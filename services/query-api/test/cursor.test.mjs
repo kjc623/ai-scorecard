@@ -1,101 +1,12 @@
-// suppress-cursor.test.mjs — k-suppression and cursor pagination.
+// cursor.test.mjs — cursor pagination.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applySuppression, anyCellBelowK } from '../src/suppress.js';
 import { decodeCursor, encodeCursor, paginate } from '../src/cursor.js';
 import { plan, executePlan } from '../src/plan.js';
 import { baseDoc, NOW } from './helpers.mjs';
 
 const KEY = Buffer.from('a'.repeat(32));
-
-function cell(overrides) {
-  return { bucket: '2026-09-01T00:00:00.000Z', tool: 'claude_web', submissions: 12, users: 6, __k_subjects: 6, ...overrides };
-}
-
-test('a cell with fewer than k distinct subjects is suppressed, and reports why', () => {
-  const { rows, suppressedCells } = applySuppression([cell({ __k_subjects: 2, users: 2 })], { measures: ['submissions', 'users'] });
-  assert.equal(suppressedCells, 1);
-  assert.equal(rows[0].result_state, 'suppressed');
-  assert.equal(rows[0].reason, 'fewer_than_k_subjects');
-  assert.equal(rows[0].k, 5);
-  assert.equal(rows[0].submissions, undefined, 'a suppressed cell carries no measure');
-  assert.equal(rows[0].users, undefined);
-  assert.notEqual(rows[0].submissions, 0, 'a suppressed cell is never a zero');
-  assert.equal(rows[0].tool, 'claude_web', 'the cell still says which cell it is');
-});
-
-test('a genuine zero is published as a zero, never as suppressed', () => {
-  const { rows, suppressedCells } = applySuppression(
-    [cell({ __k_subjects: 0, submissions: 0, users: 0 })],
-    { measures: ['submissions', 'users'] },
-  );
-  assert.equal(suppressedCells, 0);
-  assert.equal(rows[0].submissions, 0);
-  assert.equal(rows[0].result_state, undefined);
-});
-
-test('k applies to distinct subjects, not to rows', () => {
-  const { suppressedCells } = applySuppression(
-    [cell({ submissions: 900, users: 2, __k_subjects: 2 })],
-    { measures: ['submissions', 'users'] },
-  );
-  assert.equal(suppressedCells, 1, 'nine hundred submissions from two people is still suppressed');
-});
-
-test('suppression blanks every measure in the cell, not only the count', () => {
-  const { rows } = applySuppression([cell({ __k_subjects: 1, submissions: 5, users: 1, bytes_total: 900 })], {
-    measures: ['submissions', 'users', 'bytes_total'],
-  });
-  for (const measure of ['submissions', 'users', 'bytes_total']) assert.equal(rows[0][measure], undefined);
-});
-
-test('the hidden subject count never reaches the wire', () => {
-  const { rows } = applySuppression([cell({})], { measures: ['submissions'] });
-  assert.equal(rows[0].__k_subjects, undefined);
-});
-
-test('complementary suppression hides the total when exactly one cell is suppressed', () => {
-  const rows = [
-    cell({ tool: 'a', __k_subjects: 1, submissions: 3 }),
-    cell({ tool: 'b', __k_subjects: 9, submissions: 40 }),
-    { bucket: null, tool: null, submissions: 43, users: null, __k_subjects: 10 },
-  ];
-  const result = applySuppression(rows, { measures: ['submissions', 'users'], groupKeys: ['bucket', 'tool'] });
-  assert.equal(result.suppressedCells, 2, 'the cell and the total');
-  assert.equal(result.totalSuppressed, true);
-  assert.equal(result.rows[2].reason, 'complementary_suppression');
-  assert.equal(result.rows[2].submissions, undefined);
-});
-
-test('with two suppressed cells the total stays published: neither value is recoverable', () => {
-  const rows = [
-    cell({ tool: 'a', __k_subjects: 1, submissions: 3 }),
-    cell({ tool: 'b', __k_subjects: 2, submissions: 7 }),
-    { bucket: null, tool: null, submissions: 50, users: null, __k_subjects: 10 },
-  ];
-  const result = applySuppression(rows, { measures: ['submissions', 'users'], groupKeys: ['bucket', 'tool'] });
-  assert.equal(result.suppressedCells, 2);
-  assert.equal(result.totalSuppressed, false);
-  assert.equal(result.rows[2].submissions, 50);
-});
-
-test('suppression does not apply to an explicitly subject-scoped read', () => {
-  const result = applySuppression([cell({ __k_subjects: 1, users: 1 })], {
-    measures: ['submissions', 'users'],
-    subjectScoped: true,
-  });
-  assert.equal(result.suppressedCells, 0);
-  assert.equal(result.rows[0].submissions, 12);
-  assert.ok(result.notes[0].includes('subject-scoped'));
-});
-
-test('the audit trigger is decided before suppression: a suppressed cell still counts', () => {
-  const rows = [cell({ __k_subjects: 1, users: 1 }), cell({ tool: 'b', __k_subjects: 9 })];
-  assert.equal(anyCellBelowK(rows), true);
-  assert.equal(anyCellBelowK([cell({ __k_subjects: 0, submissions: 0, users: 0 })]), false, 'a zero cell is not a small group');
-  assert.equal(anyCellBelowK([cell({ __k_subjects: 5 })]), false);
-});
 
 // ---------------------------------------------------------------------------------------------
 // Cursors

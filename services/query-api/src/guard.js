@@ -10,7 +10,6 @@
 
 import {
   COARSENING_ORDER,
-  K,
   MAX_RESPONSE_BYTES,
   MAX_SERIES_POINTS,
   MAX_UNNARROWED_SUBJECT_WINDOW_DAYS,
@@ -251,7 +250,7 @@ function groupedCardinalities(query, source) {
       else if (filter.op === 'in' || filter.op === 'not_in') cardinality = Math.min(cardinality, Math.max(1, filter.value.length));
       else if (filter.op === 'between') cardinality = Math.min(cardinality, Math.max(1, Math.ceil(cardinality / 4)));
     }
-    if (name === 'subject' && cardinality > K * 100) {
+    if (name === 'subject' && cardinality > 500) {
       // Grouping by subject is only ever a subject-scoped lookup; the estimator keeps it from
       // pretending a 4,000-person enumeration is a small question.
       out.push(cardinality);

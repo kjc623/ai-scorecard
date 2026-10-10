@@ -2,42 +2,28 @@
 //
 // Screens produce *view models*, not markup: a tile, a table, a series and a set of notes. render.js
 // turns those into HTML. The split is what makes the honesty rules testable without a DOM — a test
-// asserts on `tile.value.kind`, which is where "suppressed" and "zero" are still distinguishable.
+// asserts on `tile.value.kind`, which is where "absent" and "zero" are still distinguishable.
 //
 // Every number a screen shows comes from `measureOf`/`sumMeasure` in states.js. There is no other
-// path to a value, so a suppressed cell cannot be merged with a zero in one screen while being
+// path to a value, so an absent measure cannot be merged with a zero in one screen while being
 // kept apart in another.
 
-import { measureOf, isSuppressed, vocabOf } from './states.js';
+import { measureOf, vocabOf } from './states.js';
 import { formatBytes, formatCount, formatInstant, formatLabels, formatScore } from './format.js';
-import { K, SOURCES, TEMPLATES } from './vocab.js';
+import { SOURCES, TEMPLATES } from './vocab.js';
 
-/**
- * A total over a set of cells, with the effect of suppression stated rather than hidden.
- *
- * If any contributing cell is suppressed, the sum is a FLOOR: the suppressed contribution is
- * unknown, so the number shown is a lower bound and says so.
- */
+/** A total over a set of cells. A set in which no cell carries the measure has no total. */
 export function sumMeasure(state, measure) {
   let total = 0;
   let counted = 0;
-  let suppressed = 0;
-  let absent = 0;
   for (const row of state.data) {
     const value = measureOf(row, measure);
     if (value.kind === 'number') {
       total += value.value;
       counted += 1;
-    } else if (value.kind === 'suppressed') {
-      suppressed += 1;
-    } else {
-      absent += 1;
     }
   }
-  if (counted === 0 && suppressed > 0) return { kind: 'suppressed', k: state.suppression?.k ?? K, suppressedCells: suppressed };
   if (counted === 0) return { kind: 'absent' };
-  if (suppressed > 0) return { kind: 'floor', value: total, suppressedCells: suppressed };
-  void absent;
   return { kind: 'number', value: total };
 }
 
@@ -45,18 +31,10 @@ function tile(label, value, note) {
   return Object.freeze({ label, value, note: note ?? null });
 }
 
-/** A tile from a summed measure, carrying the floor/suppressed distinction into the label. */
+/** A tile from a summed measure, saying so when no returned cell carries it. */
 export function measureTile(label, state, measure, formatter = formatCount) {
   const total = sumMeasure(state, measure);
   if (total.kind === 'number') return tile(label, { kind: 'number', text: formatter(total.value) }, null);
-  if (total.kind === 'suppressed') {
-    return tile(label, { kind: 'suppressed', text: 'suppressed', k: total.k, suppressedCells: total.suppressedCells },
-      `Every contributing cell was below k = ${total.k} subjects.`);
-  }
-  if (total.kind === 'floor') {
-    return tile(label, { kind: 'floor', text: `≥ ${formatter(total.value)}` },
-      `Floor · ${total.suppressedCells} suppressed`);
-  }
   return tile(label, { kind: 'absent', text: '—' }, 'This measure is not carried by any returned cell.');
 }
 
@@ -69,9 +47,8 @@ export function tableFrom(state, { title, columns, emptyText }) {
   return Object.freeze({
     title,
     columns: Object.freeze(columns),
-    rows: Object.freeze(state.data.map((row) => Object.freeze({ row, vocab: vocabOf(row), suppressed: isSuppressed(row) }))),
+    rows: Object.freeze(state.data.map((row) => Object.freeze({ row, vocab: vocabOf(row) }))),
     emptyText: emptyText ?? 'No rows.',
-    suppressedCells: state.data.filter(isSuppressed).length,
   });
 }
 
@@ -92,22 +69,20 @@ export function seriesFrom(state, { measure, dim = 'tool', title }) {
   }
   const points = [...byBucket.entries()].map(([bucket, rows]) => {
     let value = 0;
-    let suppressed = 0;
     for (const row of rows) {
       const v = measureOf(row, measure);
       if (v.kind === 'number') value += v.value;
-      else if (v.kind === 'suppressed') suppressed += 1;
     }
     return Object.freeze({
       bucket,
-      value: suppressed > 0 ? { kind: 'floor', value, suppressedCells: suppressed } : { kind: 'number', value },
+      value: { kind: 'number', value },
       series: rows.length,
     });
   }).sort((a, b) => String(a.bucket).localeCompare(String(b.bucket)));
   return Object.freeze({ title, points, dim, measure, unavailable: false, reason: null });
 }
 
-/** The cells of one dimension, ranked by a measure — with suppressed cells kept in the ranking. */
+/** The cells of one dimension, ranked by a measure — a cell that does not carry it ranks last. */
 export function rankedCells(state, measure, key) {
   return [...state.data]
     .map((row) => ({ row, key: row[key], value: measureOf(row, measure) }))
@@ -133,7 +108,6 @@ function shared(state, extraNotes = []) {
     if (lower.length > 0) notes.push(`${lower.map(([m]) => m).join(', ')} is a distinct-subject count served as a lower bound: it can under-count when a cell combines rows.`);
   }
   if (state.meta?.warnings) notes.push(...state.meta.warnings);
-  if (state.suppression?.k) notes.push(`k = ${state.suppression.k} distinct subjects per cell; ${state.suppression.suppressed_cells ?? 0} cell(s) suppressed in this response.`);
   if (state.audit?.entry_id) notes.push(`Audited read: entry ${state.audit.entry_id} at ${formatInstant(state.audit.written_at)}.`);
   notes.push(...extraNotes);
   return Object.freeze({ banners: state.banners, notes: Object.freeze(notes) });
@@ -292,8 +266,7 @@ export function unsanctionedView(state) {
     tiles: Object.freeze([
       measureTile('Submissions', state, 'submissions'),
       tile('Tools involved', { kind: 'number', text: formatCount(tools.size) }, null),
-      tile('People in this page', { kind: 'number', text: formatCount(state.data.filter((r) => !isSuppressed(r)).length) }, 'A page count, not a fleet total.'),
-      tile('Suppressed cells', { kind: 'number', text: formatCount(state.data.filter(isSuppressed).length) }, `Below k = ${state.suppression?.k ?? K} subjects.`),
+      tile('People in this page', { kind: 'number', text: formatCount(state.data.length) }, 'A page count, not a fleet total.'),
     ]),
     tables: Object.freeze([
       tableFrom(state, {
@@ -310,7 +283,6 @@ export function unsanctionedView(state) {
     series: Object.freeze([]),
     ...shared(state, [
       'This table is ordered by tool and then by person: it is a list, not a ranking. There is no view of people sorted by volume.',
-      'A suppressed row is a row that exists: the cell had fewer than k subjects in it.',
     ]),
   });
 }
@@ -349,9 +321,7 @@ export function teamsView(state) {
       }),
     ]),
     series: Object.freeze([seriesFrom(state, { measure: 'submissions', title: 'Submissions per bucket' })]),
-    ...shared(state, notes.concat([
-      'A team cell below k people is suppressed: a two-person team\'s daily count is that team\'s data.',
-    ])),
+    ...shared(state, notes),
   });
 }
 
@@ -656,9 +626,8 @@ export function eventView(state) {
         columns: Object.freeze([column('field', 'Field'), column('value', 'Value')]),
         rows: Object.freeze(head ? Object.entries(head)
           .filter(([key]) => !OBSERVATION_COLUMNS.includes(key))
-          .map(([field, value]) => Object.freeze({ row: { field, value: renderable(value) }, vocab: {}, suppressed: false })) : []),
+          .map(([field, value]) => Object.freeze({ row: { field, value: renderable(value) }, vocab: {} })) : []),
         emptyText: 'The record is not here. See the state above for why.',
-        suppressedCells: 0,
       }),
       tableFrom({ data: observations }, {
         title: 'Observation routes',
@@ -746,9 +715,8 @@ export function refusalView(state, { title }) {
       Object.freeze({
         title: 'What the API said',
         columns: Object.freeze([column('field', 'Field'), column('value', 'Value')]),
-        rows: Object.freeze(rows.map((row) => Object.freeze({ row, vocab: {}, suppressed: false }))),
+        rows: Object.freeze(rows.map((row) => Object.freeze({ row, vocab: {} }))),
         emptyText: 'No detail.',
-        suppressedCells: 0,
       }),
     ]),
     series: Object.freeze([]),

@@ -188,7 +188,6 @@ export const TEMPLATES = Object.freeze({
           'An unscoped window beyond 7 days is refused by the cost guard, naming the narrowing that would make it servable.',
           'Three states, not two: `unsanctioned`, `unknown` and `sanctioned` are separate answers, and `unknown` gets its own count and list. The default here is `unsanctioned`, the template\'s own question.',
           'The unsanctioned tool set is resolved at read time from the decision on the tool each fingerprint belongs to (mart.agg_tool_user_period ⋈ ref.tool_catalogue ⋈ ops.tool_sanction); its display name comes from ref.tool_catalogue. Both precomputed, nothing scans raw events.',
-          'The k-suppression cell is the (bucket, tool) group, not the person: a tool used by fewer than k people is suppressed, and a tool with enough people publishes the rows that name them.',
           'Ordered by tool and then by person, never by volume: this is a list, not a leaderboard.',
         ],
       };
@@ -224,7 +223,6 @@ export const TEMPLATES = Object.freeze({
         extras: [(q) => orgCoverageStatement(q)],
         notes: [
           'Empty until the directory sync: the response is not_yet_covered with reason directory_not_synced, never a flat zero line.',
-          'Department cells below k distinct users are suppressed; k-suppression does not apply to subject-scoped reads.',
         ],
       };
     },
@@ -278,7 +276,6 @@ export const TEMPLATES = Object.freeze({
         extras: [(q) => classTotalStatement(q)],
         notes: [
           'submissions counts submissions CARRYING that class. The total from mart.agg_tool_period is a different measure and is labelled as one.',
-          'Each cell carries `users`, so k-suppression applies per cell: a class appearing in one person\'s submissions is that person\'s data.',
           'degraded_events travels beside the class mix so a classifier outage cannot read as a fall in sensitive data.',
           'Three grouping dimensions is the DSL cap, so `classifier_version` and `severity` cannot both be shown beside class and tool; the template takes `dimensions` to choose.',
         ],
@@ -344,7 +341,6 @@ export const TEMPLATES = Object.freeze({
         extras: [(q) => flushCheckStatement(subject, q.window)],
         notes: [
           'Always audited: it filters on a subject and returns one, so there is no anonymous form of it.',
-          'k-suppression does not apply: this is an explicitly subject-scoped read.',
           'Below 14 observed buckets the spike answer is not_yet_covered, not "no change".',
         ],
       };

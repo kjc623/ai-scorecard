@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { SOURCES, TEMPLATES, TEMPLATE_NAMES, RESULT_STATES, K, STATE_PAIRS, COLLECTOR_DETAILS } from '../src/vocab.js';
+import { SOURCES, TEMPLATES, TEMPLATE_NAMES, RESULT_STATES, STATE_PAIRS, COLLECTOR_DETAILS } from '../src/vocab.js';
 import { ROLE_CAPABILITIES } from '../server/session.mjs';
 import * as registry from '../../query-api/src/registry.js';
 import * as serverTemplates from '../../query-api/src/templates.js';
@@ -35,10 +35,6 @@ test('the ten templates, their sources and their parameters match', () => {
 
 test('the result-state vocabulary is the API\'s', () => {
   assert.deepEqual(Object.keys(RESULT_STATES).sort(), [...serverErrors.RESULT_STATE_NAMES].sort());
-});
-
-test('k is the same number on both sides', () => {
-  assert.equal(K, registry.K);
 });
 
 test('the role-to-capability map is the one query-api enforces', () => {

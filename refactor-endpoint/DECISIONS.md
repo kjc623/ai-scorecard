@@ -2864,3 +2864,27 @@ What the first bring-up found, and the runbook now says:
 - **The per-tool collection-mode override** follows the same rule: set per tool key, carried in the
   bundle's `tool_modes` per fingerprint. The migration folds overrides on a tool's fingerprints into
   one at the narrowest mode.
+
+## 2026-10-10, task 60: the console issues from the first device
+
+Three decisions by the owner after the first ChatGPT prompt from the reference VM reached the
+dashboard.
+
+- **The rollup writes only the buckets the source has.** Each aggregate built a grid of every bucket
+  in its window times every member seen in the window and wrote a zero row per empty cell, so a
+  tool first seen today showed six days of zeros before it. Each statement now computes the
+  window's cells from the source, deletes the rows of cells the source no longer has (the erasure
+  and retention case the grid existed for), and upserts the rest.
+- **No k-suppression.** A one-person tenant saw every aggregate as "≥ 0, suppressed", and the owner
+  withdrew the rule that a cell covering fewer than five people is hidden. query-api serves every
+  cell as the number it is: the `suppressed` result state, the `suppression` envelope block, the
+  hidden subject count and the post-read audit of small cells are gone, and the dashboard renders
+  no suppressed cell. Subject-bearing reads are audited before the read as before; aggregate reads
+  are not audited. Coverage floors are unchanged.
+- **The extension's fingerprint names the host.** The `tf1:` vector mixed the destination with the
+  request's path, method, content type, body shape and message signals, so the catalogue could only
+  match a request whose body looked like the documented sample, and real ChatGPT bodies did not
+  (their role sits under `author`). Every real prompt rendered as "Unrecognised tool". The `tf2:`
+  derivation hashes `{v: 2, host}` alone: one fingerprint per host, predictable from the catalogue,
+  with the predicate still deciding what is a submission. Migration `0019-extension-fingerprints.sql`
+  swaps the catalogue rows; decisions and overrides are per tool, so none is lost.

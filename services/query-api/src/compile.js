@@ -15,7 +15,7 @@
 // hostile-input test asserts the consequence directly: two documents that differ only in their
 // values compile to byte-identical SQL.
 
-import { BUCKET_TRUNC_SQL, K, NATIVE_BUCKETS, REDUCTION_SOURCE_BUCKET } from './registry.js';
+import { BUCKET_TRUNC_SQL, NATIVE_BUCKETS, REDUCTION_SOURCE_BUCKET } from './registry.js';
 import { REASON, unsupported } from './errors.js';
 
 /** `${type}` -> the SQL cast appended to a placeholder. */
@@ -84,8 +84,6 @@ export function compile(validated, opts = {}) {
     probe_row: false,
     rollup: query.rollup,
     has_cursor: Boolean(query.cursor),
-    k: source.kSuppression ? K : null,
-    subject_count_basis: null,
     query_class: source.costClass,
     statement_timeout_ms: validated.klass.statementTimeoutMs,
     required_indexes: [...source.indexes],
@@ -150,34 +148,6 @@ export function compile(validated, opts = {}) {
       meta.measure_semantics[name] = collapsing ? 'distinct_lower_bound' : 'exact';
     } else {
       meta.measure_semantics[name] = measure.semantics;
-    }
-  }
-
-  if (source.kSuppression && source.subjectCount) {
-    if (source.subjectCount.column) {
-      // max() is a *lower* bound on the cell's distinct subjects: the users of any one
-      // collapsed row are a subset of the union's, so max <= distinct. Suppressing when the
-      // bound is below k can only over-suppress, never publish a cell that is really smaller
-      // than k. Summing the column would be an upper bound and would publish small cells.
-      select.push(`max(${source.subjectCount.column})::bigint AS __k_subjects`);
-      meta.subject_count_basis = collapsing ? 'lower_bound' : 'exact';
-    } else if (source.subjectCount.distinct) {
-      // Q2's cell is the tool, not the person. When `subject` is a grouping key the
-      // grain is one row per subject per bucket, so the number of grouped rows in the (bucket,
-      // tool) window is exactly the number of distinct subjects that used the tool in that cell —
-      // available as a plain window count, where `count(DISTINCT …) OVER …` is not legal SQL. Any
-      // other shape (no subject grouping, a reduced week/month bucket) keeps the exact
-      // `count(DISTINCT …)`, so the fallback is never a wrong number.
-      if (source.subjectCount.perToolCell && query.dimensions.includes('subject') && query.bucket) {
-        const bucketExpr = (query.bucket === 'hour' || query.bucket === 'day')
-          ? source.bucket.startColumn
-          : `date_trunc(${BUCKET_TRUNC_SQL[query.bucket]}, ${source.bucket.startColumn})`;
-        select.push(`count(*) OVER (PARTITION BY ${bucketExpr}, ${source.dimensions.tool.sql})::bigint AS __k_subjects`);
-        meta.subject_count_basis = 'per_tool_cell';
-      } else {
-        select.push(`count(DISTINCT ${source.subjectCount.distinct})::bigint AS __k_subjects`);
-        meta.subject_count_basis = 'exact';
-      }
     }
   }
 

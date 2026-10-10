@@ -1,11 +1,10 @@
 /* styles.css — the dashboard's whole visual vocabulary.
  *
- * Three states get three treatments, and they are not interchangeable:
+ * Two states get two treatments, and they are not interchangeable:
  *   .v-number       a real value, including 0
- *   .v-suppressed   there was something and the number is withheld (hatched)
  *   .v-absent       the response does not carry this value at all
- * The hatching is on the suppressed marker and nowhere else, so a hatched thing on this page always
- * means the same thing.
+ * Hatching marks a state that cannot say (a not-yet-covered banner, an unknown vocabulary value) and
+ * nothing else, so a hatched thing on this page always means the same thing.
  *
  * The look: a warm near-black (or warm paper) ground, panels set into shallow trays, one serif for
  * screen titles and one accent that is spent only on data marks and on where the reader is. State
@@ -226,16 +225,10 @@ a.tile { display: block; text-decoration: none; color: inherit; }
 .filter-label { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-soft); }
 .tile-label { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em; color: var(--ink-soft); }
 .tile-value { font: 400 36px/1.1 var(--serif); letter-spacing: -0.02em; color: var(--ink); }
-.tile-value .v-vocab, .tile-value .v-suppressed { font: 12px/1.7 var(--mono); letter-spacing: 0; vertical-align: middle; }
+.tile-value .v-vocab { font: 12px/1.7 var(--mono); letter-spacing: 0; vertical-align: middle; }
 .tile-note { font-size: 12.5px; color: var(--ink-soft); }
 
 .v-number { font-variant-numeric: tabular-nums; }
-.v-floor { font-variant-numeric: tabular-nums; color: var(--warn); }
-.v-suppressed {
-  display: inline-block; background: var(--hatch); border: 1px dashed var(--ink-faint); border-radius: 6px;
-  padding: 1px 7px; font-size: 12px; color: var(--ink-soft); white-space: nowrap;
-}
-.v-k { font: 10px/1 var(--mono); margin-left: 5px; opacity: .75; }
 .v-absent { color: var(--ink-faint); }
 .v-text { word-break: break-word; }
 .v-time { font: 12px/1.4 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -276,12 +269,9 @@ tbody tr { transition: background .3s var(--ease); }
 tbody tr:hover { background: var(--tray); }
 tr.row-link { cursor: pointer; }
 tr.row-link:hover td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
-tr.row-suppressed { background: var(--hatch); }
 tr.row-empty td { color: var(--ink-soft); font-style: italic; }
 .cell-link { text-decoration-color: var(--accent); font-family: var(--mono); font-size: 12.5px; }
-.table-note, .series-note { display: inline-flex; align-items: center; gap: 7px; margin: 0 0 0 auto; font-size: 12px; color: var(--ink-soft); }
-.series-note { margin: 0; padding: 0 22px 18px; }
-.legend-swatch { width: 14px; height: 10px; border-radius: 3px; background: var(--hatch); border: 1px dashed var(--ink-faint); }
+.table-note { display: inline-flex; align-items: center; gap: 7px; margin: 0 0 0 auto; font-size: 12px; color: var(--ink-soft); }
 
 /* How the rows split across a vocabulary column: one segmented bar and its legend. */
 .dists { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px 28px; padding: 2px 22px 18px; }
@@ -329,7 +319,6 @@ tr.row-empty td { color: var(--ink-soft); font-style: italic; }
 }
 .bars:hover .bar-fill { opacity: .45; }
 .bars .bar:hover .bar-fill, .bars .bar:focus-visible .bar-fill { opacity: 1; }
-.bar-floor .bar-fill { background: var(--hatch); border: 1px dashed var(--ink-faint); border-bottom: 0; }
 .bar-label { position: absolute; bottom: -22px; left: 0; right: 0; text-align: center; font: 10px/1 var(--mono); color: var(--ink-soft); }
 .bar::after {
   content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 8px); z-index: 5;

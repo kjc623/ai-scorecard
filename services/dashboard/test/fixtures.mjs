@@ -51,9 +51,8 @@ function page(overrides = {}) {
 
 const TOOL_ROWS = Object.freeze([
   Object.freeze({ bucket: DAY, tool: 'tls_b6681b043244c43f', sanctioned_state: 'unsanctioned', submissions: 812, users: 214, bytes_total: 41_000_000, blocked: 12, warned: 40, logged: 760 }),
-  // Below k: the server has already replaced every measure with the suppression marker. The
-  // client must not turn this back into a number.
-  Object.freeze({ bucket: DAY, tool: 'shadow_llm_gateway', sanctioned_state: 'unknown', result_state: 'suppressed', reason: 'fewer_than_k_subjects', k: 5 }),
+  // A small cell: two people. Its numbers are published like any other.
+  Object.freeze({ bucket: DAY, tool: 'shadow_llm_gateway', sanctioned_state: 'unknown', submissions: 3, users: 2, bytes_total: 120_000, blocked: 0, warned: 1, logged: 2 }),
   // A genuine zero: we looked and there was none. This is an answer, not a secret.
   Object.freeze({ bucket: DAY, tool: 'legacy_summariser', sanctioned_state: 'sanctioned', submissions: 0, users: 0, bytes_total: 0, blocked: 0, warned: 0, logged: 0 }),
   Object.freeze({ bucket: DAY, tool: 'tls_f412811be7ac6539', sanctioned_state: 'sanctioned', submissions: 4021, users: 1877, bytes_total: 190_000_000, blocked: 3, warned: 210, logged: 3808 }),
@@ -147,14 +146,14 @@ const AUDIT_ROWS = Object.freeze([
 
 const ORG_ROWS = Object.freeze([
   Object.freeze({ bucket: DAY, department: 'Engineering', submissions: 2210, users: 640 }),
-  Object.freeze({ bucket: DAY, department: 'Legal', result_state: 'suppressed', reason: 'fewer_than_k_subjects', k: 5 }),
+  Object.freeze({ bucket: DAY, department: 'Legal', submissions: 7, users: 2 }),
   Object.freeze({ bucket: DAY, department: 'Finance', submissions: 812, users: 96 }),
 ]);
 
 const CLASS_ROWS = Object.freeze([
   Object.freeze({ bucket: DAY, class: 'customer_pii', severity: 'high', submissions: 1204, users: 388, max_score: 0.94, degraded_events: 12 }),
   Object.freeze({ bucket: DAY, class: 'credential', severity: 'critical', submissions: 402, users: 122, max_score: 1, degraded_events: 12 }),
-  Object.freeze({ bucket: DAY, class: 'health', result_state: 'suppressed', reason: 'fewer_than_k_subjects', k: 5 }),
+  Object.freeze({ bucket: DAY, class: 'health', severity: 'high', submissions: 4, users: 2, max_score: 0.81, degraded_events: 0 }),
 ]);
 
 const PERSON_ROWS = Object.freeze([
@@ -186,7 +185,6 @@ export const STATE_ENVELOPES = Object.freeze({
     data: TOOL_ROWS,
     freshness: freshness({ state: 'stale', lag_seconds: 5400 }),
     coverage: coverage(),
-    suppression: { k: 5, suppressed_cells: 1, subject_count_basis: 'exact' },
     audit: { entry_id: '8123', written_at: '2026-10-01T11:05:01Z' },
     meta: { source: 'mart.v_tool_usage', applied_bucket: 'day', measure_semantics: { submissions: 'additive', users: 'exact' } },
   }),
@@ -254,16 +252,6 @@ export const STATE_ENVELOPES = Object.freeze({
     freshness: freshness({ aggregate: 'ingest.submission' }),
     coverage: coverage(),
   }),
-  all_suppressed: ok({
-    data: [
-      { bucket: DAY, tool: 'a', result_state: 'suppressed', reason: 'fewer_than_k_subjects', k: 5 },
-      { bucket: DAY, tool: 'b', result_state: 'suppressed', reason: 'fewer_than_k_subjects', k: 5 },
-    ],
-    freshness: freshness(),
-    coverage: coverage(),
-    suppression: { k: 5, suppressed_cells: 2, subject_count_basis: 'lower_bound' },
-    meta: { source: 'mart.v_tool_usage', applied_bucket: 'day', subject_count_basis: 'lower_bound' },
-  }),
 });
 
 /** The per-question answers used by the default "realistic" scenario. */
@@ -272,7 +260,6 @@ const REALISTIC = Object.freeze({
     data: TOOL_ROWS,
     freshness: freshness(),
     coverage: coverage({ state: 'partial' }),
-    suppression: { k: 5, suppressed_cells: 1, subject_count_basis: 'exact' },
     audit: { entry_id: '8123', written_at: '2026-10-01T11:05:01Z' },
     meta: {
       source: 'mart.v_tool_usage',
@@ -285,19 +272,17 @@ const REALISTIC = Object.freeze({
     data: [
       { bucket: DAY, tool: 'tls_b6681b043244c43f', subject: 'u_9a02', submissions: 214, bytes_total: 12_000_000 },
       { bucket: DAY, tool: 'tls_b6681b043244c43f', subject: 'u_4f21', submissions: 188, bytes_total: 9_400_000 },
-      { bucket: DAY, tool: 'shadow_llm_gateway', result_state: 'suppressed', reason: 'fewer_than_k_subjects', k: 5 },
+      { bucket: DAY, tool: 'shadow_llm_gateway', subject: 'u_1b77', submissions: 3, bytes_total: 120_000 },
     ],
     freshness: freshness(),
     coverage: coverage({ state: 'partial' }),
-    suppression: { k: 5, suppressed_cells: 1, subject_count_basis: 'exact' },
     audit: { entry_id: '8124', written_at: '2026-10-01T11:05:02Z' },
-    meta: { source: 'mart.agg_tool_user_period', applied_bucket: 'day', k: 5 },
+    meta: { source: 'mart.agg_tool_user_period', applied_bucket: 'day' },
   }),
   q3_team_growth: ok({
     data: ORG_ROWS,
     freshness: freshness({ aggregate: 'mart.agg_org_period' }),
     coverage: coverage({ state: 'partial' }),
-    suppression: { k: 5, suppressed_cells: 1, subject_count_basis: 'exact' },
     meta: {
       source: 'mart.agg_org_period',
       applied_bucket: 'day',
@@ -308,7 +293,6 @@ const REALISTIC = Object.freeze({
     data: CLASS_ROWS,
     freshness: freshness({ aggregate: 'mart.agg_class_period' }),
     coverage: coverage({ state: 'partial' }),
-    suppression: { k: 5, suppressed_cells: 1, subject_count_basis: 'exact' },
     meta: {
       source: 'mart.agg_class_period',
       applied_bucket: 'day',
@@ -328,7 +312,6 @@ const REALISTIC = Object.freeze({
     data: PERSON_ROWS,
     freshness: freshness({ aggregate: 'mart.agg_user_period' }),
     coverage: coverage({ state: 'partial' }),
-    suppression: { k: null, suppressed_cells: 0 },
     audit: { entry_id: '8126', written_at: '2026-10-01T11:05:04Z' },
     meta: {
       source: 'mart.agg_user_period',
@@ -404,13 +387,11 @@ export const SCENARIOS = Object.freeze({
       data: TOOL_ROWS,
       freshness: freshness({ state: 'stale', lag_seconds: 5400 }),
       coverage: coverage({ state: 'partial', devices_reporting: 3100, gap_reasons: { not_enrolled: 440, permission_denied: 980, unknown: 100 } }),
-      suppression: { k: 5, suppressed_cells: 1, subject_count_basis: 'lower_bound' },
       meta: { source: 'mart.v_tool_usage', applied_bucket: 'day', subject_count_basis: 'lower_bound' },
     }),
   }),
   empty: Object.freeze({ label: 'Empty, coverage adequate', answers: null, forced: STATE_ENVELOPES.empty }),
   blind: Object.freeze({ label: 'Not yet covered', answers: null, forced: STATE_ENVELOPES.blind }),
-  suppressed: Object.freeze({ label: 'Every cell suppressed', answers: null, forced: STATE_ENVELOPES.all_suppressed }),
   refused: Object.freeze({ label: 'Refused: too broad', answers: null, forced: STATE_ENVELOPES.refused_too_broad }),
   refused_shape: Object.freeze({ label: 'Refused: shape', answers: null, forced: STATE_ENVELOPES.refused_shape }),
   cursor_expired: Object.freeze({ label: 'Cursor expired', answers: null, forced: STATE_ENVELOPES.cursor_expired }),

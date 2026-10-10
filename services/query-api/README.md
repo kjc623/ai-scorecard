@@ -5,7 +5,7 @@ and compiled server-side to parameterised SQL over `mart` and `ingest.submission
 bound, and a name outside the closed vocabulary is rejected rather than escaped. Each read runs in
 one transaction scoped to the caller's tenant (`set_config('app.tenant_id', …, true)`, enforced by
 row-level security), writes its audit row before anything is served, and returns one envelope that
-carries the data with its freshness, coverage and suppression state. It also accepts two audited
+carries the data with its freshness and coverage state. It also accepts two audited
 writes (finding review) and forwards the two content requests to `content-vault`,
 which decides everything about content.
 

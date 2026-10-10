@@ -18,7 +18,6 @@
 // written after the read inside the same transaction (`phase: 'post_read'`); nothing is emitted
 // before the transaction commits either way.
 
-import { K } from './registry.js';
 import { REASON } from './errors.js';
 
 /** The closed action vocabulary written into ops.audit.action. */
@@ -105,15 +104,6 @@ export function auditDecision(validated, context = {}) {
     phase = 'pre_read';
   }
 
-  // Any aggregate whose scope resolves to fewer than k distinct subjects. The trigger is decided
-  // from the cells' own distinct-subject counts and is applied BEFORE suppression (which computes
-  // the same count, so one value decides both), which makes it
-  // the one case whose audit row is written after the read and before anything is served.
-  if (phase === 'none' && source.kSuppression) {
-    reasons.push('may_resolve_below_k_subjects');
-    phase = 'post_read';
-  }
-
   const required = phase !== 'none';
   return Object.freeze({
     required,
@@ -163,7 +153,6 @@ export function auditDetail(validated, context = {}) {
       ...(f.field === 'subject' ? {} : { value: f.value }),
     })),
     ...(context.rows !== undefined ? { rows: context.rows } : {}),
-    ...(context.suppressedCells !== undefined ? { suppressed_cells: context.suppressedCells } : {}),
     ...(context.coarsened ? { coarsened: context.coarsened } : {}),
   });
 }
@@ -236,24 +225,13 @@ export function verifyAuditPage(rows) {
  * is stated once, next to the reasoning for it.
  *
  * `phase`:
- *   * `pre_read`  — insert the audit row, then run the read, then commit, then serve.
- *   * `post_read` — run the read, decide the small-cell trigger from `__k_subjects`, insert the
- *     audit row if it fired, commit, then serve. Nothing is served before the commit either way.
- *   * `none`      — the shape is not subject-level; the read is served without an audit row.
+ *   * `pre_read` — insert the audit row, then run the read, then commit, then serve. Nothing is
+ *     served before the commit.
+ *   * `none`     — the shape is not subject-level; the read is served without an audit row.
  *
  * @param {AuditDecision} decision
- * @param {boolean} triggered  for `post_read`: whether a cell resolved below k
  */
-export function auditPlan(decision, triggered = false) {
+export function auditPlan(decision) {
   if (!decision.required) return Object.freeze({ phase: 'none', auditRequired: false, statements: Object.freeze([]) });
-  if (decision.phase === 'pre_read') {
-    return Object.freeze({ phase: 'pre_read', auditRequired: true, statements: Object.freeze(['audit_insert', 'read']) });
-  }
-  return Object.freeze({
-    phase: 'post_read',
-    auditRequired: triggered,
-    statements: Object.freeze(triggered ? ['read', 'audit_insert'] : ['read']),
-  });
+  return Object.freeze({ phase: 'pre_read', auditRequired: true, statements: Object.freeze(['audit_insert', 'read']) });
 }
-
-export { K };

@@ -16,7 +16,7 @@
 // transaction.
 
 import { createHash } from 'node:crypto';
-import { API_VERSION, K, QUERY_CLASSES, QUERY_VERSION, SOURCE_WATERMARK } from './registry.js';
+import { API_VERSION, QUERY_CLASSES, QUERY_VERSION, SOURCE_WATERMARK } from './registry.js';
 import { PROHIBITED_FIELDS, REASON, fromDatabaseError, unsupported } from './errors.js';
 import { validate, canonicalJson } from './validate.js';
 import { guard } from './guard.js';
@@ -31,13 +31,11 @@ import {
   subjectRefOf,
   verifyAuditPage,
 } from './audit.js';
-import { anyCellBelowK, applySuppression } from './suppress.js';
 import {
   buildEnvelope,
   coverageBlock,
   freshnessBlock,
   resultStateFor,
-  suppressionBlock,
 } from './envelope.js';
 import {
   coverageStatement,
@@ -183,7 +181,6 @@ export function plan(request, ctx = {}) {
         estimated_bytes: guarded.estimatedBytes,
       }),
       notes: Object.freeze([...(expansion?.notes ?? []), ...guarded.notes]),
-      k: source.kSuppression ? K : null,
     }),
   });
 }
@@ -307,24 +304,7 @@ export async function executePlan(planResult, ctx = {}) {
 
   try {
     await inTransaction(client, { tenant: ctx.tenant, statementTimeoutMs: planResult.meta.statement_timeout_ms }, async () => {
-      if (planResult.audit.plan.phase === 'post_read') {
-        // The small-cell audit is decided from the read's own `__k_subjects` column and inserted
-        // before anything is served.
-        const statements = planResult.statements;
-        await run(statements.find((s) => s.id === 'read'));
-        if (anyCellBelowK(results.get('read').rows ?? [])) {
-          await run(auditStatement(planResult.audit.decision, {
-            actorId: ctx.actorId ?? 'unknown',
-            caseReference: ctx.caseReference ?? null,
-            sessionId: ctx.sessionId ?? null,
-            subjectRef: planResult.audit.subjectRef,
-            detail: auditDetail({ query: planResult.query, source: planResult.source }, { rows: (results.get('read').rows ?? []).length }),
-          }));
-        }
-        for (const statement of statements) if (statement.id !== 'read') await run(statement);
-      } else {
-        for (const statement of planResult.statements) await run(statement);
-      }
+      for (const statement of planResult.statements) await run(statement);
       current = 'commit';
     });
   } catch (error) {
@@ -414,8 +394,6 @@ function assemble(planResult, results, now, ctx) {
     }
   }
 
-  // Hidden columns (`__k_subjects`, `__ord_*`) are stripped by applySuppression after it has used
-  // them: the k decision needs the distinct-subject count.
   let rows = [...readRows];
   let page = null;
   const limit = planResult.query.limit;
@@ -432,15 +410,8 @@ function assemble(planResult, results, now, ctx) {
     rows = rows.slice(0, limit);
   }
 
-  const suppressionResult = applySuppression(rows, {
-    k: K,
-    measures: planResult.query.measures,
-    subjectScoped: planResult.query.filters.some((f) => f.field === 'subject' && (f.op === 'eq' || f.op === 'in')),
-    groupKeys: [
-      ...(planResult.query.bucket ? ['bucket'] : []),
-      ...planResult.query.dimensions,
-    ],
-  });
+  // Hidden columns (`__ord_*`) served the ordering and never reach the wire.
+  const published = rows.map((row) => Object.freeze(Object.fromEntries(Object.entries(row).filter(([key]) => !key.startsWith('__')))));
 
   const freshness = freshnessBlock({
     aggregate: SOURCE_WATERMARK[planResult.source.id] ?? planResult.source.id,
@@ -456,10 +427,9 @@ function assemble(planResult, results, now, ctx) {
 
   const resultState = results.has('audit_insert') || planResult.source.id !== 'ops.audit'
     ? resultStateFor({
-      rowCount: suppressionResult.rows.length,
+      rowCount: published.length,
       freshness,
       coverage,
-      suppressedCells: suppressionResult.suppressedCells,
     })
     : 'ok';
 
@@ -474,17 +444,10 @@ function assemble(planResult, results, now, ctx) {
   const auditRow = results.get('audit_insert')?.rows?.[0] ?? null;
   return buildEnvelope({
     resultState,
-    data: Object.freeze([...suppressionResult.rows]),
+    data: Object.freeze(published),
     page,
     freshness,
     coverage,
-    suppression: suppressionBlock({
-      k: planResult.source.kSuppression ? K : null,
-      suppressedCells: suppressionResult.suppressedCells,
-      totalSuppressed: suppressionResult.totalSuppressed,
-      subjectCountBasis: planResult.meta.subject_count_basis,
-      notes: suppressionResult.notes,
-    }),
     ...(auditRow ? { audit: auditBlock(auditRow) } : {}),
     meta: Object.freeze({
       ...meta,

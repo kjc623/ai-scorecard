@@ -15,8 +15,6 @@
 export const QUERY_VERSION = '1';
 /** URL major version. */
 export const API_VERSION = '1';
-/** Small-cell floor: a cell with fewer distinct subjects than this is suppressed. */
-export const K = 5;
 
 // ---------------------------------------------------------------------------------------------
 // Operators
@@ -170,8 +168,6 @@ function measure(name, column, opts = {}) {
  * @property {Record<string,Measure>} measures
  * @property {ReadonlyArray<string>} grain   Source dimension names of the primary key (minus tenant, minus bucket_size)
  * @property {ReadonlyArray<{dim:string, dir:'asc'|'desc'}>} order  Total ordering key
- * @property {object|null} subjectCount  { column } | { distinct } | null
- * @property {boolean} kSuppression
  * @property {boolean} subjectBearing    true when the source's rows name a data subject
  * @property {boolean} requiresSubjectScope  grouping by `subject` needs an eq/in subject filter
  * @property {ReadonlyArray<string>} indexes  Indexes the shape requires
@@ -240,8 +236,6 @@ export const SOURCES = Object.freeze({
       { dim: 'bucket', dir: 'desc' },
       { dim: 'tool', dir: 'asc' },
     ]),
-    subjectCount: Object.freeze({ column: 't.users' }),
-    kSuppression: true,
     subjectBearing: false,
     requiresSubjectScope: false,
     indexes: Object.freeze(['mart.agg_tool_period PK (tenant_id, bucket_start, bucket_size, tool_fingerprint)']),
@@ -288,8 +282,6 @@ export const SOURCES = Object.freeze({
       { dim: 'bucket', dir: 'desc' },
       { dim: 'tool', dir: 'asc' },
     ]),
-    subjectCount: Object.freeze({ column: 't.users' }),
-    kSuppression: true,
     subjectBearing: false,
     requiresSubjectScope: false,
     indexes: Object.freeze(['mart.agg_tool_period PK (tenant_id, bucket_start, bucket_size, tool_fingerprint)']),
@@ -336,14 +328,6 @@ export const SOURCES = Object.freeze({
       { dim: 'tool', dir: 'asc' },
       { dim: 'subject', dir: 'asc' },
     ]),
-    // The suppression cell for Q2 is the tool, not the person: per-tool per-day cells below k
-    // subjects are suppressed, and a read that names who uses an unsanctioned tool must
-    // suppress a tool used by fewer than k people while still naming the tool's users when there
-    // are enough of them to make the count a fact about a group rather than about a person. The
-    // window count `count(*)` over the grouped (bucket, tool) cell is exactly that number because
-    // the grain is one row per subject per bucket; see compile.js.
-    subjectCount: Object.freeze({ distinct: 'a.user_ref', perToolCell: true }),
-    kSuppression: true,
     subjectBearing: true,
     requiresSubjectScope: false,
     indexes: Object.freeze([
@@ -351,8 +335,8 @@ export const SOURCES = Object.freeze({
       'mart.agg_tool_user_period (tenant_id, tool_fingerprint, bucket_start DESC, bucket_size)',
     ]),
     // SANCTION is joined present-tense from ops.tool_sanction through the catalogue, exactly as Q1
-    // does: a decision made after a
-    // bucket was written changes what the next read says about it, and never rewrites the bucket.
+    // does: a decision made after a bucket was written changes what the next read says about it,
+    // and never rewrites the bucket.
     joins: Object.freeze([
       Object.freeze({
         id: 'tool',
@@ -366,7 +350,6 @@ export const SOURCES = Object.freeze({
     warnings: Object.freeze([
       'An unscoped window beyond 7 days is refused by the cost guard when subject is a grouping dimension.',
       'sanctioned_state is present-tense configuration joined at read time (the decision on the tool the fingerprint belongs to, ops.tool_sanction through ref.tool_catalogue), never a property of the aggregate row; NULL means no decision, or a fingerprint outside the catalogue, rendered as `unknown`, never as `unsanctioned`.',
-      'k-suppression applies to the (bucket, tool) cell, not the person: a tool used by fewer than k people is suppressed, and a tool with enough people publishes its per-person rows, which are the point of naming who uses it.',
     ]),
   }),
 
@@ -403,8 +386,6 @@ export const SOURCES = Object.freeze({
       { dim: 'tool', dir: 'asc' },
       { dim: 'population', dir: 'asc' },
     ]),
-    subjectCount: Object.freeze({ column: 'o.users' }),
-    kSuppression: true,
     subjectBearing: false,
     requiresSubjectScope: false,
     indexes: Object.freeze([
@@ -458,8 +439,6 @@ export const SOURCES = Object.freeze({
       { dim: 'severity', dir: 'asc' },
       { dim: 'classifier_version', dir: 'asc' },
     ]),
-    subjectCount: Object.freeze({ column: 'c.users' }),
-    kSuppression: true,
     subjectBearing: false,
     requiresSubjectScope: false,
     indexes: Object.freeze(['mart.agg_class_period PK (tenant_id, bucket_start, bucket_size, class_code, tool_fingerprint, severity, classifier_version)']),
@@ -496,8 +475,6 @@ export const SOURCES = Object.freeze({
       { dim: 'bucket', dir: 'desc' },
       { dim: 'subject', dir: 'asc' },
     ]),
-    subjectCount: Object.freeze({ distinct: 'u.user_ref' }),
-    kSuppression: false,
     subjectBearing: true,
     requiresSubjectScope: true,
     indexes: Object.freeze([
@@ -540,8 +517,6 @@ export const SOURCES = Object.freeze({
       { dim: 'device', dir: 'asc' },
       { dim: 'collector', dir: 'asc' },
     ]),
-    subjectCount: null,
-    kSuppression: false,
     subjectBearing: false,
     requiresSubjectScope: false,
     indexes: Object.freeze(['mart.agg_device_period PK (tenant_id, bucket_start, bucket_size, device_id, collector)']),
@@ -596,8 +571,6 @@ export const SOURCES = Object.freeze({
       { dim: 'device', dir: 'asc' },
       { dim: 'collector', dir: 'asc' },
     ]),
-    subjectCount: null,
-    kSuppression: false,
     subjectBearing: true,
     requiresSubjectScope: false,
     indexes: Object.freeze([
@@ -690,8 +663,6 @@ export const SOURCES = Object.freeze({
       { dim: 'device', dir: 'asc' },
       { dim: 'collector', dir: 'asc' },
     ]),
-    subjectCount: null,
-    kSuppression: false,
     // No column names a person: the row is a device's component, its state and the cause the
     // device reported (error_code holds the closed detail vocabulary).
     subjectBearing: false,
@@ -746,8 +717,6 @@ export const SOURCES = Object.freeze({
       { dim: 'device', dir: 'asc' },
       { dim: 'collector', dir: 'asc' },
     ]),
-    subjectCount: null,
-    kSuppression: false,
     subjectBearing: false,
     requiresSubjectScope: false,
     indexes: Object.freeze([
@@ -846,8 +815,6 @@ export const SOURCES = Object.freeze({
       { dim: 'received_at', dir: 'desc' },
       { dim: 'submission_id', dir: 'desc' },
     ]),
-    subjectCount: null,
-    kSuppression: false,
     subjectBearing: true,
     requiresSubjectScope: false,
     indexes: Object.freeze([
@@ -948,8 +915,6 @@ export const SOURCES = Object.freeze({
       { dim: 'submission_id', dir: 'desc' },
       { dim: 'rule', dir: 'asc' },
     ]),
-    subjectCount: null,
-    kSuppression: false,
     subjectBearing: true,
     requiresSubjectScope: false,
     indexes: Object.freeze([
@@ -1022,8 +987,6 @@ export const SOURCES = Object.freeze({
       { dim: 'occurred_at', dir: 'desc' },
       { dim: 'audit_seq', dir: 'desc' },
     ]),
-    subjectCount: null,
-    kSuppression: false,
     subjectBearing: true,
     requiresSubjectScope: false,
     indexes: Object.freeze([
@@ -1089,8 +1052,6 @@ export const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 /** The longest list window, and the subject-grouped window allowed without a narrowing filter. */
 export const MAX_LIST_WINDOW_DAYS = 31;
 export const MAX_UNNARROWED_SUBJECT_WINDOW_DAYS = 7;
-/** The small-cell floor. */
-export const SUPPRESSION_K = K;
 /** How long a cursor stays valid. */
 export const CURSOR_TTL_MS = 15 * 60 * 1000;
 /** An aggregate is stale when its watermark is older than three five-minute cadences. */

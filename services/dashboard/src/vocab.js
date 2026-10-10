@@ -54,9 +54,6 @@ export const ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT = '/admin/v1/settings/tls-in
 export const ADMIN_SETTINGS_RULES_ENDPOINT = '/admin/v1/settings/rules';
 export const ADMIN_SETTINGS_KILL_SWITCH_ENDPOINT = '/admin/v1/settings/kill-switch';
 
-/** k, the small-cell floor. A cell below it arrives suppressed and is never a number. */
-export const K = 5;
-
 /**
  * Sources, with the dimensions and measures each actually carries. A dimension or measure that
  * is not listed here is not offered by the API for that source.
@@ -88,7 +85,7 @@ export const SOURCES = Object.freeze({
     measures: Object.freeze(['submissions', 'bytes_total']),
     answers: 'Q2',
     subjectBearing: true,
-    note: 'subject-bearing: every read is audited; sanctioned state is joined at read time and the k cell is the tool, not the person',
+    note: 'subject-bearing: every read is audited; sanctioned state is joined at read time',
   }),
   'mart.agg_org_period': Object.freeze({
     kind: 'aggregate',
@@ -262,7 +259,6 @@ export const RESULT_STATES = Object.freeze({
   not_yet_covered: Object.freeze({ http: 200, carriesData: true, treatment: 'hatched', label: 'Window predates collection, or the dimension has no source' }),
   stale_aggregate: Object.freeze({ http: 200, carriesData: true, treatment: 'warning', label: 'Watermark older than three cadences' }),
   coverage_degraded: Object.freeze({ http: 200, carriesData: true, treatment: 'warning', label: 'The value is a floor, not a total' }),
-  suppressed: Object.freeze({ http: 200, carriesData: true, treatment: 'hatched', label: 'Fewer than k subjects in the cell' }),
   no_longer_available: Object.freeze({ http: 410, carriesData: false, treatment: 'gone', label: 'The record or its content existed and was destroyed' }),
   not_captured: Object.freeze({ http: 200, carriesData: true, treatment: 'plain', label: 'The mode never permitted reading content' }),
   not_retrievable: Object.freeze({ http: 200, carriesData: true, treatment: 'plain', label: 'Content remains on the device' }),

@@ -9,7 +9,6 @@ import { STATE_ENVELOPES, SCENARIO_NAMES, RECORD_ROWS, fixtureTransport } from '
 import { createDashboard, SCREENS, refusalFrom } from '../src/app.js';
 import { createQueryApi } from '../src/transport.js';
 import { COMPLETE, FRESH, PARTIAL, envelope } from './helpers.mjs';
-import { K } from '../src/vocab.js';
 
 const SHELL = { coverage: PARTIAL, freshness: FRESH };
 
@@ -40,26 +39,26 @@ test('a refusal screen names the state, the code and the fix', () => {
   assert.equal(state.rowCount, 0);
 });
 
-test('a suppressed cell and a zero render into different markup on the same table', () => {
+test('a small count, a zero and an absent measure render into different markup on the same table', () => {
   const state = readState(envelope('ok', {
     data: [
       { tool: 'a', submissions: 900, users: 40 },
       { tool: 'b', submissions: 0, users: 0 },
-      { tool: 'c', result_state: 'suppressed', reason: 'fewer_than_k_subjects', k: 5 },
+      { tool: 'c', submissions: 3, users: 2 },
+      { tool: 'd' },
     ],
-    freshness: FRESH, coverage: COMPLETE, suppression: { k: 5, suppressed_cells: 1 },
+    freshness: FRESH, coverage: COMPLETE,
   }));
   const html = renderTable({
     title: 'Tools',
     columns: [{ key: 'tool', label: 'Tool' }, { key: 'submissions', label: 'Submissions', kind: 'measure' }],
-    rows: state.data.map((row) => ({ row, vocab: {}, suppressed: row.result_state === 'suppressed' })),
-    emptyText: 'none', suppressedCells: 1,
+    rows: state.data.map((row) => ({ row, vocab: {} })),
+    emptyText: 'none',
   });
   assert.match(html, /<td class="num"><span class="cell-bar"[^>]*><\/span><span class="v-number">900<\/span><\/td>/);
   assert.match(html, /<td class="num"><span class="v-number">0<\/span><\/td>/, 'a zero is a number, and draws no bar');
-  assert.match(html, /v-suppressed[^>]*>suppressed<span class="v-k">k=5/);
-  const suppressedCell = /<tr class="row-suppressed">.*?<\/tr>/s.exec(html)[0];
-  assert.ok(!/>0</.test(suppressedCell), 'the suppressed row contains no zero');
+  assert.match(html, /<td class="num"><span class="cell-bar"[^>]*><\/span><span class="v-number">3<\/span><\/td>/, 'a small count is a number like any other');
+  assert.match(html, /<td class="num"><span class="v-absent"[^>]*>—<\/span><\/td>/, 'an absent measure is neither a number nor a zero');
 });
 
 test('a tool cell resolves the name at read time and keeps the raw fingerprint visible', () => {
@@ -69,13 +68,13 @@ test('a tool cell resolves the name at read time and keeps the raw fingerprint v
       { tool: 'tls_2a942648fee3bbd5', tool_name: 'Unrecognised tool', submissions: 3 },
       { tool: 'legacy_fingerprint', submissions: 1 },
     ],
-    freshness: FRESH, coverage: COMPLETE, suppression: { k: 5, suppressed_cells: 0 },
+    freshness: FRESH, coverage: COMPLETE,
   }));
   const html = renderTable({
     title: 'Tools',
     columns: [{ key: 'tool', label: 'Tool' }, { key: 'submissions', label: 'Submissions', kind: 'measure' }],
     rows: state.data.map((row) => ({ row })),
-    emptyText: 'none', suppressedCells: 0,
+    emptyText: 'none',
   });
   // The known tool shows its name and its fingerprint.
   assert.match(html, /Claude Code<\/span> <span class="v-mono v-tool-fp">tls_b6681b043244c43f/);
@@ -85,19 +84,18 @@ test('a tool cell resolves the name at read time and keeps the raw fingerprint v
   assert.match(html, /<span class="v-text v-mono" title="Tool fingerprint">legacy_fingerprint<\/span>/);
 });
 
-test('the tile for a floored total says it is a floor, and the tile for an all-suppressed measure says suppressed', () => {
-  const floored = readState(envelope('ok', { data: [{ submissions: 10 }, { result_state: 'suppressed', k: 5 }], freshness: FRESH, coverage: COMPLETE, suppression: { k: 5, suppressed_cells: 1 } }));
-  const rows = toolsView(floored).tiles;
-  const submissions = rows.find((t) => t.label === 'Submissions');
-  assert.equal(submissions.value.kind, 'floor');
-  assert.match(submissions.value.text, /≥ 10/);
-  assert.match(submissions.note, /^Floor · 1 suppressed$/);
+test('the tile for a total counts a small cell in full, and says absent when no cell carries the measure', () => {
+  const mixed = readState(envelope('ok', { data: [{ submissions: 10 }, { submissions: 2 }], freshness: FRESH, coverage: COMPLETE }));
+  const submissions = toolsView(mixed).tiles.find((t) => t.label === 'Submissions');
+  assert.equal(submissions.value.kind, 'number');
+  assert.equal(submissions.value.text, '12');
+  assert.equal(submissions.note, null);
 
-  const all = readState(envelope('ok', { data: [{ result_state: 'suppressed', k: 5 }], freshness: FRESH, coverage: COMPLETE, suppression: { k: 5, suppressed_cells: 1 } }));
-  assert.equal(toolsView(all).tiles.find((t) => t.label === 'Submissions').value.kind, 'suppressed');
+  const none = readState(envelope('ok', { data: [{ tool: 'a' }], freshness: FRESH, coverage: COMPLETE }));
+  assert.equal(toolsView(none).tiles.find((t) => t.label === 'Submissions').value.kind, 'absent');
 });
 
-test('a series refuses to exist for an event source and renders hatched floors where cells are suppressed', () => {
+test('a series refuses to exist for an event source and draws every bucket to scale, small ones included', () => {
   const events = readState(envelope('ok', { data: [{ bucket: '2026-09-30T00:00:00Z', submissions: 1 }], freshness: FRESH, coverage: COMPLETE, meta: { source: 'ingest.submission' } }));
   const series = toolsView(events).series[0];
   assert.equal(series.unavailable, true);
@@ -106,13 +104,13 @@ test('a series refuses to exist for an event source and renders hatched floors w
   const agg = readState(envelope('ok', {
     data: [
       { bucket: '2026-09-29T00:00:00Z', tool: 'a', submissions: 10 },
-      { bucket: '2026-09-30T00:00:00Z', tool: 'a', result_state: 'suppressed', k: 5 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'a', submissions: 2 },
     ],
-    freshness: FRESH, coverage: COMPLETE, suppression: { k: 5, suppressed_cells: 1 }, meta: { source: 'mart.v_tool_usage', applied_bucket: 'day' },
+    freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage', applied_bucket: 'day' },
   }));
   const html = renderSeries(toolsView(agg).series[0]);
-  assert.match(html, /bar-floor/);
-  assert.match(html, /Hatched columns are floors, not zeroes/);
+  assert.match(html, /data-tip="2026-09-29 · 10"[^>]*><span class="bar-fill" style="--h:100"/);
+  assert.match(html, /data-tip="2026-09-30 · 2"[^>]*><span class="bar-fill" style="--h:20"/, 'a small bucket is drawn at its own height');
 });
 
 test('the overview summarises usage, data classes and findings beside the enrolled denominator', async () => {
@@ -211,8 +209,8 @@ test('HTML escaping: a hostile tool name or case reference cannot become markup'
   const html = renderTable({
     title: 'T',
     columns: [{ key: 'tool', label: 'Tool' }, { key: 'case', label: 'Case' }],
-    rows: [{ row: { tool: hostile, case: "'><script>alert(2)</script>" }, vocab: {}, suppressed: false }],
-    emptyText: 'none', suppressedCells: 0,
+    rows: [{ row: { tool: hostile, case: "'><script>alert(2)</script>" }, vocab: {} }],
+    emptyText: 'none',
   });
   assert.ok(!html.includes('<img'), 'the tag is escaped');
   assert.ok(!html.includes('<script>'), 'the script tag is escaped');
@@ -224,8 +222,8 @@ test('a vocabulary value is never blank: null renders as unknown, which is its o
   const html = renderTable({
     title: 'T',
     columns: [{ key: 'collector_state', label: 'State', kind: 'vocab' }],
-    rows: [{ row: { collector_state: null }, vocab: {}, suppressed: false }],
-    emptyText: 'none', suppressedCells: 0,
+    rows: [{ row: { collector_state: null }, vocab: {} }],
+    emptyText: 'none',
   });
   assert.match(html, /v-vocab-unknown">unknown</);
 });
@@ -246,13 +244,7 @@ test('the acceptance run: every scenario renders every screen without throwing',
   }
   const queryScreens = SCREENS.filter((s) => s.kind !== 'admin').length;
   assert.equal(rendered.length, SCENARIO_NAMES.length * queryScreens, 'every scenario × every query screen');
-  assert.ok(rendered.length >= 80, `expected a broad matrix, got ${rendered.length}`);
-});
-
-test('k is displayed wherever a suppression is explained', () => {
-  const state = readState(STATE_ENVELOPES.all_suppressed);
-  const html = renderScreen({ ...toolsView(state), id: 'x', title: 'x' }, SHELL);
-  assert.ok(html.includes(`k = ${K}`) || html.includes(`k=${K}`), 'the threshold is on screen');
+  assert.ok(rendered.length >= 70, `expected a broad matrix, got ${rendered.length}`);
 });
 
 test('classes and teams screens carry their two-measure honesty note', () => {

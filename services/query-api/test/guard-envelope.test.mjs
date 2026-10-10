@@ -167,8 +167,7 @@ test('result states never merge "we looked and found nothing" with "we cannot sa
   assert.equal(resultStateFor({ rowCount: 5, freshness: fresh, coverage: { state: 'partial' } }), 'coverage_degraded');
   assert.equal(resultStateFor({ rowCount: 5, freshness: { state: 'stale' }, coverage: complete }), 'stale_aggregate');
   assert.equal(resultStateFor({ rowCount: 5, freshness: fresh, coverage: complete }), 'ok');
-  assert.equal(resultStateFor({ rowCount: 5, freshness: fresh, coverage: complete, suppressedCells: 5 }), 'suppressed');
-  assert.equal(resultStateFor({ rowCount: 5, freshness: fresh, coverage: complete, suppressedCells: 2 }), 'ok');
+  assert.equal(resultStateFor({ rowCount: 5, freshness: fresh, coverage: complete }), 'ok');
 });
 
 test('the q3 shape reports not_yet_covered for a missing watermark rather than a zero line', () => {

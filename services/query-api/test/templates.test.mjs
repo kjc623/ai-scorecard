@@ -164,7 +164,7 @@ test('q8 is a bounded, cursor-paged list with both clocks and no grouping', () =
   assert.ok(read.text.includes('s.first_occurred_at AS first_occurred_at'));
   assert.ok(read.text.includes('s.last_occurred_at AS last_occurred_at'));
   assert.ok(!read.text.includes('GROUP BY'));
-  assert.equal(p.meta.k, null, 'k-suppression does not apply to an event list');
+  assert.equal(p.meta.k, undefined, 'an event list carries no cell threshold');
 });
 
 test('q8 caps its window at 31 days and refuses an unbounded read', () => {
