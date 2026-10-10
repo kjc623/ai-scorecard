@@ -18,7 +18,12 @@ through the dashboard on the analyst hostname at
 certificate request the extension downloader cannot answer), and the browsers install it from the
 `ExtensionInstallForcelist` policy (see `device/installer/README.md`). The packaged manifest's
 `update_url` names the same update manifest: the policy's URL serves only the first install, and
-without `update_url` the browser looks for updates in its own store. The installers register the native
+without `update_url` the browser looks for updates in its own store. The browser checks every few hours on its own; sooner,
+the extension follows the agent: `capture-core` names its release version in each `policy_bundle`
+answer, and an extension of an older release asks the browser to check now
+(`runtime.requestUpdateCheck`, once per agent version). A downloaded update installs only when the
+service worker stops, which the open native port prevents, so on `runtime.onUpdateAvailable` the
+extension hands its queue to `capture-core` and reloads. The installers register the native
 messaging host `com.shadowaicapture.capture_core` for the extension's id, which `manifest.json`'s
 `key` pins (`jnjjgjlbhfleknjpoiiopcaogphghodk`). With no host the extension keeps observing, holds
 observations in a bounded memory queue and reports the channel absent.

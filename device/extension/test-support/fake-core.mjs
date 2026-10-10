@@ -36,6 +36,8 @@ export function createFakeCore({
   bundle = null,
   /** Answer mode queries with this instead of the bundle. */
   modeAnswer = null,
+  /** The agent's release version named in each policy_bundle answer; a development agent names none. */
+  agentVersion = null,
 } = {}) {
   const received = [];
   /** @type {Map<string, {chunks: number[], bytes: number, complete: boolean}>} */
@@ -157,6 +159,7 @@ export function createFakeCore({
           policy_version: policyVersion,
           bundle: bundle,
           unchanged: Boolean(body && body.known_version) && body.known_version === policyVersion,
+          ...(agentVersion ? { agent_version: agentVersion } : {}),
         });
 
       case 'mode_query':

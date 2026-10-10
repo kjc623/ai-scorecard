@@ -347,6 +347,31 @@ func TestNativeSessionPolicySync(t *testing.T) {
 	}
 }
 
+// The policy_bundle answer names the agent's release version, so the extension of an older release
+// asks the browser for its update; a development build names none.
+func TestNativeSessionPolicySyncNamesTheAgentRelease(t *testing.T) {
+	svc, _ := enrolledServiceWith(t, func(priv ed25519.PrivateKey) []byte {
+		return signedTestBundle(t, priv, "5", protocol.ModeM1)
+	})
+	s := newNativeSession(svc, svc.peerPerson(hostinfo.User{}))
+	frame, _ := json.Marshal(protocol.NativeMessage{Type: protocol.TypePolicySync, Version: protocol.Version})
+	ask := func() protocol.PolicyBundleMessage {
+		var msg protocol.NativeMessage
+		var pb protocol.PolicyBundleMessage
+		if err := json.Unmarshal(s.Handle(context.Background(), frame), &msg); err != nil || json.Unmarshal(msg.Body, &pb) != nil {
+			t.Fatalf("policy_sync answer unreadable: %v", err)
+		}
+		return pb
+	}
+	defer func(v string) { version = v }(version)
+	for _, tc := range []struct{ build, want string }{{"1.0.28", "1.0.28"}, {"dev", ""}} {
+		version = tc.build
+		if got := ask().AgentVersion; got != tc.want {
+			t.Fatalf("agent %q: agent_version = %q, want %q", tc.build, got, tc.want)
+		}
+	}
+}
+
 // goldenPolicyFrame is the policy_bundle frame the extension's tests apply
 // (device/extension/test/golden-frames.test.mjs).
 const goldenPolicyFrame = "../../../integration/testdata/policy/policy-bundle.json"

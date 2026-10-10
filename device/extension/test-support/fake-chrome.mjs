@@ -38,6 +38,12 @@ export function createFakeChrome() {
     posted: [],
     /** Whether this install holds `webRequestBlocking`. False models an install not forced by policy. */
     blockingGranted: true,
+    /** The installed manifest's version, and what `requestUpdateCheck` answers. */
+    manifestVersion: '1.0.0',
+    updateCheckStatus: 'no_update',
+    updateChecks: 0,
+    updateAvailableHandlers: [],
+    reloads: 0,
   };
 
   const onMessageAdd = [];
@@ -89,6 +95,17 @@ export function createFakeChrome() {
         return state.lastError;
       },
       getURL: (p) => `chrome-extension://fake-extension-id/${p}`,
+      getManifest: () => ({ manifest_version: 3, version: state.manifestVersion }),
+      async requestUpdateCheck() {
+        state.updateChecks += 1;
+        return { status: state.updateCheckStatus };
+      },
+      onUpdateAvailable: {
+        addListener: (fn) => state.updateAvailableHandlers.push(fn),
+      },
+      reload() {
+        state.reloads += 1;
+      },
       connectNative(application) {
         state.connectAttempts += 1;
         if (state.failConnect) {

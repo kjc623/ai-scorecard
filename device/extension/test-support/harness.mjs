@@ -32,7 +32,7 @@ export function fakeCrypto() {
  * A complete extension under test: the real worker wiring, the real content-script wiring, a fake
  * chrome, and a fake core answering on every native port.
  */
-export function createHarness({ core = {}, capacity = 200, failConnect = false, deviceId = null, document = null, nativeTimeoutMs = undefined, connectCooldownMs = undefined } = {}) {
+export function createHarness({ core = {}, capacity = 200, failConnect = false, deviceId = null, document = null, nativeTimeoutMs = undefined, connectCooldownMs = undefined, version = undefined } = {}) {
   const fake = createFakeChrome();
   fake.state.failConnect = failConnect;
 
@@ -83,7 +83,7 @@ export function createHarness({ core = {}, capacity = 200, failConnect = false, 
 
   const adapter = createChromeAdapter(scope);
   const contentAdapter = createContentScriptAdapter(scope);
-  const app = bootstrapWorker(adapter, { capacity, deviceId, nativeTimeoutMs, connectCooldownMs });
+  const app = bootstrapWorker(adapter, { capacity, deviceId, nativeTimeoutMs, connectCooldownMs, ...(version ? { version } : {}) });
   const content = bootstrapContentScript(contentAdapter, { document });
 
   return { fake, scope, adapter, contentAdapter, content, core: fakeCore, app, crypto };

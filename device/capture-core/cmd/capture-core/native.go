@@ -178,6 +178,9 @@ func (h *nativeSession) handlePolicySync(msg protocol.NativeMessage) []byte {
 		}
 	}
 	answer := protocol.PolicyBundleMessage{}
+	if _, ok := parseAgentVersion(version); ok {
+		answer.AgentVersion = version
+	}
 	if b := h.svc.currentBundle(); b != nil {
 		answer.PolicyVersion = b.Version
 		answer.Unchanged = req.KnownVersion != "" && req.KnownVersion == b.Version

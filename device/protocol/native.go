@@ -213,6 +213,10 @@ type PolicyBundleMessage struct {
 	PolicyVersion string          `json:"policy_version"`
 	Bundle        json.RawMessage `json:"bundle"`
 	Unchanged     bool            `json:"unchanged,omitempty"`
+	// AgentVersion is the agent's release version, absent from a development build. The extension
+	// of the same release carries the same version, so an older extension asks the browser for its
+	// update rather than waiting for the browser's own check.
+	AgentVersion string `json:"agent_version,omitempty"`
 }
 
 // Ack confirms a message was accepted. Acceptance is not delivery to the server: the spool is
