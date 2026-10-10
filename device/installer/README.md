@@ -30,12 +30,13 @@ node device/installer/release-msi.mjs --version 1.4.0 --policy-key-file policy.p
   --extension-update-url https://<analyst-fqdn>/v1/extension/updates.xml --wix-eula wix7 [--sign]
 ```
 
-`device/installer/dist/release/` then holds `ShadowAICapture.msi`, `shadow-ai-capture.crx` and
-`release.json`: the MSI's version, product, upgrade and package codes, sha256, size, publisher and
-signature state, the install and uninstall commands, the pinned trust anchors, and
-`extension: {id, version, file, sha256, size}`. This directory is control-api's agent release (the
-`agent-release` build context of its image): control-api wraps the MSI into each tenant's package and
-serves the CRX and the extension update manifest from it. The build fails closed on a missing input,
+`device/installer/dist/release/` then holds `ShadowAICapture.msi`, `shadow-ai-capture.crx`,
+`release.json` (the MSI's version, product, upgrade and package codes, sha256, size, publisher and
+signature state, the install and uninstall commands and the detection key, the pinned trust anchors,
+and `extension: {id, version, file, sha256, size}`) and `agent-release.json`, the signed statement
+agents update from (below). This directory is control-api's agent release (the `agent-release` build
+context of its image): control-api wraps the MSI into each tenant's package and serves the agent
+update, the CRX and the extension update manifest from it. The build fails closed on a missing input,
 on generated files that differ from `manifest.mjs`, and on any check of the built package.
 
 `--sign` Authenticode-signs the executables and the MSI with `signtool` and one of: Trusted Signing
@@ -58,12 +59,31 @@ tenant file. `--release device/installer/dist/release` also checks a built relea
 **The agent.** In the dashboard, Settings → Deployment → download the Intune package (`.intunewin`
 holding the signed MSI and this tenant's `ShadowAICapture.tenant.env`, with a deployment key minted
 for the download; treat it as a secret). Intune admin center → Apps → Windows → Add → Windows app
-(Win32): install command `msiexec /i ShadowAICapture.msi /qn`, uninstall `msiexec /x {ProductCode} /qn`,
-install behaviour System, detection rule MSI product code with version greater than or equal to the
-release version, requirement Windows 10 21H2 or later x64, assignment Required. Publish a later
-version as a new app superseding this one without uninstalling it: the MSI upgrades in place and the
-device keeps its enrolment. An install with no tenant file beside the MSI fails with 1603 before
-changing anything (`msiexec /l*v` logs the reason under action `CheckTenantConfig`).
+(Win32): install command `msiexec /i ShadowAICapture.msi /qn`, install behaviour System, requirement
+Windows 10 21H2 or later x64, assignment Required. The agent updates itself (below), so neither the
+detection rule nor the uninstall command names this build's ProductCode (`INSTALLED` in
+`manifest.mjs`): detection is the registry value `HKEY_LOCAL_MACHINE\SOFTWARE\ShadowAICapture`
+`Version`, version comparison, greater than or equal to the release version, 64-bit view; the
+uninstall command removes whichever product carries the UpgradeCode:
+
+```
+powershell.exe -NoProfile -NonInteractive -Command "foreach ($p in (New-Object -ComObject WindowsInstaller.Installer).RelatedProducts('{7E9C2B7A-6D0E-4C6A-9F2B-1A6E6C2D44A1}')) { $r = (Start-Process msiexec.exe -ArgumentList '/x',$p,'/qn' -Wait -PassThru).ExitCode; if ($r -ne 0) { exit $r } }"
+```
+
+An install with no tenant file beside the MSI fails with 1603 before changing anything (`msiexec /l*v`
+logs the reason under action `CheckTenantConfig`).
+
+**Updates.** Each release build also writes `agent-release.json`: the MSI's version, file name,
+sha256 and size, signed with the classifier signing key, whose public half every package pins
+(`SAC_CLASSIFIER_PUBKEY`). control-api serves it and the MSI to enrolled devices
+(`GET /v1/agent/release`, `GET /v1/agent/package`). Every 15 minutes the Windows agent verifies the
+statement under the pinned key, and when it names a newer version downloads the MSI (resuming over
+several requests on a slow link), checks its size and sha256, copies its own `tenant.env` beside it
+as `ShadowAICapture.tenant.env`, and runs `msiexec /i … /qn /norestart`, which upgrades it in place
+and keeps its enrolment. The download, the installer log and the attempt record are under
+`state\update`; a version whose install does not take is retried after 6 hours, and the health
+document's `agent_update` says what the last check found. It never installs an older version, an
+unsigned statement or a package that differs from it, and a development build never updates.
 
 **The extension.** Force-install it in both browsers with `ExtensionInstallForcelist`, value
 `<extension id>;https://<analyst-fqdn>/v1/extension/updates.xml` (the id is `release.json`'s

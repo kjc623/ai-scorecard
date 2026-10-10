@@ -2,8 +2,8 @@
 
 The reference VM is a Windows 11 Hyper-V VM on the owner's PC, Entra-joined, Intune-managed and
 enrolled into pre-prod's test tenant, set up as a customer's device is. The agent reaches it only as
-the deploy workflow's signed release, through Intune. These tools take that release to the VM and
-run checks inside it. They run on the owner's PC: Node 22, the `gh` CLI signed in, Windows
+the deploy workflow's signed release: installed once through Intune, then updating itself from
+pre-prod. These tools install it, follow each release onto the VM and run checks inside it. They run on the owner's PC: Node 22, the `gh` CLI signed in, Windows
 PowerShell 5.1 with `Microsoft.Graph.Authentication`, and an elevated prompt for Hyper-V.
 
 ## Configuration
@@ -15,8 +15,9 @@ the tenant file with the deployment key); no tool prints them.
 ## Commands
 
 ```
-node tools/testbed/deploy.mjs [--commit <sha>] [--no-wait]
-node tools/testbed/deploy.mjs --uninstall
+node tools/testbed/deploy.mjs [--commit <sha>]
+node tools/testbed/deploy.mjs --install [--commit <sha>] [--no-wait]
+node tools/testbed/deploy.mjs --uninstall [--no-wait]
 & .\tools\testbed\invm.ps1 -Command '<script>'
 & .\tools\testbed\invm.ps1 -AsUser console|second -Command '<script>'
 & .\tools\testbed\invm.ps1 -Screenshot <out.png>
@@ -27,11 +28,15 @@ node tools/testbed/deploy.mjs --uninstall
 ```
 
 `deploy.mjs` finds the push run of `deploy.yml` on `main` for the commit (default: `origin`'s
-`main`), waits for it, downloads its `agent-release` artifact, wraps the MSI and the tenant file with
-the pinned `IntuneWinAppUtil.exe`, and publishes it with `Publish-IntuneBuild.ps1`. It then syncs the
-VM, restarts its Intune Management Extension, and waits (up to 60 minutes) until the VM runs the
-release and reports to pre-prod, printing the elapsed time. `--uninstall` assigns the app as
-uninstall and waits until the agent is gone.
+`main`), waits for it and downloads its `agent-release` artifact. The VM's agent updates itself to
+that release from pre-prod, so by default `deploy.mjs` publishes nothing: it waits (up to 60 minutes)
+until the VM runs the release and reports to pre-prod, printing the elapsed time and, while it
+waits, the agent's last update check. `--install` is for a VM with no agent, or one older than the
+self-updating agent: it wraps the MSI and the tenant file with the pinned `IntuneWinAppUtil.exe`,
+publishes it with `Publish-IntuneBuild.ps1` (detected by the registry version at this release or
+later, as the dashboard's Intune steps say), syncs the VM, restarts its Intune Management
+Extension, and waits the same way. `--uninstall` assigns the app as uninstall and waits until the
+agent is gone.
 
 `invm.ps1` runs from an elevated Windows PowerShell prompt at the repository root, called as
 `& .\tools\testbed\invm.ps1`; `powershell -File` from a PowerShell prompt would split a quoted
@@ -42,7 +47,7 @@ health acknowledgement.
 
 ## What it changes
 
-Intune: only the Win32 app `Shadow AI Capture (pre-prod test)`, created on the first run (its id is
+Intune (`--install` and `--uninstall` only): the Win32 app `Shadow AI Capture (pre-prod test)`, created on the first run (its id is
 written to `TESTBED.md`), and only its assignment to the test device group. Any other app id is
 refused. The VM: only through these scripts.
 

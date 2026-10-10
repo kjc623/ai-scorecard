@@ -331,7 +331,8 @@ Any other dependency needs the owner's approval: stop and ask. Builds stay `CGO_
 Every collector task is implemented on Windows: built and tested on the PC, then verified in the
 device phase (task 60) on the reference VM in `TESTBED.md`: Hyper-V, Entra-joined and
 Intune-managed, and enrolled into pre-prod's test tenant. The agent reaches it as CI's signed
-release, through Intune, with `tools/testbed/deploy.mjs` (task 59). On macOS and Linux, the same
+release: installed once through Intune with `tools/testbed/deploy.mjs --install` (task 59), then
+updating itself from pre-prod. On macOS and Linux, the same
 collector compiles and reports `absent` with detail `tool_version_unsupported` for the tool
 configs, or `etw_session_failed` for ETW, until tasks 53–56 port it. Each new package keeps the
 existing file-suffix convention

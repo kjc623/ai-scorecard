@@ -56,6 +56,8 @@ type Server struct {
 	Directory *directoryadmin.Handler
 	// Extensions serves the browser extension's update manifest and CRX.
 	Extensions *deploy.Extensions
+	// Agents serves enrolled devices the signed agent release and its package.
+	Agents *deploy.Agents
 	// SCIM is the provisioning endpoint a customer's identity provider calls (/scim/v2).
 	SCIM http.Handler
 	// Mounts are further handlers by path prefix: the internal sign-in API, the onboarding pages and
@@ -87,6 +89,12 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.Extensions != nil {
 		s.Extensions.Register(mux)
+	}
+	if s.Agents != nil {
+		s.Agents.Register(mux, func(r *http.Request) (string, string, error) {
+			cur, err := s.authenticateDevice(r)
+			return cur.TenantID, cur.DeviceID, err
+		})
 	}
 	if s.Admin != nil {
 		s.Admin.Register(mux)

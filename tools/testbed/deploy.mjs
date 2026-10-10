@@ -1,9 +1,14 @@
 #!/usr/bin/env node
-// tools/testbed/deploy.mjs - takes the agent release a push to main built, publishes it to the
-// reference VM through Intune, and waits until the VM runs it and reports to pre-prod.
+// tools/testbed/deploy.mjs - follows a push to main's agent release onto the reference VM.
 //
-//   node tools/testbed/deploy.mjs [--commit <sha>] [--no-wait]
+//   node tools/testbed/deploy.mjs [--commit <sha>]
+//   node tools/testbed/deploy.mjs --install [--commit <sha>] [--no-wait]
 //   node tools/testbed/deploy.mjs --uninstall [--no-wait]
+//
+// The agent updates itself from pre-prod, as on a customer's device, so by default this only waits
+// until the VM runs the release and reports to pre-prod. --install publishes the release to the VM
+// through Intune instead, for a VM with no agent (a restored checkpoint) or one too old to update
+// itself; --uninstall assigns the app as uninstall.
 //
 // Runs on the owner's Windows PC with the gh CLI signed in. The configuration is
 // refactor-endpoint/TESTBED.md (testbed.mjs). Graph calls go through Publish-IntuneBuild.ps1 and VM
@@ -142,7 +147,9 @@ export function evaluateInstall(probe, release) {
   const installed = products.find((p) => guidKey(p.product_code) === guidKey(release.product_code));
   if (!installed || installed.version !== release.version) {
     const now = products.map((p) => p.version).join(', ') || 'nothing';
-    waiting.push(`the install of ${release.version} (installed: ${now})`);
+    const u = probe.health?.update;
+    const update = u?.last_answer ? `; the agent's last update check: ${u.last_answer}${u.offered_version ? ` ${u.offered_version}` : ''}${u.last_error ? `, ${u.last_error}` : ''}` : '';
+    waiting.push(`the install of ${release.version} (installed: ${now}${update})`);
   }
   if (probe.service !== 'Running') waiting.push(`the ShadowAICapture service (${probe.service ?? 'absent'})`);
   const h = probe.health;
@@ -172,7 +179,7 @@ const PROBE = [
   '$state = $null; $started = $null',
   'if ($svc) { $state = [string]$svc.State; if ($svc.ProcessId) { $started = (Get-Process -Id $svc.ProcessId).StartTime.ToUniversalTime().ToString(\'o\') } }',
   "$health = $null; $file = 'C:\\ProgramData\\ShadowAICapture\\state\\health.json'",
-  "if (Test-Path -LiteralPath $file) { $h = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json; $hb = $h.last_heartbeat_at; if ($hb -is [datetime]) { $hb = $hb.ToUniversalTime().ToString('o') }; $health = @{ agent_version = $h.agent_version; enrolled = [bool]$h.enrolled; device_id = [bool]$h.device_id; last_heartbeat_at = $hb } }",
+  "if (Test-Path -LiteralPath $file) { $h = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json; $hb = $h.last_heartbeat_at; if ($hb -is [datetime]) { $hb = $hb.ToUniversalTime().ToString('o') }; $health = @{ agent_version = $h.agent_version; enrolled = [bool]$h.enrolled; device_id = [bool]$h.device_id; last_heartbeat_at = $hb; update = $h.agent_update } }",
   '@{ products = $products; service = $state; service_started_at = $started; health = $health } | ConvertTo-Json -Compress -Depth 4',
 ].join('; ');
 
@@ -359,7 +366,7 @@ async function waitForVM(tools, verdictOf) {
       const relay = tools.log.relay('  ');
       relay.push(tools.invm(['-Command', imeLog(tools.config.intuneAppId)], 'reading the IME log'));
       relay.end();
-      throw new Error(`the VM did not get there within ${WAIT_LIMIT_MS / 60_000} minutes of the publish`);
+      throw new Error(`the VM did not get there within ${WAIT_LIMIT_MS / 60_000} minutes`);
     }
     await sleep(POLL_MS);
   }
@@ -370,12 +377,13 @@ async function main(argv, log) {
     args: argv,
     options: {
       commit: { type: 'string' },
-      wait: { type: 'boolean' },
+      install: { type: 'boolean', default: false },
       'no-wait': { type: 'boolean' },
       uninstall: { type: 'boolean', default: false },
     },
   });
   if (process.platform !== 'win32') throw new Error("the testbed tools run on the owner's Windows PC (Hyper-V, Windows PowerShell)");
+  if (values.install && values.uninstall) throw new Error('--install and --uninstall exclude each other');
   const started = Date.now();
   const config = loadConfig();
   const tools = new Tools(config, log);
@@ -388,6 +396,16 @@ async function main(argv, log) {
     const run = await findRelease(tools, commit);
     release = readRelease(tools, run, home);
     log.line(`release ${release.version} (product code ${release.product_code}) from run #${run.number}, ${run.url}`);
+  }
+
+  if (release && !values.install) {
+    // The agent on the VM updates itself; with none there, nothing will arrive.
+    const probe = lastJson(tools.invm(['-Command', PROBE], 'probing the VM'));
+    if (!(probe.products ?? []).length) throw new Error('the VM has no agent to update itself; run deploy.mjs --install');
+    log.line(`waiting for the VM's agent to update itself to ${release.version} (it checks pre-prod every 15 minutes)`);
+    await waitForVM(tools, (p) => evaluateInstall(p, release));
+    log.line(`the VM runs ${release.version}, enrolled and reporting to pre-prod; ${elapsed(Date.now() - started)}`);
+    return;
   }
 
   const publishedAt = Date.now();

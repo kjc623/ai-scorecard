@@ -8,10 +8,13 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { createAdminApi, createQueryApi, filenameFromDisposition, normaliseDeployment } from '../src/transport.js';
 import { createDeployment, deploymentKeyState, verificationAvailable } from '../src/deployment.js';
 import { renderDeployment } from '../src/deployment-render.js';
+import { escapeHtml } from '../src/render.js';
+import { INSTALLED } from '../../../device/installer/manifest.mjs';
 import { boot } from '../src/app.js';
 import { fakeDocument } from './helpers.mjs';
 import { fixtureTransport } from './fixtures.mjs';
@@ -119,7 +122,7 @@ test('empty: nothing linked, no keys, no tokens, and "not reported" is never a z
   assert.match(page, /not reported by the server/, 'a count the server did not send is said to be missing');
   assert.doesNotMatch(page, /<span class="v-number">0<\/span><\/span><span class="tile-note">not reported/, 'and is not drawn as 0');
   assert.match(page, /Intune verification needs an active Microsoft Entra ID connection/);
-  assert.match(page, /\{product code\}/, 'the install steps say the product code is a placeholder');
+  assert.match(page, /its version is shown as a placeholder/, 'the install steps say the version is a placeholder');
 });
 
 test('populated: connection, counts with their denominators, keys, SCIM and the setup steps', async () => {
@@ -138,9 +141,9 @@ test('populated: connection, counts with their denominators, keys, SCIM and the 
   assert.match(page, /Download Intune package \(\.intunewin\)/);
   assert.match(page, /Download package \(\.zip\)/);
   assert.match(page, /msiexec \/i ShadowAICapture\.msi \/qn/);
-  assert.match(page, /msiexec \/x \{6F1C2B9E-3A4D-4E57-9B21-0C8D7E6F5A41\} \/qn/);
+  assert.ok(page.includes(`Uninstall command: <code>${escapeHtml(INSTALLED.uninstallCommand)}</code>`), "the uninstall command is the installer's, for any version");
   assert.match(page, /Windows app \(Win32\)/);
-  assert.match(page, /rule type <b>MSI<\/b>, product code <code>\{6F1C2B9E-3A4D-4E57-9B21-0C8D7E6F5A41\}<\/code>.*<code>1\.4\.0<\/code>/);
+  assert.match(page, /rule type <b>Registry<\/b>, registry key <code>HKEY_LOCAL_MACHINE\\SOFTWARE\\ShadowAICapture<\/code>, value name <code>Version<\/code>.*<code>1\.4\.0<\/code>/);
   assert.match(page, /https:\/\/dash\.corp\.test\/scim\/v2/);
   assert.match(page, /map <code>objectId<\/code> to <code>externalId<\/code>/);
   assert.match(page, />412</);
@@ -373,4 +376,13 @@ test('an admin is shown Settings → Deployment and the page renders over the ad
   assert.match(doc.html('app'), /Deployment keys/);
   assert.match(doc.html('app'), /Laptops/);
   assert.equal(requests[0].path, '/admin/v1/deployment');
+});
+
+test('the uninstall and detection steps match the installer and the package README', () => {
+  // The MSI records its version and is removed by its UpgradeCode (device/installer/manifest.mjs);
+  // control-api's README.txt states the same command.
+  const goSource = readFileSync(new URL('../../control-api/internal/deploy/package.go', import.meta.url), 'utf8');
+  assert.ok(goSource.includes('UninstallCommand = `' + INSTALLED.uninstallCommand + '`'), "control-api's UninstallCommand is the installer's");
+  assert.ok(goSource.includes('DetectionKey     = `HKEY_LOCAL_MACHINE\\' + INSTALLED.registryKey + '`'), "control-api's DetectionKey is the installer's");
+  assert.ok(goSource.includes(`DetectionValue   = "${INSTALLED.versionValue}"`), "control-api's DetectionValue is the installer's");
 });

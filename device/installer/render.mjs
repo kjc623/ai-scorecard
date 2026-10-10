@@ -13,7 +13,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { extensionId } from '../extension/tools/extension-id.mjs';
-import { CONFIG, LAYOUT, NATIVE_HOST, PRODUCT, START_MENU_SHORTCUT, TENANT_PACKAGE, UNINSTALL_CLEANUP, nativeHostManifest } from './manifest.mjs';
+import { CONFIG, INSTALLED, LAYOUT, NATIVE_HOST, PRODUCT, START_MENU_SHORTCUT, TENANT_PACKAGE, UNINSTALL_CLEANUP, nativeHostManifest } from './manifest.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const GENERATED = join(ROOT, 'device', 'installer', 'generated');
@@ -197,6 +197,10 @@ function wixSource() {
       <Component Id="Cmp_NativeHost" Directory="BINFOLDER">
         <File Id="Fil_NativeHost" Source="$(var.StageDir)\\etc\\${HOST_FILE}" KeyPath="yes" />
 ${NATIVE_HOST.registryKeys.map(registryKey).join('\n')}
+      </Component>
+      <!-- The installed version, which MDM detection rules compare: it follows the agent's updates. -->
+      <Component Id="Cmp_InstalledVersion" Directory="INSTALLFOLDER">
+        <RegistryValue Root="HKLM" Key="${INSTALLED.registryKey}" Name="${INSTALLED.versionValue}" Type="string" Value="[ProductVersion]" KeyPath="yes" />
       </Component>
       <!-- profile and state hold the deployment key, the device credential and the spool: SYSTEM and
            Administrators only. Users may read cli. A component keyed by a folder needs a fixed GUID. -->

@@ -136,6 +136,7 @@ type healthSnapshot struct {
 	PolicyOutcome  string                  `json:"policy_outcome,omitempty"`
 	PolicyCause    string                  `json:"policy_cause,omitempty"`
 	PolicyFetch    *policySyncStatus       `json:"policy_fetch,omitempty"`
+	AgentUpdate    *agentUpdateStatus      `json:"agent_update,omitempty"`
 	Classifier     protocol.HealthReport   `json:"classifier"`
 	Reports        []protocol.HealthReport `json:"reports"`
 	Extension      *protocol.HealthReport  `json:"extension,omitempty"`
@@ -185,6 +186,10 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 	if svc.policySync != nil {
 		st := svc.policySync.Status()
 		snap.PolicyFetch = &st
+	}
+	if svc.updater != nil {
+		st := svc.updater.Status()
+		snap.AgentUpdate = &st
 	}
 	snap.Classifier = svc.host.Health().Report(snap.DeviceID, svc.classifierVersion())
 	snap.Classifier.Collector = string(svc.host.Name())

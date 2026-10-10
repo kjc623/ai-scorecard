@@ -10,6 +10,10 @@ import { formatCount, formatInstant } from './format.js';
 import { DEPLOYMENT_FORMATS, deploymentKeyState, verificationAvailable } from './deployment.js';
 
 const DEP_INSTALL_COMMAND = 'msiexec /i ShadowAICapture.msi /qn';
+// The agent updates itself, so an MDM detects it by the version it records in the registry and
+// removes whichever version is installed (INSTALLED in device/installer/manifest.mjs).
+const DEP_UNINSTALL_COMMAND = 'powershell.exe -NoProfile -NonInteractive -Command "foreach ($p in (New-Object -ComObject WindowsInstaller.Installer).RelatedProducts(\'{7E9C2B7A-6D0E-4C6A-9F2B-1A6E6C2D44A1}\')) { $r = (Start-Process msiexec.exe -ArgumentList \'/x\',$p,\'/qn\' -Wait -PassThru).ExitCode; if ($r -ne 0) { exit $r } }"';
+const DEP_DETECTION_KEY = 'HKEY_LOCAL_MACHINE\\SOFTWARE\\ShadowAICapture';
 
 export function depInstant(iso, absent = 'never') {
   return iso ? `<span class="v-time" title="${escapeHtml(iso)}">${escapeHtml(formatInstant(iso))}</span>` : `<span class="v-absent">${escapeHtml(absent)}</span>`;
@@ -148,23 +152,25 @@ function depVerification(state) {
 }
 
 function depHowTo(data) {
-  const code = data.release?.product_code ?? '{product code}';
   const version = data.release?.version ?? 'the release version';
-  const unknown = !data.release?.product_code || !data.release?.version
-    ? '<p class="dp-note">The server did not report the release, so the product code and version are shown as placeholders. README.txt in the .zip package carries both.</p>'
+  const unknown = !data.release?.version
+    ? '<p class="dp-note">The server did not report the release, so its version is shown as a placeholder. README.txt in the .zip package carries it.</p>'
     : '';
+  const detection = `registry key <code>${escapeHtml(DEP_DETECTION_KEY)}</code>, value name <code>Version</code>, detection method <b>Version comparison</b>, greater than or equal to <code>${escapeHtml(version)}</code>`;
   return '<details class="dp-howto"><summary>Deploy with Microsoft Intune</summary><ol class="dp-steps">'
     + '<li>In the Microsoft Intune admin center, go to <b>Apps</b> → <b>Windows</b> → <b>Add</b> and choose <b>Windows app (Win32)</b>.</li>'
     + '<li>Select the downloaded <code>.intunewin</code> file as the app package file.</li>'
     + `<li>Install command: <code>${escapeHtml(DEP_INSTALL_COMMAND)}</code>. Install behavior: <b>System</b>.</li>`
-    + `<li>Uninstall command: <code>msiexec /x ${escapeHtml(code)} /qn</code></li>`
-    + `<li>Detection rule: rule type <b>MSI</b>, product code <code>${escapeHtml(code)}</code>, with the product version check on: greater than or equal to <code>${escapeHtml(version)}</code>.</li>`
+    + `<li>Uninstall command: <code>${escapeHtml(DEP_UNINSTALL_COMMAND)}</code></li>`
+    + `<li>Detection rule: rule type <b>Registry</b>, ${detection}, associated with a 32-bit app on 64-bit clients <b>No</b>.</li>`
     + '<li>Assign the app as <b>Required</b> to the device groups that should run the agent.</li>'
-    + '</ol>' + unknown + '</details>'
+    + '</ol>'
+    + '<p class="dp-note">Deploy it once. The agent updates itself from this deployment and checks each release\'s signature first; the detection rule stays satisfied as it does.</p>'
+    + unknown + '</details>'
     + '<details class="dp-howto"><summary>Deploy with Configuration Manager, Group Policy or another tool</summary><ol class="dp-steps">'
     + '<li>Unzip the <code>.zip</code> package and keep <code>ShadowAICapture.msi</code> and <code>ShadowAICapture.tenant.env</code> in the same folder: the installer reads the tenant file from beside itself.</li>'
     + `<li>Run <code>${escapeHtml(DEP_INSTALL_COMMAND)}</code> from that folder as SYSTEM or an administrator.</li>`
-    + `<li>Detect the installation by the MSI product code <code>${escapeHtml(code)}</code> and version <code>${escapeHtml(version)}</code>. The README.txt in the package says the same.</li>`
+    + `<li>Detect the installation by the ${detection}. The README.txt in the package says the same.</li>`
     + '</ol></details>';
 }
 

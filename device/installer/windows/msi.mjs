@@ -17,7 +17,8 @@ import { join } from 'node:path';
 
 import { extensionId } from '../../extension/tools/extension-id.mjs';
 import { CRX_FILE } from '../../extension/tools/build-crx.mjs';
-import { NATIVE_HOST, PRODUCT, TENANT_PACKAGE, TRUST_ANCHORS, UNINSTALL_CLEANUP } from '../manifest.mjs';
+import { AGENT_RELEASE_FILE, verifyAgentRelease } from '../agent-release.mjs';
+import { INSTALLED, NATIVE_HOST, PRODUCT, TENANT_PACKAGE, TRUST_ANCHORS, UNINSTALL_CLEANUP } from '../manifest.mjs';
 import { DATA_FOLDER_ACL } from '../render.mjs';
 import { BuildError, ROOT } from '../build.mjs';
 
@@ -178,6 +179,11 @@ export function releaseChecks(dir) {
       at('StopServices') < at('UninstallCleanup') && at('UninstallCleanup') < at('RemoveFiles'),
     cleanup ? `type ${type}, sequence ${at('StopServices')} < ${at('UninstallCleanup')} < ${at('RemoveFiles')}` : 'no UninstallCleanup custom action',
   );
+  check(
+    'it records its version where MDM detection rules read it',
+    info.tables.Registry.some((r) => r.Root === '2' && r.Key === INSTALLED.registryKey && r.Name === INSTALLED.versionValue && r.Value === '[ProductVersion]'),
+    `HKLM\\${INSTALLED.registryKey} ${INSTALLED.versionValue}`,
+  );
   check('release.json records whether the MSI is signed', release.signed === isSigned(msi), `signed: ${release.signed}`);
 
   const crx = join(dir, CRX_FILE);
@@ -186,6 +192,16 @@ export function releaseChecks(dir) {
     'release.json describes the extension CRX beside the MSI',
     existsSync(crx) && ext.file === CRX_FILE && ext.id === extensionId() && ext.version === release.version && ext.sha256 === sha256(crx) && ext.size === statSync(crx).size,
     existsSync(crx) ? `${ext.id} ${ext.version}` : `${CRX_FILE} missing`,
+  );
+
+  const statementFile = join(dir, AGENT_RELEASE_FILE);
+  const statement = existsSync(statementFile) && release.trust?.classifier_pubkey
+    ? verifyAgentRelease(readFileSync(statementFile, 'utf8'), release.trust.classifier_pubkey) : null;
+  check(
+    `${AGENT_RELEASE_FILE} names the MSI, signed with the pinned classifier key`,
+    statement && statement.type === 'agent_release' && statement.platform === 'windows-amd64' && statement.version === release.version &&
+      statement.file === MSI_FILE && statement.sha256 === release.sha256 && statement.size === release.size,
+    statement ? `${statement.version} ${statement.sha256}` : `${AGENT_RELEASE_FILE} missing or its signature does not verify`,
   );
 
   // An administrative install unpacks the files without installing or registering anything.

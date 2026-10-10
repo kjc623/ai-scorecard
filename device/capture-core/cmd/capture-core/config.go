@@ -39,6 +39,9 @@ type Config struct {
 	// clear sends the hostname and account name, hashed sends neither.
 	DeviceIdentity string
 	LogLevel       string
+
+	// configFiles are the --config-file paths, in order.
+	configFiles []string
 }
 
 // configKeys maps each configuration-file key to the flag it sets. The installer generates the
@@ -113,6 +116,7 @@ func parseFlags(args []string) (Config, runMode, error) {
 			}
 		}
 	}
+	cfg.configFiles = configFiles
 	if mode.showVersion {
 		return cfg, mode, nil
 	}

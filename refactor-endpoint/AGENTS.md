@@ -88,8 +88,9 @@ How a change reaches the VM in this phase:
 
 1. The owner merges to `main`. That deploys pre-prod (services, database migration, and the
    signed agent release).
-2. The agent runs `node tools/testbed/deploy.mjs`, which takes that run's release to the VM
-   through Intune and waits until it runs.
+2. The VM's agent updates itself to that run's release within 15 minutes;
+   `node tools/testbed/deploy.mjs` waits until it runs (`--install` publishes it through Intune
+   for a VM with no agent).
 3. The agent runs the brief's "On the device" section.
 4. If a check fails, or the section calls for code (a capture that differs from the documented
    fixtures, a spike that calls for a rule, a `Render` change), fix it on a new branch from `main`

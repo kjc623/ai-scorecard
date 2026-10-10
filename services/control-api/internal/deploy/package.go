@@ -36,6 +36,15 @@ const (
 	DefaultMaxReleaseBytes = 256 << 20
 )
 
+// How an MDM detects and removes the agent whatever version it has updated itself to: the MSI
+// records its version in the registry, and the uninstall removes the product carrying the
+// UpgradeCode (INSTALLED in device/installer/manifest.mjs).
+const (
+	DetectionKey     = `HKEY_LOCAL_MACHINE\SOFTWARE\ShadowAICapture`
+	DetectionValue   = "Version"
+	UninstallCommand = `powershell.exe -NoProfile -NonInteractive -Command "foreach ($p in (New-Object -ComObject WindowsInstaller.Installer).RelatedProducts('{7E9C2B7A-6D0E-4C6A-9F2B-1A6E6C2D44A1}')) { $r = (Start-Process msiexec.exe -ArgumentList '/x',$p,'/qn' -Wait -PassThru).ExitCode; if ($r -ne 0) { exit $r } }"`
+)
+
 // Release is release.json, written by the release build beside the generic MSI and the browser
 // extension.
 type Release struct {
@@ -196,12 +205,16 @@ func Readme(r Release) []byte {
 		"Install (as SYSTEM or an administrator; no other parameters are needed)",
 		"  msiexec /i " + MSIFileName + " /qn",
 		"",
-		"Uninstall",
-		"  msiexec /x " + r.ProductCode + " /qn",
+		"Uninstall (any version)",
+		"  " + UninstallCommand,
 		"",
 		"Detection rule",
-		"  Windows Installer product code " + r.ProductCode,
-		"  Product version greater than or equal to " + r.Version,
+		"  Registry " + DetectionKey + ", value " + DetectionValue + ",",
+		"  version greater than or equal to " + r.Version,
+		"",
+		"Updates",
+		"  The agent updates itself from the deployment it enrols with, verifying each release's signature,",
+		"  so deploy this package once: the detection rule above stays satisfied as it updates.",
 		"",
 		"Requirements",
 		"  Windows 10 21H2 or later, 64-bit (x64).",
