@@ -143,12 +143,9 @@ export function createPipeline({
     }
 
     // The mode decides what may be read, and only then is anything read. The tool's mode is keyed by
-    // its fingerprint, which is derived under the tenant default (the bound every request shares),
-    // so one tool keeps one fingerprint whatever its own mode is.
-    const fingerprint = await computeToolFingerprint(adapter, {
-      ...request,
-      body_read: modeReadsContent(policy.modeFor({ host }).mode),
-    });
+    // its fingerprint, which comes from the destination alone, so one tool keeps one fingerprint
+    // whatever its own mode is and whatever the request carries.
+    const fingerprint = await computeToolFingerprint(adapter, request);
     const gate = readBodyForMode(await resolveMode({ host, tool_fingerprint: fingerprint.fingerprint }), body);
     const mode = gate.mode;
 
@@ -248,10 +245,7 @@ export function createPipeline({
       return { cancel: false, queued: false, skipped: true, observation: null, mode: MODE.M0, candidate: null };
     }
 
-    const fingerprint = await computeToolFingerprint(adapter, {
-      ...shapeInput(detail, null, tab_context),
-      body_read: false,
-    });
+    const fingerprint = await computeToolFingerprint(adapter, shapeInput(detail, null, tab_context));
     const gate = readBodyForMode(policy.modeFor({ host, tool_fingerprint: fingerprint.fingerprint }), null);
     const decision = await decide({
       url,
@@ -290,11 +284,7 @@ export function createPipeline({
 
   /** A WebSocket handshake is observed; the frames after it are not visible to webRequest. */
   async function captureHandshake({ detail, host, tab_context, shape }) {
-    const fingerprint = await computeToolFingerprint(adapter, {
-      ...shapeInput(detail, null, tab_context),
-      body_read: false,
-      forced_method: 'GET',
-    });
+    const fingerprint = await computeToolFingerprint(adapter, shapeInput(detail, null, tab_context));
     const mode = policy.modeFor({ host, tool_fingerprint: fingerprint.fingerprint }).mode;
     const decision = await decide({
       url: detail.url,

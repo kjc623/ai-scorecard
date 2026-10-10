@@ -1,21 +1,18 @@
 /**
- * tool-fingerprint.js — `tool_fingerprint = "tf1:" + base32(SHA-256(canonical(signal_vector)))`.
+ * tool-fingerprint.js — `tool_fingerprint = "tf2:" + base32(SHA-256(canonical({v: 2, host})))`.
  *
- * The `tf1:` prefix versions the derivation so it can change without silently re-keying history.
- * The vector holds the destination, method, normalised path shape, content type, body shape,
- * message count bucket, role values, and whether model parameters or tool declarations are
- * present. It excludes the tab URL, request id, timestamp and automation marker.
+ * The fingerprint identifies the tool a request went to, so it is derived from the one signal that
+ * is the same for every request to that tool: the destination host, lower-cased, without a port.
+ * The path, the method, the content type and the body's shape vary from one prompt to the next and
+ * belong to the predicate, which decides whether a request is a submission, never to the identity.
+ * The `tf2:` prefix versions the derivation so it can change without silently re-keying history.
  *
- * The derivation is extension-specific: the egress proxy derives its own `tls_` fingerprint from
- * the host and path, so one tool seen through both routes yields one fingerprint per route, not one
- * fingerprint overall. Because the body shape and the message-count and role signals read from the
- * body enter the vector, one tool also yields different fingerprints at M0 — when the body is not
- * read, so `body_shape` is `unread` — and at M1+, when it is. Recording `unread` rather than
- * omitting the field keeps that weaker observation explicit in the vector.
+ * The egress proxy derives its own `tls_` fingerprint from the host and path, so one tool seen
+ * through both routes yields one fingerprint per route; the catalogue names both.
  */
 
 import { sha256Hex } from './codec.js';
-import { shapeVector } from './predicate.js';
+import { hostOf } from './predicate.js';
 
 /** RFC 4648 base32, unpadded, lower-case. */
 const B32 = 'abcdefghijklmnopqrstuvwxyz234567';
@@ -54,16 +51,16 @@ function replacerSorted(vector) {
 
 /**
  * @param {import('./adapter.js').Adapter} adapter
- * @param {object} req  the same record `predicateRequest` takes, plus `body_read: boolean`
+ * @param {{url?: string, host?: string}} req  the request record; only its destination is read
  * @returns {Promise<{fingerprint: string, vector: object, canonical: string}>}
  */
 export async function computeToolFingerprint(adapter, req) {
-  const vector = shapeVector(req);
-  if (!req || req.body_read === false) vector.body_shape = 'unread';
+  const host = (hostOf(req?.url) || String(req?.host || '')).toLowerCase().replace(/:\d+$/, '');
+  const vector = { v: 2, host };
   const canon = canonical(vector);
   const hex = await sha256Hex(adapter.crypto, new TextEncoder().encode(canon));
   const bytes = hexToBytes(hex);
-  return { fingerprint: `tf1:${base32(bytes)}`, vector, canonical: canon };
+  return { fingerprint: `tf2:${base32(bytes)}`, vector, canonical: canon };
 }
 
 function hexToBytes(hex) {

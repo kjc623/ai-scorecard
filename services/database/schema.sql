@@ -2684,9 +2684,8 @@ INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES
 --   * `tls` rows: the egress proxy's fingerprint of a destination, "tls_" + the first eight bytes
 --     (lowercase hex) of sha256("tls|" + lowercased host + "|" + path without leading or trailing
 --     slashes). One tool may have several paths, so several rows. evidence names the host and path.
---   * `extension` rows: the browser extension's "tf1:" + base32(sha256(canonical signal vector)).
---     The vector includes the body shape, so one tool yields one row per body-shape variant: `unread`
---     at M0 and the parsed body shape at M1+. evidence names the host, path and body shape.
+--   * `extension` rows: the browser extension's "tf2:" + base32(sha256(canonical({v: 2, host}))),
+--     one per host the tool is reached at. evidence names the host.
 --   * `process` rows: the process detector's "proc_" + image signature.
 -- A fingerprint not listed here renders as "Unrecognised tool" and belongs to no tool.
 INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_kind, evidence, app_key) VALUES
@@ -2719,16 +2718,10 @@ INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_k
   ('tls_d829c7e9598888f9', 'xAI API', 'xai', 'tls', '{"host":"api.x.ai","path":"/v1/chat/completions"}', 'xai_api'),
   ('tls_544b80dcc1446f8b', 'Together AI', 'together', 'tls', '{"host":"api.together.xyz","path":"/v1/chat/completions"}', 'together_ai'),
   ('tls_4fb4f5cb98d7a1c3', 'Cohere API', 'cohere', 'tls', '{"host":"api.cohere.ai","path":"/v1/chat"}', 'cohere_api'),
-  ('tf1:hlognixbimq6jqlfcheehwxezyv2vtyogd3smjsgk77zwjifb2ea', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com","path":"/backend-api/conversation","body_shape":"object"}', 'chatgpt_web'),
-  ('tf1:xiomqpsllfipvhz6w2xwx2l3zdik3ngbdxvofzaxux62523edvkq', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com","path":"/backend-api/conversation","body_shape":"unread"}', 'chatgpt_web'),
-  ('tf1:x27bqogmznppw26owgvccwfqezl4i3cugvad7sycdk2uqk62gvia', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com","path":"/backend-api/chat/completions","body_shape":"object"}', 'chatgpt_web'),
-  ('tf1:ydl5lxopbtwsnmghjc2lwxk3slkjrvscd4ouvgfb3pmmxunk5sta', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com","path":"/backend-api/chat/completions","body_shape":"unread"}', 'chatgpt_web'),
-  ('tf1:kq55tcqzzdlrwxhti5pdrscxyk5dog6xfyg7ug6thghamyrqopea', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chat.openai.com","path":"/backend-api/conversation","body_shape":"object"}', 'chatgpt_web'),
-  ('tf1:ohbm5fgfrvf4arkilu24wkkad7wirfo7mrm5w3xmy2hjfvbqhj7a', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chat.openai.com","path":"/backend-api/conversation","body_shape":"unread"}', 'chatgpt_web'),
-  ('tf1:nf5drcrnmwyfqnmyduciaqvohsp2c4t4dz6qaxf4g4duu3vc3mga', 'Gemini (web)', 'google', 'extension', '{"host":"gemini.google.com","path":"/","body_shape":"object"}', 'gemini_web'),
-  ('tf1:ob5qgeqi2s5ex44u3lpaf4qbynapejw7yps7sotdhx2xgyv4j3qq', 'Gemini (web)', 'google', 'extension', '{"host":"gemini.google.com","path":"/","body_shape":"unread"}', 'gemini_web'),
-  ('tf1:qv3h3ufruluti57ac7llyqt7f4r4u2qtehffb3a5345yhxdp3qqq', 'Perplexity (web)', 'perplexity', 'extension', '{"host":"www.perplexity.ai","path":"/","body_shape":"object"}', 'perplexity_web'),
-  ('tf1:dtd56ngekt7ismxxikxqfqko4ifxuvcl2yxdek3cqozqbx4mv4va', 'Perplexity (web)', 'perplexity', 'extension', '{"host":"www.perplexity.ai","path":"/","body_shape":"unread"}', 'perplexity_web'),
+  ('tf2:de4s6yclxfhnumvdm3ubzgd5jveiwkzapelxdcj2qdzd72qrridq', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com"}', 'chatgpt_web'),
+  ('tf2:mespeqbrgr4vb7rqmmrubxuglidtpu3e5xpjd7dwqkm2evicbwla', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chat.openai.com"}', 'chatgpt_web'),
+  ('tf2:6lwajg7v6mwycbn43eszknx6p3sqfegfsk6tj2p4yqovdd32mnfq', 'Gemini (web)', 'google', 'extension', '{"host":"gemini.google.com"}', 'gemini_web'),
+  ('tf2:vjlb4hsqpngtmkhd4gwtgmcorqo26q2ezy7vp4erdqysbawzdx2q', 'Perplexity (web)', 'perplexity', 'extension', '{"host":"www.perplexity.ai"}', 'perplexity_web'),
   ('proc_ollama',          'Ollama (local)',    'ollama',    'process', '{"image_signature":"ollama"}', 'ollama'),
   ('proc_lmstudio',        'LM Studio (local)', 'lmstudio',  'process', '{"image_signature":"lm studio"}', 'lm_studio'),
   ('proc_llama',           'llama.cpp (local)', 'llama.cpp', 'process', '{"image_signature":"llama.cpp"}', 'llama_cpp'),
