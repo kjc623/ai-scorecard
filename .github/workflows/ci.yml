@@ -1,9 +1,18 @@
 name: ci
 
+# Runs the acceptance gates a change can affect. Each filter below lists what its gates read; a
+# change to anything a filter does not exclude runs them. A change to this workflow, to
+# tools/accept.mjs or to .gitattributes runs every gate, as do the weekly run and a manual run,
+# which also catch drift in the runner images and toolchains that no file change shows. The job
+# `ci` is the one status that says whether every selected gate passed.
+
 on:
   pull_request:
   push:
     branches: [main]
+  schedule:
+    - cron: '0 5 * * 1'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,8 +22,88 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      gates: ${{ steps.select.outputs.gates }}
+      windows: ${{ steps.select.outputs.windows }}
+    steps:
+      # A pull request's changed files come from the API; a push's are diffed in the checkout.
+      - uses: actions/checkout@v4
+        if: github.event_name == 'push'
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        with:
+          # A file counts for a filter when it matches every pattern: the first says where the
+          # gate's inputs are, the rest exclude what it never reads. Markdown no more than three
+          # levels deep is prose; deeper files (testdata, embedded migrations) are inputs.
+          predicate-quantifier: every
+          filters: |
+            tooling:
+              - '{.github/workflows/ci.yml,tools/accept.mjs,.gitattributes}'
+            # Every Go module. Services build against device/protocol and contracts/generated/go,
+            # and control-api's tests read device/.
+            go:
+              - '**'
+              - '!{docs,backlog,refactor-endpoint,refactor-endpoint-macos-linux}/**'
+              - '!{*,*/*,*/*/*}.md'
+              - '!{.github,azure,fly,tools}/**'
+              - '!services/{dashboard,query-api}/**'
+            # The Node packages' tests read across the repository: device/protocol, the installer
+            # manifest, the database schema, query-api, control-api and tools/check-vocab.mjs.
+            node:
+              - '**'
+              - '!{docs,backlog,refactor-endpoint,refactor-endpoint-macos-linux}/**'
+              - '!{*,*/*,*/*/*}.md'
+              - '!{.github,azure,fly}/**'
+            bicep:
+              - 'azure/**'
+              - '!{*,*/*,*/*/*}.md'
+            # The migrator is a Go program on services/platform.
+            database:
+              - 'services/{database,platform}/**'
+              - '!{*,*/*,*/*/*}.md'
+            browser:
+              - 'device/extension/**'
+              - '!{*,*/*,*/*/*}.md'
+            # The agent's Go modules and the installer: the installer gate builds capture-core and
+            # reads the extension; device/integration builds against contracts/generated/go.
+            windows:
+              - '{device,contracts}/**'
+              - '!{*,*/*,*/*/*}.md'
+      - id: select
+        env:
+          EVENT: ${{ github.event_name }}
+          TOOLING: ${{ steps.filter.outputs.tooling }}
+          GO: ${{ steps.filter.outputs.go }}
+          NODE: ${{ steps.filter.outputs.node }}
+          BICEP: ${{ steps.filter.outputs.bicep }}
+          DATABASE: ${{ steps.filter.outputs.database }}
+          BROWSER: ${{ steps.filter.outputs.browser }}
+          WINDOWS: ${{ steps.filter.outputs.windows }}
+        run: |
+          full=false
+          if [[ "$EVENT" != pull_request && "$EVENT" != push || "$TOOLING" == true ]]; then full=true; fi
+          # static compares components with each other, so it runs on every change.
+          gates=static
+          [[ $full == true || "$GO" == true ]] && gates+=,go
+          [[ $full == true || "$NODE" == true ]] && gates+=,node
+          [[ $full == true || "$BICEP" == true ]] && gates+=,bicep
+          [[ $full == true || "$DATABASE" == true ]] && gates+=,database
+          [[ $full == true || "$BROWSER" == true ]] && gates+=,browser
+          windows=false
+          [[ $full == true || "$WINDOWS" == true ]] && windows=true
+          echo "gates=$gates" >> "$GITHUB_OUTPUT"
+          echo "windows=$windows" >> "$GITHUB_OUTPUT"
+          echo "Linux gates: $gates; Windows: $windows" >> "$GITHUB_STEP_SUMMARY"
+
   linux:
     name: accept (Linux)
+    needs: changes
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,12 +115,15 @@ jobs:
         with:
           node-version: '22'
       - run: az bicep install
+        if: contains(needs.changes.outputs.gates, 'bicep')
       # Docker and Chrome are on the hosted runner, so the database and browser gates run here.
       # The hosted Ubuntu runner has gcc, so the Go suites also run under the race detector.
-      - run: node tools/accept.mjs --skip installer --race
+      - run: node tools/accept.mjs --only ${{ needs.changes.outputs.gates }} --race
 
   windows:
     name: accept (Windows)
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,4 +135,22 @@ jobs:
         with:
           node-version: '22'
       # The agent's production platform: its Go modules and the installer are checked on Windows too.
-      - run: node tools/accept.mjs --only go,installer
+      # The services run on Linux, where the Linux job checks every module.
+      - run: node tools/accept.mjs --only go,installer --modules device,contracts
+
+  # A skipped job reports success, so this is the status to require: it fails when change detection
+  # failed or any selected gate failed or was cancelled.
+  ci:
+    if: always()
+    needs: [changes, linux, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          LINUX: ${{ needs.linux.result }}
+          WINDOWS: ${{ needs.windows.result }}
+          WINDOWS_SELECTED: ${{ needs.changes.outputs.windows }}
+        run: |
+          echo "changes: $CHANGES, accept (Linux): $LINUX, accept (Windows): $WINDOWS"
+          [[ $CHANGES == success && $LINUX == success ]] || exit 1
+          [[ $WINDOWS == success || ( $WINDOWS == skipped && $WINDOWS_SELECTED != true ) ]] || exit 1
