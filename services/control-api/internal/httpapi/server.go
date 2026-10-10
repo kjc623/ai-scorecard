@@ -27,6 +27,7 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/content"
 	"github.com/shadow-ai-capture/control-api/internal/deploy"
 	"github.com/shadow-ai-capture/control-api/internal/deviceca"
+	"github.com/shadow-ai-capture/control-api/internal/directoryadmin"
 	"github.com/shadow-ai-capture/control-api/internal/enrol"
 	"github.com/shadow-ai-capture/control-api/internal/health"
 	"github.com/shadow-ai-capture/control-api/internal/policyserve"
@@ -51,6 +52,8 @@ type Server struct {
 	Admin *deploy.Handler
 	// Settings is the Settings admin API (/admin/v1/settings*), authenticated the same way.
 	Settings *settings.Handler
+	// Directory is the directory pull and teams admin API (/admin/v1/directory*, /admin/v1/teams*).
+	Directory *directoryadmin.Handler
 	// Extensions serves the browser extension's update manifest and CRX.
 	Extensions *deploy.Extensions
 	// SCIM is the provisioning endpoint a customer's identity provider calls (/scim/v2).
@@ -90,6 +93,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.Settings != nil {
 		s.Settings.Register(mux)
+	}
+	if s.Directory != nil {
+		s.Directory.Register(mux)
 	}
 	if s.SCIM != nil {
 		mux.Handle("/scim/v2", s.SCIM)

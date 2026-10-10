@@ -15,10 +15,12 @@
 //     query-api; the single-use grant in the URL is the capability;
 //   * forwards GET and HEAD of the browser extension's update manifest and CRX to control-api,
 //     with no credential: the browsers' extension downloader fetches them, without a session;
+//   * forwards /scim/v2/* to control-api with the identity provider's own bearer token and
+//     nothing else, for a deployment where this server is the only public origin;
 //   * refuses a state-changing /v1 or /admin/v1 request that did not come from this origin.
 //
 // Every page and read needs a session except the sign-in pages and their two stylesheets,
-// /onboard/*, the minted retrieval URL, the two extension downloads and the two probes.
+// /onboard/*, /scim/v2/*, the minted retrieval URL, the two extension downloads and the two probes.
 
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -82,6 +84,7 @@ const IDENTITY_REFUSALS = new Map([
   ['invite_unknown', 'invite_invalid'], ['invite_used', 'invite_invalid'], ['invite_expired', 'invite_invalid'],
   ['provider_unavailable', 'unavailable'], ['unavailable', 'unavailable'],
 ]);
+const SCIM_ERROR = 'urn:ietf:params:scim:api:messages:2.0:Error';
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'host', 'content-length', 'accept-encoding']);
 
 const TYPES = {
@@ -495,6 +498,36 @@ export function createDashboardServer(config) {
     return relayBody(req, res, upstream);
   }
 
+  /**
+   * Forward one SCIM request to control-api: method, path, query, body, its content type and the
+   * identity provider's Authorization header, which is the credential; never a cookie. Back come the
+   * status, the SCIM content type, Location and ETag, and the body.
+   */
+  async function forwardScim(req, res, url) {
+    const headers = { 'accept-encoding': 'identity' };
+    for (const name of ['authorization', 'content-type', 'accept', 'if-match', 'if-none-match']) {
+      if (req.headers[name] !== undefined) headers[name] = String(req.headers[name]);
+    }
+    let body;
+    if (!['GET', 'HEAD'].includes(req.method)) {
+      body = await readBody(req);
+      if (body === null) return json(res, 413, { schemas: [SCIM_ERROR], status: '413', detail: 'The request body is larger than this server forwards.' });
+    }
+    let upstream;
+    try {
+      upstream = await fetchImpl(`${cfg.controlUrl}${url.pathname}${url.search}`, { method: req.method, headers, body, redirect: 'manual', signal: AbortSignal.timeout(60_000) });
+    } catch {
+      return json(res, 503, { schemas: [SCIM_ERROR], status: '503', detail: 'The provisioning service could not be reached.' });
+    }
+    const out = { 'cache-control': 'no-store' };
+    for (const name of ['content-type', 'location', 'etag']) {
+      const value = upstream.headers.get(name);
+      if (value !== null) out[name] = value;
+    }
+    res.writeHead(upstream.status, out);
+    return relayBody(req, res, upstream);
+  }
+
   /** Forward one minted retrieval URL straight to the vault: the grant is the capability, so no principal is added. */
   async function forwardRetrieval(req, res, target) {
     let upstream;
@@ -557,6 +590,7 @@ export function createDashboardServer(config) {
     if (path === '/signout') return handleSignout(req, res);
     if (path === '/login') return handleLogin(res, url);
     if (path === '/onboard' || path.startsWith('/onboard/')) return forwardOnboard(req, res, url);
+    if (path === '/scim/v2' || path.startsWith('/scim/v2/')) return forwardScim(req, res, url);
     if (path === '/v1/extension' || path.startsWith(EXTENSION_PREFIX)) {
       if (!EXTENSION_PATHS.has(path)) return void res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found');
       if (req.method !== 'GET' && req.method !== 'HEAD') return void res.writeHead(405, { allow: 'GET, HEAD' }).end();

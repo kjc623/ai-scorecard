@@ -114,7 +114,7 @@ func TestWireMountsEverySurface(t *testing.T) {
 	}
 	db := stdlib.OpenDB(*pg)
 	defer db.Close()
-	srv, _, err := wire(cfg, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv, _, _, err := wire(cfg, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}

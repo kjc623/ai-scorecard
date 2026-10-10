@@ -472,9 +472,10 @@ once through it: that sign-in makes you the organisation's first administrator. 
 {{if .FormError}}<section class="error" role="alert">{{.FormError}}</section>{{end}}
 {{if .Entra}}<section><h2>Microsoft Entra ID</h2>
 <p>You will be asked to grant tenant-wide admin consent to the application. It asks for sign-in
-(<code>openid</code>, <code>profile</code>, <code>email</code>, <code>offline_access</code>) and to read Intune managed
-devices (<code>DeviceManagementManagedDevices.Read.All</code>), which lets device enrolment check that a device is yours.
-It does not read your directory: people are provisioned through SCIM.</p>
+(<code>openid</code>, <code>profile</code>, <code>email</code>, <code>offline_access</code>), to read Intune managed
+devices (<code>DeviceManagementManagedDevices.Read.All</code>), which lets device enrolment check that a device is yours,
+and to read your people and groups (<code>User.Read.All</code>, <code>GroupMember.Read.All</code>), which the product
+does only once an admin turns on reading the directory; SCIM provisioning works without it.</p>
 <form method="post" action="/onboard/{{.Invite}}/entra"><button type="submit">Connect Microsoft Entra ID</button></form>
 </section>{{end}}
 <section><h2>Another OpenID Connect provider</h2>

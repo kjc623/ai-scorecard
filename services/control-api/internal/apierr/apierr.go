@@ -51,6 +51,13 @@ const (
 	CodeUnsupportedFormat   = "unsupported_format"
 	CodeInvalidVerification = "invalid_device_verification"
 
+	// Teams and the directory pull.
+	CodeTeamNameTaken      = "team_name_taken"
+	CodeTeamNotConsole     = "team_members_follow_directory"
+	CodeDirectorySyncOff   = "directory_sync_off"
+	CodeGraphConsent       = "graph_consent_missing"
+	CodeDirectoryUnreached = "directory_unreachable"
+
 	// The Settings API's refusals, each named so the page can say what the database refused.
 	CodeCollectionExceedsCeiling = "collection_exceeds_ceiling"
 	CodeScopeOverrideTooWide     = "scope_override_too_wide"
