@@ -38,8 +38,8 @@ func newRig(t *testing.T) *rig {
 	r.store.AddTenant(store.Tenant{TenantID: tenantA, Status: "active", IngestEnabled: true})
 	r.store.SetCeiling(tenantA, "m3")
 	r.store.SetCatalogueTools(
-		store.ToolDecision{ToolFingerprint: "tls_b6681b043244c43f", DisplayName: "Claude Code"},
-		store.ToolDecision{ToolFingerprint: "tls_f32477ff734d70d1", DisplayName: "OpenAI API"},
+		store.ToolDecision{ToolKey: "claude_code", DisplayName: "Claude Code", Fingerprints: []string{"app:claude_code", "tls_b6681b043244c43f"}},
+		store.ToolDecision{ToolKey: "openai_api", DisplayName: "OpenAI API", Fingerprints: []string{"app:openai_api", "tls_f32477ff734d70d1"}},
 	)
 	auth := func(req *http.Request) (deploy.Principal, error) {
 		switch req.Header.Get("X-Test-Principal") {
@@ -83,10 +83,10 @@ func errorCode(t *testing.T, rec *httptest.ResponseRecorder) string {
 var routes = []struct{ method, path, body string }{
 	{"GET", "/admin/v1/settings", ""},
 	{"PUT", "/admin/v1/settings/collection-mode", `{"collection_mode":"m1"}`},
-	{"PUT", "/admin/v1/settings/scope-override", `{"tool_fingerprint":"tls_b6681b043244c43f","collection_mode":"m0"}`},
+	{"PUT", "/admin/v1/settings/scope-override", `{"tool_key":"claude_code","collection_mode":"m0"}`},
 	{"PUT", "/admin/v1/settings/retention", `{"applies_to":"event","ttl_days":90}`},
 	{"PUT", "/admin/v1/settings/content-search", `{"content_search":"attachment_names"}`},
-	{"PUT", "/admin/v1/settings/tools/tls_b6681b043244c43f/sanction", `{"sanctioned_state":"unsanctioned"}`},
+	{"PUT", "/admin/v1/settings/tools/claude_code/sanction", `{"sanctioned_state":"unsanctioned"}`},
 	{"PUT", "/admin/v1/settings/endpoint", endpointBody},
 	{"PUT", "/admin/v1/settings/endpoint/tools/cursor", `{"otel":false,"hooks":false}`},
 	{"PUT", "/admin/v1/settings/tls-inspection", `{"enabled":true}`},
@@ -117,11 +117,11 @@ func TestGet(t *testing.T) {
 	r.store.AddDevice(store.Device{TenantID: tenantA, DeviceID: "22222222-2222-4222-8222-222222222222", OS: "windows", Hostname: "LAPTOP-1", EnrolledAt: r.now.Add(-2 * time.Hour)})
 	r.store.SetDeviceMode(tenantA, "22222222-2222-4222-8222-222222222222", "m2")
 	r.store.SeedCollectionMode(tenantA, "m2")
-	r.store.SeedScopeOverride(tenantA, "tls_b6681b043244c43f", "m1")
+	r.store.SeedScopeOverride(tenantA, "claude_code", "m1")
 	r.store.SeedRetention(tenantA, "event", 120)
 	r.store.SeedContentSearch(tenantA, "attachment_names")
-	r.store.SetToolSanction(context.Background(), tenantA, "tls_f32477ff734d70d1", "unsanctioned",
-		store.AuditEntry{TenantID: tenantA, ActorType: store.ActorUser, ActorID: admin.Actor, Action: "tool.sanction", ObjectType: "tool", ObjectID: "tls_f32477ff734d70d1", OccurredAt: r.now})
+	r.store.SetToolSanction(context.Background(), tenantA, "openai_api", "unsanctioned",
+		store.AuditEntry{TenantID: tenantA, ActorType: store.ActorUser, ActorID: admin.Actor, Action: "tool.sanction", ObjectType: "tool", ObjectID: "openai_api", OccurredAt: r.now})
 
 	rec := r.do(t, "admin", "GET", "/admin/v1/settings", "")
 	if rec.Code != http.StatusOK {
@@ -139,8 +139,9 @@ func TestGet(t *testing.T) {
 		} `json:"retention_defaults"`
 		ContentSearch string `json:"content_search"`
 		Tools         []struct {
-			ToolFingerprint string `json:"tool_fingerprint"`
-			SanctionedState string `json:"sanctioned_state"`
+			ToolKey         string   `json:"tool_key"`
+			SanctionedState string   `json:"sanctioned_state"`
+			Fingerprints    []string `json:"fingerprints"`
 		} `json:"tools"`
 		Devices []struct {
 			DeviceID       string `json:"device_id"`
@@ -150,7 +151,7 @@ func TestGet(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	if got.CeilingMode != "m3" || got.CollectionMode != "m2" || got.ScopeOverrides["tls_b6681b043244c43f"] != "m1" {
+	if got.CeilingMode != "m3" || got.CollectionMode != "m2" || got.ScopeOverrides["claude_code"] != "m1" {
 		t.Fatalf("modes = %+v", got)
 	}
 	if got.EventRetentionDays == nil || *got.EventRetentionDays != 120 {
@@ -165,7 +166,8 @@ func TestGet(t *testing.T) {
 	if got.ContentSearch != "attachment_names" {
 		t.Fatalf("content search = %s", got.ContentSearch)
 	}
-	if len(got.Tools) != 2 || got.Tools[1].SanctionedState != "unsanctioned" {
+	if len(got.Tools) != 2 || got.Tools[1].ToolKey != "openai_api" || got.Tools[1].SanctionedState != "unsanctioned" ||
+		len(got.Tools[1].Fingerprints) != 2 || got.Tools[1].Fingerprints[1] != "tls_f32477ff734d70d1" {
 		t.Fatalf("tools = %+v", got.Tools)
 	}
 	if len(got.Devices) != 1 || got.Devices[0].CollectionMode != "m2" {
@@ -224,29 +226,32 @@ func TestScopeOverride(t *testing.T) {
 	}
 	// An override wider than the ceiling is refused even while following the ceiling.
 	r.store.SetCeiling(tenantA, "m1")
-	if rec := put(`{"tool_fingerprint":"tls_b6681b043244c43f","collection_mode":"m2"}`); rec.Code != http.StatusConflict || errorCode(t, rec) != apierr.CodeScopeOverrideTooWide {
+	if rec := put(`{"tool_key":"claude_code","collection_mode":"m2"}`); rec.Code != http.StatusConflict || errorCode(t, rec) != apierr.CodeScopeOverrideTooWide {
 		t.Fatalf("override above the ceiling: %d %s", rec.Code, rec.Body)
 	}
 	r.store.SetCeiling(tenantA, "m3")
 	// Request a mode below the ceiling so a wider override is possible to refuse.
 	r.store.SeedCollectionMode(tenantA, "m2")
 	// A narrower override is accepted.
-	if rec := put(`{"tool_fingerprint":"tls_b6681b043244c43f","collection_mode":"m1"}`); rec.Code != http.StatusNoContent {
+	if rec := put(`{"tool_key":"claude_code","collection_mode":"m1"}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("override: %d %s", rec.Code, rec.Body)
 	}
 	// A wider override is refused.
-	if rec := put(`{"tool_fingerprint":"tls_b6681b043244c43f","collection_mode":"m3"}`); rec.Code != http.StatusConflict || errorCode(t, rec) != apierr.CodeScopeOverrideTooWide {
+	if rec := put(`{"tool_key":"claude_code","collection_mode":"m3"}`); rec.Code != http.StatusConflict || errorCode(t, rec) != apierr.CodeScopeOverrideTooWide {
 		t.Fatalf("wider override: %d %s", rec.Code, rec.Body)
 	}
 	// Clearing is accepted.
-	if rec := put(`{"tool_fingerprint":"tls_b6681b043244c43f","collection_mode":null}`); rec.Code != http.StatusNoContent {
+	if rec := put(`{"tool_key":"claude_code","collection_mode":null}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("clear: %d %s", rec.Code, rec.Body)
 	}
 	if rec := put(`{"collection_mode":"m1"}`); rec.Code != http.StatusBadRequest {
-		t.Fatalf("missing fingerprint: %d", rec.Code)
+		t.Fatalf("missing tool key: %d", rec.Code)
+	}
+	if rec := put(`{"tool_key":"tls_b6681b043244c43f","collection_mode":"m1"}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("a fingerprint is not a tool: %d %s", rec.Code, rec.Body)
 	}
 	s, _ := r.store.Settings(context.Background(), tenantA)
-	if _, ok := s.ScopeOverrides["tls_b6681b043244c43f"]; ok {
+	if _, ok := s.ScopeOverrides["claude_code"]; ok {
 		t.Fatalf("override not cleared: %+v", s.ScopeOverrides)
 	}
 }
@@ -300,10 +305,13 @@ func TestContentSearch(t *testing.T) {
 func TestToolSanction(t *testing.T) {
 	r := newRig(t)
 	put := func(body string) *httptest.ResponseRecorder {
-		return r.do(t, "admin", "PUT", "/admin/v1/settings/tools/tls_b6681b043244c43f/sanction", body)
+		return r.do(t, "admin", "PUT", "/admin/v1/settings/tools/claude_code/sanction", body)
 	}
 	if rec := put(`{"sanctioned_state":"unsanctioned"}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("unsanctioned: %d %s", rec.Code, rec.Body)
+	}
+	if rec := r.do(t, "admin", "PUT", "/admin/v1/settings/tools/tls_b6681b043244c43f/sanction", `{"sanctioned_state":"unsanctioned"}`); rec.Code != http.StatusNotFound {
+		t.Fatalf("a fingerprint is not a tool: %d %s", rec.Code, rec.Body)
 	}
 	if rec := put(`{"sanctioned_state":"maybe"}`); rec.Code != http.StatusBadRequest {
 		t.Fatalf("bad state: %d", rec.Code)

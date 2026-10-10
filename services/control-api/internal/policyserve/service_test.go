@@ -55,6 +55,12 @@ func newRig(t *testing.T, mutate func(*policyserve.Config)) *rig {
 	r.store.AddTenant(store.Tenant{TenantID: tenantA, Status: "active", IngestEnabled: true})
 	r.store.SetCeiling(tenantA, "m3")
 	r.store.SetCatalogueHosts("api.openai.com", "API.Anthropic.com", "chatgpt.com", "api.openai.com")
+	r.store.SetCatalogueTools(
+		store.ToolDecision{ToolKey: "claude_code", DisplayName: "Claude Code", Fingerprints: []string{"app:claude_code"}},
+		store.ToolDecision{ToolKey: "cursor", DisplayName: "Cursor", Fingerprints: []string{"app:cursor", "tls_9230903190dcf0dc"}},
+		store.ToolDecision{ToolKey: "windsurf", DisplayName: "Windsurf", Fingerprints: []string{"app:windsurf"}},
+		store.ToolDecision{ToolKey: "ollama", DisplayName: "Ollama", Fingerprints: []string{"app:ollama"}},
+	)
 	cfg := policyserve.Config{Now: func() time.Time { return r.now }, RecheckInterval: -1, Logger: quiet}
 	if mutate != nil {
 		mutate(&cfg)
@@ -172,7 +178,7 @@ func TestServesASignedBundleComposedFromTheTenant(t *testing.T) {
 func TestComposeCarriesRequestedModeAndOverrides(t *testing.T) {
 	r := newRig(t, nil)
 	r.store.SeedCollectionMode(tenantA, "m2")
-	r.store.SeedScopeOverride(tenantA, "tls_b6681b043244c43f", "m0")
+	r.store.SeedScopeOverride(tenantA, "claude_code", "m0")
 
 	rec := r.get(t, "")
 	if rec.Code != http.StatusOK {
@@ -187,7 +193,7 @@ func TestComposeCarriesRequestedModeAndOverrides(t *testing.T) {
 		t.Fatalf("tenant_default_mode = %v, want m2", p["tenant_default_mode"])
 	}
 	toolModes := p["tool_modes"].(map[string]any)
-	if toolModes["tls_b6681b043244c43f"] != "m0" {
+	if toolModes["app:claude_code"] != "m0" {
 		t.Fatalf("tool_modes = %v", toolModes)
 	}
 	row := r.store.PolicyBundles(tenantA)[0]
@@ -426,15 +432,15 @@ func TestComposeRulesAndSanctionedTools(t *testing.T) {
 		t.Fatalf("rules:\n got %s\nwant %s", got, wantRules)
 	}
 
-	sanction := func(fp, state string) {
+	sanction := func(key, state string) {
 		t.Helper()
-		if err := r.store.SetToolSanction(ctx, tenantA, fp, state, audit); err != nil {
+		if err := r.store.SetToolSanction(ctx, tenantA, key, state, audit); err != nil {
 			t.Fatal(err)
 		}
 	}
-	sanction("app:cursor", "sanctioned")
-	sanction("app:claude_code", "sanctioned")
-	sanction("app:windsurf", "unsanctioned")
+	sanction("cursor", "sanctioned")
+	sanction("claude_code", "sanctioned")
+	sanction("windsurf", "unsanctioned")
 	v3, err := r.svc.Current(ctx, tenantA)
 	if err != nil {
 		t.Fatal(err)
@@ -442,14 +448,14 @@ func TestComposeRulesAndSanctionedTools(t *testing.T) {
 	if !newer(v3.Version, v2.Version) {
 		t.Fatalf("changed sanctions: version %s, want newer than %s", v3.Version, v2.Version)
 	}
-	if got := sectionOf(t, v3.Envelope, "sanctioned_tools"); got != `["app:claude_code","app:cursor"]` {
+	if got := sectionOf(t, v3.Envelope, "sanctioned_tools"); got != `["app:claude_code","app:cursor","tls_9230903190dcf0dc"]` {
 		t.Fatalf("sanctioned_tools = %s", got)
 	}
 	if again, _ := r.svc.Current(ctx, tenantA); again.Version != v3.Version {
 		t.Fatalf("version moved to %s with no change", again.Version)
 	}
 
-	sanction("app:cursor", "unknown")
+	sanction("cursor", "unknown")
 	v4, err := r.svc.Current(ctx, tenantA)
 	if err != nil {
 		t.Fatal(err)
@@ -656,7 +662,7 @@ func TestComposeLoopback(t *testing.T) {
 
 	// The tool's own mode, where the tenant set one, is the mode the broker records at.
 	m1 := "m1"
-	if err := r.store.SetScopeOverride(ctx, tenantA, "app:ollama", &m1, audit); err != nil {
+	if err := r.store.SetScopeOverride(ctx, tenantA, "ollama", &m1, audit); err != nil {
 		t.Fatal(err)
 	}
 	v3, err := r.svc.Current(ctx, tenantA)
@@ -915,15 +921,15 @@ func TestServedBundleVerifiesWithTheDevicesVerifier(t *testing.T) {
 	}
 	// Rules using every field and match list, and two sanctioned tools.
 	if err := r.store.ReplaceEnforcementRules(context.Background(), tenantA, []store.EnforcementRule{
-		{RuleID: "block_credentials", Action: "block", Match: store.RuleMatch{Labels: []string{"credential"}, Tools: []string{"app:cursor"},
+		{RuleID: "block_credentials", Action: "block", Match: store.RuleMatch{Labels: []string{"credential"}, Tools: []string{"cursor"},
 			Categories: []string{"ide"}, Sanction: []string{"unsanctioned"}, Routes: []string{"proxy.tls", "tool.hook"}},
 			Message: "Remove the credential and try again.", Link: "https://intranet.example/ai"},
 		{RuleID: "allow.rest", Action: "allow"},
 	}, audit); err != nil {
 		t.Fatal(err)
 	}
-	for _, fp := range []string{"app:claude_code", "app:cursor"} {
-		if err := r.store.SetToolSanction(context.Background(), tenantA, fp, "sanctioned", audit); err != nil {
+	for _, key := range []string{"claude_code", "cursor"} {
+		if err := r.store.SetToolSanction(context.Background(), tenantA, key, "sanctioned", audit); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1033,7 +1039,7 @@ func main() {
 		" " + sectionOf(t, resp.SignedBundle, "rules") + " " + sectionOf(t, resp.SignedBundle, "sanctioned_tools") +
 		" " + sectionOf(t, resp.SignedBundle, "catalog") + " [ollama] ide " + sectionOf(t, resp.SignedBundle, "kill_switches") + " true " +
 		sectionOf(t, resp.SignedBundle, "loopback")
-	if !strings.Contains(want, `"link":"https://intranet.example/ai"`) || !strings.Contains(want, `"routes":["proxy.tls","tool.hook"]`) || !strings.Contains(want, `["app:claude_code","app:cursor"]`) ||
+	if !strings.Contains(want, `"link":"https://intranet.example/ai"`) || !strings.Contains(want, `"routes":["proxy.tls","tool.hook"]`) || !strings.Contains(want, `["app:claude_code","app:cursor","tls_9230903190dcf0dc"]`) ||
 		!strings.Contains(want, `{"app_key":"continue","category":"ide_assistant","signals":[]}`) || !strings.Contains(want, `"value":"%USERPROFILE%\\.ollama\\models"`) ||
 		!strings.Contains(want, `"tool_fingerprint":"app:ollama"`) || !strings.Contains(want, `"cool_down_seconds":300`) {
 		t.Fatalf("the served bundle does not carry the rules, sanctioned tools and catalog under test: %s", want)

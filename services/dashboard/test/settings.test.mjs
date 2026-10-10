@@ -21,14 +21,14 @@ function populated(overrides = {}) {
   return {
     ceiling_mode: 'm3',
     collection_mode: 'm3',
-    scope_overrides: { tls_b6681b043244c43f: 'm1' },
+    scope_overrides: { claude_code: 'm1' },
     event_retention_days: 120,
     content_retention_days: null,
     retention_defaults: { event_days: 90, content_days: 30 },
     content_search: 'attachment_names',
     tools: [
-      { tool_fingerprint: 'tls_b6681b043244c43f', display_name: 'Claude Code', sanctioned_state: 'unsanctioned' },
-      { tool_fingerprint: 'tls_f32477ff734d70d1', display_name: 'OpenAI API', sanctioned_state: 'unknown' },
+      { tool_key: 'claude_code', display_name: 'Claude Code', sanctioned_state: 'unsanctioned', fingerprints: ['app:claude_code', 'tls_b6681b043244c43f'] },
+      { tool_key: 'openai_api', display_name: 'OpenAI API', sanctioned_state: 'unknown', fingerprints: ['app:openai_api', 'tls_f32477ff734d70d1'] },
     ],
     devices: [{ device_id: 'd-1', hostname: 'LAPTOP-1', collection_mode: 'm2', last_seen_at: '2026-10-01T09:00:00Z' }],
     endpoint: endpointDefaults(),
@@ -202,14 +202,14 @@ test('a tool sanction writes the decision and re-reads', async () => {
   let state = populated();
   const { controller, requests } = await loaded({
     [GET]: () => ({ status: 200, body: state }),
-    'PUT /admin/v1/settings/tools/tls_b6681b043244c43f/sanction': (spec) => {
-      state = { ...state, tools: state.tools.map((t) => (t.tool_fingerprint === 'tls_b6681b043244c43f' ? { ...t, sanctioned_state: spec.body.sanctioned_state } : t)) };
+    'PUT /admin/v1/settings/tools/claude_code/sanction': (spec) => {
+      state = { ...state, tools: state.tools.map((t) => (t.tool_key === 'claude_code' ? { ...t, sanctioned_state: spec.body.sanctioned_state } : t)) };
       return { status: 204 };
     },
   });
-  await controller.setToolSanction('tls_b6681b043244c43f', 'sanctioned');
+  await controller.setToolSanction('claude_code', 'sanctioned');
   const put = requests.find((r) => r.method === 'PUT');
-  assert.equal(put.path, '/admin/v1/settings/tools/tls_b6681b043244c43f/sanction');
+  assert.equal(put.path, '/admin/v1/settings/tools/claude_code/sanction');
   assert.deepEqual(put.body, { sanctioned_state: 'sanctioned' });
   assert.equal(controller.state.data.tools[0].sanctioned_state, 'sanctioned');
 });
@@ -530,7 +530,7 @@ function servedRules() {
     rules: [
       {
         rule_id: 'block_credentials', action: 'block',
-        match: { labels: ['credential'], tools: ['tls_b6681b043244c43f'], categories: ['coding_agent'], sanction: ['unsanctioned'], routes: ['tool.hook'] },
+        match: { labels: ['credential'], tools: ['claude_code'], categories: ['coding_agent'], sanction: ['unsanctioned'], routes: ['tool.hook'] },
         message: 'Remove the credential and try again.', link: 'https://intranet.example/ai',
       },
       { rule_id: 'allow_rest', action: 'allow', match: { labels: [], tools: [], categories: [], sanction: [], routes: [] }, message: '' },
@@ -592,7 +592,7 @@ test('enforcement rules: the editor offers the data classes, the tools, the cata
   const card = rulesCard(html());
   const option = (field, value) => new RegExp(`aria-pressed="(true|false)" data-action="rule-match" data-field="${field}" data-value="${value.replace('.', '\\.')}">`);
   for (const c of ['credential', 'customer_pii', 'government_id', 'health', 'legal_commercial', 'payment_card', 'source_code']) assert.match(card, option('labels', c));
-  for (const t of ['tls_b6681b043244c43f', 'tls_f32477ff734d70d1']) assert.match(card, option('tools', t));
+  for (const t of ['claude_code', 'openai_api']) assert.match(card, option('tools', t));
   for (const c of ['chat_assistant', 'coding_agent', 'ide_assistant', 'ide', 'local_runtime', 'inference_api']) assert.match(card, option('categories', c));
   assert.doesNotMatch(card, option('categories', 'ai_feature'), 'a category no catalog app falls in is not offered');
   assert.ok(card.indexOf('data-value="chat_assistant"') < card.indexOf('data-value="local_runtime"'), 'categories are offered in the display order');
@@ -644,7 +644,7 @@ test('enforcement rules: add, edit, move and delete change a draft; saving sends
   // Edit the first rule's message and drop its tool; move the new rule to the top; delete the allow.
   await controller.act({ action: 'rule-edit', index: '0' });
   controller.setRuleDraft('message', 'Take the credential out first.');
-  await controller.act({ action: 'rule-match', field: 'tools', value: 'tls_b6681b043244c43f' });
+  await controller.act({ action: 'rule-match', field: 'tools', value: 'claude_code' });
   await controller.act({ action: 'rule-apply' });
   await controller.act({ action: 'rule-up', index: '2' });
   await controller.act({ action: 'rule-up', index: '1' });

@@ -1,13 +1,11 @@
-// tool-catalogue.test.mjs — the catalogue, the read-time resolution and the sanction write.
+// tool-catalogue.test.mjs — the catalogue and the read-time resolution of names and sanction state.
 //
-// Three claims are under test (db.test.mjs runs the resolver against a live database):
+// Two claims are under test (db.test.mjs runs the resolver against a live database):
 //
 //   1. every source that can show a tool resolves the fingerprint to a name at read time, and keeps
 //      the raw fingerprint beside it, so an unknown tool is never mistaken for a known one;
 //   2. Q2's suppression cell is the (bucket, tool) group, not the person, so a tool used by fewer
-//      than k people is suppressed while a tool with enough people can name them;
-//   3. a sanction decision is validated strictly and its SQL is an upsert that clears attribution
-//      when the state returns to `unknown`.
+//      than k people is suppressed while a tool with enough people can name them.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -17,13 +15,6 @@ import { validate } from '../src/validate.js';
 import { guard } from '../src/guard.js';
 import { SOURCES } from '../src/registry.js';
 import { expandTemplate } from '../src/templates.js';
-import {
-  SANCTION_STATES,
-  TOOL_SANCTION_ACTION,
-  validateSanctionRequest,
-  UPSERT_TOOL_SANCTION_SQL,
-  toolSanctionAuditStatement,
-} from '../src/sanction.js';
 import { NOW, rejection } from './helpers.mjs';
 
 const WINDOW = { from: '2026-09-01T00:00:00Z', to: '2026-09-08T00:00:00Z' };
@@ -90,9 +81,9 @@ test('Q2 joins the present-tense sanction state and filters to it', () => {
   assert.equal(SOURCES['mart.agg_tool_user_period'].dimensions.sanctioned_state.sql, 'ot.sanctioned_state');
 });
 
-test('Q2 compiles to the tool-cell suppression count and the ops.tool join', () => {
+test('Q2 compiles to the tool-cell suppression count and the sanction join through the catalogue', () => {
   const text = readText({ query_version: '1', template: 'q2_unsanctioned_users', params: { window: WINDOW, limit: 100 } });
-  assert.match(text, /LEFT JOIN ops\.tool ot ON ot\.tenant_id = a\.tenant_id AND ot\.tool_fingerprint = a\.tool_fingerprint/);
+  assert.match(text, /LEFT JOIN ref\.tool_catalogue tc ON tc\.tool_fingerprint = a\.tool_fingerprint LEFT JOIN ops\.tool_sanction ot ON ot\.tenant_id = a\.tenant_id AND ot\.tool_key = tc\.app_key/);
   assert.match(text, /ot\.sanctioned_state = \$\d+::text/);
   assert.match(text, /count\(\*\) OVER \(PARTITION BY a\.bucket_start, a\.tool_fingerprint\)::bigint AS __k_subjects/);
   assert.ok(!text.includes('count(DISTINCT'), 'the tool-cell count must not fall back to the per-row distinct count');
@@ -115,55 +106,3 @@ test('the tool-cell count falls back to the exact distinct count when subject is
   assert.ok(!text.includes('OVER (PARTITION BY'));
 });
 
-// ── the sanction write ─────────────────────────────────────────────────────────────────────────
-
-test('a sanction request accepts the three states and refuses anything else', () => {
-  for (const state of SANCTION_STATES) {
-    const ok = validateSanctionRequest({ tool_fingerprint: 'tls_b6681b043244c43f', sanctioned_state: state });
-    assert.equal(ok.sanctionedState, state);
-  }
-  assert.equal(
-    rejection(() => validateSanctionRequest({ tool_fingerprint: 'x', sanctioned_state: 'maybe' })).reason,
-    'type_mismatch',
-  );
-  assert.equal(
-    rejection(() => validateSanctionRequest({ tool_fingerprint: '', sanctioned_state: 'sanctioned' })).reason,
-    'type_mismatch',
-  );
-  assert.equal(
-    rejection(() => validateSanctionRequest({ tool_fingerprint: 'x', sanctioned_state: 'sanctioned', case_reference: 'c' })).reason,
-    'unknown_key',
-  );
-  assert.equal(
-    rejection(() => validateSanctionRequest({ tool_fingerprint: 'x', sanctioned_state: 'sanctioned', tenant_id: 'other' })).reason,
-    'tenant_in_request',
-  );
-});
-
-test('the sanction upsert attributes a decision and clears attribution on unknown', () => {
-  assert.match(UPSERT_TOOL_SANCTION_SQL, /INSERT INTO ops\.tool/);
-  assert.match(UPSERT_TOOL_SANCTION_SQL, /ON CONFLICT \(tenant_id, tool_fingerprint\) DO UPDATE/);
-  // `unknown` is the absence of a decision: the schema's tool_decision_attributed check accepts it
-  // only because the attribution is cleared in the same statement.
-  assert.match(UPSERT_TOOL_SANCTION_SQL, /CASE WHEN \$3::text = 'unknown' THEN NULL ELSE \$4::text END/);
-  assert.match(UPSERT_TOOL_SANCTION_SQL, /CASE WHEN \$3::text = 'unknown' THEN NULL ELSE now\(\) END/);
-  // A policy decision is not an observation, so last_seen_at is not touched.
-  assert.ok(!UPSERT_TOOL_SANCTION_SQL.includes('last_seen_at'));
-});
-
-test('a sanction writes a tool.sanction audit row naming the previous state', () => {
-  const audit = toolSanctionAuditStatement({
-    actorId: 'analyst@example',
-    toolFingerprint: 'tls_b6681b043244c43f',
-    sanctionedState: 'unsanctioned',
-    previousState: 'unknown',
-    displayName: null,
-    note: 'not approved',
-    caseReference: 'CASE-1',
-  });
-  assert.equal(TOOL_SANCTION_ACTION, 'tool.sanction');
-  assert.ok(audit.text.includes('INSERT INTO ops.audit'));
-  assert.deepEqual(audit.params.slice(1, 5), ['analyst@example', 'tool.sanction', 'ops.tool', 'tls_b6681b043244c43f']);
-  assert.match(String(audit.params[7]), /"previous_state":"unknown"/);
-  assert.match(String(audit.params[7]), /"sanctioned_state":"unsanctioned"/);
-});

@@ -114,7 +114,7 @@ SELECT DISTINCT lower(evidence->>'host') AS host
  WHERE signal_kind = 'tls' AND coalesce(evidence->>'host', '') <> ''
  ORDER BY host`
 
-	// SQLScopeOverrides is the tenant's narrower per-tool modes, as tool_fingerprint -> mode.
+	// SQLScopeOverrides is the tenant's narrower per-tool modes, as tool key -> mode.
 	SQLScopeOverrides = `
 SELECT key, value
   FROM ops.tenant t, jsonb_each_text(t.scope_overrides)
@@ -372,6 +372,9 @@ func (s *SQLStore) PolicyInputs(ctx context.Context, tenantID string) (PolicyInp
 			return err2
 		}
 		if in.SanctionedTools, err2 = sanctionedTools(ctx, tx, tenantID); err2 != nil {
+			return err2
+		}
+		if in.ToolFingerprints, err2 = toolFingerprints(ctx, tx); err2 != nil {
 			return err2
 		}
 		if in.KillSwitches, err2 = killSwitches(ctx, tx, tenantID); err2 != nil {

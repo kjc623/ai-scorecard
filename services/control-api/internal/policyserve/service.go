@@ -289,12 +289,16 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 	if canary == "" && len(hosts) > 0 {
 		canary = hosts[0] + ":443"
 	}
+	// An override is set per tool; the bundle carries it per catalogue fingerprint of the tool,
+	// which is what a device knows.
 	toolModes := map[string]string{}
-	for fp, m := range in.ScopeOverrides {
+	for key, m := range in.ScopeOverrides {
 		if !protocol.CollectionMode(m).Valid() {
-			return nil, fmt.Errorf("scope override %q has mode %q outside {m0,m1,m2,m3}", fp, m)
+			return nil, fmt.Errorf("scope override %q has mode %q outside {m0,m1,m2,m3}", key, m)
 		}
-		toolModes[fp] = m
+		for _, fp := range in.ToolFingerprints[key] {
+			toolModes[fp] = m
+		}
 	}
 	pacListen := ""
 	if in.Tenant.TLSInspection {
@@ -318,7 +322,7 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 			NodeRequire: true,
 		},
 		Endpoint:        composeEndpoint(in.Endpoint),
-		Rules:           composeRules(in.Rules),
+		Rules:           composeRules(in.Rules, in.ToolFingerprints),
 		SanctionedTools: sanctioned(in.SanctionedTools),
 		Catalog:         composeCatalog(in.Catalog),
 		KillSwitches:    composeKillSwitches(in.KillSwitches),
@@ -419,13 +423,25 @@ func composeCatalog(apps []store.CatalogApp) []CatalogApp {
 }
 
 // composeRules is the bundle's rules list, in the tenant's order.
-func composeRules(rules []store.EnforcementRule) []Rule {
+// composeRules is the bundle's rules. A rule's tools list names tool keys; the bundle carries the
+// tools' catalogue fingerprints, sorted, because devices match fingerprints. A key the catalogue
+// does not know contributes nothing.
+func composeRules(rules []store.EnforcementRule, fingerprints map[string][]string) []Rule {
 	list := func(v []string) []string { return append([]string{}, v...) }
 	out := make([]Rule, 0, len(rules))
 	for _, r := range rules {
 		m := r.Match
+		tools := []string{}
+		for _, key := range m.Tools {
+			for _, fp := range fingerprints[key] {
+				if !slices.Contains(tools, fp) {
+					tools = append(tools, fp)
+				}
+			}
+		}
+		sort.Strings(tools)
 		out = append(out, Rule{RuleID: r.RuleID, Action: r.Action, Message: r.Message, Link: r.Link,
-			Match: RuleMatch{Labels: list(m.Labels), Tools: list(m.Tools), Categories: list(m.Categories),
+			Match: RuleMatch{Labels: list(m.Labels), Tools: tools, Categories: list(m.Categories),
 				Sanction: list(m.Sanction), Routes: list(m.Routes)}})
 	}
 	return out

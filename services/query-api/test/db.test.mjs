@@ -250,18 +250,15 @@ test('a bucket-size predicate keeps hour rows out of a day total, and counts arr
   );
 });
 
-test('the tool display name resolves a catalogue entry, an override and an unknown fingerprint', { skip: SKIP }, async () => {
+test('the tool display name resolves a catalogue entry and an unknown fingerprint', { skip: SKIP }, async () => {
   await scratch(
-    (client) => client.query(
-      "INSERT INTO ops.tool (tenant_id, tool_fingerprint, display_name, sanctioned_state, decided_by, decided_at) VALUES (ops.current_tenant(), 'tls_override_test', 'Approved build', 'sanctioned', 'tester', now())",
-    ),
+    null,
     async (client) => {
       const { rows: [catalogued] } = await client.query('SELECT tool_fingerprint FROM ref.tool_catalogue LIMIT 1');
       assert.ok(catalogued, 'ref.tool_catalogue is seeded');
       const name = async (fp) => (await client.query('SELECT ops.tool_display_name($1) AS name', [fp])).rows[0].name;
       const { rows: [expected] } = await client.query('SELECT display_name FROM ref.tool_catalogue WHERE tool_fingerprint = $1', [catalogued.tool_fingerprint]);
       assert.equal(await name(catalogued.tool_fingerprint), expected.display_name);
-      assert.equal(await name('tls_override_test'), 'Approved build');
       assert.equal(await name('tls_never_seen_anywhere'), 'Unrecognised tool');
     },
   );

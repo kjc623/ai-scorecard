@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -32,7 +33,7 @@ func TestSettingsAgainstPostgres(t *testing.T) {
 	}
 
 	// A scope override wider than the ceiling is refused even while following the ceiling.
-	if err := st.SetScopeOverride(ctx, tenant, "tls_b6681b043244c43f", &m2, audit); !errors.Is(err, store.ErrScopeOverrideTooWide) {
+	if err := st.SetScopeOverride(ctx, tenant, "claude_code", &m2, audit); !errors.Is(err, store.ErrScopeOverrideTooWide) {
 		t.Fatalf("override above the ceiling: %v", err)
 	}
 
@@ -51,14 +52,17 @@ func TestSettingsAgainstPostgres(t *testing.T) {
 	if err := st.SetCollectionMode(ctx, tenant, &m1, audit); err != nil {
 		t.Fatalf("collection mode m1: %v", err)
 	}
-	if err := st.SetScopeOverride(ctx, tenant, "tls_b6681b043244c43f", &m2, audit); !errors.Is(err, store.ErrScopeOverrideTooWide) {
+	if err := st.SetScopeOverride(ctx, tenant, "claude_code", &m2, audit); !errors.Is(err, store.ErrScopeOverrideTooWide) {
 		t.Fatalf("override wider than the requested mode: %v", err)
 	}
-	if err := st.SetScopeOverride(ctx, tenant, "tls_b6681b043244c43f", &m0, audit); err != nil {
+	if err := st.SetScopeOverride(ctx, tenant, "claude_code", &m0, audit); err != nil {
 		t.Fatalf("narrower override: %v", err)
 	}
-	if err := st.SetScopeOverride(ctx, tenant, "tls_b6681b043244c43f", nil, audit); err != nil {
+	if err := st.SetScopeOverride(ctx, tenant, "claude_code", nil, audit); err != nil {
 		t.Fatalf("clear override: %v", err)
+	}
+	if err := st.SetScopeOverride(ctx, tenant, "tls_b6681b043244c43f", &m0, audit); !errors.Is(err, store.ErrUnknownTool) {
+		t.Fatalf("override on a fingerprint rather than a tool: %v", err)
 	}
 
 	// Retention writes the policy matrix and reads back the one value.
@@ -73,7 +77,7 @@ func TestSettingsAgainstPostgres(t *testing.T) {
 	}
 
 	// A sanction decision is attributed and read back.
-	if err := st.SetToolSanction(ctx, tenant, "tls_b6681b043244c43f", "unsanctioned", audit); err != nil {
+	if err := st.SetToolSanction(ctx, tenant, "claude_code", "unsanctioned", audit); err != nil {
 		t.Fatalf("tool sanction: %v", err)
 	}
 
@@ -95,7 +99,7 @@ func TestSettingsAgainstPostgres(t *testing.T) {
 	}
 	found := false
 	for _, tool := range s.Tools {
-		if tool.ToolFingerprint == "tls_b6681b043244c43f" && tool.SanctionedState == "unsanctioned" {
+		if tool.ToolKey == "claude_code" && tool.SanctionedState == "unsanctioned" && slices.Contains(tool.Fingerprints, "tls_b6681b043244c43f") {
 			found = true
 		}
 	}

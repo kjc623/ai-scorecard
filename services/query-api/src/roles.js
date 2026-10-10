@@ -8,8 +8,8 @@
 //   analyst         everything a viewer may, plus event and finding lists, the per-person screens
 //                   and prompt-text search. Not stored-content retrieval.
 //   content_reader  everything an analyst may, plus opening one event's stored prompt.
-//   admin           every capability: everything a content_reader may, plus configuration,
-//                   sanction decisions, the audit trail and data-subject requests.
+//   admin           every capability: everything a content_reader may, plus configuration, the
+//                   audit trail and data-subject requests.
 //
 // Roles are not a ladder (an analyst is not "above" a viewer in some rank the checks consult), so
 // every check asks whether a role carries a capability, never how roles rank.
@@ -20,7 +20,7 @@ import { REASON, QueryError } from './errors.js';
 export const ROLES = Object.freeze(['viewer', 'analyst', 'content_reader', 'admin']);
 
 /** Every capability the read path knows. */
-export const CAPABILITIES = Object.freeze(['aggregate', 'device', 'subject', 'search', 'content', 'audit', 'settings', 'sanction', 'data_subject']);
+export const CAPABILITIES = Object.freeze(['aggregate', 'device', 'subject', 'search', 'content', 'audit', 'settings', 'data_subject']);
 
 /** What each role may do. Frozen so a caller cannot widen a role by mutation. */
 export const ROLE_CAPABILITIES = Object.freeze({
@@ -55,7 +55,6 @@ const SOURCE_CAPABILITY = Object.freeze({
 /** The capability an endpoint needs, for the routes that are not a source read. */
 export const ENDPOINT_CAPABILITY = Object.freeze({
   '/v1/finding-review': 'subject',
-  '/v1/tool-sanction': 'sanction',
   '/v1/content-search': 'search',
   '/v1/content/retrieval': 'content',
   '/v1/list-export': 'subject',

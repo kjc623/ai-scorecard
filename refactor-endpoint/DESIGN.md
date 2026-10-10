@@ -207,7 +207,8 @@ there is no version gating; old agents are reinstalled.
     list and AND across lists.
   - `labels` are classifier classes (`credential`, `customer_pii`, `government_id`, `health`,
     `legal_commercial`, `payment_card`, `source_code`).
-  - `tools` are fingerprints; `categories` are `ref.app.category` values.
+  - `tools` are tool keys (`ref.app.app_key`) as stored; the bundle carries the tools' catalogue
+    fingerprints, which is what a device matches. `categories` are `ref.app.category` values.
   - `sanction` holds `sanctioned` or `unsanctioned`, decided against `sanctioned_tools`.
   - `routes` are envelope routes.
   - The first matching rule wins. No match records `logged` with rule id `policy.default`, as

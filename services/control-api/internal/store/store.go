@@ -200,13 +200,17 @@ func (t PolicyTenant) Active() bool { return t.Status != "closed" && t.IngestEna
 type PolicyInputs struct {
 	Tenant            PolicyTenant
 	InterceptionHosts []string
-	// ScopeOverrides is the tenant's narrower per-tool modes, keyed by tool fingerprint.
+	// ScopeOverrides is the tenant's narrower per-tool modes, keyed by tool key.
 	ScopeOverrides map[string]string
 	Endpoint       EndpointSettings
 	// Rules is the tenant's enforcement rules, in order.
 	Rules []EnforcementRule
-	// SanctionedTools is the fingerprints whose ops.tool.sanctioned_state is sanctioned, sorted.
+	// SanctionedTools is the catalogue fingerprints of the tools the tenant has sanctioned
+	// (ops.tool_sanction), sorted.
 	SanctionedTools []string
+	// ToolFingerprints is the catalogue's fingerprints by tool key, sorted, which a rule's tools
+	// list expands to.
+	ToolFingerprints map[string][]string
 	// Catalog is the app catalog, by app key, each app's signals by platform, kind and value.
 	Catalog []CatalogApp
 	// KillSwitches is the tenant's tripped kill switches, by route.
@@ -319,12 +323,14 @@ type RetentionDefaults struct {
 	ContentDays int
 }
 
-// ToolDecision is one tool's sanction state as the Settings page shows it: the catalogue's
-// fingerprint and name, and the tenant's decision (unknown when none has been made).
+// ToolDecision is one tool's sanction state as the Settings page shows it: the tool's key and name
+// from ref.app, the catalogue fingerprints that belong to it, and the tenant's decision (unknown
+// when none has been made).
 type ToolDecision struct {
-	ToolFingerprint string
+	ToolKey         string
 	DisplayName     string
 	SanctionedState string
+	Fingerprints    []string
 }
 
 // DeviceMode is the collection mode a device reported it has actually applied, from ops.device.
@@ -339,7 +345,7 @@ type DeviceMode struct {
 type Settings struct {
 	CeilingMode          string
 	CollectionMode       string            // "" means "follow the ceiling"
-	ScopeOverrides       map[string]string // tool fingerprint -> mode
+	ScopeOverrides       map[string]string // tool key -> mode
 	EventRetentionDays   *int
 	ContentRetentionDays *int
 	ContentSearch        string
@@ -386,6 +392,8 @@ var (
 	ErrRetentionOutOfRange = errors.New("store: retention period is outside the retention classes")
 	// ErrUnknownEndpointTool is a tool key outside EndpointToolKeys.
 	ErrUnknownEndpointTool = errors.New("store: endpoint tool key unknown")
+
+	ErrUnknownTool = errors.New("store: tool key unknown")
 	// ErrUnknownRuleLabel is an enforcement rule naming a label outside ref.data_class.
 	ErrUnknownRuleLabel = errors.New("store: enforcement rule label is not a data class")
 	// ErrUnknownKillSwitchRoute is a kill switch for a route outside KillSwitchRoutes.
@@ -454,7 +462,7 @@ type Store interface {
 	SetCollectionMode(ctx context.Context, tenantID string, mode *string, audit AuditEntry) error
 	// SetScopeOverride sets or clears (nil mode) one tool's narrower override.
 	// ErrScopeOverrideTooWide when the override is wider than the requested mode or the ceiling.
-	SetScopeOverride(ctx context.Context, tenantID string, fingerprint string, mode *string, audit AuditEntry) error
+	SetScopeOverride(ctx context.Context, tenantID string, toolKey string, mode *string, audit AuditEntry) error
 	// SetRetention sets the retention period for events or content, as the tenant's
 	// ops.retention_policy. appliesTo is "event" or "content". ErrRetentionOutOfRange when ttlDays
 	// is outside the retention classes.
@@ -462,9 +470,10 @@ type Store interface {
 	// SetContentSearch sets the content search tier. ErrSearchTierRequiresCeiling when the tier
 	// needs a ceiling the tenant does not have.
 	SetContentSearch(ctx context.Context, tenantID string, tier string, audit AuditEntry) error
-	// SetToolSanction sets one tool's sanction decision. state is sanctioned, unsanctioned or
-	// unknown; setting unknown clears the attribution.
-	SetToolSanction(ctx context.Context, tenantID string, fingerprint string, state string, audit AuditEntry) error
+	// SetToolSanction sets one tool's sanction decision, which covers every fingerprint of the tool.
+	// state is sanctioned, unsanctioned or unknown; setting unknown clears the attribution.
+	// ErrUnknownTool when toolKey names no tool of the catalogue.
+	SetToolSanction(ctx context.Context, tenantID string, toolKey string, state string, audit AuditEntry) error
 	// SetEndpointCollectors sets the tenant's endpoint collector switches.
 	SetEndpointCollectors(ctx context.Context, tenantID string, c EndpointCollectors, audit AuditEntry) error
 	// SetEndpointTool sets one tool's native collector switches. ErrUnknownEndpointTool when the key

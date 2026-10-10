@@ -120,9 +120,11 @@ predicate `class`; on `mart.v_finding` — `detected_at`, `submission_id`, `rule
 `last_seen_at`, `revoked_at`, `spool_depth`, `spool_dropped_total`.
 
 Every source that shows a tool returns the raw fingerprint in `tool` and a display name in
-`tool_name`, resolved at read time from the tenant's `ops.tool` override and the shared
-`ref.tool_catalogue`, falling back to `Unrecognised tool`. `sanctioned_state` is present-tense
-configuration joined at read time; NULL (no decision) renders as `unknown`, never `unsanctioned`.
+`tool_name`, resolved at read time from the shared `ref.tool_catalogue`, falling back to
+`Unrecognised tool`. `sanctioned_state` is present-tense
+configuration joined at read time: the tenant's decision on the tool the fingerprint belongs to
+(`ops.tool_sanction` through the catalogue's `app_key`); NULL (no decision, or a fingerprint outside
+the catalogue) renders as `unknown`, never `unsanctioned`.
 
 **`mart.agg_user_period` requires a subject filter** (`subject eq` or `subject in`). Its row grain
 *is* a person, so a read without one would be a list of people, which the product never offers. The

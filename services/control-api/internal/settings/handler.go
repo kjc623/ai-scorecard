@@ -69,7 +69,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /admin/v1/settings/scope-override", h.handleScopeOverride)
 	mux.HandleFunc("PUT /admin/v1/settings/retention", h.handleRetention)
 	mux.HandleFunc("PUT /admin/v1/settings/content-search", h.handleContentSearch)
-	mux.HandleFunc("PUT /admin/v1/settings/tools/{fingerprint}/sanction", h.handleToolSanction)
+	mux.HandleFunc("PUT /admin/v1/settings/tools/{tool_key}/sanction", h.handleToolSanction)
 	mux.HandleFunc("PUT /admin/v1/settings/endpoint", h.handleEndpoint)
 	mux.HandleFunc("PUT /admin/v1/settings/endpoint/tools/{tool_key}", h.handleEndpointTool)
 	mux.HandleFunc("PUT /admin/v1/settings/tls-inspection", h.handleTLSInspection)
@@ -125,9 +125,10 @@ func (h *Handler) audit(p deploy.Principal, action, objectType, objectID string,
 // --- GET /admin/v1/settings ---------------------------------------------------------------
 
 type toolJSON struct {
-	ToolFingerprint string `json:"tool_fingerprint"`
-	DisplayName     string `json:"display_name"`
-	SanctionedState string `json:"sanctioned_state"`
+	ToolKey         string   `json:"tool_key"`
+	DisplayName     string   `json:"display_name"`
+	SanctionedState string   `json:"sanctioned_state"`
+	Fingerprints    []string `json:"fingerprints"`
 }
 
 type deviceJSON struct {
@@ -229,7 +230,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 		out.ScopeOverrides = map[string]string{}
 	}
 	for _, t := range s.Tools {
-		out.Tools = append(out.Tools, toolJSON{ToolFingerprint: t.ToolFingerprint, DisplayName: t.DisplayName, SanctionedState: t.SanctionedState})
+		out.Tools = append(out.Tools, toolJSON{ToolKey: t.ToolKey, DisplayName: t.DisplayName, SanctionedState: t.SanctionedState, Fingerprints: append([]string{}, t.Fingerprints...)})
 	}
 	for _, d := range s.Devices {
 		out.Devices = append(out.Devices, deviceJSON{DeviceID: d.DeviceID, Hostname: d.Hostname, CollectionMode: d.CollectionMode, LastSeenAt: d.LastSeenAt})
@@ -287,15 +288,15 @@ func (h *Handler) handleScopeOverride(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		ToolFingerprint string  `json:"tool_fingerprint"`
-		CollectionMode  *string `json:"collection_mode"`
+		ToolKey        string  `json:"tool_key"`
+		CollectionMode *string `json:"collection_mode"`
 	}
 	if !h.decode(w, r, &req) {
 		return
 	}
-	req.ToolFingerprint = strings.TrimSpace(req.ToolFingerprint)
-	if req.ToolFingerprint == "" {
-		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "tool_fingerprint is required"))
+	req.ToolKey = strings.TrimSpace(req.ToolKey)
+	if req.ToolKey == "" {
+		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "tool_key is required"))
 		return
 	}
 	if req.CollectionMode != nil && !validMode(*req.CollectionMode) {
@@ -304,9 +305,12 @@ func (h *Handler) handleScopeOverride(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := h.cfg.Now().UTC()
-	err := h.store.SetScopeOverride(r.Context(), p.Tenant, req.ToolFingerprint, req.CollectionMode,
+	err := h.store.SetScopeOverride(r.Context(), p.Tenant, req.ToolKey, req.CollectionMode,
 		h.audit(p, "tenant.scope_override.set", "tenant", p.Tenant, now, nil))
 	switch {
+	case errors.Is(err, store.ErrUnknownTool):
+		h.fail(w, apierr.New(http.StatusNotFound, apierr.CodeNotFound, "no such tool"))
+		return
 	case errors.Is(err, store.ErrScopeOverrideTooWide):
 		h.fail(w, apierr.New(http.StatusConflict, apierr.CodeScopeOverrideTooWide,
 			"the override is wider than the tenant's requested mode; an override can only narrow collection"))
@@ -398,15 +402,15 @@ func (h *Handler) handleContentSearch(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// --- PUT /admin/v1/settings/tools/{fingerprint}/sanction ------------------------------------
+// --- PUT /admin/v1/settings/tools/{tool_key}/sanction ---------------------------------------
 
 func (h *Handler) handleToolSanction(w http.ResponseWriter, r *http.Request) {
 	p, ok := h.admin(w, r)
 	if !ok {
 		return
 	}
-	fingerprint := r.PathValue("fingerprint")
-	if strings.TrimSpace(fingerprint) == "" {
+	toolKey := r.PathValue("tool_key")
+	if strings.TrimSpace(toolKey) == "" {
 		h.fail(w, apierr.New(http.StatusNotFound, apierr.CodeNotFound, "no such tool"))
 		return
 	}
@@ -423,9 +427,12 @@ func (h *Handler) handleToolSanction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := h.cfg.Now().UTC()
-	err := h.store.SetToolSanction(r.Context(), p.Tenant, fingerprint, req.SanctionedState,
-		h.audit(p, "tool.sanction", "tool", fingerprint, now, nil))
+	err := h.store.SetToolSanction(r.Context(), p.Tenant, toolKey, req.SanctionedState,
+		h.audit(p, "tool.sanction", "tool", toolKey, now, nil))
 	switch {
+	case errors.Is(err, store.ErrUnknownTool):
+		h.fail(w, apierr.New(http.StatusNotFound, apierr.CodeNotFound, "no such tool"))
+		return
 	case errors.Is(err, store.ErrUnknownTenant):
 		h.fail(w, apierr.New(http.StatusForbidden, apierr.CodeUnknownTenant, "the tenant is unknown to this deployment"))
 		return

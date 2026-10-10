@@ -245,7 +245,7 @@ export const SOURCES = Object.freeze({
     subjectBearing: false,
     requiresSubjectScope: false,
     indexes: Object.freeze(['mart.agg_tool_period PK (tenant_id, bucket_start, bucket_size, tool_fingerprint)']),
-    // The display name is joined at read time from ops.tool / ref.tool_catalogue through
+    // The display name is joined at read time from ref.tool_catalogue through
     // ops.tool_display_name(); `tool` keeps returning the raw fingerprint, so the name can never
     // hide which behaviour-derived tool a row is about, and an unknown fingerprint is returned as
     // "Unrecognised tool" with `tool` beside it. It is selected only when `tool` is
@@ -296,7 +296,7 @@ export const SOURCES = Object.freeze({
     joins: Object.freeze([
       Object.freeze({
         id: 'tool',
-        sql: 'LEFT JOIN ops.tool ot ON ot.tenant_id = t.tenant_id AND ot.tool_fingerprint = t.tool_fingerprint',
+        sql: 'LEFT JOIN ref.tool_catalogue tc ON tc.tool_fingerprint = t.tool_fingerprint LEFT JOIN ops.tool_sanction ot ON ot.tenant_id = t.tenant_id AND ot.tool_key = tc.app_key',
         when: Object.freeze(['sanctioned_state']),
       }),
     ]),
@@ -304,7 +304,7 @@ export const SOURCES = Object.freeze({
       Object.freeze({ sql: 'ops.tool_display_name(t.tool_fingerprint) AS "tool_name"', whenDimensions: Object.freeze(['tool']) }),
     ]),
     warnings: Object.freeze([
-      'sanctioned_state is present-tense configuration joined at read time (ops.tool), never a property of the aggregate row.',
+      'sanctioned_state is present-tense configuration joined at read time (the decision on the tool the fingerprint belongs to, ops.tool_sanction through ref.tool_catalogue), never a property of the aggregate row.',
     ]),
   }),
 
@@ -350,12 +350,13 @@ export const SOURCES = Object.freeze({
       'mart.agg_tool_user_period PK (tenant_id, bucket_start, bucket_size, tool_fingerprint, user_ref)',
       'mart.agg_tool_user_period (tenant_id, tool_fingerprint, bucket_start DESC, bucket_size)',
     ]),
-    // SANCTION is joined present-tense from ops.tool, exactly as Q1 does: a decision made after a
+    // SANCTION is joined present-tense from ops.tool_sanction through the catalogue, exactly as Q1
+    // does: a decision made after a
     // bucket was written changes what the next read says about it, and never rewrites the bucket.
     joins: Object.freeze([
       Object.freeze({
         id: 'tool',
-        sql: 'LEFT JOIN ops.tool ot ON ot.tenant_id = a.tenant_id AND ot.tool_fingerprint = a.tool_fingerprint',
+        sql: 'LEFT JOIN ref.tool_catalogue tc ON tc.tool_fingerprint = a.tool_fingerprint LEFT JOIN ops.tool_sanction ot ON ot.tenant_id = a.tenant_id AND ot.tool_key = tc.app_key',
         when: Object.freeze(['sanctioned_state']),
       }),
     ]),
@@ -364,7 +365,7 @@ export const SOURCES = Object.freeze({
     ]),
     warnings: Object.freeze([
       'An unscoped window beyond 7 days is refused by the cost guard when subject is a grouping dimension.',
-      'sanctioned_state is present-tense configuration joined at read time (ops.tool), never a property of the aggregate row; NULL means no decision, rendered as `unknown`, never as `unsanctioned`.',
+      'sanctioned_state is present-tense configuration joined at read time (the decision on the tool the fingerprint belongs to, ops.tool_sanction through ref.tool_catalogue), never a property of the aggregate row; NULL means no decision, or a fingerprint outside the catalogue, rendered as `unknown`, never as `unsanctioned`.',
       'k-suppression applies to the (bucket, tool) cell, not the person: a tool used by fewer than k people is suppressed, and a tool with enough people publishes its per-person rows, which are the point of naming who uses it.',
     ]),
   }),

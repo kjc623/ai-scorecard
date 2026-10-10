@@ -139,8 +139,6 @@ WITH buckets AS (
            interval %[2]s) AS bucket_start
 ),
 tools AS (
-  SELECT tool_fingerprint FROM ops.tool WHERE tenant_id = $1
-  UNION
   SELECT DISTINCT tool_fingerprint FROM ingest.submission
    WHERE tenant_id = $1 AND received_at >= $2 AND received_at < $3
 ),

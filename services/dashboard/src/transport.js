@@ -331,8 +331,8 @@ export function createAdminApi({ transport }) {
     setCollectionMode(mode) {
       return done({ method: 'PUT', path: ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT, body: { collection_mode: mode } });
     },
-    setScopeOverride(toolFingerprint, mode) {
-      return done({ method: 'PUT', path: ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT, body: { tool_fingerprint: toolFingerprint, collection_mode: mode } });
+    setScopeOverride(toolKey, mode) {
+      return done({ method: 'PUT', path: ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT, body: { tool_key: toolKey, collection_mode: mode } });
     },
     setRetention(appliesTo, ttlDays) {
       return done({ method: 'PUT', path: ADMIN_SETTINGS_RETENTION_ENDPOINT, body: { applies_to: appliesTo, ttl_days: ttlDays } });
@@ -340,8 +340,8 @@ export function createAdminApi({ transport }) {
     setContentSearch(tier) {
       return done({ method: 'PUT', path: ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT, body: { content_search: tier } });
     },
-    setToolSanction(toolFingerprint, state) {
-      return done({ method: 'PUT', path: `${ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT}/${encodeURIComponent(String(toolFingerprint))}/sanction`, body: { sanctioned_state: state } });
+    setToolSanction(toolKey, state) {
+      return done({ method: 'PUT', path: `${ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT}/${encodeURIComponent(String(toolKey))}/sanction`, body: { sanctioned_state: state } });
     },
     /** Every collector switch at once: control-api requires all six, so none is turned off by omission. */
     setEndpointCollectors({ inventory, processes, flows, otel, hooks, hooks_managed_only }) {
@@ -431,9 +431,10 @@ export function normaliseDeployment(body) {
  */
 export function normaliseSettings(body) {
   const tools = (Array.isArray(body.tools) ? body.tools : []).filter((t) => t && typeof t === 'object').map((t) => Object.freeze({
-    tool_fingerprint: String(t.tool_fingerprint ?? ''),
+    tool_key: String(t.tool_key ?? ''),
     display_name: nullableText(t.display_name),
     sanctioned_state: ['sanctioned', 'unsanctioned', 'unknown'].includes(t.sanctioned_state) ? t.sanctioned_state : 'unknown',
+    fingerprints: Object.freeze((Array.isArray(t.fingerprints) ? t.fingerprints : []).filter((f) => typeof f === 'string')),
   }));
   const devices = (Array.isArray(body.devices) ? body.devices : []).filter((d) => d && typeof d === 'object').map((d) => Object.freeze({
     device_id: String(d.device_id ?? ''),
@@ -443,7 +444,7 @@ export function normaliseSettings(body) {
   }));
   const overrides = body.scope_overrides && typeof body.scope_overrides === 'object' ? body.scope_overrides : {};
   const scoped = {};
-  for (const [fp, mode] of Object.entries(overrides)) scoped[fp] = nullableText(mode);
+  for (const [key, mode] of Object.entries(overrides)) scoped[key] = nullableText(mode);
   return Object.freeze({
     ceiling_mode: nullableText(body.ceiling_mode),
     collection_mode: nullableText(body.collection_mode),

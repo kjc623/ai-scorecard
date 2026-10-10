@@ -104,23 +104,23 @@ function stCollectionMode(state) {
 }
 
 function stOverrideSelect(tool, state) {
-  const current = state.data.scope_overrides[tool.tool_fingerprint] ?? '';
+  const current = state.data.scope_overrides[tool.tool_key] ?? '';
   const disabled = Boolean(state.override.pending);
   const options = ['<option value="">Default</option>']
     .concat(COLLECTION_MODES.map((m) => `<option value="${m}"${m === current ? ' selected' : ''}>${escapeHtml(MODE_LABELS[m])}</option>`))
     .join('');
-  return `<select class="dp-input dp-select" data-action="override" data-tool="${escapeHtml(tool.tool_fingerprint)}" aria-label="Mode for ${escapeHtml(tool.display_name ?? tool.tool_fingerprint)}"${disabled ? ' disabled' : ''}>${options}</select>`;
+  return `<select class="dp-input dp-select" data-action="override" data-tool="${escapeHtml(tool.tool_key)}" aria-label="Mode for ${escapeHtml(tool.display_name ?? tool.tool_key)}"${disabled ? ' disabled' : ''}>${options}</select>`;
 }
 
+/** One row per tool: the override covers every fingerprint the catalogue knows for it. */
 function stOverrides(state) {
   const tools = state.data.tools;
   const rows = tools.map((tool) => '<tr>'
-    + `<td><span class="v-text">${escapeHtml(tool.display_name ?? tool.tool_fingerprint)}</span></td>`
-    + `<td><code>${escapeHtml(tool.tool_fingerprint)}</code></td>`
+    + `<td>${toolCell(tool)}</td>`
     + `<td class="dp-action">${stOverrideSelect(tool, state)}</td></tr>`).join('');
-  const empty = tools.length === 0 ? '<tr class="row-empty"><td colspan="3">No tools are catalogued yet.</td></tr>' : '';
-  const body = '<p>Narrow collection for one tool below the tenant\'s mode. An override can only reduce what is collected, never raise it.</p>'
-    + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Tool</th><th scope="col">Fingerprint</th><th scope="col">Mode</th></tr></thead>'
+  const empty = tools.length === 0 ? '<tr class="row-empty"><td colspan="2">No tools are catalogued yet.</td></tr>' : '';
+  const body = '<p>Narrow collection for one tool below the tenant\'s mode. An override can only reduce what is collected, never raise it, and covers every fingerprint of the tool.</p>'
+    + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Tool</th><th scope="col">Mode</th></tr></thead>'
     + `<tbody>${rows}${empty}</tbody></table></div>`
     + stProblem(state.override.problem);
   return stCard('Per-tool overrides', body, { wide: true });
@@ -149,17 +149,25 @@ function stRetention(state) {
   return stCard('Retention', body);
 }
 
+/** A tool's name with how many fingerprints the catalogue knows for it: each way a device recognises it. */
+function toolCell(tool) {
+  const n = Array.isArray(tool.fingerprints) ? tool.fingerprints.length : 0;
+  return `<span class="v-text">${escapeHtml(tool.display_name ?? tool.tool_key)}</span> <span class="dp-sub">${n} ${n === 1 ? 'fingerprint' : 'fingerprints'}</span>`;
+}
+
+/** One row per tool: the decision covers every fingerprint the catalogue knows for it. */
 function stTools(state) {
   const tools = state.data.tools;
   const rows = tools.map((tool) => {
     const current = tool.sanctioned_state;
-    const seg = SANCTION_STATES.map((s) => segItem(s, s, current, { action: 'sanction', tool: tool.tool_fingerprint, value: s }, { disabled: Boolean(state.sanction.pending) })).join('');
+    const name = tool.display_name ?? tool.tool_key;
+    const seg = SANCTION_STATES.map((s) => segItem(s, s, current, { action: 'sanction', tool: tool.tool_key, value: s }, { disabled: Boolean(state.sanction.pending) })).join('');
     return '<tr>'
-      + `<td><span class="v-text">${escapeHtml(tool.display_name ?? tool.tool_fingerprint)}</span></td>`
-      + `<td class="dp-action"><div class="seg dp-seg" role="group" aria-label="Sanction for ${escapeHtml(tool.display_name ?? tool.tool_fingerprint)}">${seg}</div></td></tr>`;
+      + `<td>${toolCell(tool)}</td>`
+      + `<td class="dp-action"><div class="seg dp-seg" role="group" aria-label="Sanction for ${escapeHtml(name)}">${seg}</div></td></tr>`;
   }).join('');
   const empty = tools.length === 0 ? '<tr class="row-empty"><td colspan="2">No tools are catalogued yet.</td></tr>' : '';
-  const body = '<p>Mark a tool sanctioned or unsanctioned. A tool with no decision is <em>unknown</em>, never unsanctioned.</p>'
+  const body = '<p>Mark a tool sanctioned or unsanctioned. A decision covers every fingerprint of the tool: each way a device recognises it. A tool with no decision is <em>unknown</em>, never unsanctioned.</p>'
     + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Tool</th><th scope="col">Decision</th></tr></thead>'
     + `<tbody>${rows}${empty}</tbody></table></div>`
     + stProblem(state.sanction.problem);
@@ -288,7 +296,7 @@ const ROUTE_LABELS = Object.freeze(Object.fromEntries(RULE_ROUTES.map((r) => [r.
 function matchOptions(field, data, current) {
   const known = {
     labels: () => (data.data_classes ?? []).map((c) => [c, c]),
-    tools: () => data.tools.map((t) => [t.tool_fingerprint, t.display_name ?? t.tool_fingerprint]),
+    tools: () => data.tools.map((t) => [t.tool_key, t.display_name ?? t.tool_key]),
     categories: () => {
       const present = data.app_categories ?? [];
       return RULE_CATEGORIES.filter((c) => present.includes(c.key)).map((c) => [c.key, c.label])
@@ -303,7 +311,7 @@ function matchOptions(field, data, current) {
 
 /** A match value as the table shows it. */
 function matchValueLabel(field, value, data) {
-  if (field === 'tools') return data.tools.find((t) => t.tool_fingerprint === value)?.display_name ?? value;
+  if (field === 'tools') return data.tools.find((t) => t.tool_key === value)?.display_name ?? value;
   if (field === 'categories') return CATEGORY_LABELS[value] ?? value;
   if (field === 'routes') return ROUTE_LABELS[value] ?? value;
   return value;

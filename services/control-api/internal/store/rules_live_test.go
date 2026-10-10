@@ -55,7 +55,7 @@ func TestEnforcementRulesAgainstPostgres(t *testing.T) {
 		{RuleID: "block_credentials", Action: "block", Match: store.RuleMatch{Labels: []string{"credential"}, Tools: []string{},
 			Categories: []string{}, Sanction: []string{}, Routes: []string{"proxy.tls"}},
 			Message: "Remove the credential and try again.", Link: "https://intranet.example/ai"},
-		{RuleID: "warn.unsanctioned", Action: "warn", Match: store.RuleMatch{Labels: []string{}, Tools: []string{"app:cursor"},
+		{RuleID: "warn.unsanctioned", Action: "warn", Match: store.RuleMatch{Labels: []string{}, Tools: []string{"cursor"},
 			Categories: []string{"coding_agent"}, Sanction: []string{"unsanctioned"}, Routes: []string{}},
 			Message: "Use the approved coding agent."},
 		{RuleID: "allow_rest", Action: "allow", Match: empty},
@@ -120,19 +120,28 @@ func TestEnforcementRulesAgainstPostgres(t *testing.T) {
 		t.Fatalf("audits =\n%v\nwant\n%v", got, want)
 	}
 
-	// The policy read carries the sanctioned tools, sorted, and only those.
-	for fp, state := range map[string]string{"app:cursor": "sanctioned", "app:claude_code": "sanctioned", "app:windsurf": "unsanctioned"} {
-		if err := st.SetToolSanction(ctx, tenant, fp, state, store.AuditEntry{TenantID: tenant, ActorType: store.ActorUser,
-			ActorID: "admin@example.com", Action: "tool.sanction", ObjectType: "tool", ObjectID: fp, OccurredAt: audit.OccurredAt}); err != nil {
+	// The policy read carries every catalogue fingerprint of the sanctioned tools, sorted, and only
+	// those, and the catalogue's fingerprints by tool for the rules to expand to.
+	for key, state := range map[string]string{"cursor": "sanctioned", "claude_code": "sanctioned", "windsurf": "unsanctioned"} {
+		if err := st.SetToolSanction(ctx, tenant, key, state, store.AuditEntry{TenantID: tenant, ActorType: store.ActorUser,
+			ActorID: "admin@example.com", Action: "tool.sanction", ObjectType: "tool", ObjectID: key, OccurredAt: audit.OccurredAt}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := st.SetToolSanction(ctx, tenant, "tls_b6681b043244c43f", "sanctioned", audit); !errors.Is(err, store.ErrUnknownTool) {
+		t.Fatalf("a fingerprint is not a tool: %v", err)
 	}
 	in, err := st.PolicyInputs(ctx, tenant)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"app:claude_code", "app:cursor"}; !reflect.DeepEqual(in.SanctionedTools, want) {
-		t.Fatalf("sanctioned tools = %v, want %v", in.SanctionedTools, want)
+	wantSanctioned := []string{"app:claude_code", "app:cursor", "tls_14a9086e088f0d82", "tls_31299ef7601928f7", "tls_5a5a41ed0bf50d9d",
+		"tls_69f6ab029df3c019", "tls_9230903190dcf0dc", "tls_b6681b043244c43f", "tls_cb53d2b2add3d450"}
+	if !reflect.DeepEqual(in.SanctionedTools, wantSanctioned) {
+		t.Fatalf("sanctioned tools = %v, want %v", in.SanctionedTools, wantSanctioned)
+	}
+	if got := in.ToolFingerprints["cursor"]; !reflect.DeepEqual(got, []string{"app:cursor", "tls_14a9086e088f0d82", "tls_9230903190dcf0dc"}) {
+		t.Fatalf("cursor fingerprints = %v", got)
 	}
 }
 
