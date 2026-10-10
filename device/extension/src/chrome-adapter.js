@@ -152,6 +152,13 @@ export function createChromeAdapter(scope = globalThis) {
           disconnect: () => port.disconnect(),
         };
       },
+      version: () => api.runtime.getManifest().version,
+      requestUpdateCheck: async () => {
+        const answer = await api.runtime.requestUpdateCheck();
+        return answer && typeof answer === 'object' ? answer.status : answer;
+      },
+      onUpdateAvailable: (fn) => api.runtime.onUpdateAvailable.addListener((details) => fn(details && details.version)),
+      reload: () => api.runtime.reload(),
     },
 
     messages: {

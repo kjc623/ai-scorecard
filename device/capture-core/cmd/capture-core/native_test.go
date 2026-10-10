@@ -305,7 +305,7 @@ func TestNativeSessionClassifiesAttachmentsAndDropsTheBytes(t *testing.T) {
 }
 
 // The extension is handed the decoded payload of the bundle in force, exactly the bytes the
-// signature covered, and told when it already has it.
+// signature covered, and told when it already has it and which agent release answers.
 func TestNativeSessionPolicySync(t *testing.T) {
 	var signed []byte
 	svc, _ := enrolledServiceWith(t, func(priv ed25519.PrivateKey) []byte {
@@ -328,6 +328,9 @@ func TestNativeSessionPolicySync(t *testing.T) {
 	if pb.PolicyVersion != "5" || len(pb.Bundle) == 0 || pb.Unchanged {
 		t.Fatalf("first sync = %+v, want version 5 with the bundle", pb)
 	}
+	if pb.AgentVersion != agentRelease(version) {
+		t.Fatalf("agent_version = %q, want %q for agent %q", pb.AgentVersion, agentRelease(version), version)
+	}
 	var envelope policy.SignedBundle
 	if err := json.Unmarshal(signed, &envelope); err != nil {
 		t.Fatal(err)
@@ -344,6 +347,16 @@ func TestNativeSessionPolicySync(t *testing.T) {
 
 	if pb := ask("5"); !pb.Unchanged || (len(pb.Bundle) != 0 && string(pb.Bundle) != "null") {
 		t.Fatalf("sync at the current version = %+v, want unchanged with no bundle", pb)
+	}
+}
+
+// A development build names no release, so the extension of an older release is asked to update
+// only by an agent that is a release.
+func TestAgentRelease(t *testing.T) {
+	for v, want := range map[string]string{"1.0.28": "1.0.28", "dev": "", "": ""} {
+		if got := agentRelease(v); got != want {
+			t.Fatalf("agentRelease(%q) = %q, want %q", v, got, want)
+		}
 	}
 }
 

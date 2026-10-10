@@ -20,6 +20,7 @@ import { createPipeline } from '../src/pipeline.js';
 import { createPolicyCache } from '../src/mode-policy.js';
 import { createQueue } from '../src/queue.js';
 import { installLanes } from '../src/registration.js';
+import { createSelfUpdate } from '../src/self-update.js';
 
 export const HEALTH_ALARM = 'capture-health';
 export const HEALTH_PERIOD_MINUTES = 1;
@@ -78,6 +79,12 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
     attachments: createAttachmentCollector({ adapter, counters: health.counters }),
   });
 
+  const selfUpdate = createSelfUpdate({
+    adapter,
+    version,
+    beforeReload: () => pipeline.drainQueue(capacity).then(() => reportHealth()),
+  });
+
   /**
    * Whether this install holds `webRequestBlocking`, asked before any lane is registered: a
    * blocking registration without the grant is accepted silently and never invoked, so the lanes
@@ -104,6 +111,7 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
   async function requestPolicySync() {
     try {
       const answer = await native.sendRequest(TYPE.POLICY_SYNC, { known_version: policy.snapshot().policy_version || '' });
+      void selfUpdate.consider(answer.body && answer.body.agent_version);
       return applyPolicy(answer.body);
     } catch (e) {
       // With no bundle the device resolves M0 and reports why.
@@ -175,6 +183,7 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
     if (blockingAvailable) health.onEnforcementAvailable();
     else health.onEnforcementUnavailable();
     installAlarms();
+    selfUpdate.install();
     const installed = installLanesNow();
     await requestPolicySync();
     return { policy, queue, health, native, pipeline, lanes: installed, blockingAvailable };
@@ -187,6 +196,7 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
     health,
     native,
     pipeline,
+    selfUpdate,
     reportHealth,
     requestPolicySync,
     applyPolicy,
@@ -203,7 +213,7 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
 // real-browser check reads health and taps the queue through.
 if (typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.connectNative === 'function') {
   const adapter = createChromeAdapter(globalThis);
-  const app = bootstrap(adapter);
+  const app = bootstrap(adapter, { version: adapter.runtime.version() });
   app.start();
   globalThis.__captureApp = app;
 }
