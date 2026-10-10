@@ -17,13 +17,13 @@ the tenant file with the deployment key); no tool prints them.
 ```
 node tools/testbed/deploy.mjs [--commit <sha>] [--no-wait]
 node tools/testbed/deploy.mjs --uninstall
-powershell -File tools/testbed/invm.ps1 -Command '<script>'
-powershell -File tools/testbed/invm.ps1 -AsUser console|second -Command '<script>'
-powershell -File tools/testbed/invm.ps1 -Screenshot <out.png>
-powershell -File tools/testbed/invm.ps1 -CopyFrom <vm path> <pc path>
-powershell -File tools/testbed/invm.ps1 -CopyTo <pc path> <vm path>
-powershell -File tools/testbed/invm.ps1 -RestoreCheckpoint
-powershell -File tools/testbed/invm.ps1 -AgentState
+& .\tools\testbed\invm.ps1 -Command '<script>'
+& .\tools\testbed\invm.ps1 -AsUser console|second -Command '<script>'
+& .\tools\testbed\invm.ps1 -Screenshot <out.png>
+& .\tools\testbed\invm.ps1 -CopyFrom <vm path> <pc path>
+& .\tools\testbed\invm.ps1 -CopyTo <pc path> <vm path>
+& .\tools\testbed\invm.ps1 -RestoreCheckpoint
+& .\tools\testbed\invm.ps1 -AgentState
 ```
 
 `deploy.mjs` finds the push run of `deploy.yml` on `main` for the commit (default: `origin`'s
@@ -33,9 +33,12 @@ VM, restarts its Intune Management Extension, and waits (up to 60 minutes) until
 release and reports to pre-prod, printing the elapsed time. `--uninstall` assigns the app as
 uninstall and waits until the agent is gone.
 
-`invm.ps1` works through PowerShell Direct. `-AsUser` runs the script in that Entra user's own
-session (HKCU, the user's environment, processes that must be theirs); `-AgentState` prints the
-agent's health rows and counters, spool, delivery, policy bundle and last health acknowledgement.
+`invm.ps1` runs from an elevated Windows PowerShell prompt at the repository root, called as
+`& .\tools\testbed\invm.ps1`; `powershell -File` from a PowerShell prompt would split a quoted
+`-Command` argument at its spaces. It works through PowerShell Direct. `-AsUser` runs the script in
+that Entra user's own session (HKCU, the user's environment, processes that must be theirs);
+`-AgentState` prints the agent's health rows and counters, spool, delivery, policy bundle and last
+health acknowledgement.
 
 ## What it changes
 

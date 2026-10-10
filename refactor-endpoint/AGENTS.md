@@ -99,7 +99,8 @@ How a change reaches the VM in this phase:
 
 How each kind of check is done:
 
-- **Device side**, with `powershell -File tools/testbed/invm.ps1`:
+- **Device side**, with `& .\tools\testbed\invm.ps1`, in an elevated Windows PowerShell at the
+  repository root:
   - `-Command` runs as the VM administrator: services, files, HKLM, the machine trust store,
     `certutil`, the agent's log.
   - `-AsUser console` or `-AsUser second` runs in that Entra user's own session: HKCU, the user's
