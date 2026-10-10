@@ -74,15 +74,22 @@ func internal(cause error) *Error {
 	return &Error{Status: http.StatusInternalServerError, Detail: "the request could not be completed; nothing was changed", Cause: cause}
 }
 
-// Principal is an authenticated SCIM client: a tenant and the token it presented.
+// Principal is an authenticated SCIM client: a tenant and the token it presented, or, for the
+// product's own directory pull, the Actor it audits as.
 type Principal struct {
 	TenantID string
 	TokenID  string
+	Actor    string
 }
 
 // actorID is how ops.audit names the client: the token, not the identity provider's claim about
 // itself, so a revoked token's history is still traceable to the token.
-func (p Principal) actorID() string { return "scim:" + p.TokenID }
+func (p Principal) actorID() string {
+	if p.Actor != "" {
+		return p.Actor
+	}
+	return "scim:" + p.TokenID
+}
 
 // Service is the SCIM provider's logic, independent of HTTP.
 type Service struct {

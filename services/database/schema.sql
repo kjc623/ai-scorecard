@@ -270,6 +270,9 @@ CREATE TABLE ops.user_dim (
   -- person; it exists for subject export and erasure.
   directory_object_id_enc bytea,
   department              text,
+  -- The organisational unit the directory places the person in: the parent of their on-premises
+  -- distinguished name (`OU=Sales,DC=contoso,DC=com`). NULL for a cloud-only person.
+  org_unit                text,
   population              text,
   manager_ref             text,
   -- The directory's display name. Written only while the tenant's device_identity is 'clear'.
@@ -982,6 +985,78 @@ CREATE TABLE ops.scim_group_member (
 
 CREATE INDEX scim_group_member_by_user ON ops.scim_group_member (tenant_id, user_id);
 
+-- The tenant's pull of its directory from Microsoft Graph, through the vendor's Entra application.
+-- A row means the pull is on; it runs beside SCIM, which a customer's identity provider pushes, and
+-- both write people and groups through the same SCIM service. last_error is a closed code, never a
+-- Graph response body.
+CREATE TABLE ops.directory_sync (
+  tenant_id          uuid PRIMARY KEY REFERENCES ops.tenant(tenant_id),
+  enabled_by         text NOT NULL,
+  enabled_at         timestamptz NOT NULL DEFAULT now(),
+  last_started_at    timestamptz,
+  last_completed_at  timestamptz,
+  last_status        text CHECK (last_status IN ('ok','failed')),
+  last_error         text CONSTRAINT directory_sync_error_is_code CHECK (last_error ~ '^[a-z_]{1,64}$'),
+  users_synced       integer CHECK (users_synced >= 0),
+  groups_synced      integer CHECK (groups_synced >= 0),
+  CONSTRAINT directory_sync_failure_has_code CHECK ((last_status = 'failed') = (last_error IS NOT NULL))
+);
+
+-- A team usage is reported by. Its members are either chosen in the console (source 'console',
+-- ops.team_member) or follow the directory: a provisioned group's members, everyone in a
+-- department, or everyone in an organisational unit and the units below it.
+CREATE TABLE ops.team (
+  tenant_id    uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  team_id      uuid NOT NULL DEFAULT gen_random_uuid(),
+  name         text NOT NULL CONSTRAINT team_name_present CHECK (btrim(name) <> '' AND length(name) <= 120),
+  source       text NOT NULL CHECK (source IN ('console','group','department','org_unit')),
+  group_id     uuid,
+  -- The department name or the unit's distinguished name, compared case-insensitively.
+  match_value  text CONSTRAINT team_match_value_bounded CHECK (length(match_value) <= 1024),
+  created_by   text NOT NULL,
+  created_at   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, team_id),
+  -- A group the identity provider stops provisioning takes its team with it.
+  FOREIGN KEY (tenant_id, group_id) REFERENCES ops.scim_group(tenant_id, scim_id) ON DELETE CASCADE,
+  CONSTRAINT team_group_source CHECK ((source = 'group') = (group_id IS NOT NULL)),
+  CONSTRAINT team_match_source CHECK ((source IN ('department','org_unit')) = (match_value IS NOT NULL))
+);
+
+CREATE UNIQUE INDEX team_name_unique ON ops.team (tenant_id, lower(name));
+
+-- The members of a console team, by canonical ref.
+CREATE TABLE ops.team_member (
+  tenant_id  uuid NOT NULL,
+  team_id    uuid NOT NULL,
+  user_ref   text NOT NULL CONSTRAINT team_member_ref_is_derived CHECK (user_ref ~ '^u_[0-9a-f]{32}$'),
+  added_by   text NOT NULL,
+  added_at   timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, team_id, user_ref),
+  FOREIGN KEY (tenant_id, team_id) REFERENCES ops.team(tenant_id, team_id) ON DELETE CASCADE
+);
+
+-- Every team's members as of now, whatever the team's source. A person may be in several teams.
+CREATE VIEW ops.v_team_member
+WITH (security_invoker = true) AS
+SELECT t.tenant_id, t.team_id, m.user_ref
+  FROM ops.team t
+  JOIN ops.team_member m ON m.tenant_id = t.tenant_id AND m.team_id = t.team_id
+ WHERE t.source = 'console'
+UNION
+SELECT t.tenant_id, t.team_id, u.user_ref
+  FROM ops.team t
+  JOIN ops.scim_group_member gm ON gm.tenant_id = t.tenant_id AND gm.group_id = t.group_id
+  JOIN ops.scim_user u ON u.tenant_id = gm.tenant_id AND u.scim_id = gm.user_id
+ WHERE t.source = 'group' AND u.active
+UNION
+SELECT t.tenant_id, t.team_id, ud.user_ref
+  FROM ops.team t
+  JOIN ops.user_dim ud ON ud.tenant_id = t.tenant_id
+ WHERE (t.source = 'department' AND lower(ud.department) = lower(t.match_value))
+    OR (t.source = 'org_unit'
+        AND (lower(ud.org_unit) = lower(t.match_value)
+             OR right(lower(ud.org_unit), length(t.match_value) + 1) = ',' || lower(t.match_value)));
+
 -- Device-derived ref -> canonical ref. A device derives a person's ref from whatever it can resolve
 -- (a UPN, an Entra object id, an account name), so one person reaches the server under several refs.
 -- ingest.record_event resolves through this table, so stored events carry the canonical ref. Rows
@@ -1525,6 +1600,21 @@ CREATE TABLE mart.agg_org_period (
   PRIMARY KEY (tenant_id, bucket_start, bucket_size, department, tool_fingerprint, population)
 );
 
+-- Usage per team, by the team's members when the bucket was last recomputed. A person in several
+-- teams counts in each, so team rows do not add up to a fleet total.
+CREATE TABLE mart.agg_team_period (
+  tenant_id        uuid NOT NULL,
+  bucket_start     timestamptz NOT NULL,
+  bucket_size      text NOT NULL CHECK (bucket_size IN ('hour','day')),
+  team_id          uuid NOT NULL,
+  tool_fingerprint text NOT NULL,
+  submissions      bigint NOT NULL CHECK (submissions >= 0),
+  users            bigint NOT NULL CHECK (users >= 0),
+  PRIMARY KEY (tenant_id, bucket_start, bucket_size, team_id, tool_fingerprint)
+);
+
+CREATE INDEX agg_team_period_by_team ON mart.agg_team_period (tenant_id, team_id, bucket_start DESC);
+
 -- A per-person time series, so every read is subject-level and audited. It carries no score or
 -- ranking: the product does not do productivity analytics.
 CREATE TABLE mart.agg_user_period (
@@ -1698,6 +1788,36 @@ SELECT t.tenant_id,
        (SELECT max(d.last_seen_at) FROM ops.device d
          WHERE d.tenant_id = t.tenant_id)                                 AS last_device_seen_at
   FROM ops.tenant t;
+
+
+-- The people an analyst can open: everyone the directory knows and everyone with usage, by name.
+-- The name is the directory's display name, else the account name the person's device last
+-- reported, else the pseudonymous ref. It carries no measure, so it cannot rank anyone.
+CREATE VIEW mart.v_person
+WITH (security_invoker = true) AS
+SELECT coalesce(ud.tenant_id, a.tenant_id) AS tenant_id,
+       coalesce(ud.user_ref, a.user_ref)   AS user_ref,
+       ud.display_name                     AS directory_name,
+       dn.subject_name,
+       coalesce(ud.display_name, dn.subject_name, ud.user_ref, a.user_ref) AS name,
+       ud.department,
+       ud.org_unit,
+       ud.status                           AS directory_status,
+       a.last_active_day
+  FROM ops.user_dim ud
+  FULL JOIN (SELECT u.tenant_id, u.user_ref, max(u.bucket_start) AS last_active_day
+               FROM mart.agg_user_period u
+              WHERE u.bucket_size = 'day'
+              GROUP BY u.tenant_id, u.user_ref) a
+    ON a.tenant_id = ud.tenant_id AND a.user_ref = ud.user_ref
+  LEFT JOIN LATERAL (
+    SELECT d.last_subject_name AS subject_name
+      FROM ops.device d
+     WHERE d.tenant_id = coalesce(ud.tenant_id, a.tenant_id)
+       AND d.last_user_ref = coalesce(ud.user_ref, a.user_ref)
+       AND d.last_subject_name IS NOT NULL
+     ORDER BY d.last_seen_at DESC NULLS LAST
+     LIMIT 1) dn ON true;
 
 
 -- =====================================================================================
@@ -2225,12 +2345,13 @@ DECLARE
     'ops.identity_connection', 'ops.tenant_email_domain', 'ops.onboarding_invite',
     'ops.role_grant', 'ops.auth_session', 'ops.scim_token', 'ops.scim_user', 'ops.scim_group',
     'ops.scim_group_member', 'ops.user_ref_alias', 'ops.deployment_key',
+    'ops.directory_sync', 'ops.team', 'ops.team_member',
     -- ingest
     'ingest.observation', 'ingest.submission', 'ingest.rejected', 'ingest.search_text',
     -- mart
     'mart.finding', 'mart.agg_tool_period', 'mart.agg_tool_user_period',
     'mart.agg_class_period', 'mart.agg_org_period', 'mart.agg_user_period',
-    'mart.agg_device_period'
+    'mart.agg_device_period', 'mart.agg_team_period'
   ];
 BEGIN
   FOREACH t IN ARRAY tenant_tables LOOP
@@ -2343,6 +2464,11 @@ GRANT SELECT, INSERT, UPDATE ON ops.identity_connection, ops.tenant_email_domain
 GRANT DELETE ON ops.tenant_email_domain, ops.role_grant, ops.auth_session, ops.auth_signin,
       ops.scim_user, ops.scim_group, ops.scim_group_member
   TO sac_control;
+-- The directory pull is switched on (inserted), records each run (updated) and is switched off
+-- (deleted). Teams are created, renamed and deleted in the console, and so are a console team's
+-- members.
+GRANT SELECT, INSERT, UPDATE, DELETE ON ops.directory_sync, ops.team, ops.team_member TO sac_control;
+GRANT SELECT ON ops.v_team_member TO sac_control;
 
 -- sac_resolver reads only what the cross-tenant lookups answer from.
 GRANT SELECT ON ops.identity_connection, ops.tenant_email_domain, ops.onboarding_invite,
@@ -2362,7 +2488,8 @@ GRANT EXECUTE ON FUNCTION ops.identity_connection_for_entra(text), ops.identity_
       ops.onboarding_invite_by_hash(text), ops.auth_session_by_hash(bytea),
       ops.tenant_for_scim_token(text)
   TO sac_control;
-GRANT EXECUTE ON FUNCTION ops.tenant_ids() TO sac_ops;
+-- control-api's directory pull visits every tenant, as the jobs do.
+GRANT EXECUTE ON FUNCTION ops.tenant_ids() TO sac_ops, sac_control;
 
 -- Hand the lookups to sac_resolver. Changing a function's owner requires the applying role to be
 -- able to SET ROLE to the new owner and the new owner to have CREATE on the schema; both are held
@@ -2410,8 +2537,13 @@ GRANT INSERT ON ops.audit TO sac_vault;
 GRANT SELECT ON ingest.submission, ingest.observation TO sac_query;
 GRANT SELECT ON mart.finding, mart.agg_tool_period, mart.agg_tool_user_period,
       mart.agg_class_period, mart.agg_org_period, mart.agg_user_period, mart.agg_device_period,
-      mart.v_device_liveness, mart.v_tool_usage, mart.v_finding,
-      mart.v_tenant_suspension_impact TO sac_query;
+      mart.agg_team_period, mart.v_device_liveness, mart.v_tool_usage, mart.v_finding,
+      mart.v_tenant_suspension_impact, mart.v_person TO sac_query;
+-- Team names and members, for the Teams page. Membership of a group-sourced team is read through
+-- the provisioned person's canonical ref and status, never their sealed resource.
+GRANT SELECT ON ops.team, ops.team_member, ops.v_team_member, ops.scim_group,
+      ops.scim_group_member TO sac_query;
+GRANT SELECT (tenant_id, scim_id, user_ref, active) ON ops.scim_user TO sac_query;
 GRANT SELECT ON ops.tenant, ops.user_dim, ops.device, ops.collector_state, ops.tool_sanction,
       ops.grant, ops.erasure_receipt, ops.coverage_snapshot, ops.aggregate_watermark,
       ops.retention_policy, ops.notice_acknowledgement, ops.policy_bundle,
@@ -2432,7 +2564,10 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ingest.observation, ingest.submission TO
 GRANT SELECT, INSERT, UPDATE, DELETE ON ingest.rejected TO sac_ops;
 GRANT SELECT, INSERT, UPDATE, DELETE ON mart.finding, mart.agg_tool_period,
       mart.agg_tool_user_period, mart.agg_class_period, mart.agg_org_period,
-      mart.agg_user_period, mart.agg_device_period TO sac_ops;
+      mart.agg_user_period, mart.agg_device_period, mart.agg_team_period TO sac_ops;
+-- The team rollup reads each team's members as of the pass.
+GRANT SELECT ON ops.team, ops.team_member, ops.v_team_member, ops.scim_group_member TO sac_ops;
+GRANT SELECT (tenant_id, scim_id, user_ref, active) ON ops.scim_user TO sac_ops;
 -- Expiry deletes content and its index entries without being able to read either, and marks the
 -- content's submission shredded.
 GRANT SELECT (tenant_id, object_id, submission_id, event_id, expires_at), DELETE ON ops.content TO sac_ops;

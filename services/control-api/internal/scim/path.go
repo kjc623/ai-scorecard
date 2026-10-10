@@ -9,9 +9,12 @@ import (
 
 // The schema URNs this provider speaks.
 const (
-	SchemaUser                  = "urn:ietf:params:scim:schemas:core:2.0:User"
-	SchemaGroup                 = "urn:ietf:params:scim:schemas:core:2.0:Group"
-	SchemaEnterpriseUser        = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"
+	SchemaUser           = "urn:ietf:params:scim:schemas:core:2.0:User"
+	SchemaGroup          = "urn:ietf:params:scim:schemas:core:2.0:Group"
+	SchemaEnterpriseUser = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User"
+	// SchemaDirectoryUser is the product's own user extension: where the person sits in the
+	// directory, for teams that follow an organisational unit.
+	SchemaDirectoryUser         = "urn:ietf:params:scim:schemas:extension:sundial:2.0:User"
 	SchemaListResponse          = "urn:ietf:params:scim:api:messages:2.0:ListResponse"
 	SchemaPatchOp               = "urn:ietf:params:scim:api:messages:2.0:PatchOp"
 	SchemaError                 = "urn:ietf:params:scim:api:messages:2.0:Error"
@@ -23,7 +26,7 @@ const (
 // knownSchemas are matched as whole prefixes before the generic rule, so that both of Entra's
 // spellings of an extension attribute, `…:2.0:User:department` and the older `…:2.0:User.department`,
 // resolve to the same place.
-var knownSchemas = []string{SchemaEnterpriseUser, SchemaUser, SchemaGroup}
+var knownSchemas = []string{SchemaEnterpriseUser, SchemaDirectoryUser, SchemaUser, SchemaGroup}
 
 var errBadPath = errors.New("scim: malformed attribute path")
 

@@ -19,7 +19,10 @@ import (
 // server's own id and meta, the read-only group list, and a password, which is never stored.
 var userPatcher = patcher{ignore: map[string]bool{"id": true, "meta": true, "schemas": true, "password": true, "groups": true}}
 
-const departmentPath = SchemaEnterpriseUser + ":department"
+const (
+	departmentPath = SchemaEnterpriseUser + ":department"
+	orgUnitPath    = SchemaDirectoryUser + ":orgUnit"
+)
 
 // normalizeUser turns a provider's body into the resource that is sealed and served back.
 func normalizeUser(body map[string]any) (map[string]any, *Error) {
@@ -54,8 +57,10 @@ func normalizeUser(body map[string]any) (map[string]any, *Error) {
 		}
 	}
 	addSchema(res, SchemaUser)
-	if _, ok := getKey(res, SchemaEnterpriseUser); ok {
-		addSchema(res, SchemaEnterpriseUser)
+	for _, ext := range []string{SchemaEnterpriseUser, SchemaDirectoryUser} {
+		if _, ok := getKey(res, ext); ok {
+			addSchema(res, ext)
+		}
 	}
 	return res, nil
 }
@@ -67,6 +72,7 @@ type userFacts struct {
 	active      bool
 	displayName string
 	department  string
+	orgUnit     string
 }
 
 func (s *Service) facts(res map[string]any) userFacts {
@@ -75,6 +81,7 @@ func (s *Service) facts(res map[string]any) userFacts {
 		externalID: firstString(res, "externalId"),
 		active:     true,
 		department: firstString(res, departmentPath),
+		orgUnit:    firstString(res, orgUnitPath),
 	}
 	if v, ok := getKey(res, "active"); ok {
 		if b, ok := boolValue(v); ok {
@@ -165,6 +172,7 @@ func (s *Service) writeIdentity(tx Tx, tenantID, identity string, key []byte, ro
 		UserRef:              row.UserRef,
 		DirectoryObjectIDEnc: sealed,
 		Department:           nullable(f.department),
+		OrgUnit:              nullable(f.orgUnit),
 		Status:               DimInactive,
 		SyncedAt:             at,
 	}

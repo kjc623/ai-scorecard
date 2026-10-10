@@ -375,12 +375,15 @@ func TestDiscoveryDocuments(t *testing.T) {
 	if spc["patch"].(map[string]any)["supported"] != true || spc["bulk"].(map[string]any)["supported"] != false {
 		t.Fatalf("ServiceProviderConfig = %v", spc)
 	}
-	if l := h.mustDo(200, "GET", "/scim/v2/Schemas", tok, nil); total(l) != 3 {
+	if l := h.mustDo(200, "GET", "/scim/v2/Schemas", tok, nil); total(l) != 4 {
 		t.Fatalf("Schemas = %v", l)
 	}
 	ent := h.mustDo(200, "GET", "/scim/v2/Schemas/"+SchemaEnterpriseUser, tok, nil)
 	if str(ent["id"]) != SchemaEnterpriseUser {
 		t.Fatalf("enterprise schema = %v", ent)
+	}
+	if dir := h.mustDo(200, "GET", "/scim/v2/Schemas/"+SchemaDirectoryUser, tok, nil); str(dir["id"]) != SchemaDirectoryUser {
+		t.Fatalf("directory schema = %v", dir)
 	}
 	if l := h.mustDo(200, "GET", "/scim/v2/ResourceTypes", tok, nil); total(l) != 2 {
 		t.Fatalf("ResourceTypes = %v", l)
