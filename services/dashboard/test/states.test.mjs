@@ -1,31 +1,29 @@
-// states.test.mjs — the consumer side of the contract reader pinned.
+// states.test.mjs — the consumer side of the contract the read path pins.
 //
-// The single most important behaviour in this package: a suppressed small cell and a genuine zero
-// must never be collapsed into one another. `reader` pinned the producer side (a suppressed cell
-// carries no measure key); this file pins the consumer side, which is where the merge would happen
-// if a renderer ever wrote `value ?? 0`.
+// The single most important behaviour in this package: a measure the response does not carry and
+// a genuine zero must never be collapsed into one another. This file pins the consumer side, which
+// is where the merge would happen if a renderer ever wrote `value ?? 0`.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  measureOf, isSuppressed, assertStateful, readState, bannersFor,
+  measureOf, assertStateful, readState, bannersFor,
   coverageText, freshnessText, emptyStateFor, vocabOf,
 } from '../src/states.js';
 import { sumMeasure } from '../src/views.js';
 import { COMPLETE, FRESH, PARTIAL, envelope } from './helpers.mjs';
 import { STATE_ENVELOPES } from './fixtures.mjs';
 
-const SUPPRESSED = Object.freeze({ bucket: '2026-09-30T00:00:00Z', tool: 'shadow_llm_gateway', result_state: 'suppressed', reason: 'fewer_than_k_subjects', k: 5 });
+const SMALL = Object.freeze({ bucket: '2026-09-30T00:00:00Z', tool: 'shadow_llm_gateway', submissions: 3, users: 2 });
 const ZERO = Object.freeze({ bucket: '2026-09-30T00:00:00Z', tool: 'legacy_summariser', submissions: 0, users: 0 });
 const VALUE = Object.freeze({ bucket: '2026-09-30T00:00:00Z', tool: 'tls_b6681b043244c43f', submissions: 812, users: 214 });
 const ABSENT = Object.freeze({ bucket: '2026-09-30T00:00:00Z', tool: 'tls_f412811be7ac6539' });
 
-test('a suppressed cell yields suppressed, never a number', () => {
-  const value = measureOf(SUPPRESSED, 'submissions');
-  assert.equal(value.kind, 'suppressed');
-  assert.equal(value.k, 5);
-  assert.equal(value.reason, 'fewer_than_k_subjects');
-  assert.equal(value.value, undefined);
+test('a small cell yields its number like any other cell', () => {
+  const value = measureOf(SMALL, 'submissions');
+  assert.equal(value.kind, 'number');
+  assert.equal(value.value, 3);
+  assert.equal(measureOf(SMALL, 'users').value, 2);
 });
 
 test('a genuine zero yields the number 0', () => {
@@ -34,39 +32,30 @@ test('a genuine zero yields the number 0', () => {
   assert.equal(value.value, 0);
 });
 
-test('suppression wins even if a measure key is present on the row', () => {
-  // A producer bug must not become a leak: the marker is authoritative, not the stray key.
-  const contradictory = { result_state: 'suppressed', k: 5, submissions: 900 };
-  assert.equal(measureOf(contradictory, 'submissions').kind, 'suppressed');
-});
-
 test('an absent measure is absent, not zero', () => {
   assert.equal(measureOf(ABSENT, 'submissions').kind, 'absent');
   assert.equal(measureOf(null, 'submissions').kind, 'absent');
   assert.equal(measureOf({ submissions: null }, 'submissions').kind, 'absent');
 });
 
-test('the suppressed marker and the zero are distinguishable by every predicate', () => {
-  assert.equal(isSuppressed(SUPPRESSED), true);
-  assert.equal(isSuppressed(ZERO), false);
-  assert.notEqual(measureOf(SUPPRESSED, 'submissions').kind, measureOf(ZERO, 'submissions').kind);
+test('the absent measure and the zero are distinguishable', () => {
+  assert.notEqual(measureOf(ABSENT, 'submissions').kind, measureOf(ZERO, 'submissions').kind);
 });
 
-test('a total over a set containing a suppressed cell is a floor, not a total', () => {
-  const state = readState(envelope('ok', { data: [VALUE, SUPPRESSED], freshness: FRESH, coverage: COMPLETE, suppression: { k: 5, suppressed_cells: 1 } }));
+test('a total over a set containing a small cell counts it in full', () => {
+  const state = readState(envelope('ok', { data: [VALUE, SMALL], freshness: FRESH, coverage: COMPLETE }));
   const total = sumMeasure(state, 'submissions');
-  assert.equal(total.kind, 'floor');
-  assert.equal(total.value, 812);
-  assert.equal(total.suppressedCells, 1);
+  assert.equal(total.kind, 'number');
+  assert.equal(total.value, 815);
 });
 
-test('a total where every cell is suppressed is suppressed, not zero', () => {
-  const state = readState(envelope('ok', { data: [SUPPRESSED, { ...SUPPRESSED, tool: 'b' }], freshness: FRESH, coverage: COMPLETE, suppression: { k: 5, suppressed_cells: 2 } }));
-  assert.equal(sumMeasure(state, 'submissions').kind, 'suppressed');
+test('a total over cells that do not carry the measure is absent, not zero', () => {
+  const state = readState(envelope('ok', { data: [ABSENT, { ...ABSENT, tool: 'b' }], freshness: FRESH, coverage: COMPLETE }));
+  assert.equal(sumMeasure(state, 'submissions').kind, 'absent');
 });
 
 test('a total of genuine zeroes is the number zero', () => {
-  const state = readState(envelope('ok', { data: [ZERO, { ...ZERO, tool: 'b' }], freshness: FRESH, coverage: COMPLETE, suppression: { k: 5, suppressed_cells: 0 } }));
+  const state = readState(envelope('ok', { data: [ZERO, { ...ZERO, tool: 'b' }], freshness: FRESH, coverage: COMPLETE }));
   const total = sumMeasure(state, 'submissions');
   assert.equal(total.kind, 'number');
   assert.equal(total.value, 0);

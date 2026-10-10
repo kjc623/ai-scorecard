@@ -39,7 +39,7 @@ test('the unsanctioned table is ordered by tool and person, never by volume', as
   const { view } = await dashboard.load('tools', { filters: { view: 'unsanctioned' } });
   const table = view.tables[0];
   const subjects = table.rows.map((r) => r.row.subject).filter(Boolean);
-  assert.deepEqual(subjects, ['u_9a02', 'u_4f21'], 'rows keep the API order rather than a volume ranking');
+  assert.deepEqual(subjects, ['u_9a02', 'u_4f21', 'u_1b77'], 'rows keep the API order rather than a volume ranking');
   const volumes = table.rows.filter((r) => typeof r.row.submissions === 'number').map((r) => r.row.submissions);
   assert.ok(volumes[0] > volumes[1], 'the fixture is ordered against volume on purpose, so a volume sort would be visible');
   assert.ok(view.notes.some((n) => /not a ranking/.test(n)));
@@ -123,42 +123,35 @@ test('a data-bearing envelope without a state block is refused rather than rende
   assert.throws(() => readState(envelope('ok', { data: [{ submissions: 5 }] })), /refusing to render/);
 });
 
-// ── no suppressed cell shown as zero, no zero shown as suppressed ────────────────────────────
+// ── no absent value shown as zero, no zero shown as absent ───────────────────────────────────
 
-test('the renderer cannot merge a suppressed cell with a zero', () => {
-  const suppressed = renderValue({ kind: 'suppressed', k: 5 });
+test('the renderer cannot merge an absent value with a zero', () => {
+  const absent = renderValue({ kind: 'absent' });
   const zero = renderValue({ kind: 'number', value: 0, text: '0' });
-  assert.match(suppressed, /v-suppressed/);
-  assert.ok(!/>\s*0\s*</.test(suppressed), 'a suppressed marker contains no zero');
+  assert.match(absent, /v-absent/);
+  assert.ok(!/>\s*0\s*</.test(absent), 'an absent marker contains no zero');
   assert.match(zero, /v-number">0</);
-  assert.ok(!/suppressed/.test(zero), 'a zero is not rendered as suppressed');
-  assert.notEqual(suppressed.replace(/k=5/, ''), zero);
+  assert.ok(!/v-absent/.test(zero), 'a zero is not rendered as absent');
 });
 
-test('the same distinction survives a whole table', () => {
+test('the same distinction survives a whole table, and a small count is a number', () => {
   const state = readState(envelope('ok', {
     data: [
       { tool: 'a', submissions: 0, users: 0 },
-      { tool: 'b', result_state: 'suppressed', reason: 'fewer_than_k_subjects', k: 5 },
+      { tool: 'b', submissions: 2, users: 1 },
+      { tool: 'c' },
     ],
-    freshness: FRESH, coverage: COMPLETE, suppression: { k: 5, suppressed_cells: 1 },
+    freshness: FRESH, coverage: COMPLETE,
   }));
   const html = renderTable({
     title: 't',
     columns: [{ key: 'tool', label: 'Tool' }, { key: 'submissions', label: 'Submissions', kind: 'measure' }],
-    rows: state.data.map((row) => ({ row, vocab: {}, suppressed: row.result_state === 'suppressed' })),
+    rows: state.data.map((row) => ({ row, vocab: {} })),
     emptyText: 'none',
-    suppressedCells: 1,
   });
   assert.match(html, /<span class="v-number">0<\/span>/);
-  assert.match(html, /v-suppressed/);
-  assert.match(html, /row-suppressed/);
-});
-
-test('a floor is labelled as a floor', () => {
-  const html = renderValue({ kind: 'floor', value: 812, text: '812', suppressedCells: 1 });
-  assert.match(html, /≥ 812/);
-  assert.match(html, /v-floor/);
+  assert.match(html, /<span class="v-number">2<\/span>/, 'a small count renders its number');
+  assert.match(html, /v-absent/);
 });
 
 // ── no merging of the state pairs ────────────────────────────────────────────────────────────
@@ -207,9 +200,8 @@ test('both clocks are rendered, and the device clock is marked as possibly skewe
   const html = renderTable({
     title: 'Events',
     columns: [{ key: 'received_at', label: 'Received (server)', kind: 'instant' }, { key: 'first_occurred_at', label: 'Occurred (device)', kind: 'device-clock' }],
-    rows: ACTIVITY_ROWS.map((row) => ({ row, vocab: {}, suppressed: false })),
+    rows: ACTIVITY_ROWS.map((row) => ({ row, vocab: {} })),
     emptyText: 'none',
-    suppressedCells: 0,
   });
   assert.ok(/Received \(server\)/.test(html));
   assert.ok(/Occurred \(device\)/.test(html));

@@ -119,7 +119,6 @@ content is a per-tenant setting
 
 These hold everywhere, and tests enforce them:
 
-- A per-person figure covering fewer than five people is suppressed, never shown or exported.
 - Nothing ranks people by volume: no leaderboard, no list of people sorted by usage.
 - The dashboard never shows a fleet percentage; counts are shown with their denominator.
 - A read that resolves to a person writes its audit entry in the same transaction that serves it.

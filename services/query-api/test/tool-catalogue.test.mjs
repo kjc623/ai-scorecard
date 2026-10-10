@@ -4,8 +4,7 @@
 //
 //   1. every source that can show a tool resolves the fingerprint to a name at read time, and keeps
 //      the raw fingerprint beside it, so an unknown tool is never mistaken for a known one;
-//   2. Q2's suppression cell is the (bucket, tool) group, not the person, so a tool used by fewer
-//      than k people is suppressed while a tool with enough people can name them.
+//   2. Q2 joins the present-tense sanction state through the catalogue and filters on it.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -72,7 +71,7 @@ test('the event list returns the name beside the fingerprint', () => {
   assert.match(text, /ops\.tool_display_name\(s\.tool_fingerprint\) AS "tool_name"/);
 });
 
-// ── Q2: the sanctioned join and the tool-level suppression cell ────────────────────────────────
+// ── Q2: the sanctioned join ──────────────────────────────────────────────────────────────────
 
 test('Q2 joins the present-tense sanction state and filters to it', () => {
   const document = expandTemplate({ template: 'q2_unsanctioned_users', params: { window: WINDOW, limit: 100 } }).document;
@@ -81,28 +80,9 @@ test('Q2 joins the present-tense sanction state and filters to it', () => {
   assert.equal(SOURCES['mart.agg_tool_user_period'].dimensions.sanctioned_state.sql, 'ot.sanctioned_state');
 });
 
-test('Q2 compiles to the tool-cell suppression count and the sanction join through the catalogue', () => {
+test('Q2 compiles to the sanction join through the catalogue', () => {
   const text = readText({ query_version: '1', template: 'q2_unsanctioned_users', params: { window: WINDOW, limit: 100 } });
   assert.match(text, /LEFT JOIN ref\.tool_catalogue tc ON tc\.tool_fingerprint = a\.tool_fingerprint LEFT JOIN ops\.tool_sanction ot ON ot\.tenant_id = a\.tenant_id AND ot\.tool_key = tc\.app_key/);
   assert.match(text, /ot\.sanctioned_state = \$\d+::text/);
-  assert.match(text, /count\(\*\) OVER \(PARTITION BY a\.bucket_start, a\.tool_fingerprint\)::bigint AS __k_subjects/);
-  assert.ok(!text.includes('count(DISTINCT'), 'the tool-cell count must not fall back to the per-row distinct count');
-});
-
-test('the tool-cell count falls back to the exact distinct count when subject is not grouped', () => {
-  // A query that groups only by tool cannot count grouped rows as subjects: the fallback keeps the
-  // number exact rather than pinning every cell at one.
-  const text = compiledText({
-    query_version: '1',
-    source: 'mart.agg_tool_user_period',
-    bucket: 'day',
-    dimensions: ['tool'],
-    measures: ['submissions', 'bytes_total'],
-    filters: [],
-    window: WINDOW,
-    limit: 20,
-  });
-  assert.match(text, /count\(DISTINCT a\.user_ref\)::bigint AS __k_subjects/);
-  assert.ok(!text.includes('OVER (PARTITION BY'));
 });
 

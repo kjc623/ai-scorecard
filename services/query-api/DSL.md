@@ -183,7 +183,7 @@ The window column is filterable under its own name (`received_at`, `detected_at`
 
 `users` is `exact` only when the cell is a single aggregate row (the grouping includes the source's
 full grain and the bucket is native); otherwise it is `distinct_lower_bound` and is served as
-`max(...)`, which **never overstates**. The same value is the k input of section 6.
+`max(...)`, which **never overstates**.
 
 `max_score` is a `MAX`, not a sum. `submissions` on `mart.agg_class_period` counts submissions
 *carrying that class*: one submission with three labels appears in three rows. The Q4 template
@@ -202,7 +202,7 @@ Every template declares exactly these parameters; anything else is an error.
 | `q3_team_growth` | `mart.agg_org_period` | `window`, `bucket`, `limit`, `department`, `population` | carries the `unmapped` residual in `meta.extras.org_coverage`; `not_yet_covered` before the directory sync |
 | `q4_class_mix` | `mart.agg_class_period` | `window`, `bucket`, `limit`, `dimensions`, `class`, `severity` | `dimensions` ⊆ `{class, tool, severity, classifier_version}`, ≤ 3; default `[class, severity]` |
 | `q5_findings` | `mart.v_finding` | `window`, `limit`, `cursor`, `severity`, `rule`, `review_state`, `subject`, `tool`, `class` | review state `open` means nobody has looked |
-| `q6_subject_series` | `mart.agg_user_period` | `subject` (**required**), `window`, `bucket`, `limit` | k-suppression exempt; carries `meta.extras.flush_check` |
+| `q6_subject_series` | `mart.agg_user_period` | `subject` (**required**), `window`, `bucket`, `limit` | carries `meta.extras.flush_check` |
 | `q7_devices` | `mart.v_device_liveness` | `limit`, `cursor`, `liveness`, `collector_state`, `collector`, `device_os`, `managed_state`, `region` | **no window**; four liveness values stay distinct; the row grain and cursor are `(device, collector)`; fleet-wide counts in `meta.extras.device_status` |
 | `q8_activity` | `ingest.submission` | `window`, `limit`, `cursor`, `subject`, `tool`, `device`, `class`, `content_state`, `action`, `mode`, `department`, `prompt_kind`, `prompt_kind_not` | window ≤ 31 days; both clocks returned; `prompt_kind` includes only that kind and `prompt_kind_not` excludes it |
 | `q9_event_detail` | `ingest.submission` | `submission_id` (**required**), `received_at_hint` | single record; `data` is one row per observation, each carrying the submission's columns |
@@ -226,7 +226,6 @@ Every template declares exactly these parameters; anything else is an error.
   "coverage": { "window": { "from": "2026-09-03T00:00:00.000Z", "to": "2026-10-02T00:00:00.000Z" },
                 "devices_reporting": 4180,
                 "devices_enrolled": 4620, "gap_reasons": {"not_enrolled": 440}, "state": "partial" },
-  "suppression": { "k": 5, "suppressed_cells": 2, "subject_count_basis": "lower_bound" },
   "audit": { "entry_id": "8123", "written_at": "2026-10-02T11:05:01Z" },
   "meta": { "…": "see below" } }
 ```
@@ -237,24 +236,17 @@ Three properties are enforced in code, not by convention:
    builder refuses to construct one without them. `page` is present on a list read. `audit` is
    present exactly when an audit row was written; `audit.entry_id` makes a screenshot traceable.
 2. **`result_state` is a first-class answer, not an error channel** (section 5).
-3. **`data` never contains a bare number for a suppressed cell, and never a hidden column.**
-   Internal columns (`__k_subjects`, `__ord_*`, `__recomputed_hash`) never reach the wire.
+3. **`data` never contains a hidden column.** Internal columns (`__ord_*`, `__recomputed_hash`)
+   never reach the wire.
 
 `meta` carries, at least: `source`, `kind`, `applied_bucket`, `native_bucket_size`, `reduced_from`,
 `dimensions`, `measures`, `measure_semantics`, `order`, `limit`, `probe_row`, `truncated` (an
-aggregate with a `limit`), `rollup`, `has_cursor`, `k`, `subject_count_basis`, `query_class`,
+aggregate with a `limit`), `rollup`, `has_cursor`, `query_class`,
 `statement_timeout_ms`, `required_indexes`, `warnings`, `joins_used`, `dsl_hash`,
 `snapshot_upper_bound`, `coarsened`, `guard{estimated_cells,bounded_cells,limited,estimated_bytes}`,
 `notes`, and `extras` when the template produced a side read. New keys may appear in `meta`,
-`freshness`, `coverage` and `suppression` within `query_version: "1"`; `data`, `page`,
-`result_state` and the error codes are the stable surface.
-
-A suppressed cell looks like this and carries **no measure at all** — not `0`, not `null`:
-
-```json
-{ "bucket": "2026-10-01T00:00:00Z", "department": "Legal",
-  "result_state": "suppressed", "reason": "fewer_than_k_subjects", "k": 5 }
-```
+`freshness` and `coverage` within `query_version: "1"`; `data`, `page`, `result_state` and the
+error codes are the stable surface.
 
 ---
 
@@ -270,7 +262,6 @@ not a number", and the client must render the difference.
 | `not_yet_covered` | 200 | window predates collection, or the dimension has no source | hatched, with `freshness.reason` / `coverage.reason` |
 | `stale_aggregate` | 200 | watermark older than 3× the cadence (15 min) | data **with** its age |
 | `coverage_degraded` | 200 | the value is a floor, not a total | data with the gap share |
-| `suppressed` | 200 | every cell in the response was suppressed | hatched cells |
 | `no_longer_available` | **410** | the record existed and was destroyed | with the reason and the erasure receipt |
 | `not_found` | 404 | no such record, and no erasure receipt covers its window | "No such record"; `detail.purge_window_unknown` when no `received_at_hint` was given, `detail.retention_evidence: "no_ledger_in_schema"` because retention expiry leaves no per-row receipt |
 | `unsupported_query_shape` | 400 | filter combination not servable | the fix, named |
@@ -296,24 +287,7 @@ A rejection never carries `data`, `freshness` or `coverage` — there is no numb
 
 ---
 
-## 6. Suppression (k = 5)
-
-* k applies to **distinct subjects per cell**, not to rows: 900 submissions from 2 people is
-  suppressed.
-* A suppressed cell suppresses **every measure in it**.
-* **A genuine zero is not suppressed.** `0` means "we looked and there was none"; `suppressed`
-  means "there was something and we are not telling you the number". They are never merged.
-* **Complementary suppression.** With `rollup: true`, if exactly one cell in the response is
-  suppressed the published total is suppressed too (`reason: "complementary_suppression"`),
-  because otherwise total − published cells recovers the hidden value.
-* Does **not** apply to explicitly subject-scoped reads (`q6`, a subject-filtered list).
-* `meta.subject_count_basis` is `exact` or `lower_bound`; a `lower_bound` can only over-suppress.
-* The audit decision is made **before** suppression: a query answered with `suppressed` still writes
-  an audit entry.
-
----
-
-## 7. Cursor pagination
+## 6. Cursor pagination
 
 * Only list reads are paged. An aggregate takes no `cursor`; its response is bounded by `limit`.
 * **Only `page.next_cursor: null` ends an iteration.** A short page is not the end: rows deleted
@@ -331,7 +305,7 @@ A rejection never carries `data`, `freshness` or `coverage` — there is no numb
 
 ---
 
-## 8. Cost guard and audit
+## 7. Cost guard and audit
 
 ### 8.1 What is refused, before anything runs
 
@@ -358,11 +332,8 @@ Audited **before** the rows are served: any query that filters on `subject`; any
 a subject reference; a single-record detail; any read of `ops.audit` (one row per query, not
 re-audited).
 
-Audited **after** the read and before anything is served: an aggregate whose cells resolve to fewer
-than k distinct subjects — the same value section 6 computes for suppression decides it.
-
-Not audited: tool-, class- and team-level aggregates whose cells are k or wider; coverage state;
-a device's collector rows (`ops.collector_state`, which names no person); reference data.
+Not audited: tool-, class- and team-level aggregates; coverage state; a device's collector rows
+(`ops.collector_state`, which names no person); reference data.
 
 Fail closed: if the audit row cannot be committed the transaction is rolled back, the response is
 `503 audit_unavailable`, and **zero rows** are served. Nothing is streamed; a response is

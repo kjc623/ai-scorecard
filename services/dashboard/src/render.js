@@ -4,8 +4,8 @@
 // rule titles, user references and case references, all of which are attacker-influenced text as
 // far as the browser is concerned, and none of which is allowed to become markup.
 //
-// The one visual rule that matters more than the rest: a suppressed value renders as a hatched
-// marker carrying k, and a genuine zero renders as `0`. They are different CSS classes fed by
+// The one visual rule that matters more than the rest: a value the response does not carry renders
+// as an absent marker, and a genuine zero renders as `0`. They are different CSS classes fed by
 // different value kinds, so a stylesheet change cannot merge them by accident either.
 
 import { formatBytes, formatCount, formatInstant, formatScore } from './format.js';
@@ -20,18 +20,14 @@ export function escapeHtml(value) {
 }
 
 /**
- * Render one value that already has a kind. There is no branch here that turns `suppressed` into a
- * number, and none that turns a number into a suppression.
+ * Render one value that already has a kind. There is no branch here that turns `absent` into a
+ * number, and none that turns a number into an absence.
  */
 export function renderValue(value) {
   if (!value || typeof value !== 'object') return '<span class="v-absent">—</span>';
   switch (value.kind) {
     case 'number':
       return `<span class="v-number">${escapeHtml(value.text ?? formatCount(value.value))}</span>`;
-    case 'floor':
-      return `<span class="v-floor" title="A floor: ${escapeHtml(String(value.suppressedCells ?? 0))} cell(s) suppressed">≥ ${escapeHtml(String(value.text ?? formatCount(value.value)).replace(/^≥\s*/, ''))}</span>`;
-    case 'suppressed':
-      return `<span class="v-suppressed" title="Fewer than k = ${escapeHtml(String(value.k ?? 5))} distinct subjects">suppressed<span class="v-k">k=${escapeHtml(String(value.k ?? 5))}</span></span>`;
     case 'vocab':
       return `<span class="v-vocab v-vocab-${escapeHtml(String(value.text).replace(/[^a-z_]/gi, ''))}">${escapeHtml(value.text)}</span>`;
     case 'absent':
@@ -42,10 +38,7 @@ export function renderValue(value) {
 
 const MEASURE_KINDS = Object.freeze(['measure', 'measure-bytes', 'measure-score', 'count']);
 
-/**
- * A data bar behind a number: the same value, drawn. It is scaled to the largest publishable
- * value in its column, so a suppressed cell has no length to read off.
- */
+/** A data bar behind a number: the same value, drawn, scaled to the largest value in its column. */
 function dataBar(raw, max) {
   if (!(max > 0) || !(Number(raw) > 0)) return '';
   return `<span class="cell-bar" style="--w:${Math.max(2, Math.round((Number(raw) / max) * 100))}" aria-hidden="true"></span>`;
@@ -55,7 +48,6 @@ function renderCell(row, column, max = 0) {
   const { key, kind } = column;
   const raw = row[key];
   if (kind === 'measure' || kind === 'measure-bytes' || kind === 'measure-score') {
-    if (row.result_state === 'suppressed') return renderValue({ kind: 'suppressed', k: row.k });
     if (raw === null || raw === undefined) return renderValue({ kind: 'absent' });
     if (kind === 'measure-bytes') return `${dataBar(raw, max)}<span class="v-number">${escapeHtml(formatBytes(Number(raw)))}</span>`;
     if (kind === 'measure-score') return `<span class="v-number">${escapeHtml(formatScore(Number(raw)))}</span>`;
@@ -155,12 +147,11 @@ export function renderTable(table) {
   const numeric = (c) => MEASURE_KINDS.includes(c.kind);
   const maxima = new Map(table.columns.filter(numeric).map((c) => [
     c.key,
-    Math.max(0, ...table.rows.map(({ row }) => (row.result_state === 'suppressed' ? 0 : Number(row[c.key]) || 0))),
+    Math.max(0, ...table.rows.map(({ row }) => Number(row[c.key]) || 0)),
   ]));
   const head = table.columns.map((c) => `<th scope="col"${numeric(c) ? ' class="num"' : ''}>${escapeHtml(c.label)}</th>`).join('');
   const body = table.rows.map(({ row }) => {
     const cells = table.columns.map((c) => `<td${numeric(c) ? ' class="num"' : ''}>${renderCell(row, c, maxima.get(c.key))}</td>`).join('');
-    if (row.result_state === 'suppressed') return `<tr class="row-suppressed">${cells}</tr>`;
     // A row that names a submission opens it: the event screen is reached from a row, not typed.
     if (typeof row.submission_id === 'string' && row.submission_id !== '') {
       const hint = row.received_at ? `&received_at_hint=${encodeURIComponent(row.received_at)}` : '';
@@ -171,42 +162,28 @@ export function renderTable(table) {
   const empty = table.rows.length === 0
     ? `<tr class="row-empty"><td colspan="${table.columns.length}">${escapeHtml(table.emptyText ?? 'No rows.')}</td></tr>`
     : '';
-  const note = table.suppressedCells > 0
-    ? `<p class="table-note"><span class="legend-swatch" aria-hidden="true"></span>${escapeHtml(String(table.suppressedCells))} suppressed<span class="sr"> cell(s) in this table: a hatched cell means there was something and the number is withheld, never that the value is zero.</span></p>`
-    : '';
   const count = table.rows.length > 0 ? `<span class="block-count">${table.rows.length}</span>` : '';
   const more = table.href ? `<a class="block-link" href="${escapeHtml(table.href)}">View all</a>` : '';
-  return `<section class="table-block card"><div class="card-core"><header class="block-head"><h3>${escapeHtml(table.title)}</h3>${count}${note}${more}</header>`
+  return `<section class="table-block card"><div class="card-core"><header class="block-head"><h3>${escapeHtml(table.title)}</h3>${count}${more}</header>`
     + (table.breakdowns === false ? '' : renderBreakdowns(table))
     + `<div class="table-scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}${empty}</tbody></table></div></div></section>`;
 }
 
-/**
- * A series. A suppressed bucket renders as a hatched column, not as a zero-height one, and the
- * axis is scaled to the largest publishable value so a suppressed bucket cannot be read off the
- * chart's proportions.
- */
+/** A series: one column per bucket, with the axis scaled to the largest value. */
 export function renderSeries(series) {
   if (!series) return '';
   const open = (inner) => `<section class="series-block card"><div class="card-core"><header class="block-head"><h3>${escapeHtml(series.title)}</h3></header>${inner}</div></section>`;
   if (series.unavailable) return open(`<p class="series-unavailable">No chart: ${escapeHtml(series.reason)}</p>`);
   if (series.points.length === 0) return open('<p class="series-unavailable">No points.</p>');
-  const max = Math.max(1, ...series.points.map((p) => (p.value.kind === 'number' || p.value.kind === 'floor' ? p.value.value : 0)));
+  const max = Math.max(1, ...series.points.map((p) => (p.value.kind === 'number' ? p.value.value : 0)));
   const bars = series.points.map((p, i) => {
     const label = formatInstant(p.bucket).slice(0, 10) || 'total';
     const delay = `--i:${Math.min(i, 24)}`;
-    if (p.value.kind === 'floor') {
-      return `<div class="bar bar-floor" style="${delay}" tabindex="0" data-tip="${escapeHtml(label)} · ≥ ${escapeHtml(formatCount(p.value.value))} (${escapeHtml(String(p.value.suppressedCells))} suppressed)"><span class="bar-fill" style="--h:100"></span><span class="bar-label">${escapeHtml(label.slice(5))}</span></div>`;
-    }
     const height = Math.max(1, Math.round((p.value.value / max) * 100));
     return `<div class="bar" style="${delay}" tabindex="0" data-tip="${escapeHtml(label)} · ${escapeHtml(formatCount(p.value.value))}"><span class="bar-fill" style="--h:${height}"></span><span class="bar-label">${escapeHtml(label.slice(5))}</span></div>`;
   }).join('');
-  const hasFloor = series.points.some((p) => p.value.kind === 'floor');
   const axis = `<div class="axis" aria-hidden="true"><span>${escapeHtml(formatCount(max))}</span><span>${escapeHtml(formatCount(Math.round(max / 2)))}</span><span>0</span></div>`;
-  return open(
-    `<div class="chart">${axis}<div class="bars${series.points.length <= 3 ? ' bars-few' : ''}">${bars}</div></div>`
-    + (hasFloor ? '<p class="series-note"><span class="legend-swatch" aria-hidden="true"></span>Hatched columns are floors, not zeroes.</p>' : ''),
-  );
+  return open(`<div class="chart">${axis}<div class="bars${series.points.length <= 3 ? ' bars-few' : ''}">${bars}</div></div>`);
 }
 
 export function renderBanner(banner) {

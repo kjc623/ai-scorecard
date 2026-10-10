@@ -103,7 +103,7 @@ test('the effective ordering key is exposed for the cursor to bind to', () => {
   );
 });
 
-test('a rollup emits GROUPING SETS so the published total exists for complementary suppression', () => {
+test('a rollup emits GROUPING SETS so the published total travels with the cells', () => {
   const statement = read(baseDoc({ rollup: true, dimensions: ['tool'], limit: undefined }));
   assert.ok(statement.text.includes('GROUP BY GROUPING SETS ((t.bucket_start, t.tool_fingerprint), ())'));
 });
@@ -118,7 +118,6 @@ test('distinct-subject measures are served as a lower bound, and the response sa
   );
   assert.equal(soft.meta.measure_semantics.users, 'distinct_lower_bound');
   assert.equal(soft.meta.measure_semantics.submissions, 'additive');
-  assert.equal(soft.meta.subject_count_basis, 'lower_bound');
 });
 
 test('submissions is summed even where a subject count is not', () => {
@@ -135,16 +134,10 @@ test('max_score is a maximum, never a sum', () => {
   assert.ok(c.text.includes('MAX(c.max_score) AS "max_score"'));
 });
 
-test('the hidden subject count is computed in SQL and never returned to the client', () => {
-  const { compiled: c } = compiled(baseDoc({ measures: ['submissions'] }));
-  assert.ok(c.text.includes('max(t.users)::bigint AS __k_subjects'));
-});
-
-test('an exact distinct-subject count is taken over aggregate rows, not over events', () => {
+test('an aggregate read is taken over aggregate rows, not over events', () => {
   const { compiled: c } = compiled(
     baseDoc({ source: 'mart.agg_tool_user_period', dimensions: ['tool'], measures: ['submissions'] }),
   );
-  assert.ok(c.text.includes('count(DISTINCT a.user_ref)::bigint AS __k_subjects'));
   assert.ok(!c.text.includes('ingest.submission'), 'no aggregate read may touch the event table');
 });
 

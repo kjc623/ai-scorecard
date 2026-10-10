@@ -1,6 +1,6 @@
 // format.js — presentation of a value that already has a state.
 //
-// Nothing here decides whether a value exists. A suppressed cell is not a number and never reaches
+// Nothing here decides whether a value exists. An absent measure is not a number and never reaches
 // these functions as one; see states.js for that decision.
 
 /** Group thousands. Deterministic, locale-independent, so a test can assert it. */

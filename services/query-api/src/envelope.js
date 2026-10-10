@@ -126,7 +126,7 @@ function normaliseGaps(value) {
  *   2. `coverage_degraded` — we have numbers, and they are a floor.
  *   3. `stale_aggregate` — we have numbers and we know how old they are.
  *   4. `empty` — we looked, coverage was adequate, there is nothing.
- *   5. `ok`, or `suppressed` when every cell in the response was suppressed.
+ *   5. `ok`.
  *
  * A floor beats an age because it changes what the number means; the age is carried in
  * `freshness` either way, so nothing is lost by choosing.
@@ -138,7 +138,6 @@ export function resultStateFor(input) {
   const rows = input.rowCount ?? 0;
   const freshnessState = input.freshness?.state ?? 'fresh';
   const coverageState = input.coverage?.state ?? 'complete';
-  const suppressedCells = input.suppressedCells ?? 0;
 
   if (rows === 0) {
     // Nothing to show, and we can say why: no source for the window or dimension at all beats
@@ -154,7 +153,6 @@ export function resultStateFor(input) {
   // (a path that cannot say must not read as a clean bill of health).
   if (coverageState === 'partial' || coverageState === 'not_yet_covered') return 'coverage_degraded';
   if (freshnessState === 'stale') return 'stale_aggregate';
-  if (suppressedCells > 0 && suppressedCells >= rows) return 'suppressed';
   return 'ok';
 }
 
@@ -179,21 +177,9 @@ export function buildEnvelope(input) {
   if (input.page) envelope.page = input.page;
   if (input.freshness) envelope.freshness = input.freshness;
   if (input.coverage) envelope.coverage = input.coverage;
-  if (input.suppression) envelope.suppression = input.suppression;
   if (input.audit) envelope.audit = input.audit;
   if (input.meta) envelope.meta = input.meta;
   return Object.freeze(envelope);
-}
-
-/** The suppression block. `suppressed_cells` is never folded into `data`. */
-export function suppressionBlock(input) {
-  return Object.freeze({
-    k: input.k ?? null,
-    suppressed_cells: input.suppressedCells ?? 0,
-    ...(input.totalSuppressed ? { complementary: true } : {}),
-    ...(input.subjectCountBasis ? { subject_count_basis: input.subjectCountBasis } : {}),
-    ...(input.notes && input.notes.length > 0 ? { notes: Object.freeze([...input.notes]) } : {}),
-  });
 }
 
 function toIso(value) {

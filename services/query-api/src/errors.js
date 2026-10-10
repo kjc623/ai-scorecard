@@ -8,7 +8,7 @@
 import { API_VERSION, QUERY_VERSION } from './registry.js';
 
 /**
- * @typedef {'ok'|'empty'|'not_yet_covered'|'stale_aggregate'|'coverage_degraded'|'suppressed'|
+ * @typedef {'ok'|'empty'|'not_yet_covered'|'stale_aggregate'|'coverage_degraded'|
  *   'no_longer_available'|'not_captured'|'not_retrievable'|'not_found'|'unsupported_query_shape'|
  *   'query_too_broad'|'cursor_expired'|'audit_unavailable'|'key_unavailable'|'busy'|
  *   'unauthorised_role'|'content_search_not_enabled'|'audit_chain_broken'} ResultState
@@ -21,7 +21,6 @@ export const RESULT_STATES = Object.freeze({
   not_yet_covered: { http: 200, data: true },
   stale_aggregate: { http: 200, data: true },
   coverage_degraded: { http: 200, data: true },
-  suppressed: { http: 200, data: true },
   no_longer_available: { http: 410, data: false },
   not_captured: { http: 200, data: true },
   not_retrievable: { http: 200, data: true },
@@ -91,8 +90,6 @@ export const REASON = Object.freeze({
   BUCKET_REQUIRED: 'bucket_required',
   DIRECTORY_NOT_SYNCED: 'directory_not_synced',
   BEFORE_ENROLMENT: 'before_enrolment',
-  FEWER_THAN_K_SUBJECTS: 'fewer_than_k_subjects',
-  COMPLEMENTARY_SUPPRESSION: 'complementary_suppression',
   CURSOR_UNKNOWN: 'cursor_unknown',
   CURSOR_EXPIRED: 'cursor_expired',
   CURSOR_MISMATCH: 'cursor_mismatch',

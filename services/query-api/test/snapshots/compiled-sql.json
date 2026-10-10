@@ -47,7 +47,6 @@
       "applied_bucket": null,
       "native_bucket_size": null,
       "measure_semantics": {},
-      "subject_count_basis": null,
       "order": [
         {
           "by": "occurred_at",
@@ -60,17 +59,16 @@
           "key": "audit_seq"
         }
       ],
-      "k": null,
       "estimated_cells": 50,
       "bounded_cells": 50
     }
   },
   "template:q1_tools_ranked": {
-    "result_state_hint": "post_read",
+    "result_state_hint": "none",
     "statements": [
       {
         "id": "read",
-        "text": "SELECT t.bucket_start AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       SUM(t.blocked) AS \"blocked\",\n       SUM(t.warned) AS \"warned\",\n       SUM(t.logged) AS \"logged\",\n       max(t.users)::bigint AS __k_subjects,\n       ops.tool_display_name(t.tool_fingerprint) AS \"tool_name\"\n  FROM mart.v_tool_usage t\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n GROUP BY t.bucket_start, t.tool_fingerprint\n ORDER BY t.bucket_start DESC NULLS LAST, SUM(t.submissions) DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST\n LIMIT $5::int",
+        "text": "SELECT t.bucket_start AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       SUM(t.blocked) AS \"blocked\",\n       SUM(t.warned) AS \"warned\",\n       SUM(t.logged) AS \"logged\",\n       ops.tool_display_name(t.tool_fingerprint) AS \"tool_name\"\n  FROM mart.v_tool_usage t\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n GROUP BY t.bucket_start, t.tool_fingerprint\n ORDER BY t.bucket_start DESC NULLS LAST, SUM(t.submissions) DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST\n LIMIT $5::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -108,7 +106,6 @@
         "warned": "additive",
         "logged": "additive"
       },
-      "subject_count_basis": "exact",
       "order": [
         {
           "by": "bucket",
@@ -126,7 +123,6 @@
           "key": "tool"
         }
       ],
-      "k": 5,
       "estimated_cells": 1400,
       "bounded_cells": 101
     }
@@ -150,7 +146,7 @@
       },
       {
         "id": "read",
-        "text": "SELECT a.bucket_start AS bucket,\n       a.tool_fingerprint AS \"tool\",\n       a.user_ref AS \"subject\",\n       SUM(a.submissions) AS \"submissions\",\n       SUM(a.bytes_total) AS \"bytes_total\",\n       count(*) OVER (PARTITION BY a.bucket_start, a.tool_fingerprint)::bigint AS __k_subjects,\n       ops.tool_display_name(a.tool_fingerprint) AS \"tool_name\"\n  FROM mart.agg_tool_user_period a\n  LEFT JOIN ref.tool_catalogue tc ON tc.tool_fingerprint = a.tool_fingerprint LEFT JOIN ops.tool_sanction ot ON ot.tenant_id = a.tenant_id AND ot.tool_key = tc.app_key\n WHERE a.tenant_id = ops.current_tenant()\n   AND a.bucket_start >= $1::timestamptz\n   AND a.bucket_start < $2::timestamptz\n   AND a.bucket_start <= $3::timestamptz\n   AND a.bucket_size = $4::text\n   AND a.tool_fingerprint = $5::text\n   AND ot.sanctioned_state = $6::text\n GROUP BY a.bucket_start, a.tool_fingerprint, a.user_ref\n ORDER BY a.bucket_start DESC NULLS LAST, a.tool_fingerprint ASC NULLS LAST, a.user_ref ASC NULLS LAST\n LIMIT $7::int",
+        "text": "SELECT a.bucket_start AS bucket,\n       a.tool_fingerprint AS \"tool\",\n       a.user_ref AS \"subject\",\n       SUM(a.submissions) AS \"submissions\",\n       SUM(a.bytes_total) AS \"bytes_total\",\n       ops.tool_display_name(a.tool_fingerprint) AS \"tool_name\"\n  FROM mart.agg_tool_user_period a\n  LEFT JOIN ref.tool_catalogue tc ON tc.tool_fingerprint = a.tool_fingerprint LEFT JOIN ops.tool_sanction ot ON ot.tenant_id = a.tenant_id AND ot.tool_key = tc.app_key\n WHERE a.tenant_id = ops.current_tenant()\n   AND a.bucket_start >= $1::timestamptz\n   AND a.bucket_start < $2::timestamptz\n   AND a.bucket_start <= $3::timestamptz\n   AND a.bucket_size = $4::text\n   AND a.tool_fingerprint = $5::text\n   AND ot.sanctioned_state = $6::text\n GROUP BY a.bucket_start, a.tool_fingerprint, a.user_ref\n ORDER BY a.bucket_start DESC NULLS LAST, a.tool_fingerprint ASC NULLS LAST, a.user_ref ASC NULLS LAST\n LIMIT $7::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -186,7 +182,6 @@
         "submissions": "additive",
         "bytes_total": "additive"
       },
-      "subject_count_basis": "per_tool_cell",
       "order": [
         {
           "by": "bucket",
@@ -204,17 +199,16 @@
           "key": "subject"
         }
       ],
-      "k": 5,
       "estimated_cells": 28000,
       "bounded_cells": 101
     }
   },
   "template:q3_team_growth": {
-    "result_state_hint": "post_read",
+    "result_state_hint": "none",
     "statements": [
       {
         "id": "read",
-        "text": "SELECT o.bucket_start AS bucket,\n       o.department AS \"department\",\n       SUM(o.submissions) AS \"submissions\",\n       MAX(o.users) AS \"users\",\n       max(o.users)::bigint AS __k_subjects\n  FROM mart.agg_org_period o\n WHERE o.tenant_id = ops.current_tenant()\n   AND o.bucket_start >= $1::timestamptz\n   AND o.bucket_start < $2::timestamptz\n   AND o.bucket_start <= $3::timestamptz\n   AND o.bucket_size = $4::text\n GROUP BY o.bucket_start, o.department\n ORDER BY o.bucket_start DESC NULLS LAST, SUM(o.submissions) DESC NULLS LAST, o.department ASC NULLS LAST\n LIMIT $5::int",
+        "text": "SELECT o.bucket_start AS bucket,\n       o.department AS \"department\",\n       SUM(o.submissions) AS \"submissions\",\n       MAX(o.users) AS \"users\"\n  FROM mart.agg_org_period o\n WHERE o.tenant_id = ops.current_tenant()\n   AND o.bucket_start >= $1::timestamptz\n   AND o.bucket_start < $2::timestamptz\n   AND o.bucket_start <= $3::timestamptz\n   AND o.bucket_size = $4::text\n GROUP BY o.bucket_start, o.department\n ORDER BY o.bucket_start DESC NULLS LAST, SUM(o.submissions) DESC NULLS LAST, o.department ASC NULLS LAST\n LIMIT $5::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -257,7 +251,6 @@
         "submissions": "additive",
         "users": "distinct_lower_bound"
       },
-      "subject_count_basis": "lower_bound",
       "order": [
         {
           "by": "bucket",
@@ -275,17 +268,16 @@
           "key": "department"
         }
       ],
-      "k": 5,
       "estimated_cells": 280,
       "bounded_cells": 101
     }
   },
   "template:q4_class_mix": {
-    "result_state_hint": "post_read",
+    "result_state_hint": "none",
     "statements": [
       {
         "id": "read",
-        "text": "SELECT c.bucket_start AS bucket,\n       c.class_code AS \"class\",\n       c.severity AS \"severity\",\n       SUM(c.submissions) AS \"submissions\",\n       MAX(c.users) AS \"users\",\n       MAX(c.max_score) AS \"max_score\",\n       SUM(c.degraded_events) AS \"degraded_events\",\n       max(c.users)::bigint AS __k_subjects\n  FROM mart.agg_class_period c\n WHERE c.tenant_id = ops.current_tenant()\n   AND c.bucket_start >= $1::timestamptz\n   AND c.bucket_start < $2::timestamptz\n   AND c.bucket_start <= $3::timestamptz\n   AND c.bucket_size = $4::text\n GROUP BY c.bucket_start, c.class_code, c.severity\n ORDER BY c.bucket_start DESC NULLS LAST, SUM(c.submissions) DESC NULLS LAST, c.class_code ASC NULLS LAST, c.severity ASC NULLS LAST\n LIMIT $5::int",
+        "text": "SELECT c.bucket_start AS bucket,\n       c.class_code AS \"class\",\n       c.severity AS \"severity\",\n       SUM(c.submissions) AS \"submissions\",\n       MAX(c.users) AS \"users\",\n       MAX(c.max_score) AS \"max_score\",\n       SUM(c.degraded_events) AS \"degraded_events\"\n  FROM mart.agg_class_period c\n WHERE c.tenant_id = ops.current_tenant()\n   AND c.bucket_start >= $1::timestamptz\n   AND c.bucket_start < $2::timestamptz\n   AND c.bucket_start <= $3::timestamptz\n   AND c.bucket_size = $4::text\n GROUP BY c.bucket_start, c.class_code, c.severity\n ORDER BY c.bucket_start DESC NULLS LAST, SUM(c.submissions) DESC NULLS LAST, c.class_code ASC NULLS LAST, c.severity ASC NULLS LAST\n LIMIT $5::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -330,7 +322,6 @@
         "max_score": "additive",
         "degraded_events": "additive"
       },
-      "subject_count_basis": "lower_bound",
       "order": [
         {
           "by": "bucket",
@@ -353,7 +344,6 @@
           "key": "severity"
         }
       ],
-      "k": 5,
       "estimated_cells": 196,
       "bounded_cells": 101
     }
@@ -406,7 +396,6 @@
       "applied_bucket": null,
       "native_bucket_size": null,
       "measure_semantics": {},
-      "subject_count_basis": null,
       "order": [
         {
           "by": "detected_at",
@@ -424,7 +413,6 @@
           "key": "rule"
         }
       ],
-      "k": null,
       "estimated_cells": 50,
       "bounded_cells": 50
     }
@@ -494,7 +482,6 @@
         "tools_used": "additive",
         "block_events": "additive"
       },
-      "subject_count_basis": null,
       "order": [
         {
           "by": "bucket",
@@ -507,7 +494,6 @@
           "key": "subject"
         }
       ],
-      "k": null,
       "estimated_cells": 7,
       "bounded_cells": 7
     }
@@ -555,7 +541,6 @@
       "applied_bucket": null,
       "native_bucket_size": null,
       "measure_semantics": {},
-      "subject_count_basis": null,
       "order": [
         {
           "by": "device",
@@ -568,7 +553,6 @@
           "key": "collector"
         }
       ],
-      "k": null,
       "estimated_cells": 50,
       "bounded_cells": 50
     }
@@ -622,7 +606,6 @@
       "applied_bucket": null,
       "native_bucket_size": null,
       "measure_semantics": {},
-      "subject_count_basis": null,
       "order": [
         {
           "by": "received_at",
@@ -635,7 +618,6 @@
           "key": "submission_id"
         }
       ],
-      "k": null,
       "estimated_cells": 50,
       "bounded_cells": 50
     }
@@ -733,7 +715,6 @@
       "applied_bucket": null,
       "native_bucket_size": null,
       "measure_semantics": {},
-      "subject_count_basis": null,
       "order": [
         {
           "by": "received_at",
@@ -746,17 +727,16 @@
           "key": "submission_id"
         }
       ],
-      "k": null,
       "estimated_cells": 20,
       "bounded_cells": 20
     }
   },
   "source:mart.agg_class_period:day": {
-    "result_state_hint": "post_read",
+    "result_state_hint": "none",
     "statements": [
       {
         "id": "read",
-        "text": "SELECT c.bucket_start AS bucket,\n       c.class_code AS \"class\",\n       c.tool_fingerprint AS \"tool\",\n       SUM(c.submissions) AS \"submissions\",\n       MAX(c.users) AS \"users\",\n       MAX(c.max_score) AS \"max_score\",\n       max(c.users)::bigint AS __k_subjects\n  FROM mart.agg_class_period c\n WHERE c.tenant_id = ops.current_tenant()\n   AND c.bucket_start >= $1::timestamptz\n   AND c.bucket_start < $2::timestamptz\n   AND c.bucket_start <= $3::timestamptz\n   AND c.bucket_size = $4::text\n   AND starts_with(c.tool_fingerprint, $5::text)\n GROUP BY c.bucket_start, c.class_code, c.tool_fingerprint\n ORDER BY c.bucket_start DESC NULLS LAST, c.class_code ASC NULLS LAST, c.tool_fingerprint ASC NULLS LAST\n LIMIT $6::int",
+        "text": "SELECT c.bucket_start AS bucket,\n       c.class_code AS \"class\",\n       c.tool_fingerprint AS \"tool\",\n       SUM(c.submissions) AS \"submissions\",\n       MAX(c.users) AS \"users\",\n       MAX(c.max_score) AS \"max_score\"\n  FROM mart.agg_class_period c\n WHERE c.tenant_id = ops.current_tenant()\n   AND c.bucket_start >= $1::timestamptz\n   AND c.bucket_start < $2::timestamptz\n   AND c.bucket_start <= $3::timestamptz\n   AND c.bucket_size = $4::text\n   AND starts_with(c.tool_fingerprint, $5::text)\n GROUP BY c.bucket_start, c.class_code, c.tool_fingerprint\n ORDER BY c.bucket_start DESC NULLS LAST, c.class_code ASC NULLS LAST, c.tool_fingerprint ASC NULLS LAST\n LIMIT $6::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -792,7 +772,6 @@
         "users": "distinct_lower_bound",
         "max_score": "additive"
       },
-      "subject_count_basis": "lower_bound",
       "order": [
         {
           "by": "bucket",
@@ -810,17 +789,16 @@
           "key": "tool"
         }
       ],
-      "k": 5,
       "estimated_cells": 49,
       "bounded_cells": 21
     }
   },
   "source:mart.agg_class_period:week+rollup": {
-    "result_state_hint": "post_read",
+    "result_state_hint": "none",
     "statements": [
       {
         "id": "read",
-        "text": "SELECT date_trunc('week', c.bucket_start) AS bucket,\n       c.class_code AS \"class\",\n       c.tool_fingerprint AS \"tool\",\n       SUM(c.submissions) AS \"submissions\",\n       MAX(c.users) AS \"users\",\n       MAX(c.max_score) AS \"max_score\",\n       max(c.users)::bigint AS __k_subjects\n  FROM mart.agg_class_period c\n WHERE c.tenant_id = ops.current_tenant()\n   AND c.bucket_start >= $1::timestamptz\n   AND c.bucket_start < $2::timestamptz\n   AND c.bucket_start <= $3::timestamptz\n   AND c.bucket_size = $4::text\n   AND starts_with(c.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', c.bucket_start), c.class_code, c.tool_fingerprint), ())\n ORDER BY date_trunc('week', c.bucket_start) DESC NULLS LAST, c.class_code ASC NULLS LAST, c.tool_fingerprint ASC NULLS LAST",
+        "text": "SELECT date_trunc('week', c.bucket_start) AS bucket,\n       c.class_code AS \"class\",\n       c.tool_fingerprint AS \"tool\",\n       SUM(c.submissions) AS \"submissions\",\n       MAX(c.users) AS \"users\",\n       MAX(c.max_score) AS \"max_score\"\n  FROM mart.agg_class_period c\n WHERE c.tenant_id = ops.current_tenant()\n   AND c.bucket_start >= $1::timestamptz\n   AND c.bucket_start < $2::timestamptz\n   AND c.bucket_start <= $3::timestamptz\n   AND c.bucket_size = $4::text\n   AND starts_with(c.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', c.bucket_start), c.class_code, c.tool_fingerprint), ())\n ORDER BY date_trunc('week', c.bucket_start) DESC NULLS LAST, c.class_code ASC NULLS LAST, c.tool_fingerprint ASC NULLS LAST",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -855,7 +833,6 @@
         "users": "distinct_lower_bound",
         "max_score": "additive"
       },
-      "subject_count_basis": "lower_bound",
       "order": [
         {
           "by": "bucket",
@@ -873,7 +850,6 @@
           "key": "tool"
         }
       ],
-      "k": 5,
       "estimated_cells": 8,
       "bounded_cells": 8
     }
@@ -919,7 +895,6 @@
         "degraded_days": "additive",
         "absent_days": "additive"
       },
-      "subject_count_basis": null,
       "order": [
         {
           "by": "bucket",
@@ -937,7 +912,6 @@
           "key": "collector"
         }
       ],
-      "k": null,
       "estimated_cells": 42,
       "bounded_cells": 21
     }
@@ -983,7 +957,6 @@
         "degraded_days": "additive",
         "absent_days": "additive"
       },
-      "subject_count_basis": null,
       "order": [
         {
           "by": "bucket",
@@ -1001,17 +974,16 @@
           "key": "collector"
         }
       ],
-      "k": null,
       "estimated_cells": 7,
       "bounded_cells": 7
     }
   },
   "source:mart.agg_org_period:day": {
-    "result_state_hint": "post_read",
+    "result_state_hint": "none",
     "statements": [
       {
         "id": "read",
-        "text": "SELECT o.bucket_start AS bucket,\n       o.department AS \"department\",\n       o.population AS \"population\",\n       coalesce(o.population, chr(1)) AS \"__ord_population\",\n       SUM(o.submissions) AS \"submissions\",\n       MAX(o.users) AS \"users\",\n       max(o.users)::bigint AS __k_subjects\n  FROM mart.agg_org_period o\n WHERE o.tenant_id = ops.current_tenant()\n   AND o.bucket_start >= $1::timestamptz\n   AND o.bucket_start < $2::timestamptz\n   AND o.bucket_start <= $3::timestamptz\n   AND o.bucket_size = $4::text\n   AND starts_with(o.tool_fingerprint, $5::text)\n GROUP BY o.bucket_start, o.department, o.population, coalesce(o.population, chr(1))\n ORDER BY o.bucket_start DESC NULLS LAST, o.department ASC NULLS LAST, coalesce(o.population, chr(1)) ASC NULLS LAST\n LIMIT $6::int",
+        "text": "SELECT o.bucket_start AS bucket,\n       o.department AS \"department\",\n       o.population AS \"population\",\n       coalesce(o.population, chr(1)) AS \"__ord_population\",\n       SUM(o.submissions) AS \"submissions\",\n       MAX(o.users) AS \"users\"\n  FROM mart.agg_org_period o\n WHERE o.tenant_id = ops.current_tenant()\n   AND o.bucket_start >= $1::timestamptz\n   AND o.bucket_start < $2::timestamptz\n   AND o.bucket_start <= $3::timestamptz\n   AND o.bucket_size = $4::text\n   AND starts_with(o.tool_fingerprint, $5::text)\n GROUP BY o.bucket_start, o.department, o.population, coalesce(o.population, chr(1))\n ORDER BY o.bucket_start DESC NULLS LAST, o.department ASC NULLS LAST, coalesce(o.population, chr(1)) ASC NULLS LAST\n LIMIT $6::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -1046,7 +1018,6 @@
         "submissions": "additive",
         "users": "distinct_lower_bound"
       },
-      "subject_count_basis": "lower_bound",
       "order": [
         {
           "by": "bucket",
@@ -1064,17 +1035,16 @@
           "key": "population"
         }
       ],
-      "k": 5,
       "estimated_cells": 2240,
       "bounded_cells": 21
     }
   },
   "source:mart.agg_org_period:week+rollup": {
-    "result_state_hint": "post_read",
+    "result_state_hint": "none",
     "statements": [
       {
         "id": "read",
-        "text": "SELECT date_trunc('week', o.bucket_start) AS bucket,\n       o.department AS \"department\",\n       o.population AS \"population\",\n       coalesce(o.population, chr(1)) AS \"__ord_population\",\n       SUM(o.submissions) AS \"submissions\",\n       MAX(o.users) AS \"users\",\n       max(o.users)::bigint AS __k_subjects\n  FROM mart.agg_org_period o\n WHERE o.tenant_id = ops.current_tenant()\n   AND o.bucket_start >= $1::timestamptz\n   AND o.bucket_start < $2::timestamptz\n   AND o.bucket_start <= $3::timestamptz\n   AND o.bucket_size = $4::text\n   AND starts_with(o.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', o.bucket_start), o.department, o.population, coalesce(o.population, chr(1))), ())\n ORDER BY date_trunc('week', o.bucket_start) DESC NULLS LAST, o.department ASC NULLS LAST, coalesce(o.population, chr(1)) ASC NULLS LAST",
+        "text": "SELECT date_trunc('week', o.bucket_start) AS bucket,\n       o.department AS \"department\",\n       o.population AS \"population\",\n       coalesce(o.population, chr(1)) AS \"__ord_population\",\n       SUM(o.submissions) AS \"submissions\",\n       MAX(o.users) AS \"users\"\n  FROM mart.agg_org_period o\n WHERE o.tenant_id = ops.current_tenant()\n   AND o.bucket_start >= $1::timestamptz\n   AND o.bucket_start < $2::timestamptz\n   AND o.bucket_start <= $3::timestamptz\n   AND o.bucket_size = $4::text\n   AND starts_with(o.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', o.bucket_start), o.department, o.population, coalesce(o.population, chr(1))), ())\n ORDER BY date_trunc('week', o.bucket_start) DESC NULLS LAST, o.department ASC NULLS LAST, coalesce(o.population, chr(1)) ASC NULLS LAST",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -1108,7 +1078,6 @@
         "submissions": "additive",
         "users": "distinct_lower_bound"
       },
-      "subject_count_basis": "lower_bound",
       "order": [
         {
           "by": "bucket",
@@ -1126,17 +1095,16 @@
           "key": "population"
         }
       ],
-      "k": 5,
       "estimated_cells": 321,
       "bounded_cells": 321
     }
   },
   "source:mart.agg_tool_period:day": {
-    "result_state_hint": "post_read",
+    "result_state_hint": "none",
     "statements": [
       {
         "id": "read",
-        "text": "SELECT t.bucket_start AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       ot.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       max(t.users)::bigint AS __k_subjects,\n       ops.tool_display_name(t.tool_fingerprint) AS \"tool_name\"\n  FROM mart.agg_tool_period t\n  LEFT JOIN ref.tool_catalogue tc ON tc.tool_fingerprint = t.tool_fingerprint LEFT JOIN ops.tool_sanction ot ON ot.tenant_id = t.tenant_id AND ot.tool_key = tc.app_key\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY t.bucket_start, t.tool_fingerprint, ot.sanctioned_state\n ORDER BY t.bucket_start DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, ot.sanctioned_state ASC NULLS LAST\n LIMIT $6::int",
+        "text": "SELECT t.bucket_start AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       ot.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       ops.tool_display_name(t.tool_fingerprint) AS \"tool_name\"\n  FROM mart.agg_tool_period t\n  LEFT JOIN ref.tool_catalogue tc ON tc.tool_fingerprint = t.tool_fingerprint LEFT JOIN ops.tool_sanction ot ON ot.tenant_id = t.tenant_id AND ot.tool_key = tc.app_key\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY t.bucket_start, t.tool_fingerprint, ot.sanctioned_state\n ORDER BY t.bucket_start DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, ot.sanctioned_state ASC NULLS LAST\n LIMIT $6::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -1172,7 +1140,6 @@
         "users": "exact",
         "bytes_total": "additive"
       },
-      "subject_count_basis": "exact",
       "order": [
         {
           "by": "bucket",
@@ -1190,17 +1157,16 @@
           "key": "sanctioned_state"
         }
       ],
-      "k": 5,
       "estimated_cells": 21,
       "bounded_cells": 21
     }
   },
   "source:mart.agg_tool_period:week+rollup": {
-    "result_state_hint": "post_read",
+    "result_state_hint": "none",
     "statements": [
       {
         "id": "read",
-        "text": "SELECT date_trunc('week', t.bucket_start) AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       ot.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       max(t.users)::bigint AS __k_subjects,\n       ops.tool_display_name(t.tool_fingerprint) AS \"tool_name\"\n  FROM mart.agg_tool_period t\n  LEFT JOIN ref.tool_catalogue tc ON tc.tool_fingerprint = t.tool_fingerprint LEFT JOIN ops.tool_sanction ot ON ot.tenant_id = t.tenant_id AND ot.tool_key = tc.app_key\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', t.bucket_start), t.tool_fingerprint, ot.sanctioned_state), ())\n ORDER BY date_trunc('week', t.bucket_start) DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, ot.sanctioned_state ASC NULLS LAST",
+        "text": "SELECT date_trunc('week', t.bucket_start) AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       ot.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       ops.tool_display_name(t.tool_fingerprint) AS \"tool_name\"\n  FROM mart.agg_tool_period t\n  LEFT JOIN ref.tool_catalogue tc ON tc.tool_fingerprint = t.tool_fingerprint LEFT JOIN ops.tool_sanction ot ON ot.tenant_id = t.tenant_id AND ot.tool_key = tc.app_key\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', t.bucket_start), t.tool_fingerprint, ot.sanctioned_state), ())\n ORDER BY date_trunc('week', t.bucket_start) DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, ot.sanctioned_state ASC NULLS LAST",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -1235,7 +1201,6 @@
         "users": "distinct_lower_bound",
         "bytes_total": "additive"
       },
-      "subject_count_basis": "lower_bound",
       "order": [
         {
           "by": "bucket",
@@ -1253,7 +1218,6 @@
           "key": "sanctioned_state"
         }
       ],
-      "k": 5,
       "estimated_cells": 4,
       "bounded_cells": 4
     }
@@ -1277,7 +1241,7 @@
       },
       {
         "id": "read",
-        "text": "SELECT a.bucket_start AS bucket,\n       a.tool_fingerprint AS \"tool\",\n       ot.sanctioned_state AS \"sanctioned_state\",\n       SUM(a.submissions) AS \"submissions\",\n       SUM(a.bytes_total) AS \"bytes_total\",\n       count(DISTINCT a.user_ref)::bigint AS __k_subjects,\n       ops.tool_display_name(a.tool_fingerprint) AS \"tool_name\"\n  FROM mart.agg_tool_user_period a\n  LEFT JOIN ref.tool_catalogue tc ON tc.tool_fingerprint = a.tool_fingerprint LEFT JOIN ops.tool_sanction ot ON ot.tenant_id = a.tenant_id AND ot.tool_key = tc.app_key\n WHERE a.tenant_id = ops.current_tenant()\n   AND a.bucket_start >= $1::timestamptz\n   AND a.bucket_start < $2::timestamptz\n   AND a.bucket_start <= $3::timestamptz\n   AND a.bucket_size = $4::text\n   AND starts_with(a.tool_fingerprint, $5::text)\n GROUP BY a.bucket_start, a.tool_fingerprint, ot.sanctioned_state\n ORDER BY a.bucket_start DESC NULLS LAST, a.tool_fingerprint ASC NULLS LAST, ot.sanctioned_state ASC NULLS LAST\n LIMIT $6::int",
+        "text": "SELECT a.bucket_start AS bucket,\n       a.tool_fingerprint AS \"tool\",\n       ot.sanctioned_state AS \"sanctioned_state\",\n       SUM(a.submissions) AS \"submissions\",\n       SUM(a.bytes_total) AS \"bytes_total\",\n       ops.tool_display_name(a.tool_fingerprint) AS \"tool_name\"\n  FROM mart.agg_tool_user_period a\n  LEFT JOIN ref.tool_catalogue tc ON tc.tool_fingerprint = a.tool_fingerprint LEFT JOIN ops.tool_sanction ot ON ot.tenant_id = a.tenant_id AND ot.tool_key = tc.app_key\n WHERE a.tenant_id = ops.current_tenant()\n   AND a.bucket_start >= $1::timestamptz\n   AND a.bucket_start < $2::timestamptz\n   AND a.bucket_start <= $3::timestamptz\n   AND a.bucket_size = $4::text\n   AND starts_with(a.tool_fingerprint, $5::text)\n GROUP BY a.bucket_start, a.tool_fingerprint, ot.sanctioned_state\n ORDER BY a.bucket_start DESC NULLS LAST, a.tool_fingerprint ASC NULLS LAST, ot.sanctioned_state ASC NULLS LAST\n LIMIT $6::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -1312,7 +1276,6 @@
         "submissions": "additive",
         "bytes_total": "additive"
       },
-      "subject_count_basis": "exact",
       "order": [
         {
           "by": "bucket",
@@ -1330,7 +1293,6 @@
           "key": "sanctioned_state"
         }
       ],
-      "k": 5,
       "estimated_cells": 21,
       "bounded_cells": 21
     }
@@ -1354,7 +1316,7 @@
       },
       {
         "id": "read",
-        "text": "SELECT date_trunc('week', a.bucket_start) AS bucket,\n       a.tool_fingerprint AS \"tool\",\n       ot.sanctioned_state AS \"sanctioned_state\",\n       SUM(a.submissions) AS \"submissions\",\n       SUM(a.bytes_total) AS \"bytes_total\",\n       count(DISTINCT a.user_ref)::bigint AS __k_subjects,\n       ops.tool_display_name(a.tool_fingerprint) AS \"tool_name\"\n  FROM mart.agg_tool_user_period a\n  LEFT JOIN ref.tool_catalogue tc ON tc.tool_fingerprint = a.tool_fingerprint LEFT JOIN ops.tool_sanction ot ON ot.tenant_id = a.tenant_id AND ot.tool_key = tc.app_key\n WHERE a.tenant_id = ops.current_tenant()\n   AND a.bucket_start >= $1::timestamptz\n   AND a.bucket_start < $2::timestamptz\n   AND a.bucket_start <= $3::timestamptz\n   AND a.bucket_size = $4::text\n   AND starts_with(a.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', a.bucket_start), a.tool_fingerprint, ot.sanctioned_state), ())\n ORDER BY date_trunc('week', a.bucket_start) DESC NULLS LAST, a.tool_fingerprint ASC NULLS LAST, ot.sanctioned_state ASC NULLS LAST",
+        "text": "SELECT date_trunc('week', a.bucket_start) AS bucket,\n       a.tool_fingerprint AS \"tool\",\n       ot.sanctioned_state AS \"sanctioned_state\",\n       SUM(a.submissions) AS \"submissions\",\n       SUM(a.bytes_total) AS \"bytes_total\",\n       ops.tool_display_name(a.tool_fingerprint) AS \"tool_name\"\n  FROM mart.agg_tool_user_period a\n  LEFT JOIN ref.tool_catalogue tc ON tc.tool_fingerprint = a.tool_fingerprint LEFT JOIN ops.tool_sanction ot ON ot.tenant_id = a.tenant_id AND ot.tool_key = tc.app_key\n WHERE a.tenant_id = ops.current_tenant()\n   AND a.bucket_start >= $1::timestamptz\n   AND a.bucket_start < $2::timestamptz\n   AND a.bucket_start <= $3::timestamptz\n   AND a.bucket_size = $4::text\n   AND starts_with(a.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', a.bucket_start), a.tool_fingerprint, ot.sanctioned_state), ())\n ORDER BY date_trunc('week', a.bucket_start) DESC NULLS LAST, a.tool_fingerprint ASC NULLS LAST, ot.sanctioned_state ASC NULLS LAST",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -1388,7 +1350,6 @@
         "submissions": "additive",
         "bytes_total": "additive"
       },
-      "subject_count_basis": "exact",
       "order": [
         {
           "by": "bucket",
@@ -1406,7 +1367,6 @@
           "key": "sanctioned_state"
         }
       ],
-      "k": 5,
       "estimated_cells": 4,
       "bounded_cells": 4
     }
@@ -1466,7 +1426,6 @@
         "bytes_total": "additive",
         "tools_used": "additive"
       },
-      "subject_count_basis": null,
       "order": [
         {
           "by": "bucket",
@@ -1474,7 +1433,6 @@
           "key": "bucket"
         }
       ],
-      "k": null,
       "estimated_cells": 7,
       "bounded_cells": 7
     }
@@ -1533,7 +1491,6 @@
         "bytes_total": "additive",
         "tools_used": "additive"
       },
-      "subject_count_basis": null,
       "order": [
         {
           "by": "bucket",
@@ -1541,7 +1498,6 @@
           "key": "bucket"
         }
       ],
-      "k": null,
       "estimated_cells": 2,
       "bounded_cells": 2
     }
@@ -1584,7 +1540,6 @@
       "applied_bucket": null,
       "native_bucket_size": null,
       "measure_semantics": {},
-      "subject_count_basis": null,
       "order": [
         {
           "by": "device",
@@ -1597,7 +1552,6 @@
           "key": "collector"
         }
       ],
-      "k": null,
       "estimated_cells": 20,
       "bounded_cells": 20
     }
@@ -1650,7 +1604,6 @@
       "applied_bucket": null,
       "native_bucket_size": null,
       "measure_semantics": {},
-      "subject_count_basis": null,
       "order": [
         {
           "by": "detected_at",
@@ -1668,17 +1621,16 @@
           "key": "rule"
         }
       ],
-      "k": null,
       "estimated_cells": 20,
       "bounded_cells": 20
     }
   },
   "source:mart.v_tool_usage:day": {
-    "result_state_hint": "post_read",
+    "result_state_hint": "none",
     "statements": [
       {
         "id": "read",
-        "text": "SELECT t.bucket_start AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       t.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       max(t.users)::bigint AS __k_subjects,\n       ops.tool_display_name(t.tool_fingerprint) AS \"tool_name\"\n  FROM mart.v_tool_usage t\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY t.bucket_start, t.tool_fingerprint, t.sanctioned_state\n ORDER BY t.bucket_start DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, t.sanctioned_state ASC NULLS LAST\n LIMIT $6::int",
+        "text": "SELECT t.bucket_start AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       t.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       ops.tool_display_name(t.tool_fingerprint) AS \"tool_name\"\n  FROM mart.v_tool_usage t\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY t.bucket_start, t.tool_fingerprint, t.sanctioned_state\n ORDER BY t.bucket_start DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, t.sanctioned_state ASC NULLS LAST\n LIMIT $6::int",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -1714,7 +1666,6 @@
         "users": "exact",
         "bytes_total": "additive"
       },
-      "subject_count_basis": "exact",
       "order": [
         {
           "by": "bucket",
@@ -1732,17 +1683,16 @@
           "key": "sanctioned_state"
         }
       ],
-      "k": 5,
       "estimated_cells": 21,
       "bounded_cells": 21
     }
   },
   "source:mart.v_tool_usage:week+rollup": {
-    "result_state_hint": "post_read",
+    "result_state_hint": "none",
     "statements": [
       {
         "id": "read",
-        "text": "SELECT date_trunc('week', t.bucket_start) AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       t.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       max(t.users)::bigint AS __k_subjects,\n       ops.tool_display_name(t.tool_fingerprint) AS \"tool_name\"\n  FROM mart.v_tool_usage t\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', t.bucket_start), t.tool_fingerprint, t.sanctioned_state), ())\n ORDER BY date_trunc('week', t.bucket_start) DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, t.sanctioned_state ASC NULLS LAST",
+        "text": "SELECT date_trunc('week', t.bucket_start) AS bucket,\n       t.tool_fingerprint AS \"tool\",\n       t.sanctioned_state AS \"sanctioned_state\",\n       SUM(t.submissions) AS \"submissions\",\n       MAX(t.users) AS \"users\",\n       SUM(t.bytes_total) AS \"bytes_total\",\n       ops.tool_display_name(t.tool_fingerprint) AS \"tool_name\"\n  FROM mart.v_tool_usage t\n WHERE t.tenant_id = ops.current_tenant()\n   AND t.bucket_start >= $1::timestamptz\n   AND t.bucket_start < $2::timestamptz\n   AND t.bucket_start <= $3::timestamptz\n   AND t.bucket_size = $4::text\n   AND starts_with(t.tool_fingerprint, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', t.bucket_start), t.tool_fingerprint, t.sanctioned_state), ())\n ORDER BY date_trunc('week', t.bucket_start) DESC NULLS LAST, t.tool_fingerprint ASC NULLS LAST, t.sanctioned_state ASC NULLS LAST",
         "params": [
           "2026-09-01T00:00:00.000Z",
           "2026-09-08T00:00:00.000Z",
@@ -1777,7 +1727,6 @@
         "users": "distinct_lower_bound",
         "bytes_total": "additive"
       },
-      "subject_count_basis": "lower_bound",
       "order": [
         {
           "by": "bucket",
@@ -1795,7 +1744,6 @@
           "key": "sanctioned_state"
         }
       ],
-      "k": 5,
       "estimated_cells": 4,
       "bounded_cells": 4
     }
@@ -1848,7 +1796,6 @@
       "applied_bucket": null,
       "native_bucket_size": null,
       "measure_semantics": {},
-      "subject_count_basis": null,
       "order": [
         {
           "by": "occurred_at",
@@ -1861,7 +1808,6 @@
           "key": "audit_seq"
         }
       ],
-      "k": null,
       "estimated_cells": 20,
       "bounded_cells": 20
     }
@@ -1890,7 +1836,6 @@
       "applied_bucket": null,
       "native_bucket_size": null,
       "measure_semantics": {},
-      "subject_count_basis": null,
       "order": [
         {
           "by": "device",
@@ -1903,7 +1848,6 @@
           "key": "collector"
         }
       ],
-      "k": null,
       "estimated_cells": 20,
       "bounded_cells": 20
     }
@@ -1942,7 +1886,6 @@
       "applied_bucket": null,
       "native_bucket_size": null,
       "measure_semantics": {},
-      "subject_count_basis": null,
       "order": [
         {
           "by": "snapshot_day",
@@ -1960,7 +1903,6 @@
           "key": "collector"
         }
       ],
-      "k": null,
       "estimated_cells": 20,
       "bounded_cells": 20
     }

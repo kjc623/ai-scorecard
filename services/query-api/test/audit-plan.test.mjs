@@ -1,6 +1,6 @@
 // audit-plan.test.mjs — audit-on-read and the executor's transaction shape.
 //
-// The two properties that matter: the audit decision is made before suppression, and a read that
+// The two properties that matter: the audit decision is made before the read is served, and a read that
 // cannot be proved to have happened does not happen (fail closed, zero rows, 503).
 
 import test from 'node:test';
@@ -173,36 +173,19 @@ test('a failure after the read still rolls back and serves nothing', async () =>
   assert.equal(client.transaction, false);
 });
 
-test('the small-cell trigger is post-read: the audit row is written after the cells exist', async () => {
+test('an aggregate cell writes no audit row, however few people it covers', async () => {
   const p = plan(baseDoc({ measures: ['submissions', 'users'] }), { now: NOW, tenant: 't1', actorId: 'analyst-1' });
-  assert.equal(p.audit.decision.phase, 'post_read');
-  const rows = [{ bucket: '2026-09-01T00:00:00Z', tool: 'a', submissions: 3, users: 1, __k_subjects: 1 }];
+  assert.equal(p.audit.decision.phase, 'none');
   const client = fakeClient({
-    read: rows,
-    freshness: [{ aggregate_name: 'mart.agg_tool_period', bucket_size: 'day', last_run_at: new Date(NOW.getTime() - 60_000), last_complete_bucket: '2026-10-02T11:00:00Z' }],
-    coverage: [{ devices_enrolled: 100, devices_reporting: 100, expected_collector_days: 600, observed_collector_days: 600, gap_reasons: {} }],
-    audit_insert: [{ audit_seq: 7, occurred_at: new Date('2026-10-02T12:00:00Z') }],
-  });
-  const envelope = await executePlan(p, { client, now: NOW, tenant: 't1' });
-  const order = client.log.map((e) => (e.kind === 'query' ? e.id : e.kind));
-  assert.ok(order.indexOf('read') < order.indexOf('audit_insert'), 'the cells decide the trigger');
-  assert.equal(envelope.audit.entry_id, '7');
-  assert.equal(envelope.suppression.suppressed_cells, 1);
-  assert.equal(envelope.data[0].result_state, 'suppressed');
-  assert.equal(envelope.result_state, 'suppressed');
-});
-
-test('a wide aggregate cell writes no audit row at all', async () => {
-  const p = plan(baseDoc({ measures: ['submissions', 'users'] }), { now: NOW, tenant: 't1', actorId: 'analyst-1' });
-  const client = fakeClient({
-    read: [{ bucket: '2026-09-01T00:00:00Z', tool: 'a', submissions: 300, users: 40, __k_subjects: 40 }],
+    read: [{ bucket: '2026-09-01T00:00:00Z', tool: 'a', submissions: 3, users: 1 }],
     freshness: [{ aggregate_name: 'mart.agg_tool_period', bucket_size: 'day', last_run_at: new Date(NOW.getTime() - 60_000), last_complete_bucket: '2026-10-02T11:00:00Z' }],
     coverage: [{ devices_enrolled: 100, devices_reporting: 100, expected_collector_days: 600, observed_collector_days: 600, gap_reasons: {} }],
   });
   const envelope = await executePlan(p, { client, now: NOW, tenant: 't1' });
   assert.ok(!client.log.some((e) => e.kind === 'query' && e.id === 'audit_insert'));
   assert.equal(envelope.audit, undefined);
-  assert.equal(envelope.suppression.suppressed_cells, 0);
+  assert.equal(envelope.suppression, undefined);
+  assert.equal(envelope.data[0].users, 1, 'a small count is served as the number it is');
   assert.equal(envelope.result_state, 'ok');
 });
 
@@ -349,7 +332,7 @@ test('a statement timeout is busy and retryable, not an audit failure', async ()
 
 test('an aggregate is cut at its limit and says whether the limit truncated it', async () => {
   const p = plan(baseDoc({ measures: ['submissions'], limit: 2 }), { now: NOW, tenant: 't1', actorId: 'analyst-1' });
-  const rows = [1, 2, 3].map((n) => ({ bucket: '2026-09-01T00:00:00Z', tool: `t${n}`, submissions: 100, __k_subjects: 40 }));
+  const rows = [1, 2, 3].map((n) => ({ bucket: '2026-09-01T00:00:00Z', tool: `t${n}`, submissions: 100, __ord_1: n }));
   const truncated = await executePlan(p, { client: fakeClient({ read: rows }), now: NOW, tenant: 't1' });
   assert.equal(truncated.data.length, 2, 'the probe row is never served');
   assert.equal(truncated.meta.truncated, true);

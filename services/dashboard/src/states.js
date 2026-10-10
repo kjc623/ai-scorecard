@@ -3,13 +3,12 @@
 // This is the consumer half of the contract the read path pins. Two facts must never be merged,
 // and this module is where that is enforced rather than hoped for:
 //
-//   a suppressed cell  — {result_state:"suppressed", reason:"fewer_than_k_subjects", k, …}, with
-//                        NO measure key at all. "There was something and we are not telling you
-//                        the number."
+//   an absent measure  — a row that does not carry the key at all. "This response does not say."
 //   a genuine zero     — {submissions: 0}. "We looked and there was none."
 //
 // `measureOf()` is the only way a screen may obtain a value, and it returns a discriminated
-// result, never a number that might be a lie. `render.js` has no other source of numbers.
+// result, never a number standing in for a value the row does not carry. `render.js` has no other
+// source of numbers.
 //
 // The other rules encoded here:
 //   * a data-bearing envelope must carry freshness and coverage — if it does not, this module
@@ -19,43 +18,32 @@
 //     cannot say, and are rendered as hatched states, not as zeroes;
 //   * `coverage_degraded` always names the gap and always carries the enrolled denominator.
 
-import { K, RESULT_STATES, STATE_PAIRS } from './vocab.js';
+import { RESULT_STATES, STATE_PAIRS } from './vocab.js';
 import { formatCount } from './format.js';
 
 /** Keys that are part of a row's envelope rather than its data. */
 const SYSTEM_ROW_KEYS = Object.freeze([
-  'result_state', 'reason', 'k', 'suppressed_measures', 'bucket', 'snapshot_day',
+  'result_state', 'reason', 'bucket', 'snapshot_day',
 ]);
 
 /** The vocabulary columns a row may carry, so a renderer can show states side by side. */
 export const VOCAB_COLUMNS = Object.freeze(Object.keys(STATE_PAIRS));
 
 /**
- * A value, or the fact that there is not one. Never a number standing in for a suppression.
+ * A value, or the fact that there is not one. Never a number standing in for an absent measure.
  *
  * @param {object} row
  * @param {string} measure
- * @returns {{kind:'number', value:number}|{kind:'suppressed', k:number, reason:string}|{kind:'absent'}}
+ * @returns {{kind:'number', value:number}|{kind:'absent'}}
  */
 export function measureOf(row, measure) {
   if (!row || typeof row !== 'object') return { kind: 'absent' };
-  const suppressed = row.result_state === 'suppressed';
   const present = Object.prototype.hasOwnProperty.call(row, measure) && row[measure] !== null && row[measure] !== undefined;
-  if (suppressed) {
-    // Even if a measure key were present on a suppressed row — a bug at the producer — the
-    // suppression wins. Publishing it would merge a withheld number into an answer.
-    return { kind: 'suppressed', k: typeof row.k === 'number' ? row.k : K, reason: row.reason ?? 'fewer_than_k_subjects' };
-  }
   if (!present) return { kind: 'absent' };
   const value = row[measure];
   if (typeof value === 'number') return { kind: 'number', value };
   const parsed = Number(value);
   return Number.isFinite(parsed) ? { kind: 'number', value: parsed } : { kind: 'absent' };
-}
-
-/** True when the row is a suppression marker rather than a measurement. */
-export function isSuppressed(row) {
-  return row?.result_state === 'suppressed';
 }
 
 /** The closed-vocabulary values on a row, grouped, so the renderer can keep pairs distinct. */
@@ -169,13 +157,6 @@ export function bannersFor(envelope) {
   if (state === 'empty') {
     banners.push({ level: 'info', title: 'No data', text: 'We looked, coverage was adequate, and there is nothing in this window.' });
   }
-  if (state === 'suppressed') {
-    banners.push({
-      level: 'hatched',
-      title: 'Every cell suppressed',
-      text: `Every cell in this response had fewer than k = ${envelope.suppression?.k ?? K} distinct subjects. There was something here; the number is withheld.`,
-    });
-  }
   if (state === 'stale_aggregate') banners.push({ level: 'warning', title: 'Stale aggregate', text: freshnessText(envelope.freshness).text });
   if (state === 'coverage_degraded') {
     banners.push({
@@ -287,13 +268,10 @@ export function readState(envelope) {
     page: envelope.page ?? null,
     freshness: envelope.freshness ?? null,
     coverage: envelope.coverage ?? null,
-    suppression: envelope.suppression ?? null,
     audit: envelope.audit ?? null,
     meta: envelope.meta ?? {},
     error: envelope.error ?? null,
     banners: Object.freeze(bannersFor(envelope)),
-    suppressedCells: envelope.suppression?.suppressed_cells ?? data.filter(isSuppressed).length,
-    allSuppressed: data.length > 0 && data.every(isSuppressed),
     freshnessText: freshnessText(envelope.freshness),
     coverageText: coverageText(envelope.coverage),
   });
@@ -309,9 +287,6 @@ export function emptyStateFor(state) {
   }
   if (state.resultState === 'coverage_degraded') {
     return { kind: 'coverage_degraded', title: 'Nothing found, on partial coverage', text: 'No rows came back, and parts of the fleet were not reporting: the absence is not a total.' };
-  }
-  if (state.resultState === 'suppressed') {
-    return { kind: 'suppressed', title: 'All cells suppressed', text: `Every cell had fewer than k = ${state.suppression?.k ?? K} distinct subjects.` };
   }
   return null;
 }
