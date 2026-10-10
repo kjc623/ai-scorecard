@@ -350,25 +350,23 @@ func TestNativeSessionPolicySync(t *testing.T) {
 // The policy_bundle answer names the agent's release version, so the extension of an older release
 // asks the browser for its update; a development build names none.
 func TestNativeSessionPolicySyncNamesTheAgentRelease(t *testing.T) {
+	for v, want := range map[string]string{"1.0.28": "1.0.28", "dev": "", "": ""} {
+		if got := agentRelease(v); got != want {
+			t.Fatalf("agentRelease(%q) = %q, want %q", v, got, want)
+		}
+	}
 	svc, _ := enrolledServiceWith(t, func(priv ed25519.PrivateKey) []byte {
 		return signedTestBundle(t, priv, "5", protocol.ModeM1)
 	})
 	s := newNativeSession(svc, svc.peerPerson(hostinfo.User{}))
 	frame, _ := json.Marshal(protocol.NativeMessage{Type: protocol.TypePolicySync, Version: protocol.Version})
-	ask := func() protocol.PolicyBundleMessage {
-		var msg protocol.NativeMessage
-		var pb protocol.PolicyBundleMessage
-		if err := json.Unmarshal(s.Handle(context.Background(), frame), &msg); err != nil || json.Unmarshal(msg.Body, &pb) != nil {
-			t.Fatalf("policy_sync answer unreadable: %v", err)
-		}
-		return pb
+	var msg protocol.NativeMessage
+	var pb protocol.PolicyBundleMessage
+	if err := json.Unmarshal(s.Handle(context.Background(), frame), &msg); err != nil || json.Unmarshal(msg.Body, &pb) != nil {
+		t.Fatalf("policy_sync answer unreadable: %v", err)
 	}
-	defer func(v string) { version = v }(version)
-	for _, tc := range []struct{ build, want string }{{"1.0.28", "1.0.28"}, {"dev", ""}} {
-		version = tc.build
-		if got := ask().AgentVersion; got != tc.want {
-			t.Fatalf("agent %q: agent_version = %q, want %q", tc.build, got, tc.want)
-		}
+	if pb.AgentVersion != agentRelease(version) {
+		t.Fatalf("agent_version = %q, want %q for agent %q", pb.AgentVersion, agentRelease(version), version)
 	}
 }
 

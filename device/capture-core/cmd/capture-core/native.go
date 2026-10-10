@@ -167,6 +167,14 @@ func (h *nativeSession) handleExtensionHealth(msg protocol.NativeMessage) []byte
 	return ack(msg.ID, fmt.Sprintf("health recorded for %s state=%s", rep.Collector, rep.State))
 }
 
+// agentRelease is v when it is a release version, and empty for a development build.
+func agentRelease(v string) string {
+	if _, ok := parseAgentVersion(v); ok {
+		return v
+	}
+	return ""
+}
+
 // handlePolicySync hands the extension the payload of the bundle in force, the JSON object its
 // signature covered; the extension holds no durable state, so this is how it gets policy after a
 // restart.
@@ -177,10 +185,7 @@ func (h *nativeSession) handlePolicySync(msg protocol.NativeMessage) []byte {
 			return refusal(protocol.RefusalMalformed, "policy_sync body: %v", err)
 		}
 	}
-	answer := protocol.PolicyBundleMessage{}
-	if _, ok := parseAgentVersion(version); ok {
-		answer.AgentVersion = version
-	}
+	answer := protocol.PolicyBundleMessage{AgentVersion: agentRelease(version)}
 	if b := h.svc.currentBundle(); b != nil {
 		answer.PolicyVersion = b.Version
 		answer.Unchanged = req.KnownVersion != "" && req.KnownVersion == b.Version
