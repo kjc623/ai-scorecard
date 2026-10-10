@@ -144,10 +144,17 @@ const AUDIT_ROWS = Object.freeze([
   Object.freeze({ audit_seq: 8122, occurred_at: '2026-10-01T10:41:00Z', actor_type: 'user', actor: 'investigator.two@customer.example', action: 'query.record', object_type: 'ingest.submission', object_id: '11111111-2222-4333-8444-555555555551', subject: 'u_4f21', case: 'CASE-2026-118', detail: {}, prev_hash: 'cccc', row_hash: 'aaaa' }),
 ]);
 
-const ORG_ROWS = Object.freeze([
-  Object.freeze({ bucket: DAY, department: 'Engineering', submissions: 2210, users: 640 }),
-  Object.freeze({ bucket: DAY, department: 'Legal', submissions: 7, users: 2 }),
-  Object.freeze({ bucket: DAY, department: 'Finance', submissions: 812, users: 96 }),
+const TEAM_ROWS = Object.freeze([
+  Object.freeze({ bucket: DAY, team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', team_name: 'Engineering', submissions: 2210, users: 640 }),
+  Object.freeze({ bucket: DAY, team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0002', team_name: 'Legal', submissions: 7, users: 2 }),
+  Object.freeze({ bucket: DAY, team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0003', team_name: 'Finance', submissions: 812, users: 96 }),
+]);
+
+// The people list, in the API's order: by name, never by usage.
+const PEOPLE_ROWS = Object.freeze([
+  Object.freeze({ subject: 'u_9a02', name: 'Ada Lovelace', directory_name: 'Ada Lovelace', subject_name: null, department: 'Engineering', org_unit: 'OU=Eng,DC=contoso,DC=com', directory_status: 'active', last_active_day: DAY }),
+  Object.freeze({ subject: 'u_4f21', name: 'Grace Hopper', directory_name: null, subject_name: 'Grace Hopper', department: null, org_unit: null, directory_status: null, last_active_day: DAY }),
+  Object.freeze({ subject: 'u_1b77', name: 'u_1b77', directory_name: null, subject_name: null, department: 'Legal', org_unit: null, directory_status: 'inactive', last_active_day: null }),
 ]);
 
 const CLASS_ROWS = Object.freeze([
@@ -280,14 +287,21 @@ const REALISTIC = Object.freeze({
     meta: { source: 'mart.agg_tool_user_period', applied_bucket: 'day' },
   }),
   q3_team_growth: ok({
-    data: ORG_ROWS,
-    freshness: freshness({ aggregate: 'mart.agg_org_period' }),
+    data: TEAM_ROWS,
+    freshness: freshness({ aggregate: 'mart.agg_team_period' }),
     coverage: coverage({ state: 'partial' }),
     meta: {
-      source: 'mart.agg_org_period',
+      source: 'mart.agg_team_period',
       applied_bucket: 'day',
-      extras: { org_coverage: [{ users_all: 4210, users_mapped: 2680, org_rows: 96 }] },
+      extras: { team_coverage: [{ users_all: 4210, users_in_teams: 2680, teams: 3 }] },
     },
+  }),
+  'mart.v_person': ok({
+    data: PEOPLE_ROWS,
+    freshness: freshness({ aggregate: 'mart.v_person', state: 'not_yet_covered', reason: 'no_watermark_row', last_run_at: null }),
+    coverage: coverage({ state: 'partial' }),
+    audit: { entry_id: '8130', written_at: '2026-10-01T11:05:02Z' },
+    meta: { source: 'mart.v_person' },
   }),
   q4_class_mix: ok({
     data: CLASS_ROWS,
@@ -438,4 +452,4 @@ export function fixtureTransport(scenario = 'realistic') {
   });
 }
 
-export { TOOL_ROWS, DEVICE_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, ORG_ROWS, CLASS_ROWS, PERSON_ROWS, WINDOW };
+export { TOOL_ROWS, DEVICE_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, TEAM_ROWS, PEOPLE_ROWS, CLASS_ROWS, PERSON_ROWS, WINDOW };

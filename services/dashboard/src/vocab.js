@@ -34,6 +34,8 @@ export const ADMIN_PACKAGE_ENDPOINT = '/admin/v1/deployment/package';
 export const ADMIN_VERIFICATION_ENDPOINT = '/admin/v1/deployment/verification';
 export const ADMIN_KEYS_ENDPOINT = '/admin/v1/deployment/keys';
 export const ADMIN_SCIM_TOKENS_ENDPOINT = '/admin/v1/scim/tokens';
+export const ADMIN_DIRECTORY_ENDPOINT = '/admin/v1/directory';
+export const ADMIN_TEAMS_ENDPOINT = '/admin/v1/teams';
 
 /**
  * The admin API behind Settings → Settings. control-api's, admin-only and audited, like Deployment:
@@ -89,11 +91,27 @@ export const SOURCES = Object.freeze({
   }),
   'mart.agg_org_period': Object.freeze({
     kind: 'aggregate',
-    label: 'Usage per team',
+    label: 'Usage per department',
     dimensions: Object.freeze(['bucket', 'department', 'population', 'tool']),
     measures: Object.freeze(['submissions', 'users']),
+    note: 'empty until people arrive from the directory; the answer is then not_yet_covered, never a zero line',
+  }),
+  'mart.agg_team_period': Object.freeze({
+    kind: 'aggregate',
+    label: 'Usage per team',
+    dimensions: Object.freeze(['bucket', 'team', 'tool']),
+    measures: Object.freeze(['submissions', 'users']),
     answers: 'Q3',
-    note: 'empty until the directory sync; the answer is then not_yet_covered, never a zero line',
+    note: 'a team counts its current members; a person in two teams counts in both',
+  }),
+  'mart.v_person': Object.freeze({
+    kind: 'list',
+    label: 'People',
+    dimensions: Object.freeze(['subject', 'name', 'name_key', 'department', 'directory_status']),
+    measures: Object.freeze([]),
+    answers: 'Q6',
+    noWindow: true,
+    note: 'the people the directory and the devices know, by name; every read is audited',
   }),
   'mart.agg_class_period': Object.freeze({
     kind: 'aggregate',
@@ -193,9 +211,9 @@ export const TEMPLATES = Object.freeze({
   q3_team_growth: Object.freeze({
     question: 3,
     title: 'How much is usage growing, per team?',
-    source: 'mart.agg_org_period',
+    source: 'mart.agg_team_period',
     screen: 'teams',
-    params: Object.freeze(['window', 'bucket', 'limit', 'department', 'population']),
+    params: Object.freeze(['window', 'bucket', 'limit', 'team']),
   }),
   q4_class_mix: Object.freeze({
     question: 4,

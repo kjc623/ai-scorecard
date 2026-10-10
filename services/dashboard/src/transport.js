@@ -11,6 +11,7 @@
 import {
   QUERY_ENDPOINT, CONTENT_SEARCH_ENDPOINT, CONTENT_RETRIEVAL_ENDPOINT, LIST_EXPORT_ENDPOINT, RESULT_STATES,
   ADMIN_DEPLOYMENT_ENDPOINT, ADMIN_PACKAGE_ENDPOINT, ADMIN_VERIFICATION_ENDPOINT, ADMIN_KEYS_ENDPOINT, ADMIN_SCIM_TOKENS_ENDPOINT,
+  ADMIN_DIRECTORY_ENDPOINT, ADMIN_TEAMS_ENDPOINT,
   ADMIN_SETTINGS_ENDPOINT, ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT, ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT,
   ADMIN_SETTINGS_RETENTION_ENDPOINT, ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT, ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT,
   ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT, ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT, ADMIN_SETTINGS_RULES_ENDPOINT,
@@ -323,6 +324,50 @@ export function createAdminApi({ transport }) {
     revokeScimToken(tokenId) {
       return done({ method: 'POST', path: revokePath(ADMIN_SCIM_TOKENS_ENDPOINT, tokenId) });
     },
+    async directory() {
+      const [status, teams] = await Promise.all([
+        call({ method: 'GET', path: ADMIN_DIRECTORY_ENDPOINT }),
+        call({ method: 'GET', path: ADMIN_TEAMS_ENDPOINT }),
+      ]);
+      if (!ok(status.status) || !status.body || typeof status.body !== 'object') return refused(status);
+      if (!ok(teams.status) || !Array.isArray(teams.body?.teams)) return refused(teams);
+      return { state: 'available', data: normaliseDirectory(status.body, teams.body.teams) };
+    },
+    setDirectorySync(enabled) {
+      return done({ method: 'PUT', path: `${ADMIN_DIRECTORY_ENDPOINT}/sync`, body: { enabled } });
+    },
+    async runDirectorySync() {
+      const answer = await call({ method: 'POST', path: `${ADMIN_DIRECTORY_ENDPOINT}/sync/run` });
+      return ok(answer.status) ? { state: 'done', queued: answer.body?.queued === true } : refused(answer);
+    },
+    /** The groups a team can follow: the provisioned ones, and with a search, the directory's. */
+    async directoryGroups(search = '') {
+      const q = String(search).trim();
+      const answer = await call({ method: 'GET', path: `${ADMIN_DIRECTORY_ENDPOINT}/groups${q ? `?q=${encodeURIComponent(q)}` : ''}` });
+      if (!ok(answer.status) || !Array.isArray(answer.body?.provisioned)) return refused(answer);
+      return { state: 'available', provisioned: answer.body.provisioned, directory: Array.isArray(answer.body.directory) ? answer.body.directory : [] };
+    },
+    /** The departments or organisational units people are in, with how many people each. */
+    async directoryValues(kind) {
+      const answer = await call({ method: 'GET', path: `${ADMIN_DIRECTORY_ENDPOINT}/values?kind=${encodeURIComponent(kind)}` });
+      if (!ok(answer.status) || !Array.isArray(answer.body?.values)) return refused(answer);
+      return { state: 'available', values: answer.body.values };
+    },
+    async createTeam(team) {
+      const answer = await call({ method: 'POST', path: ADMIN_TEAMS_ENDPOINT, body: team });
+      return ok(answer.status) ? { state: 'done', team: answer.body ?? null } : refused(answer);
+    },
+    deleteTeam(teamId) {
+      return done({ method: 'DELETE', path: `${ADMIN_TEAMS_ENDPOINT}/${encodeURIComponent(String(teamId))}` });
+    },
+    async teamMembers(teamId) {
+      const answer = await call({ method: 'GET', path: `${ADMIN_TEAMS_ENDPOINT}/${encodeURIComponent(String(teamId))}/members` });
+      if (!ok(answer.status) || !Array.isArray(answer.body?.members)) return refused(answer);
+      return { state: 'available', members: answer.body.members, limit: answer.body.limit ?? null };
+    },
+    changeTeamMembers(teamId, { add = [], remove = [] }) {
+      return done({ method: 'POST', path: `${ADMIN_TEAMS_ENDPOINT}/${encodeURIComponent(String(teamId))}/members`, body: { add, remove } });
+    },
     async settings() {
       const answer = await call({ method: 'GET', path: ADMIN_SETTINGS_ENDPOINT });
       if (!ok(answer.status) || !answer.body || typeof answer.body !== 'object') return refused(answer);
@@ -384,6 +429,40 @@ export function adminErrorOf(body, status) {
 
 const nullableNumber = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
 const nullableText = (value) => (typeof value === 'string' && value !== '' ? value : null);
+
+/** The directory read and the team list, with a count the server did not send left as null. */
+export function normaliseDirectory(status, teams) {
+  const sync = status.sync && typeof status.sync === 'object'
+    ? Object.freeze({
+      enabled_by: nullableText(status.sync.enabled_by),
+      enabled_at: nullableText(status.sync.enabled_at),
+      last_started_at: nullableText(status.sync.last_started_at),
+      last_completed_at: nullableText(status.sync.last_completed_at),
+      last_status: nullableText(status.sync.last_status),
+      last_error: nullableText(status.sync.last_error),
+      users_synced: nullableNumber(status.sync.users_synced),
+      groups_synced: nullableNumber(status.sync.groups_synced),
+    })
+    : null;
+  return Object.freeze({
+    entra_connected: status.entra_connected === true,
+    graph_available: status.graph_available === true,
+    people: nullableNumber(status.people),
+    groups: nullableNumber(status.groups),
+    sync,
+    teams: Object.freeze(teams.filter((t) => t && typeof t === 'object' && typeof t.team_id === 'string').map((t) => Object.freeze({
+      team_id: t.team_id,
+      name: String(t.name ?? ''),
+      source: nullableText(t.source),
+      group_name: nullableText(t.group_name),
+      group_object_id: nullableText(t.group_object_id),
+      match_value: nullableText(t.match_value),
+      members: nullableNumber(t.members),
+      created_by: nullableText(t.created_by),
+      created_at: nullableText(t.created_at),
+    }))),
+  });
+}
 
 /**
  * The deployment read, with every field present: a value the server did not send is null, never a

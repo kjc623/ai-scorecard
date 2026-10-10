@@ -83,8 +83,7 @@ export const QUESTIONS = Object.freeze({
       window: ctx.window,
       bucket: ctx.bucket,
       limit: ctx.limit ?? 2000,
-      department: ctx.filters.department,
-      population: ctx.filters.population,
+      team: ctx.filters.team,
     })),
   },
 

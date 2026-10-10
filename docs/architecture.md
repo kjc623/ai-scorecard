@@ -136,8 +136,10 @@ These hold everywhere, and tests enforce them:
   customer's identity provider: the vendor's multi-tenant Entra application, or any OIDC provider.
   control-api issues short-lived product access tokens (ES256) that query-api and content-vault
   verify against its published keys. Roles are `viewer`, `analyst`, `content_reader`, `admin`.
-- **Directory**: customers provision people and departments by SCIM; devices and the directory
-  derive the same pseudonymous user reference from a per-tenant key, so neither sends a name.
+- **Directory**: customers provision people and groups by SCIM, or control-api reads them from the
+  customer's Entra directory through Microsoft Graph; devices and the directory derive the same
+  pseudonymous user reference from a per-tenant key, so neither sends a name. Teams are made in the
+  console or follow a group, a department or an organisational unit.
 - **Services** authenticate to Azure with managed identities. The dashboard server presents a shared
   internal token to control-api's internal sign-in API; control-api presents a short-lived service
   token to content-vault when it stores content.

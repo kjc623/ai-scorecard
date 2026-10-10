@@ -27,8 +27,8 @@ export function sumMeasure(state, measure) {
   return { kind: 'number', value: total };
 }
 
-function tile(label, value, note) {
-  return Object.freeze({ label, value, note: note ?? null });
+function tile(label, value, note, { href = null } = {}) {
+  return Object.freeze({ label, value, note: note ?? null, ...(href ? { href } : {}) });
 }
 
 /** A tile from a summed measure, saying so when no returned cell carries it. */
@@ -287,37 +287,43 @@ export function unsanctionedView(state) {
   });
 }
 
-export function teamsView(state) {
-  const org = state.meta?.extras?.org_coverage?.[0] ?? null;
-  // The residual is computed here rather than read from a column: mart.agg_org_period holds only
-  // users with a department, so "no department" is the difference between every user-day and the
-  // mapped ones. It is its own tile, not a footnote, so people with no department stay visible.
-  const unmapped = org ? Math.max(0, (org.users_all ?? 0) - (org.users_mapped ?? 0)) : null;
+export function teamsView(state, { manageHref = null } = {}) {
+  const cov = state.meta?.extras?.team_coverage?.[0] ?? null;
+  const num = (v) => (v === null || v === undefined ? null : Number(v));
+  const all = num(cov?.users_all);
+  const inTeams = num(cov?.users_in_teams);
+  const teams = num(cov?.teams);
+  // People in no team are their own tile, not a footnote, so a team view cannot quietly stand
+  // for everyone.
+  const outside = all === null || inTeams === null ? null : Math.max(0, all - inTeams);
   const notes = [];
-  if (org) {
-    notes.push(
-      `Unmapped people are an explicit series: ${formatCount(org.users_all)} user-days in the window, ${formatCount(org.users_mapped)} with a department, ${formatCount(unmapped)} without.`,
-    );
+  if (cov) {
+    notes.push(`${formatCount(all)} people used AI in this window; ${formatCount(inTeams)} of them are in at least one team and ${formatCount(outside)} are in none.`);
   }
-  return screen('teams', 'Teams', TEMPLATES.q3_team_growth.title, 'mart.agg_org_period', {
-    subtitle: 'Per-team usage. Empty until the directory is synchronised, and it says so rather than drawing a zero line.',
+  if (teams === 0) {
+    notes.push(manageHref
+      ? 'No team exists yet. Create one from the console, a directory group, a department or an organisational unit under Settings → Directory.'
+      : 'No team exists yet. An admin creates teams under Settings → Directory.');
+  }
+  const absent = () => ({ kind: 'absent', text: '—' });
+  return screen('teams', 'Teams', TEMPLATES.q3_team_growth.title, 'mart.agg_team_period', {
+    subtitle: 'Usage per team. A team counts the usage of the people in it now; a person in two teams counts in both.',
     tiles: Object.freeze([
       measureTile('Submissions', state, 'submissions'),
-      measureTile('People (lower bound)', state, 'users'),
-      tile('Teams in this page', { kind: 'number', text: formatCount(new Set(state.data.map((r) => r.department)).size) }, null),
-      tile('Mapped user-days', org ? { kind: 'number', text: formatCount(org.users_mapped) } : { kind: 'absent', text: '—' }, org ? `of ${formatCount(org.users_all)}` : 'No directory coverage read came back with this page.'),
-      tile('Unmapped user-days', unmapped === null ? { kind: 'absent', text: '—' } : { kind: 'number', text: formatCount(unmapped) }, org ? `of ${formatCount(org.users_all)}` : 'No directory coverage read came back with this page.'),
+      tile('Teams', teams === null ? absent() : { kind: 'number', text: formatCount(teams) }, manageHref ? 'Manage teams' : null, manageHref ? { href: manageHref } : undefined),
+      tile('People in a team', inTeams === null ? absent() : { kind: 'number', text: formatCount(inTeams) }, all === null ? 'No team coverage read came back with this page.' : `of ${formatCount(all)} people with usage`),
+      tile('People in no team', outside === null ? absent() : { kind: 'number', text: formatCount(outside) }, all === null ? 'No team coverage read came back with this page.' : `of ${formatCount(all)} people with usage`),
     ]),
     tables: Object.freeze([
       tableFrom(state, {
         title: 'Teams by submissions',
         columns: [
           column('bucket', 'Bucket', 'instant'),
-          column('department', 'Department'),
+          column('team_name', 'Team'),
           column('submissions', 'Submissions', 'measure'),
           column('users', 'People', 'measure'),
         ],
-        emptyText: 'No team has usage in this window.',
+        emptyText: teams === 0 ? 'There are no teams yet.' : 'No team has usage in this window.',
       }),
     ]),
     series: Object.freeze([seriesFrom(state, { measure: 'submissions', title: 'Submissions per bucket' })]),
@@ -367,16 +373,22 @@ export function classesView(state) {
   });
 }
 
-export function personView(state, { subject }) {
+export function personView(state, { subject, person = null, exploreHref = 'explore.html' }) {
   const series = seriesFrom(state, { measure: 'submissions', title: 'Submissions per day' });
   const flush = state.meta?.extras?.flush_check?.[0] ?? null;
   const notes = [];
   if (flush) {
     notes.push(`${formatCount(flush.rows_in_window)} rows for this person in the window, ${formatCount(flush.late_flush_rows)} received more than an hour after they occurred: a spool flush spikes received time, not behaviour.`);
   }
-  return screen('person', 'Users', null, 'mart.agg_user_period', {
-    subtitle: null,
-    search: Object.freeze({ value: subject }),
+  const name = person?.name && person.name !== subject ? person.name : null;
+  const facts = [person?.department, person?.org_unit].filter(Boolean).join(' · ');
+  return screen('person', name ?? 'Users', null, 'mart.agg_user_period', {
+    subtitle: name ? `${facts ? `${facts} · ` : ''}${subject}` : null,
+    search: Object.freeze({ value: name ? '' : subject }),
+    actions: Object.freeze([
+      Object.freeze({ label: 'Prompts and events', href: `${exploreHref}#events?subject=${encodeURIComponent(subject)}` }),
+      Object.freeze({ label: 'All people', href: '#person' }),
+    ]),
     tiles: Object.freeze([
       measureTile('Submissions', state, 'submissions'),
       measureTile('Tools used', state, 'tools_used'),
@@ -388,7 +400,6 @@ export function personView(state, { subject }) {
         title: 'Daily series',
         columns: [
           column('bucket', 'Day', 'instant'),
-          column('subject', 'Person'),
           column('submissions', 'Submissions', 'measure'),
           column('tools_used', 'Tools', 'measure'),
           column('block_events', 'Blocked', 'measure'),
@@ -401,6 +412,44 @@ export function personView(state, { subject }) {
       'No cohort percentile, no ranking, no people sorted by volume. A spike is compared against this person\'s own trailing baseline only.',
       'The spike rule needs at least 14 observed buckets. Below that the answer is not_yet_covered, not "no change".',
     ])),
+  });
+}
+
+/**
+ * The people the directory and the devices know, by name, to open one person's page. It has no
+ * usage column to sort by: it is a directory, not a ranking.
+ */
+export function peopleView(state, { search = '' } = {}) {
+  const next = state.page?.next_cursor ?? null;
+  const query = (extra) => new URLSearchParams({ ...(search ? { q: search } : {}), ...extra }).toString();
+  const named = state.data.filter((row) => row.directory_name || row.subject_name).length;
+  const table = tableFrom(state, {
+    title: search ? `People whose name starts with "${search}"` : 'People',
+    columns: [
+      column('name', 'Name', 'person'),
+      column('department', 'Department'),
+      column('org_unit', 'Organisational unit'),
+      column('directory_status', 'Directory', 'vocab'),
+      column('last_active_day', 'Last active', 'instant'),
+    ],
+    emptyText: search ? 'Nobody\'s name starts with that.' : 'Nobody is known yet: people arrive from the directory, or with their first prompt.',
+  });
+  return screen('person', 'Users', null, 'mart.v_person', {
+    subtitle: 'Everyone the directory or a device has named. Open a person to see their usage and prompts.',
+    search: Object.freeze({ value: search }),
+    tiles: Object.freeze([]),
+    tables: Object.freeze([Object.freeze({
+      ...table,
+      breakdowns: false,
+      ...(next ? { href: `#person?${query({ cursor: next })}`, moreLabel: 'Next page' } : {}),
+    })]),
+    series: Object.freeze([]),
+    ...shared(state, state.data.length > 0 && named === 0
+      ? ['No name is known for anyone on this page: the tenant keeps people hashed, or no directory has been read yet. Each is listed by reference.']
+      : []),
+    // A list of people is current state, not a measurement: fleet coverage and aggregate age say
+    // nothing about it, so their banners are kept for a page that came back without rows.
+    ...(state.data.length > 0 ? { banners: Object.freeze([]) } : {}),
   });
 }
 

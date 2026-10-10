@@ -11,28 +11,28 @@ import { DEPLOYMENT_FORMATS, deploymentKeyState, verificationAvailable } from '.
 
 const DEP_INSTALL_COMMAND = 'msiexec /i ShadowAICapture.msi /qn';
 
-function depInstant(iso, absent = 'never') {
+export function depInstant(iso, absent = 'never') {
   return iso ? `<span class="v-time" title="${escapeHtml(iso)}">${escapeHtml(formatInstant(iso))}</span>` : `<span class="v-absent">${escapeHtml(absent)}</span>`;
 }
 
-function depChip(value) {
+export function depChip(value) {
   const text = String(value ?? 'unknown');
   return `<span class="v-vocab v-vocab-${escapeHtml(text.replace(/[^a-z_]/gi, ''))}">${escapeHtml(text)}</span>`;
 }
 
-function depProblem(problem, lead = 'Not done.') {
+export function depProblem(problem, lead = 'Not done.') {
   if (!problem) return '';
   return `<p class="dp-problem" role="alert"><strong>${escapeHtml(lead)}</strong> ${escapeHtml(problem.message ?? '')}`
     + (problem.code ? ` <code>${escapeHtml(problem.code)}</code>` : '') + '</p>';
 }
 
-function depButton(label, data, { kind = '', disabled = false, small = false, type = 'button' } = {}) {
+export function depButton(label, data, { kind = '', disabled = false, small = false, type = 'button' } = {}) {
   const attrs = Object.entries(data).map(([k, v]) => ` data-${k}="${escapeHtml(v)}"`).join('');
   const cls = ['btn', kind ? `btn-${kind}` : '', small ? 'btn-small' : ''].filter(Boolean).join(' ');
   return `<button type="${type}" class="${cls}"${attrs}${disabled ? ' disabled' : ''}>${escapeHtml(label)}</button>`;
 }
 
-function depCard(title, body, { extra = '', wide = false, id = '' } = {}) {
+export function depCard(title, body, { extra = '', wide = false, id = '' } = {}) {
   return `<section class="card dp-card${wide ? ' dp-wide' : ''}"${id ? ` id="${id}"` : ''}><div class="card-core">`
     + `<header class="block-head"><h3>${escapeHtml(title)}</h3>${extra}</header>`
     + `<div class="dp-body">${body}</div></div></section>`;
@@ -299,7 +299,7 @@ function depScim(state) {
     + '<li>Assign the users or groups to provision, then turn provisioning on.</li>'
     + '</ol></details>'
     + '<details class="dp-howto"><summary>Other identity providers</summary><p>Any SCIM 2.0 client works: the base URL above, with a token created here as its bearer token. <code>userName</code> is the person\'s sign-in name, their UPN or email address.</p></details>';
-  const body = '<p>People and groups are kept in sync by your identity provider over SCIM 2.0. It is the only way people reach this product\'s directory.</p>'
+  const body = '<p>People and groups can be kept in sync by your identity provider over SCIM 2.0. With Microsoft Entra ID, Sundial can instead read them itself: see <a href="#directory">Directory &amp; teams</a>.</p>'
     + kv + depSecret(state) + form
     + depProblem(state.scim.problem, 'No token was created.')
     + table

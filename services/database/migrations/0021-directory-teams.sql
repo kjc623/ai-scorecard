@@ -80,7 +80,9 @@ CREATE TABLE IF NOT EXISTS mart.agg_team_period (
   tool_fingerprint text NOT NULL,
   submissions      bigint NOT NULL CHECK (submissions >= 0),
   users            bigint NOT NULL CHECK (users >= 0),
-  PRIMARY KEY (tenant_id, bucket_start, bucket_size, team_id, tool_fingerprint)
+  PRIMARY KEY (tenant_id, bucket_start, bucket_size, team_id, tool_fingerprint),
+  -- A deleted team takes its usage history with it.
+  FOREIGN KEY (tenant_id, team_id) REFERENCES ops.team(tenant_id, team_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS agg_team_period_by_team ON mart.agg_team_period (tenant_id, team_id, bucket_start DESC);

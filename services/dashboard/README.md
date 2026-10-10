@@ -1,7 +1,8 @@
 # dashboard
 
-The analyst-facing web application: Overview, Usage (tools, data classes, teams, users), Devices,
-Audit trail, Settings → Deployment, and the Search page, where an analyst lists events, findings,
+The analyst-facing web application: Overview, Usage (tools, data classes, teams, and users: the
+people list and each person's page), Devices, Audit trail, Settings (Settings, Deployment, Directory
+& teams), and the Search page, where an analyst lists events, findings,
 devices and audit entries, opens a device to see each of its collectors with its state and cause,
 searches prompt text, and reads an event's stored prompt.
 
@@ -14,7 +15,8 @@ It has two halves and no dependencies:
 - **The server** (`server/`) signs people in through control-api's identity service, keeps the
   product access token per session (the browser holds one opaque HttpOnly cookie), and forwards:
   `/v1/*` to query-api and `/admin/v1/*` to control-api with `Authorization: Bearer <product token>`,
-  `/onboard/*` to control-api untouched, `GET`/`HEAD` of the browser extension's update manifest
+  `/onboard/*` and an identity provider's SCIM calls (`/scim/v2/*`, with their own bearer token
+  and never a cookie) to control-api untouched, `GET`/`HEAD` of the browser extension's update manifest
   and CRX (`/v1/extension/updates.xml`, `/v1/extension/shadow-ai-capture.crx`) to control-api with
   no credential, and a minted retrieval URL
   (`GET /v1/content/retrieval/<tenant>/<grant>`) straight to content-vault, so content never
