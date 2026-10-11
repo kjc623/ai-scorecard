@@ -1,17 +1,20 @@
 name: deploy
 
-# Deploys pre-production on every push to main. tools/deploy-plan.mjs compares the commit with the
-# one the last successful run shipped and picks what changed: the agent release when device/
-# changed, and each Fly.io app whose code, shared modules or fly/ directory changed. The run builds
-# those images with the commit as their tag, pushes them to Fly.io's registry, migrates the database
-# (Supabase) when the migrator changed, then deploys those apps; every other app keeps running what
-# it runs. A change to this workflow, fly/scripts or the plan, a run with no earlier success, and a
-# manual run deploy everything, so a changed variable or secret in `preprod` takes a manual run.
-# fly/RUNBOOK.md sets up the accounts, apps and secrets this expects; the GitHub environment
-# `preprod` holds its variables and secrets.
+# Deploys pre-production when ci passes on main. A commit whose ci run failed or was cancelled is
+# not deployed (the run fails and says why), and its changes ship with the next commit that passes.
+# tools/deploy-plan.mjs compares the commit with the one the last successful run shipped and picks
+# what changed: the agent release when device/ changed, and each Fly.io app whose code, shared
+# modules or fly/ directory changed. The run builds those images with the commit as their tag,
+# pushes them to Fly.io's registry, migrates the database (Supabase) when the migrator changed, then
+# deploys those apps; every other app keeps running what it runs. A change to this workflow,
+# fly/scripts or the plan, a run with no earlier success, and a manual run deploy everything, so a
+# changed variable or secret in `preprod` takes a manual run. fly/RUNBOOK.md sets up the accounts,
+# apps and secrets this expects; the GitHub environment `preprod` holds its variables and secrets.
 
 on:
-  push:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
     branches: [main]
   workflow_dispatch:
 
@@ -30,12 +33,26 @@ jobs:
       contents: read
       actions: read
     outputs:
+      commit: ${{ steps.commit.outputs.sha }}
       agent: ${{ steps.plan.outputs.agent }}
       apps: ${{ steps.plan.outputs.apps }}
       migrate: ${{ steps.plan.outputs.migrate }}
     steps:
+      # The run fails rather than skips, so it never counts as the last successful deploy.
+      - id: commit
+        env:
+          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          CI_URL: ${{ github.event.workflow_run.html_url }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" == workflow_run && "$CI_CONCLUSION" != success ]]; then
+            echo "::error::ci concluded $CI_CONCLUSION for $SHA, so it is not deployed; the next commit that passes ci deploys its changes ($CI_URL)"
+            exit 1
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         with:
+          ref: ${{ steps.commit.outputs.sha }}
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
@@ -60,6 +77,8 @@ jobs:
     environment: preprod
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
       - uses: actions/setup-go@v5
         with:
           go-version: '1.27.x'
@@ -129,11 +148,13 @@ jobs:
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       FLY_APP_PREFIX: ${{ vars.FLY_APP_PREFIX }}
-      SAC_IMAGE_TAG: ${{ github.sha }}
+      SAC_IMAGE_TAG: ${{ needs.plan.outputs.commit }}
       FLY_ORG: ${{ vars.FLY_ORG }}
       APPS: ${{ needs.plan.outputs.apps }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
       - uses: actions/download-artifact@v4
         if: needs.plan.outputs.agent == 'true'
         with:
@@ -212,11 +233,13 @@ jobs:
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       FLY_APP_PREFIX: ${{ vars.FLY_APP_PREFIX }}
-      SAC_IMAGE_TAG: ${{ github.sha }}
+      SAC_IMAGE_TAG: ${{ needs.plan.outputs.commit }}
       PG_HOST: ${{ vars.SAC_PG_HOST }}
       PG_REF: ${{ vars.SUPABASE_PROJECT_REF }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
       - uses: superfly/flyctl-actions/setup-flyctl@1.6
         with:
           version: 0.4.115
@@ -234,7 +257,7 @@ jobs:
       APPS: ${{ needs.plan.outputs.apps }}
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       FLY_APP_PREFIX: ${{ vars.FLY_APP_PREFIX }}
-      SAC_IMAGE_TAG: ${{ github.sha }}
+      SAC_IMAGE_TAG: ${{ needs.plan.outputs.commit }}
       PG_HOST: ${{ vars.SAC_PG_HOST }}
       PG_REF: ${{ vars.SUPABASE_PROJECT_REF }}
       DEVICE_FQDN: ${{ vars.SAC_DEVICE_FQDN }}
@@ -242,6 +265,8 @@ jobs:
       ENTRA_CLIENT_ID: ${{ vars.SAC_ENTRA_APP_CLIENT_ID }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.commit }}
       - uses: superfly/flyctl-actions/setup-flyctl@1.6
         with:
           version: 0.4.115

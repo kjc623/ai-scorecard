@@ -3,7 +3,7 @@
 // changed since the last successful deploy.
 //
 //   node tools/deploy-plan.mjs --base <commit>   compare HEAD with the commit the last deploy shipped
-//   node tools/deploy-plan.mjs --all             everything (no successful deploy yet, a manual run)
+//   node tools/deploy-plan.mjs --all             everything (a manual run)
 //
 // Prints the plan and, under GitHub Actions, writes agent=, apps= and migrate= to $GITHUB_OUTPUT.
 // A base that is missing or is not an ancestor of HEAD plans everything, so a change is never

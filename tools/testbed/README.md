@@ -27,10 +27,10 @@ node tools/testbed/deploy.mjs --uninstall [--no-wait]
 & .\tools\testbed\invm.ps1 -AgentState
 ```
 
-`deploy.mjs` finds the push run of `deploy.yml` on `main` for the commit (default: `origin`'s
-`main`), waits for it and downloads its `agent-release` artifact: the release pre-prod serves after
-that run, built by it when `device/` changed and otherwise the one pre-prod already served. The VM's agent updates itself to
-that release from pre-prod, so by default `deploy.mjs` publishes nothing: it waits (up to 60 minutes)
+`deploy.mjs` finds the run of `deploy.yml` that ci started on `main` for the commit (default:
+`origin`'s `main`), waits for it and downloads its `agent-release` artifact: the release pre-prod
+serves after that run, built by it when `device/` changed and otherwise the one pre-prod already
+served. The VM's agent updates itself to that release from pre-prod, so by default `deploy.mjs` publishes nothing: it waits (up to 60 minutes)
 until the VM runs the release and reports to pre-prod, printing the elapsed time and, while it
 waits, the agent's last update check. `--install` is for a VM with no agent, or one older than the
 self-updating agent: it wraps the MSI and the tenant file with the pinned `IntuneWinAppUtil.exe`,

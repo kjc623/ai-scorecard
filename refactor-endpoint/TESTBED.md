@@ -11,9 +11,9 @@ The owner's PC builds nothing for the VM: builds come from CI.
 
 1. The agent finishes the code and its tests on the branch (a fix branch, in the device phase),
    and reports **ready to merge**.
-2. The owner merges it to `main`. The push runs the deploy workflow, which builds the signed agent
-   release when `device/` changed, deploys the services that changed and migrates the database
-   when the migrator changed, in pre-prod.
+2. The owner merges it to `main`. Once ci passes on the merge, the deploy workflow builds the
+   signed agent release when `device/` changed, deploys the services that changed and migrates the
+   database when the migrator changed, in pre-prod.
 3. The agent on the VM updates itself, as on a customer's device: it asks pre-prod for the
    release every 15 minutes, verifies the release's signature and the MSI against it, and installs
    it over itself. Nothing is run on the PC. The Devices page shows the new `1.0.<run number>`.

@@ -113,14 +113,15 @@ export function checkTenantFile(env, config) {
 }
 
 /**
- * Picks the deploy.yml run that built a commit from `gh run list --json` output: the newest push
- * run whose head is the commit. state is success, running, failed or missing.
+ * Picks the deploy.yml run that built a commit from `gh run list --json` output: the newest run that
+ * ci started on main (or, before ci started deploys, a push started) whose head is the commit.
+ * state is success, running, failed or missing.
  */
 export function selectRun(runs, commit) {
   const sha = String(commit).trim().toLowerCase();
   if (!/^[0-9a-f]{7,40}$/.test(sha)) throw new Error(`"${commit}" is not a commit sha`);
   const matches = runs
-    .filter((r) => r.event === 'push' && String(r.headSha).toLowerCase().startsWith(sha))
+    .filter((r) => (r.event === 'workflow_run' || r.event === 'push') && String(r.headSha).toLowerCase().startsWith(sha))
     .sort((a, b) => b.number - a.number);
   const run = matches[0];
   if (!run) return { state: 'missing' };
@@ -256,8 +257,16 @@ class Tools {
 
 async function findRelease(tools, commit) {
   const { log } = tools;
-  let pick = selectRun(JSON.parse(tools.gh(['run', 'list', '--workflow', 'deploy.yml', '--branch', 'main', '--limit', '100', '--json', RUN_FIELDS], 'gh run list')), commit);
-  if (pick.state === 'missing') throw new Error(`no deploy.yml run on main was triggered by a push of ${commit}`);
+  const list = () => selectRun(JSON.parse(tools.gh(['run', 'list', '--workflow', 'deploy.yml', '--branch', 'main', '--limit', '100', '--json', RUN_FIELDS], 'gh run list')), commit);
+  let pick = list();
+  // ci starts the deploy once it passes on the commit, so a fresh merge has no run yet.
+  const started = Date.now();
+  while (pick.state === 'missing') {
+    if (Date.now() - started > WAIT_LIMIT_MS) throw new Error(`no deploy.yml run on main for ${commit}: ci starts one only when it passes on the commit`);
+    log.line(`no deploy.yml run for ${commit.slice(0, 12)} yet; ci starts it once it passes on the commit; waiting`);
+    await sleep(POLL_MS);
+    pick = list();
+  }
   while (pick.state === 'running') {
     log.line(`deploy.yml run #${pick.run.number} for ${commit.slice(0, 12)} is ${pick.run.status}; waiting (${pick.run.url})`);
     await sleep(POLL_MS);
