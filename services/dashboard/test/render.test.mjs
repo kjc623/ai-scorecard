@@ -121,7 +121,7 @@ test('the overview summarises usage beside the enrolled denominator', async () =
   assert.deepEqual(view.tiles.map((t) => t.label), ['Prompts', 'Attachments', 'Sensitive prompts', 'Users', 'Devices reporting']);
   assert.match(view.tiles[4].note, /of 4,620 enrolled devices/);
   assert.deepEqual(view.tiles[4].split.map((p) => [p.label, p.count, p.href]), [['Reporting', 4180, '#devices?status=reporting'], ['Not reporting', 440, '#devices?status=attention']]);
-  assert.deepEqual(view.blocks.map((b) => [b.kind, b.title]), [['share', 'Where prompts went'], ['ranking', 'Tools in use']]);
+  assert.deepEqual(view.blocks.map((b) => [b.kind, b.title]), [['share', 'Applications'], ['ranking', 'Tools in use']]);
   assert.equal(view.blocks[1].href, '#tools');
   assert.deepEqual(view.tables, []);
   const titles = view.banners.map((b) => b.title);

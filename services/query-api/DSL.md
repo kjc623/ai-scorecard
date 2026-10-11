@@ -127,7 +127,9 @@ Extra filter-only columns (not groupable): on `ingest.submission` — `submissio
 
 Every source that shows a tool returns the raw fingerprint in `tool` and a display name in
 `tool_name`, resolved at read time from the shared `ref.tool_catalogue`, falling back to
-`Unrecognised tool`. `sanctioned_state` is present-tense
+`Unrecognised tool`. `mart.v_tool_usage` also returns `tool_key`, the catalogue app the fingerprint
+belongs to (the unit a tenant sanctions, so several fingerprints of one tool share it), NULL for a
+fingerprint outside the catalogue. `sanctioned_state` is present-tense
 configuration joined at read time: the tenant's decision on the tool the fingerprint belongs to
 (`ops.tool_sanction` through the catalogue's `app_key`); NULL (no decision, or a fingerprint outside
 the catalogue) renders as `unknown`, never `unsanctioned`.

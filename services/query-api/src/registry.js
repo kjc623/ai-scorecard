@@ -260,10 +260,13 @@ export const SOURCES = Object.freeze({
     // The display name is joined at read time from ref.tool_catalogue through
     // ops.tool_display_name(); `tool` keeps returning the raw fingerprint, so the name can never
     // hide which behaviour-derived tool a row is about, and an unknown fingerprint is returned as
-    // "Unrecognised tool" with `tool` beside it. It is selected only when `tool` is
-    // a grouping dimension, because the name is a function of the grouped fingerprint.
+    // "Unrecognised tool" with `tool` beside it. `tool_key` is the catalogue app the fingerprint
+    // belongs to, the unit a tenant sanctions, so the fingerprints of one tool count as one; it is
+    // NULL for a fingerprint outside the catalogue. Both are selected only when `tool` is a
+    // grouping dimension, because both are functions of the grouped fingerprint.
     extraSelect: Object.freeze([
       Object.freeze({ sql: 'ops.tool_display_name(t.tool_fingerprint) AS "tool_name"', whenDimensions: Object.freeze(['tool']) }),
+      Object.freeze({ sql: '(SELECT c.app_key FROM ref.tool_catalogue c WHERE c.tool_fingerprint = t.tool_fingerprint) AS "tool_key"', whenDimensions: Object.freeze(['tool']) }),
     ]),
     warnings: Object.freeze([
       'mart.v_tool_usage exposes no detections/rollup_events/degraded_events: a detection-only tool (mode I) or a rollup-only tool cannot appear in this source. Use source mart.agg_tool_period for those measures.',

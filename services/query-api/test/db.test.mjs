@@ -280,6 +280,35 @@ test('the tool display name resolves a catalogue entry, a site no app claims and
   );
 });
 
+test('Q1 names the tool each fingerprint belongs to, one key for every fingerprint of a tool', { skip: SKIP }, async () => {
+  let tool = null;
+  await scratch(
+    async (client) => {
+      tool = (await client.query(
+        'SELECT app_key, array_agg(tool_fingerprint ORDER BY tool_fingerprint) AS fingerprints FROM ref.tool_catalogue GROUP BY app_key HAVING count(*) >= 2 ORDER BY app_key LIMIT 1',
+      )).rows[0];
+      assert.ok(tool, 'the catalogue has a tool with two fingerprints');
+      for (const fingerprint of [...tool.fingerprints.slice(0, 2), 'tls_never_seen_anywhere']) {
+        await client.query(
+          `INSERT INTO mart.agg_tool_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, submissions, users, bytes_total)
+           VALUES (ops.current_tenant(), '2026-09-02T00:00:00Z', 'day', $1, 1, 1, 10)`,
+          [fingerprint],
+        );
+      }
+    },
+    async (client, tenant) => {
+      const read = plan({ query_version: '1', template: 'q1_tools_ranked', params: { window: WINDOW, limit: 100 } }, { now: NOW, tenant, actorId: 'db-test' })
+        .statements.find((s) => s.id === 'read');
+      const keys = Object.fromEntries((await client.query(read.text, read.params)).rows.map((row) => [row.tool, row.tool_key]));
+      assert.deepEqual(keys, {
+        [tool.fingerprints[0]]: tool.app_key,
+        [tool.fingerprints[1]]: tool.app_key,
+        tls_never_seen_anywhere: null,
+      });
+    },
+  );
+});
+
 test('teams and their people read under their current names, and people list by name with a case-insensitive prefix', { skip: SKIP }, async () => {
   const ada = `u_${'a'.repeat(32)}`;
   const bob = `u_${'b'.repeat(32)}`;
