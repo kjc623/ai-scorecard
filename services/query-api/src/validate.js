@@ -528,6 +528,13 @@ function resolveOrder(doc, source, dimensions, measures, bucket) {
     if (dir !== 'asc' && dir !== 'desc') {
       throw unsupported(REASON.MALFORMED_DOCUMENT, `order[${i}].dir must be "asc" or "desc".`, { dir });
     }
+    if (source.rankable === false && measures.includes(by)) {
+      // A per-person source ordered by a measure is a leaderboard.
+      throw unsupported(REASON.UNKNOWN_MEASURE, `Source "${source.id}" lists people and is not ordered by a measure; order by a dimension instead.`, {
+        by,
+        orderable: [...dimensions],
+      });
+    }
     if (seen.has(by)) throw unsupported(REASON.MALFORMED_DOCUMENT, `Ordering on "${by}" twice is not meaningful.`, { by });
     seen.add(by);
     out.push(Object.freeze({ by, dir }));

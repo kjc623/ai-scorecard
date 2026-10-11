@@ -15,7 +15,7 @@ import {
   personView, peopleView, devicesView, eventView, auditView, refusalView,
   needsInputView,
 } from './views.js';
-import { buildPeopleDocument } from './dsl.js';
+import { buildPeopleDocument, buildTeamMembersDocument } from './dsl.js';
 import { renderScreen, renderNav } from './render.js';
 import { shellNavItems, groupOf, readCollapsed, wireShell } from './shell.js';
 import { allowedPageIds, filterNavItems, mayOpen } from './session.js';
@@ -138,6 +138,9 @@ export function createDashboard({ api, now = () => new Date() }) {
             return { view: mode.view(await ask(mode.questionId, ctx)), shell: shell() };
           }
           const state = await ask(screen.questionId, ctx);
+          if (screen.id === 'teams') {
+            return { view: teamsView(state, { manageHref: params.mayManage ? '#directory' : null, members: await teamMembers(state, ctx) }), shell: shell() };
+          }
           return { view: viewFor(screen.id, state, params), shell: shell() };
         }
         case 'input': {
@@ -170,6 +173,23 @@ export function createDashboard({ api, now = () => new Date() }) {
       }
     } catch (error) {
       return { view: refusalFrom(error, { title: screen.label }), shell: shell() };
+    }
+  }
+
+  /**
+   * The people behind the teams with usage. A role that may not see people, or a read that fails,
+   * leaves the team totals standing and says why the people are missing.
+   */
+  async function teamMembers(teams, ctx) {
+    const ids = teams.data.map((row) => row.team).filter(Boolean);
+    if (teams.isRefusal || ids.length === 0) return null;
+    try {
+      return readState(await api.run(buildTeamMembersDocument({ window: ctx.window, teams: ids })));
+    } catch (error) {
+      return readState(error?.envelope ?? {
+        result_state: error?.resultState ?? 'unsupported_query_shape',
+        error: { code: error?.reason ?? 'client_error', message: String(error?.message ?? error) },
+      });
     }
   }
 

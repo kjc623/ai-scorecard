@@ -592,6 +592,63 @@ export const SOURCES = Object.freeze({
   }),
 
   // -------------------------------------------------------------------------------------------
+  // The people behind each team's total. Subject-bearing and audited; it cannot be ordered by a
+  // measure, so it is a team's roster with numbers, not a ranking.
+  // -------------------------------------------------------------------------------------------
+  'mart.v_team_member_period': Object.freeze({
+    id: 'mart.v_team_member_period',
+    kind: 'aggregate',
+    label: 'Usage per team member per bucket (mart.v_team_member_period)',
+    from: 'mart.v_team_member_period tu',
+    tenantColumn: 'tu.tenant_id',
+    costClass: 'aggregate',
+    time: null,
+    bucket: { startColumn: 'tu.bucket_start', sizeColumn: 'tu.bucket_size', sizes: NATIVE_BUCKETS },
+    dimensions: Object.freeze({
+      bucket: dim('bucket', 'tu.bucket_start', 'timestamp'),
+      team: dim('team', 'tu.team_id', 'uuid', { ...TEAM_CARD }),
+      subject: dim('subject', 'tu.user_ref', 'text', { ...USER_CARD }),
+    }),
+    measures: Object.freeze({
+      submissions: measure('submissions', 'tu.submissions'),
+    }),
+    grain: Object.freeze(['bucket', 'team', 'subject']),
+    order: Object.freeze([
+      { dim: 'bucket', dir: 'desc' },
+      { dim: 'team', dir: 'asc' },
+      { dim: 'subject', dir: 'asc' },
+    ]),
+    rankable: false,
+    subjectBearing: true,
+    requiresSubjectScope: false,
+    indexes: Object.freeze([
+      'mart.agg_user_period PK (tenant_id, bucket_start, bucket_size, user_ref)',
+      'ops.team PK (tenant_id, team_id)',
+    ]),
+    // Names are present-tense, joined at read time: the team's, and the person's as the people
+    // list shows it (the directory's display name, else the account name their device last
+    // reported, else the reference).
+    extraSelect: Object.freeze([
+      Object.freeze({
+        sql: '(SELECT tt.name FROM ops.team tt WHERE tt.tenant_id = ops.current_tenant() AND tt.team_id = tu.team_id) AS "team_name"',
+        whenDimensions: Object.freeze(['team']),
+      }),
+      Object.freeze({
+        sql: [
+          'coalesce((SELECT ud.display_name FROM ops.user_dim ud WHERE ud.tenant_id = ops.current_tenant() AND ud.user_ref = tu.user_ref),',
+          ' (SELECT d.last_subject_name FROM ops.device d WHERE d.tenant_id = ops.current_tenant() AND d.last_user_ref = tu.user_ref',
+          ' AND d.last_subject_name IS NOT NULL ORDER BY d.last_seen_at DESC NULLS LAST LIMIT 1), tu.user_ref) AS "name"',
+        ].join(''),
+        whenDimensions: Object.freeze(['subject']),
+      }),
+    ]),
+    warnings: Object.freeze([
+      'A team is its current members: a person who joined a team today shows their earlier usage under it.',
+      'Ordered by team and person, never by a measure: this is a roster, not a leaderboard.',
+    ]),
+  }),
+
+  // -------------------------------------------------------------------------------------------
   // Q7 — device collection state.
   // -------------------------------------------------------------------------------------------
   'mart.agg_device_period': Object.freeze({
@@ -1172,6 +1229,7 @@ export const SOURCE_WATERMARK = Object.freeze({
   'mart.agg_device_period': 'mart.agg_device_period',
   'mart.v_device_liveness': null,
   'mart.v_person': null,
+  'mart.v_team_member_period': 'mart.agg_user_period',
   'ops.collector_state': null,
   'ops.coverage_snapshot': null,
   'ingest.submission': null,

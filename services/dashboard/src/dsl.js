@@ -127,6 +127,28 @@ export function buildPeopleDocument({ search = '', subject = '', cursor = null, 
 }
 
 /**
+ * The people behind the teams on the Teams page: each member's submissions in the window, for the
+ * teams named. Naming the teams is what lets the read span more than a week.
+ *
+ * @param {{window: {from: string, to: string}, teams: string[], limit?: number}} input
+ */
+export function buildTeamMembersDocument({ window, teams, limit = 1000 }) {
+  const ids = [...new Set(teams.filter((t) => typeof t === 'string' && t !== ''))].slice(0, 200);
+  if (ids.length === 0) {
+    throw new DashboardQueryError('missing_filter', 'A team roster names at least one team.');
+  }
+  return Object.freeze({
+    query_version: QUERY_VERSION,
+    source: 'mart.v_team_member_period',
+    dimensions: Object.freeze(['team', 'subject']),
+    measures: Object.freeze(['submissions']),
+    filters: Object.freeze([Object.freeze({ field: 'team', op: 'in', value: Object.freeze(ids) })]),
+    window: checkWindow(window),
+    limit,
+  });
+}
+
+/**
  * Build a template request. A template parameter that the template does not declare is refused,
  * because a typo in a parameter name would otherwise answer a broader question than the one asked.
  *

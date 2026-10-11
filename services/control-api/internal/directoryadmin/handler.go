@@ -495,8 +495,9 @@ func (h *Handler) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
 	case h.storeFailed(w, err, "create team"):
 		return
 	}
-	if team.Source == SourceGroup && req.GroupObjectID != "" && h.cfg.Sync != nil {
-		// An imported group has no members until the pull reads them.
+	if team.Source == SourceGroup && h.cfg.Sync != nil {
+		// A group imported from Entra, now or by an earlier attempt, has no members until the pull
+		// reads them. A tenant with the pull off ignores the request.
 		h.cfg.Sync.Trigger(p.Tenant)
 	}
 	h.cfg.Logger.Info("control: team created", "tenant", p.Tenant, "team_id", id, "source", team.Source)

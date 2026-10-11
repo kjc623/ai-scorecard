@@ -164,19 +164,20 @@ function narrowingHint(source) {
 }
 
 /**
- * A window beyond 7 days is refused when `subject` is a grouping dimension and no tool or subject
- * filter narrows it; the refusal names the narrowing that would make it servable.
+ * A window beyond 7 days is refused when `subject` is a grouping dimension and no tool, team or
+ * subject filter narrows it; the refusal names the narrowing that would make it servable.
  */
 function assertSubjectScope(query, source) {
   if (!query.dimensions.includes('subject')) return;
   const days = windowDaysOf(query);
   const narrowedBySubject = query.filters.some((f) => f.field === 'subject' && (f.op === 'eq' || f.op === 'in'));
   const narrowedByTool = query.filters.some((f) => f.field === 'tool' && (f.op === 'eq' || f.op === 'in' || f.op === 'starts_with'));
-  if (days > MAX_UNNARROWED_SUBJECT_WINDOW_DAYS && !narrowedBySubject && !narrowedByTool) {
-    throw tooBroad(REASON.WINDOW_TOO_WIDE, `A subject-grouped read is refused beyond ${MAX_UNNARROWED_SUBJECT_WINDOW_DAYS} days unless it is narrowed by a tool or a subject filter.`, {
+  const narrowedByTeam = query.filters.some((f) => f.field === 'team' && (f.op === 'eq' || f.op === 'in'));
+  if (days > MAX_UNNARROWED_SUBJECT_WINDOW_DAYS && !narrowedBySubject && !narrowedByTool && !narrowedByTeam) {
+    throw tooBroad(REASON.WINDOW_TOO_WIDE, `A subject-grouped read is refused beyond ${MAX_UNNARROWED_SUBJECT_WINDOW_DAYS} days unless it is narrowed by a tool, team or subject filter.`, {
       max_days: MAX_UNNARROWED_SUBJECT_WINDOW_DAYS,
       requested_days: round(days),
-      fix: { add_filter: ['tool eq/in', 'subject eq/in'], or_narrow_window_to_days: MAX_UNNARROWED_SUBJECT_WINDOW_DAYS },
+      fix: { add_filter: ['tool eq/in', 'team eq/in', 'subject eq/in'], or_narrow_window_to_days: MAX_UNNARROWED_SUBJECT_WINDOW_DAYS },
     });
   }
   void source;

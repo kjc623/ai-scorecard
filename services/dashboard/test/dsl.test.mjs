@@ -60,7 +60,7 @@ test('a list document names a windowless list source and filters only on its own
 });
 
 test('the vocabularies here are complete enough to describe every source and template', () => {
-  assert.equal(Object.keys(SOURCES).length, 15);
+  assert.equal(Object.keys(SOURCES).length, 16);
   assert.equal(TEMPLATE_NAMES.length, 10);
   for (const [name, spec] of Object.entries(SOURCES)) {
     assert.ok(spec.kind === 'aggregate' || spec.kind === 'list', `${name} has a kind`);
