@@ -81,7 +81,7 @@ export const EXPLORE_DATASETS = Object.freeze({
     rowKey: (row) => String(row.submission_id),
     fields: Object.freeze([
       USER_FIELD,
-      exploreField('tool', 'Tool', { hint: 'A tool fingerprint, such as tls_b6681b043244c43f' }),
+      exploreField('tool', 'Tool', { hint: 'A tool or any of its fingerprints, such as app:chatgpt_web' }),
       exploreField('action', 'Policy action', { values: ['blocked', 'warned', 'logged'] }),
       exploreField('class', 'Data class', { values: DATA_CLASSES, closed: false }),
       exploreField('content_state', 'Content', { values: ['not_captured', 'local_only', 'uploaded', 'shredded'] }),
@@ -122,7 +122,7 @@ export const EXPLORE_DATASETS = Object.freeze({
       exploreField('class', 'Data class', { values: DATA_CLASSES, closed: false }),
       exploreField('rule', 'Rule', { hint: 'A rule code, such as PAYMENT_CARD_PAN' }),
       USER_FIELD,
-      exploreField('tool', 'Tool', { hint: 'A tool fingerprint, such as tls_b6681b043244c43f' }),
+      exploreField('tool', 'Tool', { hint: 'A tool or any of its fingerprints, such as app:chatgpt_web' }),
     ]),
     columns: Object.freeze([
       exploreColumn('detected_at', 'Detected', 'server-clock'),
