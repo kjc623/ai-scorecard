@@ -354,7 +354,7 @@ test('no file in this package contains a statement or a database driver', () => 
 test('the only endpoints the pages call are the query endpoint, the two content reads and the admin API', () => {
   // The query endpoint takes a closed query document and never returns content. The two content
   // reads are forwarded to content-vault, which decides and audits. The admin endpoints are
-  // Settings → Deployment's, Settings → Settings' and Settings → Directory & teams', control-api's,
+  // Settings → Deployment's, Settings → Settings' and Settings → Identity Providers' and Teams', control-api's,
   // admin-only and audited; they read configuration and never data. Anything else named here would
   // be another way in.
   const files = sourceFiles().filter((rel) => rel.startsWith('src/'));

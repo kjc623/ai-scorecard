@@ -25,6 +25,8 @@ import { createSettings } from './settings.js';
 import { createDirectory } from './directory.js';
 import { renderDirectory } from './directory-render.js';
 import { renderSettings } from './settings-render.js';
+import { createTeamEditor } from './team-editor.js';
+import { renderTeamAdd, renderTeamDialog, renderTeamEdit } from './team-editor-render.js';
 
 /**
  * The screens. The event detail is reached from a row that names a submission; the rest are in the
@@ -42,8 +44,8 @@ export const SCREENS = Object.freeze([
   Object.freeze({ id: 'deployment', label: 'Deployment', question: null, kind: 'admin' }),
   // Settings → Settings is the other admin screen, over the same admin API (settings.js).
   Object.freeze({ id: 'settings', label: 'Settings', question: null, kind: 'admin' }),
-  // Settings → Directory & teams: reading the directory and managing teams (directory.js).
-  Object.freeze({ id: 'directory', label: 'Directory & teams', question: null, kind: 'admin' }),
+  // Settings → Identity Providers: where people and groups come from (directory.js).
+  Object.freeze({ id: 'directory', label: 'Identity Providers', question: null, kind: 'admin' }),
   Object.freeze({ id: 'event', label: 'Event detail', question: 9, kind: 'input', questionId: 'q9_event_detail' }),
 ]);
 
@@ -223,23 +225,22 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
 
   /** The Teams screen: every team, or one team when the address names it. */
   async function teamsScreen(params, ctx) {
-    const manageHref = params.mayManage ? '#directory' : null;
     const team = params.filters.team ? String(params.filters.team) : null;
     // An admin's team list names the teams with no usage, so a quiet team is listed rather than
     // absent, and one team's screen is named even when it has no cell in the window.
     const teams = params.mayManage && admin
       ? await part(async () => {
-        const answer = await admin.directory();
-        return answer.state === 'available' ? answer.data.teams : null;
+        const answer = await admin.teams();
+        return answer.state === 'available' ? answer.teams : null;
       })
       : null;
     if (team) {
       const state = await ask('q3_team_growth', context({ preset: ctx.preset, filters: { team }, now: now() }));
-      return teamView(state, { team, members: await teamMembers(state, ctx, [team]), teams, manageHref, preset: ctx.preset });
+      return teamView(state, { team, members: await teamMembers(state, ctx, [team]), teams, preset: ctx.preset });
     }
     const state = await ask('q3_team_growth', ctx);
     const members = await teamMembers(state, ctx);
-    return teamsView(state, { manageHref, members, teams, preset: ctx.preset });
+    return teamsView(state, { mayManage: Boolean(params.mayManage), members, teams, preset: ctx.preset });
   }
 
   /**
@@ -334,6 +335,32 @@ function saveDownload(document, data, filename) {
   view.setTimeout(() => view.URL.revokeObjectURL(href), 60_000);
 }
 
+/**
+ * Repaint a container without losing the reader's place: the list keeps its scroll, and the
+ * control that had the focus has it again (a checkbox by what it ticks, a field by its id, a button
+ * by its action), or the panel takes it, so the focus never leaves an open dialog.
+ */
+function repaint(document, container, html) {
+  const active = document.activeElement;
+  const inside = Boolean(active) && typeof container.contains === 'function' && container.contains(active);
+  const was = inside ? { pick: active.dataset?.teamPick, id: active.id, team: active.dataset?.team, value: active.dataset?.value, caret: active.selectionStart } : null;
+  const scroll = container.querySelector?.('.pick-list')?.scrollTop ?? 0;
+  container.innerHTML = html;
+  const list = container.querySelector?.('.pick-list');
+  if (list) list.scrollTop = scroll;
+  if (!was) return;
+  const all = [...(container.querySelectorAll?.('input, button') ?? [])];
+  const target = was.pick !== undefined ? all.find((el) => el.dataset.teamPick === was.pick)
+    : was.id ? all.find((el) => el.id === was.id)
+      : all.find((el) => el.dataset.team === was.team && el.dataset.value === was.value);
+  if (target && !target.disabled) {
+    target.focus({ preventScroll: true });
+    if (typeof was.caret === 'number' && typeof target.setSelectionRange === 'function') target.setSelectionRange(was.caret, was.caret);
+  } else {
+    container.querySelector?.('.dialog-panel')?.focus({ preventScroll: true });
+  }
+}
+
 function copyToClipboard(document, text) {
   const clipboard = document.defaultView?.navigator?.clipboard;
   if (!clipboard?.writeText) return Promise.reject(new Error('no clipboard'));
@@ -374,6 +401,11 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   let deployment = null;
   let settings = null;
   let directory = null;
+  let editor = null;
+  // An admin adds and edits teams on Teams; the server refuses the admin API to anyone else.
+  const mayManage = mayOpen(allowed, 'directory');
+  // The add and edit pop-up lives outside the screen, so a screen repaint never closes it.
+  const dialog = document.getElementById('team-dialog');
 
   function paintDeployment(state) {
     if (paintedScreen === 'deployment') root.innerHTML = renderDeployment(state, { eyebrow: groupOf('deployment') });
@@ -403,8 +435,37 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   }
 
   function directoryController() {
-    directory ??= createDirectory({ admin: adminApi, query: active, onChange: paintDirectory });
+    directory ??= createDirectory({ admin: adminApi, onChange: paintDirectory });
     return directory;
+  }
+
+  function paintEditor(state) {
+    if (!dialog) return;
+    repaint(document, dialog, renderTeamDialog(state));
+    if (state.open && !dialog.open && typeof dialog.showModal === 'function') dialog.showModal();
+    if (!state.open && dialog.open && typeof dialog.close === 'function') dialog.close();
+  }
+
+  /** After a team is made, changed or deleted, Teams reads again; a deleted team's own screen goes back to the list. */
+  function teamSaved({ team, deleted }) {
+    const { id, filters } = parseHash(document.location.hash);
+    if (id !== 'teams') return;
+    if (deleted && filters.team && filters.team === team?.team_id) {
+      document.location.hash = filters.preset ? `#teams?preset=${encodeURIComponent(filters.preset)}` : '#teams';
+      return;
+    }
+    render();
+  }
+
+  function editorController() {
+    editor ??= createTeamEditor({ admin: adminApi, query: active, onChange: paintEditor, onSaved: teamSaved });
+    return editor;
+  }
+
+  /** The control an admin has in the Teams header: add a team on the list, edit it on a team's screen. */
+  function toolFor(screen, filters) {
+    if (screen.id !== 'teams' || !mayManage) return null;
+    return filters.team ? renderTeamEdit(String(filters.team)) : renderTeamAdd();
   }
 
   async function render() {
@@ -450,10 +511,10 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     const typing = sameScreen && document.activeElement?.name === 'subject';
     // While the next read runs the page keeps what it shows, dimmed: no blank, no jump.
     root.setAttribute?.('aria-busy', 'true');
-    const { view, shell } = await dashboard.load(screen.id, { preset, filters, mayManage: mayOpen(allowed, 'directory') });
+    const { view, shell } = await dashboard.load(screen.id, { preset, filters, mayManage });
     root.setAttribute?.('aria-busy', 'false');
     const { preset: _preset, ...others } = filters;
-    root.innerHTML = renderScreen(view, { ...shell, eyebrow: groupOf(screen.id), switch: switchFor(screen, preset, others), presets: presetsFor(screen, preset, others) });
+    root.innerHTML = renderScreen(view, { ...shell, eyebrow: groupOf(screen.id), switch: switchFor(screen, preset, others), presets: presetsFor(screen, preset, others), tool: toolFor(screen, filters) });
     document.title = `${view?.title ?? screen.label} · ${brand}`;
     if (typing) root.querySelector?.('input[name="subject"]')?.focus();
   }
@@ -463,8 +524,15 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   // The handler returns the render promise. A browser ignores a listener's return value, so this
   // costs nothing there; it means a test can await a navigation and read the finished page rather
   // than racing it.
-  // A browser fires hashchange on the window, not the document.
-  (document.defaultView ?? document).addEventListener('hashchange', render);
+  // A browser fires hashchange on the window, not the document. Moving anywhere closes the pop-up.
+  (document.defaultView ?? document).addEventListener('hashchange', () => {
+    editor?.close();
+    return render();
+  });
+  // The browser closes the dialog itself on Escape; the pop-up's state follows it.
+  dialog?.addEventListener?.('close', () => {
+    if (editor?.state.open) editor.close();
+  });
   document.addEventListener('submit', (event) => {
     const form = event.target;
     // Settings' retention form: Enter saves the value beside it.
@@ -474,10 +542,10 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       if (field && settings) settings.act({ action: 'save-retention', appliesTo: field.dataset.settingsDraft });
       return;
     }
-    // Directory's forms: Enter runs the search or creates the team the form is for.
-    if (form?.dataset?.dirForm !== undefined) {
+    // The team pop-up's forms: Enter in the name saves, Enter in the search searches.
+    if (form?.dataset?.teamForm !== undefined) {
       event.preventDefault();
-      if (directory) directory.act({ dir: form.dataset.dirForm });
+      if (editor) editor.act({ team: form.dataset.teamForm });
       return;
     }
     // Deployment's forms act through their buttons; Enter in the token label creates the token.
@@ -495,6 +563,16 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   });
   // Deployment's buttons name their action in data-dep; Settings' controls name theirs in data-action.
   document.addEventListener('click', (event) => {
+    // An open "+ Add a Team" menu closes on any click outside it, and once a way is chosen.
+    for (const menu of document.querySelectorAll?.('details.add-menu[open]') ?? []) {
+      if (!menu.contains(event.target) || event.target?.closest?.('[data-team]')) menu.removeAttribute('open');
+    }
+    const teamTarget = event.target?.closest?.('[data-team]');
+    if (teamTarget && !teamTarget.disabled) {
+      event.preventDefault();
+      editorController().act({ ...teamTarget.dataset });
+      return;
+    }
     const action = event.target?.closest?.('[data-action]');
     if (action && settings && action.tagName !== 'SELECT' && !action.disabled) {
       event.preventDefault();
@@ -514,6 +592,13 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   });
   // A per-tool override or other select names its action in data-action and fires change, not click.
   document.addEventListener('change', (event) => {
+    const pick = event.target?.dataset?.teamPick;
+    if (pick !== undefined && editor) {
+      editor.toggle(pick);
+      // A tick the pop-up refused does not stay ticked.
+      event.target.checked = Boolean(editor.state.picked[pick]);
+      return;
+    }
     const select = event.target?.closest?.('select[data-action]');
     if (!select || !settings) return;
     settings.act({ action: select.dataset.action, tool: select.dataset.tool, value: select.value });
@@ -527,10 +612,18 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     if (killRoute && settings) settings.setKillSwitchReason(killRoute, event.target.value);
     const field = event.target?.dataset?.depDraft;
     if (field && deployment) deployment.setDraft(field, event.target.value);
-    const dirField = event.target?.dataset?.dirDraft;
-    if (dirField && directory) directory.setDraft(dirField, event.target.value);
+    const teamField = event.target?.dataset?.teamDraft;
+    if (teamField && editor) {
+      editor.setDraft(teamField, event.target.value);
+      // Emptying the search shows everything again, as clearing a search box does elsewhere.
+      if (teamField === 'query' && event.target.value === '' && editor.state.term !== '') editor.search();
+    }
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    for (const menu of document.querySelectorAll?.('details.add-menu[open]') ?? []) menu.removeAttribute('open');
   });
   await render();
 
-  return { render, dashboard, deployment: () => deployment, settings: () => settings, directory: () => directory };
+  return { render, dashboard, deployment: () => deployment, settings: () => settings, directory: () => directory, editor: () => editor };
 }

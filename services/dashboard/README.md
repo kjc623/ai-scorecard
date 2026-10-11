@@ -1,10 +1,11 @@
 # dashboard
 
 The analyst-facing web application: Overview, Usage (tools, data classes, teams, and users: the
-people list and each person's page), Devices, Audit trail, Settings (Settings, Deployment, Directory
-& teams), and the Search page, where an analyst lists events, findings,
+people list and each person's page), Devices, Audit trail, Settings (Settings, Deployment, Identity
+Providers), and the Search page, where an analyst lists events, findings,
 devices and audit entries, opens a device to see each of its collectors with its state and cause,
-searches prompt text, and reads an event's stored prompt.
+searches prompt text, and reads an event's stored prompt. An admin adds, edits and deletes teams on
+Teams, from a group, department or unit the identity provider synced, or from people they tick.
 
 It has two halves and no dependencies:
 

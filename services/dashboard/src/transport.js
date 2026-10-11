@@ -325,13 +325,9 @@ export function createAdminApi({ transport }) {
       return done({ method: 'POST', path: revokePath(ADMIN_SCIM_TOKENS_ENDPOINT, tokenId) });
     },
     async directory() {
-      const [status, teams] = await Promise.all([
-        call({ method: 'GET', path: ADMIN_DIRECTORY_ENDPOINT }),
-        call({ method: 'GET', path: ADMIN_TEAMS_ENDPOINT }),
-      ]);
-      if (!ok(status.status) || !status.body || typeof status.body !== 'object') return refused(status);
-      if (!ok(teams.status) || !Array.isArray(teams.body?.teams)) return refused(teams);
-      return { state: 'available', data: normaliseDirectory(status.body, teams.body.teams) };
+      const answer = await call({ method: 'GET', path: ADMIN_DIRECTORY_ENDPOINT });
+      if (!ok(answer.status) || !answer.body || typeof answer.body !== 'object') return refused(answer);
+      return { state: 'available', data: normaliseDirectory(answer.body) };
     },
     setDirectorySync(enabled) {
       return done({ method: 'PUT', path: `${ADMIN_DIRECTORY_ENDPOINT}/sync`, body: { enabled } });
@@ -353,9 +349,17 @@ export function createAdminApi({ transport }) {
       if (!ok(answer.status) || !Array.isArray(answer.body?.values)) return refused(answer);
       return { state: 'available', values: answer.body.values };
     },
+    async teams() {
+      const answer = await call({ method: 'GET', path: ADMIN_TEAMS_ENDPOINT });
+      if (!ok(answer.status) || !Array.isArray(answer.body?.teams)) return refused(answer);
+      return { state: 'available', teams: normaliseTeams(answer.body.teams) };
+    },
     async createTeam(team) {
       const answer = await call({ method: 'POST', path: ADMIN_TEAMS_ENDPOINT, body: team });
       return ok(answer.status) ? { state: 'done', team: answer.body ?? null } : refused(answer);
+    },
+    renameTeam(teamId, name) {
+      return done({ method: 'PATCH', path: `${ADMIN_TEAMS_ENDPOINT}/${encodeURIComponent(String(teamId))}`, body: { name } });
     },
     deleteTeam(teamId) {
       return done({ method: 'DELETE', path: `${ADMIN_TEAMS_ENDPOINT}/${encodeURIComponent(String(teamId))}` });
@@ -430,8 +434,8 @@ export function adminErrorOf(body, status) {
 const nullableNumber = (value) => (typeof value === 'number' && Number.isFinite(value) ? value : null);
 const nullableText = (value) => (typeof value === 'string' && value !== '' ? value : null);
 
-/** The directory read and the team list, with a count the server did not send left as null. */
-export function normaliseDirectory(status, teams) {
+/** The directory read, with a count the server did not send left as null. */
+export function normaliseDirectory(status) {
   const sync = status.sync && typeof status.sync === 'object'
     ? Object.freeze({
       enabled_by: nullableText(status.sync.enabled_by),
@@ -450,18 +454,23 @@ export function normaliseDirectory(status, teams) {
     people: nullableNumber(status.people),
     groups: nullableNumber(status.groups),
     sync,
-    teams: Object.freeze(teams.filter((t) => t && typeof t === 'object' && typeof t.team_id === 'string').map((t) => Object.freeze({
-      team_id: t.team_id,
-      name: String(t.name ?? ''),
-      source: nullableText(t.source),
-      group_name: nullableText(t.group_name),
-      group_object_id: nullableText(t.group_object_id),
-      match_value: nullableText(t.match_value),
-      members: nullableNumber(t.members),
-      created_by: nullableText(t.created_by),
-      created_at: nullableText(t.created_at),
-    }))),
   });
+}
+
+/** The team list, with a count the server did not send left as null. */
+export function normaliseTeams(teams) {
+  return Object.freeze(teams.filter((t) => t && typeof t === 'object' && typeof t.team_id === 'string').map((t) => Object.freeze({
+    team_id: t.team_id,
+    name: String(t.name ?? ''),
+    source: nullableText(t.source),
+    group_id: nullableText(t.group_id),
+    group_name: nullableText(t.group_name),
+    group_object_id: nullableText(t.group_object_id),
+    match_value: nullableText(t.match_value),
+    members: nullableNumber(t.members),
+    created_by: nullableText(t.created_by),
+    created_at: nullableText(t.created_at),
+  })));
 }
 
 /**

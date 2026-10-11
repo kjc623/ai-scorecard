@@ -610,9 +610,81 @@ td.dp-action { text-align: right; white-space: nowrap; }
   .rank-trend { grid-area: trend; }
 }
 
-/* Directory & teams */
-.dir-results { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; max-width: 680px; }
-.dir-results li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 10px; background: var(--tray); }
-.dir-results li .dp-sub { display: inline; margin: 0; }
-.dir-results li .btn { margin-left: auto; }
-.dir-team { padding-top: 16px; border-top: 1px solid var(--line); }
+/* ── Teams: the "+ Add a Team" menu, and the pop-up it and "Edit team" open ──────────────── */
+.screen-tool { display: flex; justify-content: flex-end; }
+.add-menu { position: relative; z-index: 20; }
+.add-menu > summary { list-style: none; }
+.add-menu > summary::-webkit-details-marker { display: none; }
+.add-menu-list {
+  position: absolute; right: 0; top: calc(100% + 8px); width: max-content; min-width: 280px; padding: 6px;
+  display: grid; gap: 2px; border-radius: 16px; background: var(--panel); border: 1px solid var(--line);
+  box-shadow: inset 0 1px 0 var(--hi), var(--shadow);
+}
+.add-menu-item {
+  display: grid; gap: 2px; padding: 9px 12px; text-align: left; cursor: pointer;
+  border: 0; border-radius: 11px; background: transparent; color: var(--ink); font: 600 13px var(--sans);
+  transition: background .3s var(--ease);
+}
+.add-menu-item:hover, .add-menu-item:focus-visible { background: var(--tray); }
+.add-menu-hint { font-weight: 400; font-size: 12px; color: var(--ink-soft); }
+
+.dialog {
+  width: min(680px, calc(100vw - 32px)); max-height: min(800px, calc(100dvh - 32px)); padding: 0; overflow: hidden;
+  border: 1px solid var(--line); border-radius: var(--r-shell); background: var(--panel); color: var(--text);
+  box-shadow: inset 0 1px 0 var(--hi), 0 30px 80px -30px rgb(0 0 0 / .5);
+}
+.dialog[open] { display: flex; }
+.dialog::backdrop { background: rgb(13 13 12 / .4); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px); }
+.dialog-panel { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; outline: none; }
+.dialog-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 22px 24px 4px; }
+.dialog-head .eyebrow { margin-bottom: 10px; }
+.dialog-head h3 { margin: 0; font: 400 30px/1.05 var(--serif); letter-spacing: -0.02em; color: var(--ink); }
+.dialog-lead { margin: 8px 0 0; max-width: 60ch; font-size: 13.5px; color: var(--ink-soft); }
+.dialog-x {
+  flex: none; width: 32px; height: 32px; cursor: pointer; border-radius: 9999px;
+  border: 1px solid var(--line); background: var(--tray); color: var(--ink-soft); font: 400 18px/1 var(--sans);
+}
+.dialog-x:hover { color: var(--ink); border-color: var(--line-strong); }
+.dialog-body { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 14px; padding: 14px 24px 16px; }
+.dialog-body .dp-form { max-width: none; }
+.dialog-foot { display: grid; gap: 10px; padding: 14px 24px 18px; border-top: 1px solid var(--line); }
+.dialog-summary { margin: 0; font-size: 13px; color: var(--text); }
+.dialog-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.dialog-start { margin-right: auto; display: inline-flex; }
+
+.pick { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.pick-filter { flex-wrap: wrap; border-radius: 16px; }
+.seg-count { margin-left: 2px; font-variant-numeric: tabular-nums; color: var(--ink-faint); }
+.pick-search { display: flex; gap: 8px; margin: 0; }
+.pick-search .dp-input { flex: 1 1 auto; min-width: 0; }
+.pick-list {
+  flex: 1 1 auto; min-height: 180px; max-height: 44dvh; overflow-y: auto; overscroll-behavior: contain;
+  list-style: none; margin: 0; padding: 4px; border-radius: 14px; background: var(--sunken);
+}
+.pick-label {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "box name type" "box detail detail";
+  column-gap: 12px; align-items: center; padding: 8px 10px; border-radius: 10px; cursor: pointer;
+  transition: background .3s var(--ease);
+}
+.pick-label:hover { background: var(--panel); }
+.pick-label:has(.pick-box:checked) { background: var(--accent-soft); }
+.pick-box { grid-area: box; width: 16px; height: 16px; margin: 0; cursor: pointer; accent-color: var(--accent); }
+.pick-name { grid-area: name; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 500; }
+.pick-type { grid-area: type; font-size: 10px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+.pick-detail { grid-area: detail; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--ink-soft); }
+.pick-row.is-blocked .pick-label { cursor: not-allowed; opacity: .45; }
+.pick-row.is-blocked .pick-label:hover { background: transparent; }
+.pick-empty { padding: 18px 12px; font-size: 13px; color: var(--ink-soft); }
+.pick-more { display: flex; justify-content: center; }
+@media (prefers-reduced-motion: no-preference) {
+  .add-menu[open] .add-menu-list { animation: drop .35s var(--ease) both; }
+  .dialog[open] { animation: rise .5s var(--ease) both; }
+}
+@keyframes drop { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+@media (max-width: 900px) {
+  .screen-tool { justify-content: flex-start; }
+  .add-menu-list { left: 0; right: auto; }
+  .dialog-head { padding: 18px 18px 4px; }
+  .dialog-body { padding: 12px 18px 14px; }
+  .dialog-foot { padding: 12px 18px 16px; }
+}
