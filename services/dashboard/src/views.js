@@ -1091,6 +1091,18 @@ export function adoptionView({ usage, previous = null, firstSeen = null, shift =
 // Insights: Discovered
 // ---------------------------------------------------------------------------------------------
 
+/**
+ * A tool as one cell: its name with its sanction, and beneath it what tells it apart when the
+ * catalogue does not name it.
+ */
+const toolCell = (row) => Object.freeze({
+  primary: toolName(row),
+  mono: !row.tool_name,
+  title: `Tool fingerprint ${row.tool}`,
+  chip: sanctionChip(row.sanctioned_state ?? 'unknown'),
+  secondary: isSite({ key: row.tool }) ? NOT_CATALOGUED : toolName(row) === UNRECOGNISED_TOOL ? String(row.tool) : null,
+});
+
 /** What each kind of finding is called, in the order a tool lists them: local models and endpoints first. */
 const FOUND_AS = Object.freeze({
   local_model: 'Local model',
@@ -1155,19 +1167,12 @@ function foundTable(tools, { reporting, link, prompted, truncated, emptyText }) 
   const rows = [...tools]
     .sort((a, b) => Number(local(b)) - Number(local(a)) || (b.devices ?? -1) - (a.devices ?? -1) || toolName(a.row).localeCompare(toolName(b.row)))
     .map((tool) => {
-      const name = toolName(tool.row);
       const sent = prompted ? prompted.get(tool.key) : null;
       // A tool the read of prompts left out is unknown when that read was cut short, and silent otherwise.
       const prompts = !prompted ? null : sent !== null ? sent : prompted.truncated ? null : 0;
-      const extra = isSite({ key: tool.row.tool }) ? NOT_CATALOGUED : name === UNRECOGNISED_TOOL ? String(tool.row.tool) : null;
+      const cell = toolCell(tool.row);
       return Object.freeze({
-        tool_cell: Object.freeze({
-          primary: name,
-          mono: !tool.row.tool_name,
-          title: `Tool fingerprint ${tool.row.tool}`,
-          chip: sanctionChip(tool.row.sanctioned_state ?? 'unknown'),
-          secondary: [tool.items.size > 0 ? namesList(tool.items) : null, extra].filter(Boolean).join(' · ') || null,
-        }),
+        tool_cell: Object.freeze({ ...cell, secondary: [tool.items.size > 0 ? namesList(tool.items) : null, cell.secondary].filter(Boolean).join(' · ') || null }),
         found_as: Object.keys(FOUND_AS).filter((type) => tool.types.has(type)).map((type) => FOUND_AS[type]).join(', '),
         devices: tool.devices,
         first_seen_day: tool.firstSeen ? formatInstant(tool.firstSeen).slice(0, 10) : null,
@@ -1273,6 +1278,170 @@ export function discoveredView({ found, prompts = null }, { preset = 'd7', link 
     series: Object.freeze([]),
     tables: Object.freeze([]),
     ...shared(found, notes),
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Insights: Demand
+// ---------------------------------------------------------------------------------------------
+
+/** The tools across the top of the teams table; the seats table lists every one. */
+const DEMAND_TOOLS_SHOWN = 8;
+/** The teams a seats row names before the rest are counted. */
+const DEMAND_TEAMS_NAMED = 3;
+
+/**
+ * The demand side read, split into one entry per tool not sanctioned (its people across everyone,
+ * those in a team, and per team) and the teams that use any of them. Null when the read did not
+ * carry it.
+ */
+function demandOf(state) {
+  const rows = state?.meta?.extras?.demand;
+  if (!Array.isArray(rows)) return null;
+  const n = (value) => (value === null || value === undefined ? null : Number(value));
+  const tools = new Map();
+  const teams = new Map();
+  for (const row of rows) {
+    const key = String(row.tool);
+    const tool = tools.get(key) ?? { row, people: null, inTeams: null, teams: new Map() };
+    if (row.team_id === null || row.team_id === undefined) {
+      tool.people = n(row.people);
+      tool.inTeams = n(row.people_in_teams);
+    } else {
+      const team = teams.get(row.team_id) ?? { id: String(row.team_id), name: String(row.team_name ?? row.team_id), size: n(row.team_size), total: 0 };
+      team.total += n(row.people) ?? 0;
+      teams.set(team.id, team);
+      tool.teams.set(team.id, n(row.people));
+    }
+    tools.set(key, tool);
+  }
+  const byPeople = (a, b) => (b.people ?? -1) - (a.people ?? -1) || toolName(a.row).localeCompare(toolName(b.row));
+  return Object.freeze({
+    tools: [...tools.entries()].map(([key, tool]) => ({ key, ...tool })).sort(byPeople),
+    teams: [...teams.values()].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name)),
+  });
+}
+
+/** How many teams there are, from the side read beside the demand; null when it did not come back. */
+function teamCountOf(state) {
+  const row = state?.meta?.extras?.team_coverage?.[0];
+  return row && row.teams !== null && row.teams !== undefined ? Number(row.teams) : null;
+}
+
+/**
+ * Every tool not sanctioned that people used in the window, by the people who used it, which is
+ * the seats a licence would need: the people across everyone, how many of them are in no team,
+ * and the teams they are in. Each opens its Tools row.
+ */
+function seatsTable(demand, teamNames, { link, emptyText }) {
+  const rows = (demand?.tools ?? []).map((tool) => {
+    const named = [...tool.teams.entries()]
+      .filter(([, people]) => people > 0)
+      .sort((a, b) => b[1] - a[1] || teamNames.get(a[0]).localeCompare(teamNames.get(b[0])))
+      .map(([id, people]) => `${teamNames.get(id)} ${formatCount(people)}`);
+    const shown = named.slice(0, DEMAND_TEAMS_NAMED).join(', ');
+    return Object.freeze({
+      tool_cell: toolCell(tool.row),
+      people: tool.people,
+      no_team: tool.people === null || tool.inTeams === null ? null : tool.people - tool.inTeams,
+      teams: named.length > DEMAND_TEAMS_NAMED ? `${shown} and ${formatCount(named.length - DEMAND_TEAMS_NAMED)} more` : shown || null,
+      href: link ? link(String(tool.row.tool)) : null,
+    });
+  });
+  const top = demand?.tools?.[0];
+  return Object.freeze({
+    kind: 'table',
+    ...tableFrom({ data: rows }, {
+      title: 'Seats to license',
+      columns: [
+        column('tool_cell', 'Application', 'stack'),
+        column('people', 'People', 'measure'),
+        column('no_team', 'In no team', 'measure'),
+        column('teams', 'Teams they are in'),
+      ],
+      emptyText,
+    }),
+    ...(top && top.people !== null
+      ? { summary: `${plural(rows.length, 'tool not sanctioned was', 'tools not sanctioned were')} used in this window; ${toolName(top.row)} had the most people, ${formatCount(top.people)}${top.teams.size > 0 ? ` in ${plural(top.teams.size, 'team', 'teams')}` : ''}.` }
+      : {}),
+    rowHref: 'href',
+    breakdowns: false,
+  });
+}
+
+/**
+ * Teams down the side and the tools not sanctioned with the most people across the top: each cell
+ * is the team's members who used the tool, out of the team's size. Each team opens its page.
+ */
+function teamsByToolTable(demand, { link, emptyText, href = null }) {
+  const tools = (demand?.tools ?? []).slice(0, DEMAND_TOOLS_SHOWN);
+  const rows = (demand?.teams ?? []).map((team) => Object.freeze({
+    team_cell: Object.freeze({ primary: team.name, secondary: team.size === null ? null : plural(team.size, 'member', 'members') }),
+    ...Object.fromEntries(tools.map((tool, i) => [`tool_${i}`, Object.freeze({ count: tool.teams.get(team.id) ?? 0, of: team.size })])),
+    href: link ? link(team.id) : null,
+  }));
+  return Object.freeze({
+    kind: 'table',
+    ...tableFrom({ data: rows }, {
+      title: 'Tools not sanctioned, by team',
+      // A tool the catalogue does not name heads its column by its fingerprint, which tells two apart.
+      columns: [column('team_cell', 'Team', 'stack'), ...tools.map((tool, i) => column(`tool_${i}`, toolName(tool.row) === UNRECOGNISED_TOOL ? String(tool.row.tool) : toolName(tool.row), 'share'))],
+      emptyText,
+    }),
+    ...(href ? { href, moreLabel: 'Teams' } : {}),
+    rowHref: 'href',
+    breakdowns: false,
+  });
+}
+
+/**
+ * Insights, Demand: the tools not sanctioned, by team, and the seats each would need: what to
+ * license, and for whom. People are counted, never named.
+ *
+ * @param {object} state  view state for teams crossed with tools, with the demand beside it
+ */
+export function demandView(state, { preset = 'd7', tools = toolHref, teams = teamHref } = {}) {
+  const demand = demandOf(state);
+  const teamCount = teamCountOf(state);
+  const unread = 'The demand could not be read for this window.';
+  const teamNames = new Map((demand?.teams ?? []).map((team) => [team.id, team.name]));
+  const seats = seatsTable(demand, teamNames, {
+    link: tools ? (fingerprint) => tools(fingerprint, preset) : null,
+    emptyText: demand ? emptyLine(state, 'No tool that is not sanctioned was used in this window.') : unread,
+  });
+  let byTeamEmpty = unread;
+  if (demand && teamCount === 0) byTeamEmpty = 'No team exists yet, so demand cannot be shown per team. Teams are added on the Teams page.';
+  else if (demand) byTeamEmpty = 'No team member used a tool that is not sanctioned in this window.';
+  const byTeam = teamsByToolTable(demand, {
+    link: teams ? (team) => teams(team, preset) : null,
+    emptyText: byTeamEmpty,
+    href: teamCount === 0 ? '#teams' : null,
+  });
+  const top = demand?.tools?.[0];
+  const notes = [
+    'People counts everyone who sent the tool a prompt in the window once, under any of its fingerprints: the seats a licence would need.',
+    'A tool not sanctioned is one marked unsanctioned or with no decision yet.',
+    ...(demand && demand.tools.length > DEMAND_TOOLS_SHOWN
+      ? [`The ${DEMAND_TOOLS_SHOWN} tools with the most people are shown by team; Seats to license lists all ${formatCount(demand.tools.length)}.`]
+      : []),
+  ];
+  return screen('insights', 'Insights', null, 'mart.agg_team_period', {
+    subtitle: 'Demand: the tools not sanctioned that people use, by team, and the seats each would need.',
+    tiles: Object.freeze([
+      demand
+        ? tile('Tools not sanctioned', { kind: 'number', text: formatCount(demand.tools.length) }, 'unsanctioned or with no decision yet, used in this window')
+        : tile('Tools not sanctioned', { kind: 'absent', text: '—' }, unread),
+      demand && teamCount !== null && teamCount > 0
+        ? tile('Teams using them', { kind: 'number', text: formatCount(demand.teams.length) }, `of ${plural(teamCount, 'team', 'teams')} have a member using one`)
+        : tile('Teams using them', { kind: 'absent', text: '—' }, teamCount === 0 ? 'No team exists yet.' : unread, teamCount === 0 ? { href: '#teams', moreLabel: 'Teams' } : {}),
+      top && top.people !== null
+        ? tile('Most seats', { kind: 'number', text: formatCount(top.people) }, `people use ${toolName(top.row)}, the most of any tool not sanctioned`)
+        : tile('Most seats', { kind: 'absent', text: '—' }, demand ? 'No tool that is not sanctioned was used.' : unread),
+    ]),
+    blocks: Object.freeze([seats, byTeam]),
+    series: Object.freeze([]),
+    tables: Object.freeze([]),
+    ...shared(state, notes),
   });
 }
 

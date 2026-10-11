@@ -83,7 +83,7 @@ because their presence is an attempt rather than a typo:
 | `mart.agg_tool_user_period` | aggregate | Q2 people | PK + `(tenant, tool_fingerprint, bucket_size, bucket_start)` |
 | `mart.v_tool_first_seen` | list | the day each tool first sent a prompt, with its sanction and its people (`people`), for Insights | `mart.agg_tool_period` PK, `mart.agg_tool_user_period` `(tenant, tool_fingerprint, bucket_size, bucket_start)` |
 | `mart.agg_org_period` | aggregate | usage by department | PK + `(tenant, department, bucket_start DESC)` |
-| `mart.agg_team_period` | aggregate | Q3 teams | PK + `(tenant, team_id, bucket_start DESC)` |
+| `mart.agg_team_period` | aggregate | Q3 teams; grouped by `team` and `tool`, the demand for each tool not sanctioned in `meta.extras.demand` (the people who used it in the window, across everyone and per team with the team's size, each tool once across its fingerprints) and `meta.extras.team_coverage`, for Insights | PK + `(tenant, team_id, bucket_start DESC)` |
 | `mart.agg_class_period` | aggregate | Q4 classes | PK |
 | `mart.agg_rule_period` | aggregate | the prompts each enforcement rule decided, for Insights | PK |
 | `mart.agg_discovery_period` | aggregate | what device discovery found: the devices that reported each tool by kind of finding and item, with each tool's name, `category`, sanction, `first_seen` under any of its fingerprints and `last_seen`; where the inventory scan stands on the fleet in `meta.extras.inventory_scan`, for Insights | PK + `(tenant, tool_fingerprint, bucket_size, bucket_start)` |
