@@ -212,8 +212,8 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
   async function toolScreen(tool, ctx) {
     const usage = await ask('q1_tools_ranked', context({ preset: ctx.preset, filters: { tool }, now: now() }));
     // The people read names the tool, so it lists its people whatever its sanction; a tool with
-    // no cell in the window has nobody to list.
-    const people = usage.data.some((row) => String(row.tool) === tool)
+    // no cell in the window has nobody to list. Both reads match every fingerprint of the tool.
+    const people = usage.data.length > 0
       ? await refusable(() => ask('q2_unsanctioned_users', context({ preset: ctx.preset, filters: { tool }, now: now() })))
       : null;
     const findings = await refusable(() => ask('q5_findings', context({ preset: ctx.preset, filters: { tool }, now: now() })));

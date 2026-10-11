@@ -399,17 +399,16 @@ export function uncataloguedTools(state, { link = toolHref } = {}) {
 const SANCTION_PARTS = Object.freeze(['sanctioned', 'unsanctioned', 'unknown']);
 
 /**
- * The tools detected in the window, split by their present-tense sanction. A tool is the catalogue
- * app its fingerprints belong to, so it counts once however many fingerprints it was seen under; a
- * fingerprint outside the catalogue is a tool of its own, with no decision. When no tool has a
- * decision, the block says so and opens where the decision is made.
+ * The tools detected in the window, split by their present-tense sanction. A row's `tool` is the
+ * catalogue app its fingerprints belong to, so a tool counts once however many fingerprints it was
+ * seen under; a fingerprint outside the catalogue is a tool of its own, with no decision. When no
+ * tool has a decision, the block says so and opens where the decision is made.
  */
 export function sanctionShare(state, { title = 'Applications', emptyText = 'No tool was detected in this window.', settingsHref = '#settings' } = {}) {
   const tools = new Map();
   for (const row of state.data) {
     if (row.tool === null || row.tool === undefined) continue;
-    const key = row.tool_key ? `tool:${row.tool_key}` : `fingerprint:${row.tool}`;
-    tools.set(key, SANCTION_PARTS.includes(row.sanctioned_state) ? row.sanctioned_state : 'unknown');
+    tools.set(String(row.tool), SANCTION_PARTS.includes(row.sanctioned_state) ? row.sanctioned_state : 'unknown');
   }
   const counts = new Map(SANCTION_PARTS.map((key) => [key, 0]));
   for (const sanction of tools.values()) counts.set(sanction, counts.get(sanction) + 1);
@@ -1135,7 +1134,11 @@ export function toolsView(state, { link = toolHref, preset = null } = {}) {
  * sees the totals and is told why the roster is missing.
  */
 export function toolView({ usage, people = null, findings = null, names = {} }, { tool, preset = null, exploreHref = 'explore.html' }) {
-  const group = foldCells(usage, 'tool').find((g) => g.key === String(tool)) ?? null;
+  // The read is filtered to this tool, so its rows are the tool's own, under the id every list
+  // names it by, which a link naming one of its fingerprints does not spell.
+  const groups = foldCells(usage, 'tool');
+  const group = groups.find((g) => g.key === String(tool)) ?? (groups.length === 1 ? groups[0] : null);
+  tool = group ? group.key : String(tool);
   const name = group ? toolName(group.first) : String(tool);
   // A tool in use with no decision recorded is unknown, which is a state of its own; a tool with
   // no cell in the window has no state to show.
@@ -1440,6 +1443,8 @@ export function classesView(state) {
 export function personView(state, { subject, person = null, exploreHref = 'explore.html' }) {
   const series = seriesFrom(state, { measure: 'submissions', title: 'Prompts per day' });
   const flush = state.meta?.extras?.flush_check?.[0] ?? null;
+  // Each tool once across the window: the per-day counts cannot be added up into it.
+  const tools = state.meta?.extras?.subject_tools?.[0]?.tools ?? null;
   const notes = [];
   if (flush) {
     notes.push(`${formatCount(flush.rows_in_window)} rows for this person in the window, ${formatCount(flush.late_flush_rows)} received more than an hour after they occurred: a spool flush spikes received time, not behaviour.`);
@@ -1455,7 +1460,9 @@ export function personView(state, { subject, person = null, exploreHref = 'explo
     ]),
     tiles: Object.freeze([
       measureTile('Prompts', state, 'submissions'),
-      measureTile('Tools used', state, 'tools_used'),
+      tools === null
+        ? tile('Tools used', { kind: 'absent', text: '—' }, absentNote(state))
+        : tile('Tools used', { kind: 'number', text: formatCount(Number(tools)) }),
       measureTile('Block events', state, 'block_events'),
       measureTile('Bytes', state, 'bytes_total', formatBytes),
     ]),

@@ -371,16 +371,31 @@ ON CONFLICT (tenant_id, bucket_start, bucket_size, team_id, tool_fingerprint)
 
 // userPeriodSQL is usage per person. It deliberately carries no score, rank or efficiency
 // measure: the product reports AI usage, not productivity, and this is the table that could most
-// easily be turned into a productivity ranking.
+// easily be turned into a productivity ranking. tools_used counts a tool once however many
+// fingerprints it was seen under (ops.tool_id), resolved once per fingerprint in the window.
 var userPeriodSQL = `
-WITH src AS (
-  SELECT date_trunc(%[1]s, s.received_at) AS bucket_start, s.user_ref,
+WITH per_tool AS (
+  SELECT date_trunc(%[1]s, s.received_at) AS bucket_start, s.user_ref, s.tool_fingerprint,
          count(*) AS submissions,
          coalesce(sum(s.size_bytes), 0)::bigint AS bytes_total,
-         count(DISTINCT s.tool_fingerprint) AS tools_used,
          count(*) FILTER (WHERE s.policy_action = 'blocked') AS block_events
     FROM ingest.submission s
    WHERE s.tenant_id = $1 AND s.received_at >= $2 AND s.received_at < $3 AND s.kind = 'prompt'
+   GROUP BY 1, 2, 3
+),
+tool AS MATERIALIZED (
+  SELECT p.tool_fingerprint, ops.tool_id(p.tool_fingerprint) AS tool_id
+    FROM per_tool p
+   GROUP BY p.tool_fingerprint
+),
+src AS (
+  SELECT p.bucket_start, p.user_ref,
+         sum(p.submissions)::bigint AS submissions,
+         sum(p.bytes_total)::bigint AS bytes_total,
+         count(DISTINCT t.tool_id) AS tools_used,
+         sum(p.block_events)::bigint AS block_events
+    FROM per_tool p
+    JOIN tool t ON t.tool_fingerprint = p.tool_fingerprint
    GROUP BY 1, 2
 ),
 gone AS (
