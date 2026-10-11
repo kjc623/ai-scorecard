@@ -41,20 +41,22 @@ const tracked = (pattern) => run('git', ['ls-files', '--cached', '--others', '--
 const has = (cmd) => run(cmd, ['--version']).code === 0;
 
 /**
- * What a failed step reports: the last 40 lines of its output, after the tests a Go test timeout
- * found still running. The goroutine dump that follows a timeout would otherwise push their names
- * out of view.
+ * What a failed step reports: the last 40 lines of its output. A Go test timeout prints the tests
+ * still running, then every goroutine; those blocked for minutes are where the tests hang. The rest
+ * of the dump would push both out of view, so they lead the report.
  */
 function failureDetail(output) {
   const lines = output.trim().split(/\r?\n/);
   const tail = lines.slice(-40);
-  const running = [];
-  for (let i = 0; i < lines.length - tail.length; i++) {
-    if (!lines[i].startsWith('panic: test timed out')) continue;
-    // The panic's message ends at the blank line before the dump.
-    for (let j = i; j < lines.length && lines[j].trim() !== ''; j++) running.push(lines[j]);
+  const head = lines.slice(0, lines.length - tail.length);
+  const lead = [];
+  for (let i = 0; i < head.length; i++) {
+    if (!head[i].startsWith('panic: test timed out') && !/^goroutine \d+ \[[^\]]*, \d+ minutes/.test(head[i])) continue;
+    // A panic's message and a goroutine's stack each end at a blank line.
+    for (; i < head.length && head[i].trim() !== ''; i++) lead.push(head[i]);
+    lead.push('');
   }
-  return [...running, ...(running.length ? ['…'] : []), ...tail].join('\n');
+  return [...lead, ...(lead.length ? ['…'] : []), ...tail].join('\n');
 }
 
 /** Runs steps in order; the first failure fails the gate, a SKIPPED exit skips it. */
