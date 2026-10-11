@@ -274,14 +274,14 @@ test('classes and teams screens carry their two-measure honesty note', () => {
     data: [{ team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', team_name: 'Engineering', submissions: 10, users: 9 }],
     freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.agg_team_period', extras: { team_coverage: [{ users_all: 4210, users_in_teams: 2680, teams: 4 }] } },
   }));
-  const teamHtml = renderScreen(teamsView(teams, { manageHref: '#directory' }), SHELL);
+  const teamHtml = renderScreen(teamsView(teams, { mayManage: true }), SHELL);
   assert.ok(/1,530 are in none/.test(teamHtml), 'people in no team are said, not dropped');
   assert.ok(/Engineering/.test(teamHtml));
-  assert.ok(teamHtml.includes('href="#directory"'), 'an admin reaches team management from the page');
   const none = readState(envelope('empty', {
     data: [], freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.agg_team_period', extras: { team_coverage: [{ users_all: 12, users_in_teams: 0, teams: 0 }] } },
   }));
-  assert.ok(/No team exists yet/.test(renderScreen(teamsView(none), SHELL)));
+  assert.ok(/No team exists yet\. An admin adds teams on this page\./.test(renderScreen(teamsView(none), SHELL)));
+  assert.ok(/Add one with \+ Add a Team/.test(renderScreen(teamsView(none, { mayManage: true }), SHELL)), 'an admin is told where to add one');
 });
 
 test('the event detail screen reads the record as query-api answers it: one row per observation', async () => {

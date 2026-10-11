@@ -114,14 +114,17 @@ export function buildListDocument(source, filters, limit) {
 
 /**
  * The people list: everyone, a case-insensitive name prefix, one reference, or the references
- * named. The search is lower-cased here because `name_key` is the lower-cased name.
+ * named. The search is lower-cased here because `name_key` is the lower-cased name. `synced` keeps
+ * the people the directory holds and has not marked as gone: a person seen only on a device has no
+ * directory status at all.
  *
- * @param {{search?: string, subject?: string, subjects?: string[], cursor?: string|null, limit?: number}} input
+ * @param {{search?: string, subject?: string, subjects?: string[], synced?: boolean, cursor?: string|null, limit?: number}} input
  */
-export function buildPeopleDocument({ search = '', subject = '', subjects = null, cursor = null, limit = 50 } = {}) {
+export function buildPeopleDocument({ search = '', subject = '', subjects = null, synced = false, cursor = null, limit = 50 } = {}) {
   const filters = [];
   const term = String(search).trim().toLowerCase();
   if (term !== '') filters.push(Object.freeze({ field: 'name_key', op: 'starts_with', value: term.slice(0, 120) }));
+  if (synced) filters.push(Object.freeze({ field: 'directory_status', op: 'in', value: Object.freeze(['active', 'unknown']) }));
   if (subject !== '') filters.push(Object.freeze({ field: 'subject', op: 'eq', value: String(subject) }));
   if (Array.isArray(subjects)) {
     const ids = [...new Set(subjects.filter((s) => typeof s === 'string' && s !== ''))].slice(0, 200);

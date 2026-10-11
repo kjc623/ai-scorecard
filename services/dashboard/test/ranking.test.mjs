@@ -181,17 +181,17 @@ test('a tool with no cell in the window shows absent figures and reads nobody', 
 
 test('the Teams screen ranks the teams, lists the admin\'s quiet teams with a zero, and keeps the roster under its team', async () => {
   const admin = {
-    async directory() {
-      return { state: 'available', data: { teams: [
+    async teams() {
+      return { state: 'available', teams: [
         { team_id: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', name: 'Engineering', source: 'group', group_name: 'eng-all', members: 640 },
         { team_id: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0009', name: 'Marketing', source: 'console', members: 12 },
-      ] } };
+      ] };
     },
   };
   const { view } = await dashboardFor('realistic', { admin }).load('teams', { mayManage: true });
   assert.deepEqual(view.tiles.map((t) => t.label), ['Submissions', 'People using AI', 'Teams']);
   assert.deepEqual(view.tiles[1].split.map((p) => [p.label, p.count]), [['In a team', 2680], ['In no team', 1530]]);
-  assert.equal(view.tiles[2].href, '#directory');
+  assert.equal(view.tiles[2].href, undefined, 'teams are added on this page, not reached from a tile');
   const ranking = view.blocks[0];
   assert.deepEqual(ranking.items.map((i) => [i.label, i.value.value]), [['Engineering', 2210], ['Finance', 812], ['Legal', 7], ['Marketing', 0]], 'by submissions, then the team with no usage');
   assert.equal(ranking.items[0].href, '#teams?team=7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001');
@@ -219,7 +219,7 @@ test('a team\'s own screen reads that team only, and lists its people by name', 
   assert.equal(view.title, 'Engineering');
   assert.equal(sent[0].params.team, '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001');
   assert.deepEqual(sent[1].filters, [{ field: 'team', op: 'in', value: ['7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001'] }], 'the roster read names the one team');
-  assert.deepEqual(view.actions.map((a) => a.label), ['All teams', 'Manage teams']);
+  assert.deepEqual(view.actions.map((a) => a.label), ['All teams']);
   assert.equal(view.tiles[0].value.text, '2,210', 'this team\'s figure, not every team\'s');
   assert.equal(view.tiles[2].value.text, '3', 'this team\'s people');
   const roster = view.tables[0];
@@ -373,12 +373,12 @@ test('a quiet team is listed when the read answered, on partial coverage too; a 
   const degraded = readState(envelope('coverage_degraded', { data: [], freshness: FRESH, coverage: PARTIAL, meta: { source: 'mart.agg_team_period', extras: { team_coverage: [{ users_all: 1, users_in_teams: 0, teams: 1 }] } } }));
   const view = teamsView(degraded, { teams });
   assert.deepEqual(view.blocks[0].items.map((i) => [i.label, i.value.value]), [['Engineering', 0]], 'the team exists, so it is listed, and the coverage line says every figure is a floor');
-  assert.match(view.blocks[0].items[0].sublabel, /^1 member · Chosen in the console · No usage recorded in this window$/);
+  assert.match(view.blocks[0].items[0].sublabel, /^1 member · Manual · No usage recorded in this window$/);
   assert.ok(view.notes.some((n) => n === '1 person used AI in this window; 0 are in at least one team and 1 is in none.'));
   assert.equal(view.banners.filter((b) => b.about === 'coverage').length, 1, 'partial coverage is said once, not as two banners');
   const own = teamView(degraded, { team: 't1', teams, preset: 'd90' });
   assert.equal(own.title, 'Engineering', 'named from the admin list when it has no cell in the window');
-  assert.match(own.subtitle, /^1 member · Chosen in the console\./);
+  assert.match(own.subtitle, /^1 member · Manual\./);
   assert.deepEqual(own.series, []);
   assert.equal(own.actions[0].href, '#teams?preset=d90');
 });

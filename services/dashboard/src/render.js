@@ -446,7 +446,10 @@ export function renderScreen(view, shell = {}) {
     + `<h2>${escapeHtml(view.title)}${badges}</h2>`
     + (view.question ? `<p class="question">${escapeHtml(view.question)}</p>` : '')
     + (view.subtitle ? `<p class="subtitle">${escapeHtml(view.subtitle)}</p>` : '')
-    + '</div><div class="screen-tools"><div class="screen-switches">'
+    + '</div><div class="screen-tools">'
+    // A screen's own control, such as Teams' "+ Add a Team": HTML its caller rendered and escaped.
+    + (shell.tool ? `<div class="screen-tool">${shell.tool}</div>` : '')
+    + '<div class="screen-switches">'
     + renderPresets(shell.switch)
     + renderPresets(shell.presets)
     + '</div></div></header>';

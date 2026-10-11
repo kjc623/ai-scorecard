@@ -305,7 +305,7 @@ function depScim(state) {
     + '<li>Assign the users or groups to provision, then turn provisioning on.</li>'
     + '</ol></details>'
     + '<details class="dp-howto"><summary>Other identity providers</summary><p>Any SCIM 2.0 client works: the base URL above, with a token created here as its bearer token. <code>userName</code> is the person\'s sign-in name, their UPN or email address.</p></details>';
-  const body = '<p>People and groups can be kept in sync by your identity provider over SCIM 2.0. With Microsoft Entra ID, Sundial can instead read them itself: see <a href="#directory">Directory &amp; teams</a>.</p>'
+  const body = '<p>People and groups can be kept in sync by your identity provider over SCIM 2.0. With Microsoft Entra ID, Sundial can instead read them itself: see <a href="#directory">Identity Providers</a>.</p>'
     + kv + depSecret(state) + form
     + depProblem(state.scim.problem, 'No token was created.')
     + table

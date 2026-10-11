@@ -1,5 +1,5 @@
-// directory.test.mjs — Settings → Directory & teams: the controller over a fake admin API, the
-// requests the admin API makes, and what the page says.
+// directory.test.mjs — Settings → Identity Providers: the controller over a fake admin API, the
+// requests the admin API makes for the directory and its teams, and what the page says.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -15,17 +15,15 @@ const ADA = `u_${'a'.repeat(32)}`;
 const TEAM = '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001';
 
 /** An admin API that answers from memory and records what was asked of it. */
-function fakeAdmin({ sync = null, teams = [], fail = {} } = {}) {
+function fakeAdmin({ sync = null, fail = {} } = {}) {
   const calls = [];
-  const members = new Map();
-  const state = { sync, teams: [...teams] };
-  const refused = (code, message, status = 409) => ({ state: 'refused', status, error: { code, message } });
+  const state = { sync };
   return {
     calls,
     async directory() {
       calls.push(['directory']);
-      if (fail.directory) return refused(fail.directory, 'refused', 403);
-      return { state: 'available', data: { entra_connected: true, graph_available: true, people: 12, groups: 1, sync: state.sync, teams: state.teams.map((t) => ({ ...t, members: (members.get(t.team_id) ?? []).length })) } };
+      if (fail.directory) return { state: 'refused', status: 403, error: { code: fail.directory, message: 'refused' } };
+      return { state: 'available', data: { entra_connected: true, graph_available: true, people: 12, groups: 1, sync: state.sync } };
     },
     async setDirectorySync(enabled) {
       calls.push(['sync', enabled]);
@@ -36,49 +34,7 @@ function fakeAdmin({ sync = null, teams = [], fail = {} } = {}) {
       calls.push(['run']);
       return { state: 'done', queued: true };
     },
-    async directoryGroups(q) {
-      calls.push(['groups', q]);
-      return {
-        state: 'available',
-        provisioned: [{ id: '00000000-0000-4000-8000-000000000900', object_id: '11111111-2222-4333-8444-555555555555', name: 'Sales', members: 4, directory: 'provisioned' }],
-        directory: q ? [
-          { object_id: '11111111-2222-4333-8444-555555555555', name: 'Sales', directory: 'entra', imported: true },
-          { object_id: '26118915-6090-4610-87a4-49d0767e9fde', name: 'Sales EMEA', directory: 'entra', imported: false },
-        ] : [],
-      };
-    },
-    async directoryValues(kind) {
-      calls.push(['values', kind]);
-      return { state: 'available', values: kind === 'org_unit' ? [{ value: 'OU=Research,DC=contoso,DC=com', people: 3 }] : [{ value: 'Engineering', people: 7 }] };
-    },
-    async createTeam(body) {
-      calls.push(['create', body]);
-      if (fail.create) return refused(fail.create, 'A team with that name exists.');
-      const team = { team_id: TEAM, name: body.name, source: body.source, created_at: '2026-10-01T10:00:00Z' };
-      state.teams.push(team);
-      return { state: 'done', team };
-    },
-    async deleteTeam(id) {
-      calls.push(['delete', id]);
-      state.teams = state.teams.filter((t) => t.team_id !== id);
-      return { state: 'done' };
-    },
-    async teamMembers(id) {
-      calls.push(['members', id]);
-      return { state: 'available', members: members.get(id) ?? [], limit: 500 };
-    },
-    async changeTeamMembers(id, change) {
-      calls.push(['change', id, change]);
-      const now = members.get(id) ?? [];
-      members.set(id, [...now.filter((m) => !(change.remove ?? []).includes(m.user_ref)), ...(change.add ?? []).map((ref) => ({ user_ref: ref, name: 'Ada Lovelace' }))]);
-      return { state: 'done' };
-    },
   };
-}
-
-function fakeQuery(rows) {
-  const sent = [];
-  return { sent, async run(body) { sent.push(body); return { result_state: 'ok', data: rows }; } };
 }
 
 test('turning the directory read on and running it go to the admin API, and the page says what happened', async () => {
@@ -92,6 +48,15 @@ test('turning the directory read on and running it go to the admin API, and the 
   const html = renderDirectory(page.state);
   assert.match(html, /A read has been started/);
   assert.match(html, /Stop reading/);
+  assert.match(html, /<h2>Identity Providers<\/h2>/);
+  assert.ok(!/Create a team|Create team/.test(html), 'teams are added on the Teams page');
+  assert.ok(html.includes('href="#deployment"'), 'SCIM provisioning is pointed to where its tokens are');
+});
+
+test('a role that is not an admin is told the page is an admin\'s', async () => {
+  const page = createDirectory({ admin: fakeAdmin({ fail: { directory: 'forbidden' } }) });
+  await page.load();
+  assert.match(renderDirectory(page.state), /Only an admin can manage identity providers/);
 });
 
 test('a failed read names its cause and who can fix it', async () => {
@@ -101,64 +66,6 @@ test('a failed read names its cause and who can fix it', async () => {
   assert.match(html, /The last read failed/);
   assert.match(html, /GroupMember\.Read\.All/);
   assert.match(html, /graph_consent_missing/);
-});
-
-test('a console team is created, opened, and filled from the people list', async () => {
-  const admin = fakeAdmin();
-  const query = fakeQuery([{ subject: ADA, name: 'Ada Lovelace', department: 'Engineering' }]);
-  const page = createDirectory({ admin, query });
-  await page.load();
-  await page.act({ dir: 'create' });
-  assert.equal(page.state.create.problem.code, 'incomplete', 'a team needs a name');
-  page.setDraft('name', ' Pilot ');
-  await page.act({ dir: 'create' });
-  assert.deepEqual(admin.calls.find((c) => c[0] === 'create')[1], { name: 'Pilot', source: 'console' });
-  assert.equal(page.state.team.open, TEAM, 'a new console team opens so its members are chosen next');
-
-  page.setDraft('peopleQuery', 'Ada L');
-  await page.act({ dir: 'search-people' });
-  assert.deepEqual(query.sent[0].filters, [{ field: 'name_key', op: 'starts_with', value: 'ada l' }]);
-  assert.equal(query.sent[0].source, 'mart.v_person');
-  await page.act({ dir: 'add-member', ref: ADA });
-  assert.deepEqual(admin.calls.find((c) => c[0] === 'change'), ['change', TEAM, { add: [ADA] }]);
-  const html = renderDirectory(page.state);
-  assert.ok(html.includes(`href="#person?subject=${ADA}"`), 'a member opens their page');
-  assert.match(html, /in the team/);
-
-  await page.act({ dir: 'delete-team' });
-  assert.match(renderDirectory(page.state), /Delete the team “Pilot”\?/);
-  await page.act({ dir: 'confirm-delete' });
-  assert.deepEqual(admin.calls.at(-2), ['delete', TEAM]);
-  assert.equal(page.state.data.teams.length, 0);
-});
-
-test('a group team can follow a directory group not yet imported, and a unit team its distinguished name', async () => {
-  const admin = fakeAdmin();
-  const page = createDirectory({ admin });
-  await page.load();
-  await page.act({ dir: 'source', value: 'group' });
-  page.setDraft('groupQuery', 'sales');
-  await page.act({ dir: 'search-groups' });
-  assert.deepEqual(page.state.choices.groups.map((g) => g.name), ['Sales', 'Sales EMEA'], 'a provisioned group is listed once');
-  await page.act({ dir: 'pick-group', object: '26118915-6090-4610-87a4-49d0767e9fde', name: 'Sales EMEA' });
-  await page.act({ dir: 'create' });
-  assert.deepEqual(admin.calls.find((c) => c[0] === 'create')[1], { name: 'Sales EMEA', source: 'group', group_object_id: '26118915-6090-4610-87a4-49d0767e9fde' });
-
-  await page.act({ dir: 'source', value: 'org_unit' });
-  await page.act({ dir: 'pick-value', value: 'OU=Research,DC=contoso,DC=com' });
-  assert.equal(page.state.drafts.name, 'Research', 'a unit suggests its own name');
-  admin.calls.length = 0;
-  await page.act({ dir: 'create' });
-  assert.deepEqual(admin.calls.find((c) => c[0] === 'create')[1], { name: 'Research', source: 'org_unit', match_value: 'OU=Research,DC=contoso,DC=com' });
-});
-
-test('a refused create keeps the form and says why', async () => {
-  const page = createDirectory({ admin: fakeAdmin({ fail: { create: 'team_name_taken' } }) });
-  await page.load();
-  page.setDraft('name', 'Pilot');
-  await page.act({ dir: 'create' });
-  assert.equal(page.state.drafts.name, 'Pilot');
-  assert.match(renderDirectory(page.state), /No team was created\.<\/strong> A team with that name exists\. <code>team_name_taken<\/code>/);
 });
 
 test('the admin API reads the directory and its teams, and names each team route', async () => {
@@ -175,12 +82,17 @@ test('the admin API reads the directory and its teams, and names each team route
   const read = await admin.directory();
   assert.equal(read.state, 'available');
   assert.equal(read.data.groups, null, 'a count not sent stays unknown');
-  assert.deepEqual(read.data.teams.map((t) => t.name), ['Pilot']);
+  const teams = await admin.teams();
+  assert.deepEqual(teams.teams.map((t) => t.name), ['Pilot'], 'a team with no id is dropped');
   await admin.directoryGroups('sales east');
+  await admin.renameTeam(TEAM, 'Pilot crew');
   await admin.changeTeamMembers(TEAM, { add: [ADA] });
   await admin.deleteTeam(TEAM);
-  assert.deepEqual(seen.slice(2), [
+  assert.deepEqual(seen, [
+    'GET /admin/v1/directory',
+    'GET /admin/v1/teams',
     'GET /admin/v1/directory/groups?q=sales%20east',
+    `PATCH /admin/v1/teams/${TEAM} {"name":"Pilot crew"}`,
     `POST /admin/v1/teams/${TEAM}/members {"add":["${ADA}"],"remove":[]}`,
     `DELETE /admin/v1/teams/${TEAM}`,
   ]);

@@ -724,10 +724,10 @@ function teamMembersNotes(members) {
   return notes;
 }
 
-/** How a team is made, as the directory page says it: its members, and what it follows. */
+/** How a team is made: its members, and what it follows. */
 function teamFacts(team) {
   if (!team) return null;
-  const source = { console: 'Chosen in the console', group: `Group ${team.group_name ?? team.group_object_id ?? ''}`.trim(), department: `Department ${team.match_value ?? ''}`.trim(), org_unit: `Unit ${team.match_value ?? ''}`.trim() }[team.source] ?? null;
+  const source = { console: 'Manual', group: `Group ${team.group_name ?? team.group_object_id ?? ''}`.trim(), department: `Department ${team.match_value ?? ''}`.trim(), org_unit: `Unit ${team.match_value ?? ''}`.trim() }[team.source] ?? null;
   return [team.members === null || team.members === undefined ? null : plural(team.members, 'member', 'members'), source].filter(Boolean).join(' · ') || null;
 }
 
@@ -789,11 +789,11 @@ function rankTeams(state, { teams = null, link = teamHref, emptyText }) {
  *
  * @param {object} state view state for the team totals (Q3)
  * @param {object} [options]
- * @param {string|null} [options.manageHref] where an admin manages teams
- * @param {object|null} [options.members]    view state for the people behind the teams
- * @param {Array|null}  [options.teams]      the admin's team list, so a quiet team is still listed
+ * @param {boolean} [options.mayManage]   the reader is an admin, who adds teams on this page
+ * @param {object|null} [options.members] view state for the people behind the teams
+ * @param {Array|null}  [options.teams]   the admin's team list, so a quiet team is still listed
  */
-export function teamsView(state, { manageHref = null, members = null, teams = null, link = teamHref, preset = null } = {}) {
+export function teamsView(state, { mayManage = false, members = null, teams = null, link = teamHref, preset = null } = {}) {
   const cov = state.meta?.extras?.team_coverage?.[0] ?? null;
   const num = (v) => (v === null || v === undefined ? null : Number(v));
   const all = num(cov?.users_all);
@@ -807,9 +807,9 @@ export function teamsView(state, { manageHref = null, members = null, teams = nu
     notes.push(`${plural(all, 'person', 'people')} used AI in this window; ${inTeams === 1 ? '1 is' : `${formatCount(inTeams)} are`} in at least one team and ${outside === 1 ? '1 is' : `${formatCount(outside)} are`} in none.`);
   }
   if (teamCount === 0) {
-    notes.push(manageHref
-      ? 'No team exists yet. Create one from the console, a directory group, a department or an organisational unit under Settings → Directory.'
-      : 'No team exists yet. An admin creates teams under Settings → Directory.');
+    notes.push(mayManage
+      ? 'No team exists yet. Add one with + Add a Team: from a group in your identity provider, from people and groups synced over SCIM, or by ticking people.'
+      : 'No team exists yet. An admin adds teams on this page.');
   }
   const absent = () => ({ kind: 'absent', text: '—' });
   return screen('teams', 'Teams', null, 'mart.agg_team_period', {
@@ -824,7 +824,7 @@ export function teamsView(state, { manageHref = null, members = null, teams = nu
             Object.freeze({ key: 'no_team', label: 'In no team', count: outside }),
           ]),
         }),
-      tile('Teams', teamCount === null ? absent() : { kind: 'number', text: formatCount(teamCount) }, manageHref ? 'Manage teams' : null, manageHref ? { href: manageHref } : undefined),
+      tile('Teams', teamCount === null ? absent() : { kind: 'number', text: formatCount(teamCount) }, null),
     ]),
     blocks: Object.freeze([
       rankTeams(state, { teams, link: (team) => link(team, preset), emptyText: teamCount === 0 ? 'There are no teams yet.' : emptyLine(state, 'No team has usage in this window.') }),
@@ -839,7 +839,7 @@ export function teamsView(state, { manageHref = null, members = null, teams = nu
  * One team: its figures over the window and the people behind them, by name. The team is named
  * by the totals read, or by the roster when the totals carry no row for it.
  */
-export function teamView(state, { team, members = null, teams = null, manageHref = null, preset = null }) {
+export function teamView(state, { team, members = null, teams = null, preset = null }) {
   const group = foldCells(state, 'team', { sum: ['submissions'], max: ['users'] }).find((g) => g.key === String(team)) ?? null;
   const known = (teams ?? []).find((t) => t.team_id === String(team)) ?? null;
   const name = String(group?.first.team_name ?? known?.name ?? members?.data?.find((row) => row.team_name)?.team_name ?? 'Team');
@@ -847,10 +847,7 @@ export function teamView(state, { team, members = null, teams = null, manageHref
   const facts = teamFacts(known);
   return screen('team', name, null, 'mart.agg_team_period', {
     subtitle: facts ? `${facts}. A team counts the usage of the people in it now.` : 'One team\'s usage. A team counts the usage of the people in it now.',
-    actions: Object.freeze([
-      Object.freeze({ label: 'All teams', href: withPreset('#teams', preset) }),
-      ...(manageHref ? [Object.freeze({ label: 'Manage teams', href: manageHref })] : []),
-    ]),
+    actions: Object.freeze([Object.freeze({ label: 'All teams', href: withPreset('#teams', preset) })]),
     tiles: Object.freeze([
       foldedTile('Submissions', group, 'submissions', formatCount, { trend: group && group.trend.length > 1 ? group.trend : null }),
       foldedTile('People (lower bound)', group, 'users'),
