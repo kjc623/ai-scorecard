@@ -113,18 +113,17 @@ test('a series refuses to exist for an event source and draws every bucket to sc
   assert.match(html, /data-tip="2026-09-30 · 2"[^>]*><span class="bar-fill" style="--h:20"/, 'a small bucket is drawn at its own height');
 });
 
-test('the overview summarises usage, data classes and findings beside the enrolled denominator', async () => {
+test('the overview summarises usage beside the enrolled denominator', async () => {
   const dashboard = dashboardFor();
   const { view } = await dashboard.load('posture', {});
   assert.equal(view.id, 'posture');
   assert.equal(view.title, 'Overview');
-  assert.deepEqual(view.tiles.map((t) => t.label), ['Submissions', 'People (lower bound)', 'Open findings', 'Devices reporting']);
-  assert.match(view.tiles[3].note, /of 4,620 enrolled devices/);
-  assert.deepEqual(view.tiles[3].split.map((p) => [p.label, p.count, p.href]), [['Reporting', 4180, '#devices?status=reporting'], ['Not reporting', 440, '#devices?status=attention']]);
-  assert.deepEqual(view.blocks.map((b) => [b.kind, b.title]), [['share', 'Where submissions went'], ['ranking', 'Tools in use'], ['ranking', 'Sensitive data by class']]);
+  assert.deepEqual(view.tiles.map((t) => t.label), ['Submissions', 'Users', 'Devices reporting']);
+  assert.match(view.tiles[2].note, /of 4,620 enrolled devices/);
+  assert.deepEqual(view.tiles[2].split.map((p) => [p.label, p.count, p.href]), [['Reporting', 4180, '#devices?status=reporting'], ['Not reporting', 440, '#devices?status=attention']]);
+  assert.deepEqual(view.blocks.map((b) => [b.kind, b.title]), [['share', 'Where submissions went'], ['ranking', 'Tools in use']]);
   assert.equal(view.blocks[1].href, '#tools');
-  assert.equal(view.blocks[2].href, '#tools?view=classes');
-  assert.deepEqual(view.tables.map((t) => t.title), ['Findings']);
+  assert.deepEqual(view.tables, []);
   const titles = view.banners.map((b) => b.title);
   assert.equal(new Set(titles).size, titles.length, 'a warning every read carries is said once');
   assert.ok(!view.banners.some((b) => b.about === 'coverage'), 'coverage is said by the devices reporting tile, not a banner');
@@ -132,9 +131,9 @@ test('the overview summarises usage, data classes and findings beside the enroll
 
 test('an overview panel whose read is not yet covered says so instead of "none"', () => {
   const blind = { resultState: 'not_yet_covered', data: [], banners: [], meta: {} };
-  const view = postureView({ devices: null, tools: blind, classes: null, findings: null });
+  const view = postureView({ devices: null, tools: blind });
   assert.match(view.blocks[1].emptyText, /^Not yet covered\./);
-  assert.equal(view.tables[0].emptyText, 'No finding was raised in this window.');
+  assert.equal(postureView({ devices: null, tools: null }).blocks[1].emptyText, 'No tool was in use in this window.');
 });
 
 test('Usage switches between tools, data classes and unsanctioned use, and Devices narrows to what needs attention', async () => {

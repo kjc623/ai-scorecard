@@ -139,11 +139,9 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
       switch (screen.kind) {
         case 'posture': {
           const devices = await ask('q7_devices', context({ preset: ctx.preset, limit: 500, filters: params.filters ?? {}, now: now() }));
-          // The summary reads three more questions.
+          // The summary reads one more question.
           const tools = await part(() => ask('q1_tools_ranked', ctx));
-          const classes = await part(() => ask('q4_class_mix', ctx));
-          const findings = await part(() => ask('q5_findings', ctx));
-          return { view: postureView({ devices, tools, classes, findings }, { preset: ctx.preset }), shell: shell() };
+          return { view: postureView({ devices, tools }, { preset: ctx.preset }), shell: shell() };
         }
         case 'answer': {
           if (screen.questionId === 'q6_subject_series' || screen.questionId === 'q9_event_detail') {
@@ -163,8 +161,12 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
             const subject = params.filters?.subject;
             if (!subject) {
               const search = String(params.filters?.q ?? '').trim();
-              const people = readState(await api.run(buildPeopleDocument({ search, cursor: params.filters?.cursor ?? null })));
-              return { view: peopleView(people, { search }), shell: shell() };
+              const cursor = params.filters?.cursor ?? null;
+              const people = readState(await api.run(buildPeopleDocument({ search, cursor })));
+              // Each team's people and their submissions head the first page of everyone; a search
+              // or a later page is the directory alone.
+              const members = search || cursor ? null : await part(async () => teamMembers(await ask('q3_team_growth', ctx), ctx));
+              return { view: peopleView(people, { search, members }), shell: shell() };
             }
             const state = await ask('q6_subject_series', context({ preset: ctx.preset, filters: { subject }, now: now() }));
             // The person's name and place come from the people list; without them the page still
@@ -239,8 +241,7 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
       return teamView(state, { team, members: await teamMembers(state, ctx, [team]), teams, preset: ctx.preset });
     }
     const state = await ask('q3_team_growth', ctx);
-    const members = await teamMembers(state, ctx);
-    return teamsView(state, { mayManage: Boolean(params.mayManage), members, teams, preset: ctx.preset });
+    return teamsView(state, { mayManage: Boolean(params.mayManage), teams, preset: ctx.preset });
   }
 
   /**

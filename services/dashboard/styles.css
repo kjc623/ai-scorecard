@@ -331,8 +331,6 @@ tr.row-empty td { color: var(--ink-soft); font-style: italic; }
 .dist-seg.v-vocab-severity_high, .dist-dot.v-vocab-severity_high { background: var(--warn); }
 .dist-seg.v-vocab-severity_medium, .dist-dot.v-vocab-severity_medium, .dist-seg.v-vocab-severity_low, .dist-dot.v-vocab-severity_low { background: var(--ink-faint); }
 /* People in a team against people in none: a part of the whole, not a state. */
-.dist-seg.v-vocab-in_team, .dist-dot.v-vocab-in_team { background: var(--accent); }
-.dist-seg.v-vocab-no_team, .dist-dot.v-vocab-no_team { background: var(--ink-faint); }
 
 /* Part-to-whole: one bar, a 2px surface gap between its parts, and a legend saying each part's share. */
 .share { padding: 4px 22px 20px; }
