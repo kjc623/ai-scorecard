@@ -39,12 +39,12 @@ UPDATE ops.directory_sync
        groups_synced     = $5::int
  WHERE tenant_id = $1::uuid`
 
-	// sqlImportedGroups lists the groups a team follows whose externalId is a Graph object id.
+	// sqlImportedGroups lists the groups a team includes whose externalId is a Graph object id.
 	sqlImportedGroups = `
 SELECT DISTINCT g.scim_id::text, lower(g.external_id)
-  FROM ops.team t
-  JOIN ops.scim_group g ON g.tenant_id = t.tenant_id AND g.scim_id = t.group_id
- WHERE t.tenant_id = $1::uuid AND t.source = 'group'
+  FROM ops.team_include i
+  JOIN ops.scim_group g ON g.tenant_id = i.tenant_id AND g.scim_id = i.group_id
+ WHERE i.tenant_id = $1::uuid AND i.kind = 'group'
    AND g.external_id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
  ORDER BY 1`
 )

@@ -1003,29 +1003,20 @@ CREATE TABLE ops.directory_sync (
   CONSTRAINT directory_sync_failure_has_code CHECK ((last_status = 'failed') = (last_error IS NOT NULL))
 );
 
--- A team usage is reported by. Its members are either chosen in the console (source 'console',
--- ops.team_member) or follow the directory: a provisioned group's members, everyone in a
--- department, or everyone in an organisational unit and the units below it.
+-- A team usage is reported by. Its members are the people chosen for it (ops.team_member) and the
+-- members of whatever it includes (ops.team_include), in any mix.
 CREATE TABLE ops.team (
   tenant_id    uuid NOT NULL REFERENCES ops.tenant(tenant_id),
   team_id      uuid NOT NULL DEFAULT gen_random_uuid(),
   name         text NOT NULL CONSTRAINT team_name_present CHECK (btrim(name) <> '' AND length(name) <= 120),
-  source       text NOT NULL CHECK (source IN ('console','group','department','org_unit')),
-  group_id     uuid,
-  -- The department name or the unit's distinguished name, compared case-insensitively.
-  match_value  text CONSTRAINT team_match_value_bounded CHECK (length(match_value) <= 1024),
   created_by   text NOT NULL,
   created_at   timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (tenant_id, team_id),
-  -- A group the identity provider stops provisioning takes its team with it.
-  FOREIGN KEY (tenant_id, group_id) REFERENCES ops.scim_group(tenant_id, scim_id) ON DELETE CASCADE,
-  CONSTRAINT team_group_source CHECK ((source = 'group') = (group_id IS NOT NULL)),
-  CONSTRAINT team_match_source CHECK ((source IN ('department','org_unit')) = (match_value IS NOT NULL))
+  PRIMARY KEY (tenant_id, team_id)
 );
 
 CREATE UNIQUE INDEX team_name_unique ON ops.team (tenant_id, lower(name));
 
--- The members of a console team, by canonical ref.
+-- The people chosen for a team, by canonical ref.
 CREATE TABLE ops.team_member (
   tenant_id  uuid NOT NULL,
   team_id    uuid NOT NULL,
@@ -1036,27 +1027,68 @@ CREATE TABLE ops.team_member (
   FOREIGN KEY (tenant_id, team_id) REFERENCES ops.team(tenant_id, team_id) ON DELETE CASCADE
 );
 
--- Every team's members as of now, whatever the team's source. A person may be in several teams.
+-- What a team includes and follows as the directory changes: a provisioned group's members,
+-- everyone in a department, everyone in an organisational unit and the units below it, or another
+-- team's members. A group the identity provider stops provisioning, or a team deleted, drops out.
+CREATE TABLE ops.team_include (
+  tenant_id         uuid NOT NULL,
+  team_id           uuid NOT NULL,
+  include_id        uuid NOT NULL DEFAULT gen_random_uuid(),
+  kind              text NOT NULL CHECK (kind IN ('group','department','org_unit','team')),
+  group_id          uuid,
+  -- The department name or the unit's distinguished name, compared case-insensitively.
+  match_value       text CONSTRAINT team_include_match_value_bounded CHECK (length(match_value) <= 1024),
+  included_team_id  uuid,
+  added_by          text NOT NULL,
+  added_at          timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, team_id, include_id),
+  FOREIGN KEY (tenant_id, team_id) REFERENCES ops.team(tenant_id, team_id) ON DELETE CASCADE,
+  FOREIGN KEY (tenant_id, group_id) REFERENCES ops.scim_group(tenant_id, scim_id) ON DELETE CASCADE,
+  FOREIGN KEY (tenant_id, included_team_id) REFERENCES ops.team(tenant_id, team_id) ON DELETE CASCADE,
+  CONSTRAINT team_include_group CHECK ((kind = 'group') = (group_id IS NOT NULL)),
+  CONSTRAINT team_include_match CHECK ((kind IN ('department','org_unit')) = (match_value IS NOT NULL)),
+  CONSTRAINT team_include_team CHECK ((kind = 'team') = (included_team_id IS NOT NULL)),
+  CONSTRAINT team_include_not_itself CHECK (included_team_id <> team_id)
+);
+
+CREATE UNIQUE INDEX team_include_group_once ON ops.team_include (tenant_id, team_id, group_id);
+CREATE UNIQUE INDEX team_include_team_once ON ops.team_include (tenant_id, team_id, included_team_id);
+CREATE UNIQUE INDEX team_include_match_once ON ops.team_include (tenant_id, team_id, kind, lower(match_value));
+CREATE INDEX team_include_by_group ON ops.team_include (tenant_id, group_id) WHERE group_id IS NOT NULL;
+CREATE INDEX team_include_by_team ON ops.team_include (tenant_id, included_team_id) WHERE included_team_id IS NOT NULL;
+
+-- Every team's members as of now. A team reaches the teams it includes, and theirs in turn; UNION
+-- stops the recursion at a team already reached, so a cycle cannot loop. A person may be in
+-- several teams.
 CREATE VIEW ops.v_team_member
 WITH (security_invoker = true) AS
-SELECT t.tenant_id, t.team_id, m.user_ref
-  FROM ops.team t
-  JOIN ops.team_member m ON m.tenant_id = t.tenant_id AND m.team_id = t.team_id
- WHERE t.source = 'console'
+WITH RECURSIVE reach (tenant_id, team_id, part_id) AS (
+  SELECT t.tenant_id, t.team_id, t.team_id FROM ops.team t
+  UNION
+  SELECT r.tenant_id, r.team_id, i.included_team_id
+    FROM reach r
+    JOIN ops.team_include i ON i.tenant_id = r.tenant_id AND i.team_id = r.part_id
+   WHERE i.kind = 'team'
+)
+SELECT r.tenant_id, r.team_id, m.user_ref
+  FROM reach r
+  JOIN ops.team_member m ON m.tenant_id = r.tenant_id AND m.team_id = r.part_id
 UNION
-SELECT t.tenant_id, t.team_id, u.user_ref
-  FROM ops.team t
-  JOIN ops.scim_group_member gm ON gm.tenant_id = t.tenant_id AND gm.group_id = t.group_id
+SELECT r.tenant_id, r.team_id, u.user_ref
+  FROM reach r
+  JOIN ops.team_include i ON i.tenant_id = r.tenant_id AND i.team_id = r.part_id AND i.kind = 'group'
+  JOIN ops.scim_group_member gm ON gm.tenant_id = i.tenant_id AND gm.group_id = i.group_id
   JOIN ops.scim_user u ON u.tenant_id = gm.tenant_id AND u.scim_id = gm.user_id
- WHERE t.source = 'group' AND u.active
+ WHERE u.active
 UNION
-SELECT t.tenant_id, t.team_id, ud.user_ref
-  FROM ops.team t
-  JOIN ops.user_dim ud ON ud.tenant_id = t.tenant_id
- WHERE (t.source = 'department' AND lower(ud.department) = lower(t.match_value))
-    OR (t.source = 'org_unit'
-        AND (lower(ud.org_unit) = lower(t.match_value)
-             OR right(lower(ud.org_unit), length(t.match_value) + 1) = ',' || lower(t.match_value)));
+SELECT r.tenant_id, r.team_id, ud.user_ref
+  FROM reach r
+  JOIN ops.team_include i ON i.tenant_id = r.tenant_id AND i.team_id = r.part_id
+  JOIN ops.user_dim ud ON ud.tenant_id = i.tenant_id
+ WHERE (i.kind = 'department' AND lower(ud.department) = lower(i.match_value))
+    OR (i.kind = 'org_unit'
+        AND (lower(ud.org_unit) = lower(i.match_value)
+             OR right(lower(ud.org_unit), length(i.match_value) + 1) = ',' || lower(i.match_value)));
 
 -- Device-derived ref -> canonical ref. A device derives a person's ref from whatever it can resolve
 -- (a UPN, an Entra object id, an account name), so one person reaches the server under several refs.
@@ -2356,7 +2388,7 @@ DECLARE
     'ops.identity_connection', 'ops.tenant_email_domain', 'ops.onboarding_invite',
     'ops.role_grant', 'ops.auth_session', 'ops.scim_token', 'ops.scim_user', 'ops.scim_group',
     'ops.scim_group_member', 'ops.user_ref_alias', 'ops.deployment_key',
-    'ops.directory_sync', 'ops.team', 'ops.team_member',
+    'ops.directory_sync', 'ops.team', 'ops.team_member', 'ops.team_include',
     -- ingest
     'ingest.observation', 'ingest.submission', 'ingest.rejected', 'ingest.search_text',
     -- mart
@@ -2476,9 +2508,10 @@ GRANT DELETE ON ops.tenant_email_domain, ops.role_grant, ops.auth_session, ops.a
       ops.scim_user, ops.scim_group, ops.scim_group_member
   TO sac_control;
 -- The directory pull is switched on (inserted), records each run (updated) and is switched off
--- (deleted). Teams are created, renamed and deleted in the console, and so are a console team's
--- members.
-GRANT SELECT, INSERT, UPDATE, DELETE ON ops.directory_sync, ops.team, ops.team_member TO sac_control;
+-- (deleted). Teams are created, renamed and deleted in the console, and so are their people and
+-- what they include.
+GRANT SELECT, INSERT, UPDATE, DELETE ON ops.directory_sync, ops.team, ops.team_member, ops.team_include
+  TO sac_control;
 GRANT SELECT ON ops.v_team_member TO sac_control;
 
 -- sac_resolver reads only what the cross-tenant lookups answer from.
@@ -2550,9 +2583,9 @@ GRANT SELECT ON mart.finding, mart.agg_tool_period, mart.agg_tool_user_period,
       mart.agg_class_period, mart.agg_org_period, mart.agg_user_period, mart.agg_device_period,
       mart.agg_team_period, mart.v_device_liveness, mart.v_tool_usage, mart.v_finding,
       mart.v_tenant_suspension_impact, mart.v_person, mart.v_team_member_period TO sac_query;
--- Team names and members, for the Teams page. Membership of a group-sourced team is read through
--- the provisioned person's canonical ref and status, never their sealed resource.
-GRANT SELECT ON ops.team, ops.team_member, ops.v_team_member, ops.scim_group,
+-- Team names and members, for the Teams page. Membership through a group is read through the
+-- provisioned person's canonical ref and status, never their sealed resource.
+GRANT SELECT ON ops.team, ops.team_member, ops.team_include, ops.v_team_member, ops.scim_group,
       ops.scim_group_member TO sac_query;
 GRANT SELECT (tenant_id, scim_id, user_ref, active) ON ops.scim_user TO sac_query;
 GRANT SELECT ON ops.tenant, ops.user_dim, ops.device, ops.collector_state, ops.tool_sanction,
@@ -2577,7 +2610,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON mart.finding, mart.agg_tool_period,
       mart.agg_tool_user_period, mart.agg_class_period, mart.agg_org_period,
       mart.agg_user_period, mart.agg_device_period, mart.agg_team_period TO sac_ops;
 -- The team rollup reads each team's members as of the pass.
-GRANT SELECT ON ops.team, ops.team_member, ops.v_team_member, ops.scim_group_member TO sac_ops;
+GRANT SELECT ON ops.team, ops.team_member, ops.team_include, ops.v_team_member, ops.scim_group_member
+  TO sac_ops;
 GRANT SELECT (tenant_id, scim_id, user_ref, active) ON ops.scim_user TO sac_ops;
 -- Expiry deletes content and its index entries without being able to read either, and marks the
 -- content's submission shredded.

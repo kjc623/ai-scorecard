@@ -1,10 +1,10 @@
 // Package directoryadmin is the admin API for the people side of a tenant: the pull of its
 // directory from Microsoft Graph, and its teams.
 //
-// A team is created in the console with members an admin picks, or follows the directory: a group
-// (provisioned by SCIM, or imported from Graph by its object id and kept current by the pull), a
-// department, or an organisational unit and the units below it. Usage is reported per team by the
-// aggregate job from ops.v_team_member.
+// A team is made in the console from any mix of people an admin picks and what it includes, which
+// the directory keeps current: groups (provisioned by SCIM, or imported from Graph by their object
+// id and kept current by the pull), departments, organisational units and the units below them,
+// and other teams. Usage is reported per team by the aggregate job from ops.v_team_member.
 //
 // Every route requires a product access token carrying the admin role; the tenant is the token's.
 // Every write is audited with the admin as actor, in the write's own transaction.
@@ -31,12 +31,12 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/store"
 )
 
-// Team sources: exactly the values ops.team.source admits.
+// What a team includes: exactly the values ops.team_include.kind admits.
 const (
-	SourceConsole    = "console"
-	SourceGroup      = "group"
-	SourceDepartment = "department"
-	SourceOrgUnit    = "org_unit"
+	IncludeGroup      = "group"
+	IncludeDepartment = "department"
+	IncludeOrgUnit    = "org_unit"
+	IncludeTeam       = "team"
 )
 
 // Store errors.
@@ -44,7 +44,7 @@ var (
 	ErrUnknownTenant = errors.New("directoryadmin: tenant unknown")
 	ErrNotFound      = errors.New("directoryadmin: not found")
 	ErrNameTaken     = errors.New("directoryadmin: a team already has this name")
-	ErrNotConsole    = errors.New("directoryadmin: the team's members follow the directory")
+	ErrCycle         = errors.New("directoryadmin: the included team already includes this one")
 	ErrNoEntra       = errors.New("directoryadmin: no active Entra connection")
 )
 
@@ -70,16 +70,26 @@ type Status struct {
 
 // Team is one team as the admin page lists it.
 type Team struct {
-	ID              string
-	Name            string
-	Source          string
-	GroupID         string
-	GroupName       string
-	GroupExternalID string
-	MatchValue      string
-	CreatedBy       string
-	CreatedAt       time.Time
-	Members         int64
+	ID        string
+	Name      string
+	Includes  []Include
+	CreatedBy string
+	CreatedAt time.Time
+	// People counts the people chosen for the team; Members everyone in it now, through what it
+	// includes too.
+	People  int64
+	Members int64
+}
+
+// Include is one thing a team includes.
+type Include struct {
+	Kind string
+	// ID names the group or the team; Value the department or the unit's distinguished name.
+	ID    string
+	Value string
+	// Name and ExternalID are read back: the group's or team's name, and the group's externalId.
+	Name       string
+	ExternalID string
 }
 
 // Member is one person in a team.
@@ -121,12 +131,15 @@ type Store interface {
 	// SetSync turns the pull on or off; on needs an active Entra connection (ErrNoEntra).
 	SetSync(ctx context.Context, tenant string, on bool, a Audit) error
 	Teams(ctx context.Context, tenant string) ([]Team, error)
-	// CreateTeam returns ErrNameTaken for a name in use, ErrNotFound for an unknown group.
+	// CreateTeam returns ErrNameTaken for a name in use, ErrNotFound for an unknown group or team.
 	CreateTeam(ctx context.Context, tenant string, t Team, members []string, a Audit) error
 	RenameTeam(ctx context.Context, tenant, id, name string, a Audit) error
 	DeleteTeam(ctx context.Context, tenant, id string, a Audit) error
-	// ChangeMembers returns ErrNotConsole for a team whose members follow the directory.
+	// SetIncludes replaces what a team includes. It returns ErrNotFound for an unknown team, group
+	// or included team, and ErrCycle when an included team already includes this one.
+	SetIncludes(ctx context.Context, tenant, id string, includes []Include, a Audit) error
 	ChangeMembers(ctx context.Context, tenant, id string, add, remove []string, a Audit) error
+	// TeamMembers lists the people chosen for a team, not those it has through what it includes.
 	TeamMembers(ctx context.Context, tenant, id string, limit int) ([]Member, error)
 	DirectoryValues(ctx context.Context, tenant, kind string, limit int) ([]Value, error)
 	Groups(ctx context.Context, tenant string, limit int) ([]ProvisionedGroup, error)
@@ -194,6 +207,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/v1/teams", h.handleTeams)
 	mux.HandleFunc("POST /admin/v1/teams", h.handleCreateTeam)
 	mux.HandleFunc("PATCH /admin/v1/teams/{id}", h.handleRenameTeam)
+	mux.HandleFunc("PUT /admin/v1/teams/{id}/includes", h.handleSetIncludes)
 	mux.HandleFunc("DELETE /admin/v1/teams/{id}", h.handleDeleteTeam)
 	mux.HandleFunc("GET /admin/v1/teams/{id}/members", h.handleMembers)
 	mux.HandleFunc("POST /admin/v1/teams/{id}/members", h.handleChangeMembers)
@@ -205,6 +219,7 @@ const (
 	maxNameLen      = 120
 	maxMatchLen     = 1024
 	maxMemberChange = 500
+	maxIncludes     = 100
 	listLimit       = 500
 )
 
@@ -361,9 +376,9 @@ func (h *Handler) handleValues(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	kind := r.URL.Query().Get("kind")
-	if kind != SourceDepartment && kind != SourceOrgUnit {
+	if kind != IncludeDepartment && kind != IncludeOrgUnit {
 		h.fail(w, apierr.Detailed(http.StatusBadRequest, apierr.CodeInvalidRequest, "kind must be department or org_unit",
-			map[string]any{"supported": []string{SourceDepartment, SourceOrgUnit}}))
+			map[string]any{"supported": []string{IncludeDepartment, IncludeOrgUnit}}))
 		return
 	}
 	values, err := h.store.DirectoryValues(r.Context(), p.Tenant, kind, listLimit)
@@ -383,23 +398,44 @@ func (h *Handler) handleValues(w http.ResponseWriter, r *http.Request) {
 
 // --- teams -------------------------------------------------------------------------------------
 
+type includeJSON struct {
+	Kind     string `json:"kind"`
+	GroupID  string `json:"group_id,omitempty"`
+	ObjectID string `json:"group_object_id,omitempty"`
+	TeamID   string `json:"team_id,omitempty"`
+	Value    string `json:"value,omitempty"`
+	Name     string `json:"name"`
+}
+
 type teamJSON struct {
-	ID         string    `json:"team_id"`
-	Name       string    `json:"name"`
-	Source     string    `json:"source"`
-	GroupID    string    `json:"group_id,omitempty"`
-	GroupName  string    `json:"group_name,omitempty"`
-	ObjectID   string    `json:"group_object_id,omitempty"`
-	MatchValue string    `json:"match_value,omitempty"`
-	CreatedBy  string    `json:"created_by"`
-	CreatedAt  time.Time `json:"created_at"`
-	Members    int64     `json:"members"`
+	ID        string        `json:"team_id"`
+	Name      string        `json:"name"`
+	Includes  []includeJSON `json:"includes"`
+	CreatedBy string        `json:"created_by"`
+	CreatedAt time.Time     `json:"created_at"`
+	People    int64         `json:"people"`
+	Members   int64         `json:"members"`
 }
 
 func toJSON(t Team) teamJSON {
-	return teamJSON{ID: t.ID, Name: t.Name, Source: t.Source, GroupID: t.GroupID, GroupName: t.GroupName,
-		ObjectID: strings.ToLower(t.GroupExternalID), MatchValue: t.MatchValue, CreatedBy: t.CreatedBy,
-		CreatedAt: t.CreatedAt, Members: t.Members}
+	out := teamJSON{ID: t.ID, Name: t.Name, Includes: []includeJSON{}, CreatedBy: t.CreatedBy, CreatedAt: t.CreatedAt,
+		People: t.People, Members: t.Members}
+	for _, in := range t.Includes {
+		j := includeJSON{Kind: in.Kind, Name: in.Name}
+		switch in.Kind {
+		case IncludeGroup:
+			j.GroupID, j.ObjectID = in.ID, strings.ToLower(in.ExternalID)
+		case IncludeTeam:
+			j.TeamID = in.ID
+		default:
+			j.Value = in.Value
+			if j.Name == "" {
+				j.Name = in.Value
+			}
+		}
+		out.Includes = append(out.Includes, j)
+	}
+	return out
 }
 
 func (h *Handler) handleTeams(w http.ResponseWriter, r *http.Request) {
@@ -418,15 +454,20 @@ func (h *Handler) handleTeams(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, map[string]any{"teams": out})
 }
 
+// includeRequest names one thing a team includes. A group is named by group_id when the product
+// holds it, or by group_object_id in the customer's Entra directory, and is then imported.
+type includeRequest struct {
+	Kind          string `json:"kind"`
+	GroupID       string `json:"group_id"`
+	GroupObjectID string `json:"group_object_id"`
+	TeamID        string `json:"team_id"`
+	Value         string `json:"value"`
+}
+
 type createTeamRequest struct {
-	Name   string `json:"name"`
-	Source string `json:"source"`
-	// GroupID names a provisioned group; GroupObjectID a group in the customer's Entra directory,
-	// which is imported first.
-	GroupID       string   `json:"group_id"`
-	GroupObjectID string   `json:"group_object_id"`
-	MatchValue    string   `json:"match_value"`
-	Members       []string `json:"members"`
+	Name     string           `json:"name"`
+	Members  []string         `json:"members"`
+	Includes []includeRequest `json:"includes"`
 }
 
 func (h *Handler) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
@@ -442,34 +483,17 @@ func (h *Handler) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	team := Team{Name: name, Source: req.Source, CreatedBy: p.Actor, CreatedAt: h.cfg.Now().UTC()}
+	members, ok := h.refs(w, req.Members)
+	if !ok {
+		return
+	}
+	includes, ok := h.includes(w, r, p, req.Includes)
+	if !ok {
+		return
+	}
+	team := Team{Name: name, Includes: includes, CreatedBy: p.Actor, CreatedAt: h.cfg.Now().UTC(), People: int64(len(members))}
 	if team.CreatedBy == "" {
 		team.CreatedBy = p.Subject
-	}
-	var members []string
-	switch req.Source {
-	case SourceConsole:
-		if members, ok = h.refs(w, req.Members); !ok {
-			return
-		}
-	case SourceGroup:
-		if team.GroupID, ok = h.teamGroup(w, r, p, req); !ok {
-			return
-		}
-	case SourceDepartment, SourceOrgUnit:
-		team.MatchValue = strings.TrimSpace(req.MatchValue)
-		if team.MatchValue == "" || len(team.MatchValue) > maxMatchLen {
-			h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, fmt.Sprintf("match_value is required and at most %d characters", maxMatchLen)))
-			return
-		}
-	default:
-		h.fail(w, apierr.Detailed(http.StatusBadRequest, apierr.CodeInvalidRequest, "source must be console, group, department or org_unit",
-			map[string]any{"supported": []string{SourceConsole, SourceGroup, SourceDepartment, SourceOrgUnit}}))
-		return
-	}
-	if req.Source != SourceConsole && len(req.Members) > 0 {
-		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "members are chosen only for a console team; this team's members follow the directory"))
-		return
 	}
 	id, err := store.NewUUID()
 	if err != nil {
@@ -477,36 +501,124 @@ func (h *Handler) handleCreateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	team.ID = id
-	detail := map[string]any{"name": team.Name, "source": team.Source, "members_added": len(members)}
-	switch team.Source {
-	case SourceGroup:
-		detail["group_id"] = team.GroupID
-	case SourceDepartment, SourceOrgUnit:
-		detail["match_value"] = team.MatchValue
-	}
+	detail := map[string]any{"name": team.Name, "members_added": len(members), "includes": includeDetail(includes)}
 	err = h.store.CreateTeam(r.Context(), p.Tenant, team, members, h.audit(p, "team.create", "team", id, team.CreatedAt, detail))
-	switch {
-	case errors.Is(err, ErrNameTaken):
-		h.fail(w, apierr.New(http.StatusConflict, apierr.CodeTeamNameTaken, "a team already has this name"))
-		return
-	case errors.Is(err, ErrNotFound):
-		h.fail(w, apierr.New(http.StatusNotFound, apierr.CodeNotFound, "no such group"))
-		return
-	case h.storeFailed(w, err, "create team"):
+	if h.includesFailed(w, err, "create team") {
 		return
 	}
-	if team.Source == SourceGroup && h.cfg.Sync != nil {
-		// A group imported from Entra, now or by an earlier attempt, has no members until the pull
-		// reads them. A tenant with the pull off ignores the request.
-		h.cfg.Sync.Trigger(p.Tenant)
-	}
-	h.cfg.Logger.Info("control: team created", "tenant", p.Tenant, "team_id", id, "source", team.Source)
+	h.readGroups(p, includes)
+	h.cfg.Logger.Info("control: team created", "tenant", p.Tenant, "team_id", id, "members", len(members), "includes", len(includes))
 	h.writeJSON(w, http.StatusCreated, toJSON(team))
 }
 
-// teamGroup resolves the group a new team follows, importing it from Entra when it is named by
+func (h *Handler) handleSetIncludes(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.admin(w, r)
+	if !ok {
+		return
+	}
+	id, ok := h.teamID(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Includes []includeRequest `json:"includes"`
+	}
+	if !h.decode(w, r, &req) {
+		return
+	}
+	includes, ok := h.includes(w, r, p, req.Includes)
+	if !ok {
+		return
+	}
+	now := h.cfg.Now().UTC()
+	err := h.store.SetIncludes(r.Context(), p.Tenant, id, includes,
+		h.audit(p, "team.includes.set", "team", id, now, map[string]any{"includes": includeDetail(includes)}))
+	if h.includesFailed(w, err, "set team includes") {
+		return
+	}
+	h.readGroups(p, includes)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// readGroups asks for the pull when a team includes a group: one imported from Entra, now or by an
+// earlier attempt, has no members until the pull reads them. A tenant with the pull off ignores it.
+func (h *Handler) readGroups(p deploy.Principal, includes []Include) {
+	if h.cfg.Sync == nil {
+		return
+	}
+	for _, in := range includes {
+		if in.Kind == IncludeGroup {
+			h.cfg.Sync.Trigger(p.Tenant)
+			return
+		}
+	}
+}
+
+// includeDetail is what an audit row records of a team's includes.
+func includeDetail(includes []Include) []map[string]string {
+	out := make([]map[string]string, 0, len(includes))
+	for _, in := range includes {
+		d := map[string]string{"kind": in.Kind}
+		if in.ID != "" {
+			d["id"] = in.ID
+		}
+		if in.Value != "" {
+			d["value"] = in.Value
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// includes validates what a team is to include, deduplicated, importing each group named by an
+// Entra object id that the product does not hold yet.
+func (h *Handler) includes(w http.ResponseWriter, r *http.Request, p deploy.Principal, raw []includeRequest) ([]Include, bool) {
+	if len(raw) > maxIncludes {
+		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, fmt.Sprintf("a team includes at most %d groups, departments, units and teams", maxIncludes)))
+		return nil, false
+	}
+	seen := map[string]bool{}
+	out := []Include{}
+	for _, req := range raw {
+		var in Include
+		switch req.Kind {
+		case IncludeGroup:
+			id, ok := h.includedGroup(w, r, p, req)
+			if !ok {
+				return nil, false
+			}
+			in = Include{Kind: IncludeGroup, ID: id}
+		case IncludeTeam:
+			id := strings.ToLower(strings.TrimSpace(req.TeamID))
+			if !store.IsUUID(id) {
+				h.fail(w, apierr.New(http.StatusNotFound, apierr.CodeNotFound, "no such team"))
+				return nil, false
+			}
+			in = Include{Kind: IncludeTeam, ID: id}
+		case IncludeDepartment, IncludeOrgUnit:
+			v := strings.TrimSpace(req.Value)
+			if v == "" || len(v) > maxMatchLen {
+				h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, fmt.Sprintf("a department or unit is named by a value of 1 to %d characters", maxMatchLen)))
+				return nil, false
+			}
+			in = Include{Kind: req.Kind, Value: v}
+		default:
+			h.fail(w, apierr.Detailed(http.StatusBadRequest, apierr.CodeInvalidRequest, "kind must be group, department, org_unit or team",
+				map[string]any{"supported": []string{IncludeGroup, IncludeDepartment, IncludeOrgUnit, IncludeTeam}}))
+			return nil, false
+		}
+		key := in.Kind + ":" + in.ID + ":" + strings.ToLower(in.Value)
+		if !seen[key] {
+			seen[key] = true
+			out = append(out, in)
+		}
+	}
+	return out, true
+}
+
+// includedGroup resolves a group a team includes, importing it from Entra when it is named by
 // object id and not yet held.
-func (h *Handler) teamGroup(w http.ResponseWriter, r *http.Request, p deploy.Principal, req createTeamRequest) (string, bool) {
+func (h *Handler) includedGroup(w http.ResponseWriter, r *http.Request, p deploy.Principal, req includeRequest) (string, bool) {
 	if gid := strings.ToLower(strings.TrimSpace(req.GroupID)); gid != "" {
 		if !store.IsUUID(gid) {
 			h.fail(w, apierr.New(http.StatusNotFound, apierr.CodeNotFound, "no such group"))
@@ -516,7 +628,7 @@ func (h *Handler) teamGroup(w http.ResponseWriter, r *http.Request, p deploy.Pri
 	}
 	oid := strings.ToLower(strings.TrimSpace(req.GroupObjectID))
 	if !store.IsUUID(oid) {
-		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "a group team needs group_id or group_object_id"))
+		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "a group is named by group_id or group_object_id"))
 		return "", false
 	}
 	if id, found, err := h.store.GroupByExternalID(r.Context(), p.Tenant, oid); err != nil {
@@ -660,10 +772,6 @@ func (h *Handler) handleChangeMembers(w http.ResponseWriter, r *http.Request) {
 	now := h.cfg.Now().UTC()
 	err := h.store.ChangeMembers(r.Context(), p.Tenant, id, add, remove,
 		h.audit(p, "team.members.change", "team", id, now, map[string]any{"added": len(add), "removed": len(remove)}))
-	if errors.Is(err, ErrNotConsole) {
-		h.fail(w, apierr.New(http.StatusConflict, apierr.CodeTeamNotConsole, "this team's members follow the directory; change them there"))
-		return
-	}
 	if h.teamFailed(w, err, "change team members") {
 		return
 	}
@@ -796,6 +904,19 @@ func (h *Handler) teamFailed(w http.ResponseWriter, err error, what string) bool
 		return true
 	}
 	return h.storeFailed(w, err, what)
+}
+
+// includesFailed answers a write that names groups or teams: ErrNotFound may be any of them.
+func (h *Handler) includesFailed(w http.ResponseWriter, err error, what string) bool {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		h.fail(w, apierr.New(http.StatusNotFound, apierr.CodeNotFound, "no such team, or no such group or team to include"))
+		return true
+	case errors.Is(err, ErrCycle):
+		h.fail(w, apierr.New(http.StatusConflict, apierr.CodeTeamCycle, "a team cannot include a team that already includes it"))
+		return true
+	}
+	return h.teamFailed(w, err, what)
 }
 
 func (h *Handler) decode(w http.ResponseWriter, r *http.Request, v any) bool {

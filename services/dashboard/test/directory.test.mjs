@@ -74,7 +74,7 @@ test('the admin API reads the directory and its teams, and names each team route
     async request(spec) {
       seen.push(`${spec.method} ${spec.path}${spec.body ? ` ${JSON.stringify(spec.body)}` : ''}`);
       if (spec.path === '/admin/v1/directory') return { status: 200, body: { entra_connected: true, graph_available: true, people: 3, groups: null, sync: null } };
-      if (spec.path === '/admin/v1/teams' && spec.method === 'GET') return { status: 200, body: { teams: [{ team_id: TEAM, name: 'Pilot', source: 'console', members: 2 }, { name: 'no id' }] } };
+      if (spec.path === '/admin/v1/teams' && spec.method === 'GET') return { status: 200, body: { teams: [{ team_id: TEAM, name: 'Pilot', includes: [{ kind: 'team', team_id: 'x', name: 'Ops' }, { kind: 'person' }], people: 2, members: 2 }, { name: 'no id' }] } };
       return { status: 204, body: null };
     },
   };
@@ -84,8 +84,10 @@ test('the admin API reads the directory and its teams, and names each team route
   assert.equal(read.data.groups, null, 'a count not sent stays unknown');
   const teams = await admin.teams();
   assert.deepEqual(teams.teams.map((t) => t.name), ['Pilot'], 'a team with no id is dropped');
+  assert.deepEqual(teams.teams[0].includes.map((i) => [i.kind, i.team_id, i.name]), [['team', 'x', 'Ops']], 'an include of an unknown kind is dropped');
   await admin.directoryGroups('sales east');
   await admin.renameTeam(TEAM, 'Pilot crew');
+  await admin.setTeamIncludes(TEAM, [{ kind: 'department', value: 'Sales' }]);
   await admin.changeTeamMembers(TEAM, { add: [ADA] });
   await admin.deleteTeam(TEAM);
   assert.deepEqual(seen, [
@@ -93,6 +95,7 @@ test('the admin API reads the directory and its teams, and names each team route
     'GET /admin/v1/teams',
     'GET /admin/v1/directory/groups?q=sales%20east',
     `PATCH /admin/v1/teams/${TEAM} {"name":"Pilot crew"}`,
+    `PUT /admin/v1/teams/${TEAM}/includes {"includes":[{"kind":"department","value":"Sales"}]}`,
     `POST /admin/v1/teams/${TEAM}/members {"add":["${ADA}"],"remove":[]}`,
     `DELETE /admin/v1/teams/${TEAM}`,
   ]);
