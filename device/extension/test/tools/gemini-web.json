@@ -1,0 +1,35 @@
+{
+  "tool": "Gemini (web)",
+  "app_key": "gemini_web",
+  "source": {
+    "kind": "documented",
+    "from": "the StreamGenerate request built by github.com/HanaokaYuzu/Gemini-API (src/gemini_webapi/client.py), a client of the Gemini web app",
+    "checked": "2026-10-11"
+  },
+  "typed": "summarise this week's sales figures",
+  "request": {
+    "url": "https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?bl=boq_assistant-bard-web-server_20261005.08_p0&hl=en&_reqid=123456&rt=c",
+    "method": "POST",
+    "form": {
+      "f.req": [
+        "[null,\"[[\\\"summarise this week's sales figures\\\",0,null,null,null,null,0],[\\\"en\\\"],[\\\"\\\",\\\"\\\",\\\"\\\",null,null,null,null,null,null,\\\"\\\"],null,null,null,[1],1,null,null,1,0,null,null,null,null,null,[[0]],0,null,null,null,null,null,null,null,null,1,null,null,[4],null,null,null,null,null,null,null,null,null,null,[1],null,null,null,null,null,null,null,null,null,null,null,0,null,null,null,null,null,\\\"5B6E2F1A-3C4D-4E5F-8A9B-0C1D2E3F4A5B\\\",null,[],null,null,null,null,null,null,1,null,null,null,null,null,null,null,null,null,null,1,1]\"]"
+      ],
+      "at": [
+        "AJvLN6M3xYz:1760140000000"
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "application/json; charset=utf-8"
+    }
+  },
+  "expect": {
+    "events": 0,
+    "observed": false,
+    "attributed": false,
+    "prompt": false,
+    "why": "the form has no prompt field and only two fields, so the request scores 0.5 against a 0.8 threshold; the response would have to corroborate it, and the response lane is registered without responseHeaders, so it never can"
+  }
+}

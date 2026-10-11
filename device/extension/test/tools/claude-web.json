@@ -1,0 +1,68 @@
+{
+  "tool": "Claude (web)",
+  "app_key": "claude_web",
+  "source": {
+    "kind": "documented",
+    "from": "the completion payload built by github.com/cyber-wojtek/Claude-API (claude_webapi/client.py, _build_payload), a client of the claude.ai web app",
+    "checked": "2026-10-11"
+  },
+  "typed": "summarise this week's sales figures",
+  "request": {
+    "url": "https://claude.ai/api/organizations/6f1c2a3e-1b2c-4d5e-8f90-112233445566/chat_conversations/0a1b2c3d-4e5f-4061-8273-8495a6b7c8d9/completion",
+    "method": "POST",
+    "json": {
+      "attachments": [],
+      "files": [],
+      "locale": "en-US",
+      "model": "claude-sonnet-4-6",
+      "personalized_styles": [
+        {
+          "type": "default",
+          "key": "Default",
+          "name": "Normal",
+          "nameKey": "normal_style_name",
+          "prompt": "Normal",
+          "summary": "Default responses from Claude",
+          "summaryKey": "normal_style_summary",
+          "isDefault": true
+        }
+      ],
+      "prompt": "summarise this week's sales figures",
+      "rendering_mode": "messages",
+      "sync_sources": [],
+      "timezone": "Europe/London",
+      "tools": [
+        {
+          "name": "web_search",
+          "type": "web_search_v0"
+        },
+        {
+          "name": "artifacts",
+          "type": "artifacts_v0"
+        },
+        {
+          "name": "repl",
+          "type": "repl_v0"
+        }
+      ],
+      "turn_message_uuids": {
+        "human_message_uuid": "11111111-2222-4333-8444-555555555555",
+        "assistant_message_uuid": "66666666-7777-4888-9999-000000000000"
+      },
+      "parent_message_uuid": "00000000-0000-4000-8000-000000000000"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream; charset=utf-8"
+    }
+  },
+  "expect": {
+    "events": 2,
+    "observed": true,
+    "attributed": false,
+    "prompt": false,
+    "why": "claude.ai has no app or extension fingerprint in the catalogue (its domain is listed under Claude Desktop), a JSON body is handed over whole so the stored prompt is the payload rather than its prompt field, and the completion adds a second observation whose content is base64 encoded twice"
+  }
+}
