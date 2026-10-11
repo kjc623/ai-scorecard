@@ -175,6 +175,7 @@ function measure(name, column, opts = {}) {
  * @property {ReadonlyArray<string>} indexes  Indexes the shape requires
  * @property {ReadonlyArray<{id:string,sql:string,when:ReadonlyArray<string>}>} [joins]
  * @property {ReadonlyArray<string>} [extraSelect] Frozen extra select-list entries
+ * @property {ReadonlyArray<string>} [sideReads] Side reads that travel with every read of the source
  * @property {ReadonlyArray<string>} [warnings]
  */
 
@@ -205,6 +206,9 @@ const DEVICE_CARD = { cardinality: 5000 };
 const RULE_CARD = { cardinality: 100 };
 const CONFIDENCE_CARD = { cardinality: 4 };
 const MERGE_CONF_CARD = { cardinality: 2 };
+const DISCOVERY_TYPE_CARD = { cardinality: 6 };
+// A runtime's models and a process's inference hosts.
+const ITEM_CARD = { cardinality: 20 };
 
 /**
  * A tool's sensitive prompts (its enforcement rule matched on a label the rule names) by outcome,
@@ -598,6 +602,67 @@ export const SOURCES = Object.freeze({
     indexes: Object.freeze(['mart.agg_rule_period PK (tenant_id, bucket_start, bucket_size, rule_id)']),
     warnings: Object.freeze([
       'A rule is counted under the id the device applied: a rule since removed keeps its rows, and a prompt no rule matched has none.',
+    ]),
+  }),
+
+  // -------------------------------------------------------------------------------------------
+  // Insights — what device discovery found on the fleet, whether or not it sent prompts.
+  // -------------------------------------------------------------------------------------------
+  'mart.agg_discovery_period': Object.freeze({
+    id: 'mart.agg_discovery_period',
+    kind: 'aggregate',
+    label: 'What device discovery found per bucket (mart.agg_discovery_period)',
+    from: 'mart.agg_discovery_period d',
+    tenantColumn: 'd.tenant_id',
+    costClass: 'aggregate',
+    time: null,
+    bucket: { startColumn: 'd.bucket_start', sizeColumn: 'd.bucket_size', sizes: NATIVE_BUCKETS },
+    dimensions: Object.freeze({
+      bucket: dim('bucket', 'd.bucket_start', 'timestamp'),
+      tool: dim('tool', 'd.tool_fingerprint', 'text', { startsWith: true, ...TOOL_CARD }),
+      discovery_type: dim('discovery_type', 'd.discovery_type', 'text', {
+        ...DISCOVERY_TYPE_CARD,
+        values: ['app_installed', 'app_running', 'cli_installed', 'ide_extension', 'local_model', 'inference_connection'],
+      }),
+      item: dim('item', 'd.item', 'text', { ...ITEM_CARD }),
+    }),
+    measures: Object.freeze({
+      // Distinct within a bucket, so a window reads the busiest bucket's count: a lower bound.
+      devices: measure('devices', 'd.devices', { agg: 'max', semantics: 'distinct_lower_bound' }),
+    }),
+    grain: Object.freeze(['bucket', 'tool', 'discovery_type', 'item']),
+    order: Object.freeze([
+      { dim: 'bucket', dir: 'desc' },
+      { dim: 'tool', dir: 'asc' },
+      { dim: 'discovery_type', dir: 'asc' },
+      { dim: 'item', dir: 'asc' },
+    ]),
+    subjectBearing: false,
+    requiresSubjectScope: false,
+    indexes: Object.freeze([
+      'mart.agg_discovery_period PK (tenant_id, bucket_start, bucket_size, tool_fingerprint, discovery_type, item)',
+      'mart.agg_discovery_period agg_discovery_period_by_tool (tenant_id, tool_fingerprint, bucket_size, bucket_start)',
+    ]),
+    // A tool is named, placed and judged as the rest of the console does: by the catalogue app its
+    // fingerprint belongs to. Its first sighting is its earliest day bucket, inside the window or not.
+    extraSelect: Object.freeze([
+      'max(d.last_seen) AS "last_seen"',
+      Object.freeze({ sql: 'ops.tool_display_name(d.tool_fingerprint) AS "tool_name"', whenDimensions: Object.freeze(['tool']) }),
+      Object.freeze({ sql: '(SELECT c.app_key FROM ref.tool_catalogue c WHERE c.tool_fingerprint = d.tool_fingerprint) AS "tool_key"', whenDimensions: Object.freeze(['tool']) }),
+      Object.freeze({ sql: '(SELECT a.category FROM ref.tool_catalogue c JOIN ref.app a ON a.app_key = c.app_key WHERE c.tool_fingerprint = d.tool_fingerprint) AS "category"', whenDimensions: Object.freeze(['tool']) }),
+      Object.freeze({
+        sql: '(SELECT ts.sanctioned_state FROM ref.tool_catalogue c JOIN ops.tool_sanction ts ON ts.tool_key = c.app_key WHERE c.tool_fingerprint = d.tool_fingerprint AND ts.tenant_id = ops.current_tenant()) AS "sanctioned_state"',
+        whenDimensions: Object.freeze(['tool']),
+      }),
+      Object.freeze({
+        sql: "(SELECT min(f.bucket_start) FROM mart.agg_discovery_period f WHERE f.tenant_id = ops.current_tenant() AND f.tool_fingerprint = d.tool_fingerprint AND f.bucket_size = 'day') AS \"first_seen\"",
+        whenDimensions: Object.freeze(['tool']),
+      }),
+    ]),
+    // A tool missing from a device whose inventory scan is not reporting is unknown, not absent.
+    sideReads: Object.freeze(['inventory_scan']),
+    warnings: Object.freeze([
+      'sanctioned_state is the decision as it stands now; NULL means no decision, or a fingerprint outside the catalogue.',
     ]),
   }),
 
@@ -1386,6 +1451,7 @@ export const SOURCE_WATERMARK = Object.freeze({
   'mart.agg_team_period': 'mart.agg_team_period',
   'mart.agg_class_period': 'mart.agg_class_period',
   'mart.agg_rule_period': 'mart.agg_rule_period',
+  'mart.agg_discovery_period': 'mart.agg_discovery_period',
   'ops.enforcement_rule': null,
   'mart.agg_user_period': 'mart.agg_user_period',
   'mart.agg_device_period': 'mart.agg_device_period',

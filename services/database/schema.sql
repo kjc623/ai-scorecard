@@ -1398,6 +1398,9 @@ CREATE TABLE ingest.observation (
 -- The expire job deletes per tenant by expires_at.
 CREATE INDEX observation_expiry ON ingest.observation (tenant_id, expires_at);
 
+-- The rollup reads a window of discoveries without scanning the tenant's prompts.
+CREATE INDEX observation_discovery ON ingest.observation (tenant_id, received_at) WHERE kind = 'discovery';
+
 -- The dedup key for an observation without a content digest (M0, a canvas UI, a WebSocket session,
 -- a rollup, a discovery, an agent activity): tenant, device, tool, kind, a 300-second bucket and the
 -- payload size. The server derives it, so independently written collectors agree. `kind` is part of
@@ -1746,6 +1749,24 @@ CREATE TABLE mart.agg_device_period (
   spool_dropped   bigint NOT NULL DEFAULT 0 CHECK (spool_dropped >= 0),
   PRIMARY KEY (tenant_id, bucket_start, bucket_size, device_id, collector)
 );
+
+-- What discovery found, per bucket: for each tool, kind of finding and item, the devices that
+-- reported it and when it was last reported. The item is the model's name for a local model and the
+-- host for an inference connection, and empty otherwise. devices is a distinct count within the
+-- bucket, so buckets do not add up.
+CREATE TABLE mart.agg_discovery_period (
+  tenant_id        uuid NOT NULL,
+  bucket_start     timestamptz NOT NULL,
+  bucket_size      text NOT NULL CHECK (bucket_size IN ('hour','day')),
+  tool_fingerprint text NOT NULL,
+  discovery_type   text NOT NULL CHECK (discovery_type IN ('app_installed','app_running','cli_installed','ide_extension','local_model','inference_connection')),
+  item             text NOT NULL DEFAULT '',
+  devices          int NOT NULL CHECK (devices > 0),
+  last_seen        timestamptz NOT NULL,
+  PRIMARY KEY (tenant_id, bucket_start, bucket_size, tool_fingerprint, discovery_type, item)
+);
+-- A tool's first sighting is read across every bucket it has.
+CREATE INDEX agg_discovery_period_by_tool ON mart.agg_discovery_period (tenant_id, tool_fingerprint, bucket_size, bucket_start);
 
 -- Device liveness. A device that has stopped sends nothing, so its silence is turned into an
 -- explicit state here. `stale`, `never_reported` and `revoked` are different facts. One row per
@@ -2516,7 +2537,8 @@ DECLARE
     -- mart
     'mart.finding', 'mart.agg_tool_period', 'mart.agg_tool_user_period',
     'mart.agg_class_period', 'mart.agg_org_period', 'mart.agg_user_period',
-    'mart.agg_device_period', 'mart.agg_team_period', 'mart.agg_rule_period'
+    'mart.agg_device_period', 'mart.agg_team_period', 'mart.agg_rule_period',
+    'mart.agg_discovery_period'
   ];
 BEGIN
   FOREACH t IN ARRAY tenant_tables LOOP
@@ -2706,9 +2728,9 @@ GRANT INSERT ON ops.audit TO sac_vault;
 GRANT SELECT ON ingest.submission, ingest.observation TO sac_query;
 GRANT SELECT ON mart.finding, mart.agg_tool_period, mart.agg_tool_user_period,
       mart.agg_class_period, mart.agg_org_period, mart.agg_user_period, mart.agg_device_period,
-      mart.agg_team_period, mart.agg_rule_period, mart.v_device_liveness, mart.v_tool_usage,
-      mart.v_finding, mart.v_tenant_suspension_impact, mart.v_person, mart.v_team_member_period,
-      mart.v_tool_first_seen TO sac_query;
+      mart.agg_team_period, mart.agg_rule_period, mart.agg_discovery_period, mart.v_device_liveness,
+      mart.v_tool_usage, mart.v_finding, mart.v_tenant_suspension_impact, mart.v_person,
+      mart.v_team_member_period, mart.v_tool_first_seen TO sac_query;
 -- The enforcement rules, for the matches per rule on Insights: what each rule matches and does, and
 -- the names of the custom labels it names. Never who last edited a rule.
 GRANT SELECT (tenant_id, position, rule_id, action, match) ON ops.enforcement_rule TO sac_query;
@@ -2739,7 +2761,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ingest.rejected TO sac_ops;
 GRANT SELECT, INSERT, UPDATE, DELETE ON mart.finding, mart.agg_tool_period,
       mart.agg_tool_user_period, mart.agg_class_period, mart.agg_org_period,
       mart.agg_user_period, mart.agg_device_period, mart.agg_team_period,
-      mart.agg_rule_period TO sac_ops;
+      mart.agg_rule_period, mart.agg_discovery_period TO sac_ops;
 -- The team rollup reads each team's members as of the pass.
 GRANT SELECT ON ops.team, ops.team_member, ops.team_include, ops.v_team_member, ops.scim_group_member
   TO sac_ops;

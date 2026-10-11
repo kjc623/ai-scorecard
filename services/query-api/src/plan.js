@@ -40,6 +40,7 @@ import {
 import {
   coverageStatement,
   freshnessStatement,
+  inventoryScanStatement,
   newerEventsStatement,
   resolveMissingRecord,
 } from './blocks.js';
@@ -70,7 +71,13 @@ const SIDE_READ_IDS = Object.freeze([
   'submission_detail',
   'erasure_evidence',
   'device_status',
+  'inventory_scan',
 ]);
+
+/** The side reads a source can name in the registry, by id. */
+const SOURCE_SIDE_READS = Object.freeze({
+  inventory_scan: inventoryScanStatement,
+});
 
 /**
  * Build the statement plan for one request. Throws QueryError for every rejection.
@@ -134,6 +141,7 @@ export function plan(request, ctx = {}) {
   if (source.time && query.window) {
     sideReads.push(newerEventsStatement(source, resolvedCursor.snapshotUpper));
   }
+  for (const id of source.sideReads ?? []) sideReads.push(SOURCE_SIDE_READS[id]());
   for (const extra of expansion?.extras ?? []) {
     const statement = extra(query);
     if (statement) sideReads.push(statement);

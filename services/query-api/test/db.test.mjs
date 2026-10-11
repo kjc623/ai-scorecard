@@ -407,6 +407,57 @@ test('the rules list names the custom labels and tools each rule names, and the 
   );
 });
 
+test('what discovery found reads per tool, kind and item, named and placed by the catalogue, beside where the inventory scan stands', { skip: SKIP }, async () => {
+  const devices = ['d2', 'd3', 'd4', 'd5'].map((n) => `00000000-0000-4000-8000-0000000000${n}`);
+  await scratch(
+    async (client) => {
+      await client.query(
+        `INSERT INTO ops.device (tenant_id, device_id, os, revoked_at, revoked_by, revoked_reason) VALUES
+           (ops.current_tenant(), $1, 'windows', NULL, NULL, NULL),
+           (ops.current_tenant(), $2, 'windows', NULL, NULL, NULL),
+           (ops.current_tenant(), $3, 'windows', NULL, NULL, NULL),
+           (ops.current_tenant(), $4, 'windows', now(), 'db-test', 'retired')`,
+        devices,
+      );
+      await client.query(
+        `INSERT INTO ops.collector_state (tenant_id, device_id, collector, state, error_code, last_report_at) VALUES
+           (ops.current_tenant(), $1, 'inventory_scanner', 'healthy', NULL, now()),
+           (ops.current_tenant(), $2, 'inventory_scanner', 'absent', 'disabled_by_policy', now()),
+           (ops.current_tenant(), $3, 'inventory_scanner', 'healthy', NULL, now() - interval '3 days')`,
+        devices.slice(0, 3),
+      );
+      await client.query("INSERT INTO ops.tool_sanction (tenant_id, tool_key, sanctioned_state, decided_by, decided_at) VALUES (ops.current_tenant(), 'ollama', 'unsanctioned', 'db-test', now())");
+      await client.query(
+        `INSERT INTO mart.agg_discovery_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, discovery_type, item, devices, last_seen) VALUES
+           (ops.current_tenant(), '2026-08-20', 'day', 'app:ollama', 'local_model', 'llama3', 1, '2026-08-20T09:00:00Z'),
+           (ops.current_tenant(), '2026-09-02', 'day', 'app:ollama', 'local_model', 'llama3', 3, '2026-09-02T09:00:00Z'),
+           (ops.current_tenant(), '2026-09-03', 'day', 'app:ollama', 'local_model', 'llama3', 2, '2026-09-03T10:00:00Z'),
+           (ops.current_tenant(), '2026-09-03', 'hour', 'app:ollama', 'local_model', 'llama3', 9, '2026-09-03T10:00:00Z'),
+           (ops.current_tenant(), '2026-09-03', 'day', 'exe:0123456789abcdef', 'inference_connection', 'api.example.test', 1, '2026-09-03T11:00:00Z')`,
+      );
+    },
+    async (client, tenant) => {
+      const ctx = { now: NOW, tenant, actorId: 'db-test', cursorKey: KEY };
+      const found = await executePlan(
+        plan({ query_version: '1', source: 'mart.agg_discovery_period', bucket: 'month', dimensions: ['tool', 'discovery_type', 'item'], measures: ['devices'], window: WINDOW, limit: 100 }, ctx),
+        { ...ctx, client: nested(client) },
+      );
+      assert.deepEqual(
+        found.data.map((r) => [r.tool, r.discovery_type, r.item, r.devices, r.tool_name, r.tool_key, r.category, r.sanctioned_state, r.first_seen, r.last_seen]),
+        [
+          ['app:ollama', 'local_model', 'llama3', 3, 'Ollama', 'ollama', 'local_runtime', 'unsanctioned', '2026-08-20T00:00:00.000Z', '2026-09-03T10:00:00.000Z'],
+          ['exe:0123456789abcdef', 'inference_connection', 'api.example.test', 1, 'Unrecognised tool', null, null, null, '2026-09-03T00:00:00.000Z', '2026-09-03T11:00:00.000Z'],
+        ].map((row) => row.map((v) => (typeof v === 'string' && /^\d{4}-\d\d-\d\dT/.test(v) ? new Date(v) : v))),
+        'day rows only, the busiest day per item; first seen from before the window',
+      );
+      assert.equal(found.meta.measure_semantics.devices, 'distinct_lower_bound');
+      const scan = found.meta.extras.inventory_scan[0];
+      assert.deepEqual([scan.devices_enrolled, scan.scanned, scan.not_scanned, scan.switched_off].map(Number), [3, 1, 1, 1],
+        'a stale scan is not scanned, a scanner the policy switched off is apart, and a revoked device is not counted');
+    },
+  );
+});
+
 test('Q1 counts the people behind the usage once each, by the sanction of their tools, beside the people they are out of', { skip: SKIP }, async () => {
   const [ada, bob, cara, dan] = ['a', 'b', 'c', 'd'].map((c) => `u_${c.repeat(32)}`);
   let sanctioned = null;

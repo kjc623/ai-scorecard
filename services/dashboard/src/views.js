@@ -1089,6 +1089,211 @@ export function adoptionView({ usage, previous = null, firstSeen = null, shift =
 }
 
 // ---------------------------------------------------------------------------------------------
+// Insights: Discovered
+// ---------------------------------------------------------------------------------------------
+
+/** What each kind of finding is called, in the order a tool lists them: local models and endpoints first. */
+const FOUND_AS = Object.freeze({
+  local_model: 'Local model',
+  inference_connection: 'Inference endpoint',
+  app_installed: 'Desktop app',
+  cli_installed: 'CLI',
+  ide_extension: 'IDE extension',
+  app_running: 'Seen running',
+});
+const LOCAL = Object.freeze(['local_model', 'inference_connection']);
+/** The models or hosts a row names before the rest are counted. */
+const ITEMS_SHOWN = 3;
+
+/** The key a tool is matched on across reads: its catalogue app, else its fingerprint. */
+const toolKeyOf = (row) => (row.tool_key ? `app:${row.tool_key}` : String(row.tool));
+
+/**
+ * The prompts each tool sent in the window, by catalogue app, with the fingerprint that sent most of
+ * them, which its Tools row is. Nothing when the read did not answer.
+ */
+function promptsByTool(prompts) {
+  if (!prompts || prompts.isRefusal) return null;
+  const tools = new Map();
+  for (const row of prompts.data) {
+    const value = measureOf(row, 'submissions');
+    if (value.kind !== 'number') continue;
+    const key = toolKeyOf(row);
+    const tool = tools.get(key) ?? { prompts: 0, fingerprints: new Map() };
+    tool.prompts += value.value;
+    tool.fingerprints.set(String(row.tool), (tool.fingerprints.get(String(row.tool)) ?? 0) + value.value);
+    tools.set(key, tool);
+  }
+  return Object.freeze({
+    truncated: Boolean(prompts.meta?.truncated),
+    get: (key) => {
+      const tool = tools.get(key);
+      if (!tool) return null;
+      const [top] = [...tool.fingerprints.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+      return { prompts: tool.prompts, fingerprint: top[0] };
+    },
+  });
+}
+
+/**
+ * What discovery found, one entry per tool: its kinds of finding, the models and hosts it named, the
+ * most devices any finding was on, and when it was first and last seen.
+ */
+function foundTools(found) {
+  const tools = new Map();
+  for (const row of found.data) {
+    const key = toolKeyOf(row);
+    const tool = tools.get(key) ?? { row, types: new Set(), items: new Set(), devices: null, firstSeen: null, lastSeen: null };
+    if (FOUND_AS[row.discovery_type]) tool.types.add(row.discovery_type);
+    if (row.item) tool.items.add(String(row.item));
+    const devices = measureOf(row, 'devices');
+    if (devices.kind === 'number') tool.devices = Math.max(tool.devices ?? 0, devices.value);
+    if (row.first_seen && (!tool.firstSeen || String(row.first_seen) < tool.firstSeen)) tool.firstSeen = String(row.first_seen);
+    if (row.last_seen && (!tool.lastSeen || String(row.last_seen) > tool.lastSeen)) tool.lastSeen = String(row.last_seen);
+    tools.set(key, tool);
+  }
+  return [...tools.entries()].map(([key, tool]) => ({ key, ...tool }));
+}
+
+/** A list of names in a cell: the first few, and how many more. */
+function namesList(names) {
+  const sorted = [...names].sort((a, b) => a.localeCompare(b));
+  const shown = sorted.slice(0, ITEMS_SHOWN).join(', ');
+  return sorted.length > ITEMS_SHOWN ? `${shown} and ${formatCount(sorted.length - ITEMS_SHOWN)} more` : shown;
+}
+
+/**
+ * Every tool discovery found in the window, local models and inference endpoints first, then by
+ * the devices it was on: what it was found as, the models and hosts it named, when it was first and
+ * last seen, and the prompts it sent in the window. A tool that sent prompts opens its Tools row.
+ */
+function foundTable(tools, { reporting, link, prompted, truncated, emptyText }) {
+  const local = (tool) => LOCAL.some((type) => tool.types.has(type));
+  const rows = [...tools]
+    .sort((a, b) => Number(local(b)) - Number(local(a)) || (b.devices ?? -1) - (a.devices ?? -1) || toolName(a.row).localeCompare(toolName(b.row)))
+    .map((tool) => {
+      const name = toolName(tool.row);
+      const match = prompted ? prompted.get(tool.key) : null;
+      // A tool the read of prompts left out is unknown when that read was cut short, and silent otherwise.
+      const prompts = !prompted ? null : match ? match.prompts : prompted.truncated ? null : 0;
+      const extra = isSite({ key: tool.row.tool }) ? NOT_CATALOGUED : name === UNRECOGNISED_TOOL ? String(tool.row.tool) : null;
+      return Object.freeze({
+        tool_cell: Object.freeze({
+          primary: name,
+          mono: !tool.row.tool_name,
+          title: `Tool fingerprint ${tool.row.tool}`,
+          chip: sanctionChip(tool.row.sanctioned_state ?? 'unknown'),
+          secondary: [tool.items.size > 0 ? namesList(tool.items) : null, extra].filter(Boolean).join(' · ') || null,
+        }),
+        found_as: Object.keys(FOUND_AS).filter((type) => tool.types.has(type)).map((type) => FOUND_AS[type]).join(', '),
+        devices: tool.devices,
+        first_seen_day: tool.firstSeen ? formatInstant(tool.firstSeen).slice(0, 10) : null,
+        last_seen_day: tool.lastSeen ? formatInstant(tool.lastSeen).slice(0, 10) : null,
+        prompts,
+        href: match && match.prompts > 0 && link ? link(match.fingerprint) : null,
+      });
+    });
+  return Object.freeze({
+    kind: 'table',
+    ...tableFrom({ data: rows }, {
+      title: 'Found on devices',
+      columns: [
+        column('tool_cell', 'Application', 'stack'),
+        column('found_as', 'Found as'),
+        column('devices', reporting === null ? 'Devices' : `Devices of ${formatCount(reporting)}`, 'measure'),
+        column('first_seen_day', 'First seen'),
+        column('last_seen_day', 'Last seen'),
+        column('prompts', 'Prompts', 'measure'),
+      ],
+      emptyText,
+    }),
+    ...(rows.length > 0 ? { summary: foundSummary(tools, rows, { truncated }) } : {}),
+    rowHref: 'href',
+    breakdowns: false,
+  });
+}
+
+function foundSummary(tools, rows, { truncated }) {
+  const n = tools.length;
+  const count = (type) => tools.filter((tool) => tool.types.has(type)).length;
+  const parts = [];
+  if (count('local_model') > 0) parts.push(`${formatCount(count('local_model'))} ${count('local_model') === 1 ? 'holds' : 'hold'} local models`);
+  if (count('inference_connection') > 0) parts.push(`${formatCount(count('inference_connection'))} reached an inference endpoint`);
+  const silent = rows.filter((row) => row.prompts === 0).length;
+  if (silent > 0) parts.push(`${formatCount(silent)} sent no prompt`);
+  const said = `${truncated ? 'More than ' : ''}${plural(n, 'application was', 'applications were')} found on devices in this window`;
+  if (parts.length === 0) return `${said}.`;
+  const last = parts.pop();
+  return `${said}; ${parts.length > 0 ? `${parts.join(', ')} and ${last}` : last}.`;
+}
+
+/** Where the inventory scan stands on the enrolled fleet, from the side read beside what it found. */
+function scanOf(state) {
+  const row = state?.meta?.extras?.inventory_scan?.[0];
+  if (!row) return null;
+  const n = (value) => (value === null || value === undefined ? 0 : Number(value));
+  return Object.freeze({ enrolled: n(row.devices_enrolled), scanned: n(row.scanned), notScanned: n(row.not_scanned), switchedOff: n(row.switched_off) });
+}
+
+/** The devices whose inventory scan is not reporting, out of the enrolled fleet, opening Devices. */
+function notScannedTile(scan) {
+  const options = { href: '#devices', moreLabel: 'Devices' };
+  if (!scan) return tile('Not scanned', { kind: 'absent', text: '—' }, 'Where the inventory scan stands could not be read.', options);
+  const off = scan.switchedOff > 0 ? ` ${plural(scan.switchedOff, 'more has', 'more have')} it switched off by policy.` : '';
+  return tile('Not scanned', { kind: 'number', text: formatCount(scan.notScanned) },
+    `of ${plural(scan.enrolled, 'enrolled device', 'enrolled devices')}: the inventory scan has not reported in the last 24 hours, so what they hold is not known.${off}`,
+    options);
+}
+
+/**
+ * Insights, Discovered: every AI application, CLI, IDE extension, local model and inference
+ * endpoint device discovery found in the window, whether or not it sent prompts, and the devices
+ * whose inventory scan is not reporting, where a tool can be present and not found.
+ *
+ * @param {object} input
+ * @param {object} input.found      view state for what discovery found, with the inventory scan beside it
+ * @param {object} [input.prompts]  view state for the prompts per tool in the window
+ */
+export function discoveredView({ found, prompts = null }, { preset = 'd7', link = toolHref } = {}) {
+  const tools = foundTools(found);
+  const prompted = promptsByTool(prompts);
+  const reporting = found.coverage?.devices_reporting ?? null;
+  const table = foundTable(tools, {
+    reporting: reporting === null ? null : Number(reporting),
+    link: link ? (fingerprint) => link(fingerprint, preset) : null,
+    prompted,
+    truncated: Boolean(found.meta?.truncated),
+    emptyText: emptyLine(found, 'Discovery found no AI application on a device in this window.'),
+  });
+  const silent = table.rows.filter(({ row }) => row.prompts === 0).length;
+  // A month is read over day rows, so its count is the busiest day's.
+  const busiest = found.meta?.applied_bucket === 'hour' ? 'hour' : 'day';
+  const notes = [
+    `Devices counts the devices that reported a finding on its busiest ${busiest} in the window, out of the devices reporting now; a device can hold a tool without it being found that ${busiest}.`,
+    'First seen is the first day discovery found the application on any device, before this window or in it.',
+    prompted
+      ? 'Prompts counts what each application sent in the window under any of its fingerprints; a row with prompts opens its Tools row.'
+      : 'The prompts each application sent could not be read, so the Prompts column is empty.',
+  ];
+  return screen('insights', 'Insights', null, 'mart.agg_discovery_period', {
+    subtitle: 'Discovered: the AI applications, CLIs, IDE extensions, local models and inference endpoints found on devices, whether or not they sent prompts.',
+    tiles: Object.freeze([
+      tools.length > 0
+        ? tile('Found on devices', { kind: 'number', text: formatCount(tools.length) }, `${tools.length === 1 ? 'application' : 'applications'} found in this window`)
+        : tile('Found on devices', { kind: 'absent', text: '—' }, absentNote(found)),
+      prompted
+        ? tile('Not sending prompts', { kind: 'number', text: formatCount(silent) }, 'found on a device but sent no prompt in this window')
+        : tile('Not sending prompts', { kind: 'absent', text: '—' }, 'The prompts could not be read for this window.'),
+      notScannedTile(scanOf(found)),
+    ]),
+    blocks: Object.freeze([table]),
+    series: Object.freeze([]),
+    tables: Object.freeze([]),
+    ...shared(found, notes),
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
 // The ten questions
 // ---------------------------------------------------------------------------------------------
 
