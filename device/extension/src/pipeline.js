@@ -122,14 +122,11 @@ export function createPipeline({
     if (!shape.match && shape.score >= CANDIDATE_FLOOR) {
       holdCandidate({
         request_id: detail.requestId,
-        client_id: null,
         tool_fingerprint: null,
         vector: null,
         shape,
         request,
         size_bytes: body.size,
-        content: null,
-        content_digest: null,
         decision: null,
         mode: MODE.M0,
         host,
@@ -201,7 +198,6 @@ export function createPipeline({
         host,
         unread_reason: gate.unread_reason,
         decision,
-        request,
         detail,
       },
     );
@@ -274,7 +270,6 @@ export function createPipeline({
         host,
         unread_reason: 'mode_forbids_read',
         decision,
-        request: shapeInput(detail, null, tab_context),
         detail,
       },
     );
@@ -312,7 +307,6 @@ export function createPipeline({
         host,
         unread_reason: 'websocket_frames_not_observable',
         decision,
-        request: shapeInput(detail, null, tab_context),
         detail,
       },
     );
@@ -329,8 +323,8 @@ export function createPipeline({
    * A response for a request held as a candidate. The response contract is what separates a draft
    * save from a chat call on the same origin, and it exists only after the request has gone.
    *
-   * A positive verdict emits a second observation on `ext.page_context`, the higher-fidelity route,
-   * carrying the same digest so ingest's dedup collapses the pair rather than double counting it.
+   * A positive verdict emits the observation the request alone did not, on `ext.page_context`. A
+   * request that was emitted when it was made is not a candidate, so it is never observed twice.
    */
   async function onResponse({ detail }) {
     const entry = candidates.get(detail.requestId);
@@ -346,21 +340,17 @@ export function createPipeline({
     });
     if (!verdict.match) return { matched: false, reason: verdict.reason, score: verdict.score };
 
-    // The follow-up carries the request's own content decision, so both observations of one
-    // submission agree on `has_content` and `content_digest`. At M0 there is nothing to carry, so a
-    // response contract can never become a way to read content.
-    const carriesContent = Boolean(entry.content_digest) && entry.has_content;
+    // A held request's body was not kept, so a response contract can never become a way to read
+    // content.
     const followUp = decorate(
       observationBody({
-        client_id: entry.client_id || 'pending',
+        client_id: 'pending',
         route: ROUTE.EXT_PAGE_CONTEXT,
         tool_fingerprint: entry.tool_fingerprint || 'tf1:unread',
         occurred_at: new Date(clock()).toISOString(),
         monotonic_offset_ms: Math.max(0, Math.round(monotonic())),
         size_bytes: entry.size_bytes,
-        has_content: carriesContent,
-        content: carriesContent ? entry.content : undefined,
-        content_digest: carriesContent ? entry.content_digest : undefined,
+        has_content: false,
         decision: entry.decision || { rule_id: DEFAULT_RULE_ID, action: DECISION.LOGGED, decided_locally: true },
       }),
       {
@@ -371,34 +361,13 @@ export function createPipeline({
         host: entry.host,
         unread_reason: null,
         decision: entry.decision,
-        request,
         detail,
       },
     );
     followUp.response_contract = verdict.signals.filter((s) => s.id.startsWith('response_')).map((s) => s.id);
     followUp.upgrade_reason = verdict.reason;
-    if (entry.client_id) followUp.supersedes = entry.client_id;
     emit(followUp);
     return { matched: true, reason: verdict.reason, score: verdict.score, observation: followUp };
-  }
-
-  function remember(observation, { size_bytes, content, content_digest, decision, request, shape, vector, mode, host, client_id, tool_fingerprint }) {
-    candidates.set(observation.request_id, {
-      client_id,
-      tool_fingerprint,
-      vector,
-      shape,
-      request,
-      size_bytes,
-      content,
-      content_digest,
-      has_content: Boolean(observation.has_content),
-      decision,
-      mode,
-      host,
-      at: clock(),
-    });
-    while (candidates.size > MAX_CANDIDATES) candidates.delete(candidates.keys().next().value);
   }
 
   /** Hold a weak candidate for its response contract. Nothing is emitted for it here. */
@@ -408,7 +377,7 @@ export function createPipeline({
   }
 
   function decorate(observation, ctx) {
-    const { mode, gate, fingerprint, shape, host, unread_reason, decision, request, detail } = ctx;
+    const { mode, gate, fingerprint, shape, host, unread_reason, decision, detail } = ctx;
     observation.mode_resolved = mode;
     observation.mode_reason = gate.resolution ? gate.resolution.reason : '';
     observation.policy_version = gate.resolution ? gate.resolution.policy_version : null;
@@ -427,21 +396,6 @@ export function createPipeline({
       counters.countError('internal_error');
       throw new ExtError('internal_error', `refusing to emit a malformed observation: ${invalid.message}`);
     }
-
-    // Keep every emitted observation as a candidate too: the response tells which endpoint answered.
-    remember(observation, {
-      client_id: observation.client_id,
-      tool_fingerprint: observation.tool_fingerprint,
-      vector: fingerprint.vector,
-      shape,
-      request,
-      size_bytes: observation.size_bytes,
-      content: observation.content,
-      content_digest: observation.content_digest,
-      decision: observation.decision,
-      mode,
-      host,
-    });
     return observation;
   }
 
