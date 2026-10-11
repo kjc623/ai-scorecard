@@ -66,6 +66,7 @@ const SIDE_READ_IDS = Object.freeze([
   'flush_check',
   'class_total',
   'team_coverage',
+  'people',
   'submission_detail',
   'erasure_evidence',
   'device_status',

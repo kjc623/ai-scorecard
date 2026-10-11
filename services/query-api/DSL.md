@@ -80,7 +80,8 @@ because their presence is an attempt rather than a typo:
 |---|---|---|---|
 | `mart.v_tool_usage` | aggregate | Q1, Q2 tool set | `mart.agg_tool_period` PK |
 | `mart.agg_tool_period` | aggregate | Q1 including `detections`/`rollup_events`/`degraded_events` | PK |
-| `mart.agg_tool_user_period` | aggregate | Q2 people | PK + `(tenant, tool_fingerprint, bucket_start DESC, bucket_size)` |
+| `mart.agg_tool_user_period` | aggregate | Q2 people | PK + `(tenant, tool_fingerprint, bucket_size, bucket_start)` |
+| `mart.v_tool_first_seen` | list | the day each tool first sent a prompt, with its sanction and its people (`people`), for Insights | `mart.agg_tool_period` PK, `mart.agg_tool_user_period` `(tenant, tool_fingerprint, bucket_size, bucket_start)` |
 | `mart.agg_org_period` | aggregate | usage by department | PK + `(tenant, department, bucket_start DESC)` |
 | `mart.agg_team_period` | aggregate | Q3 teams | PK + `(tenant, team_id, bucket_start DESC)` |
 | `mart.agg_class_period` | aggregate | Q4 classes | PK |
@@ -107,6 +108,7 @@ offered is `unknown_dimension` / `unknown_measure`, and the error lists what is 
 | `mart.v_tool_usage` | `bucket`, `tool`, `sanctioned_state` | `submissions`, `users`, `bytes_total`, `blocked`, `warned`, `logged`, `sensitive`, `sensitive_blocked`, `sensitive_warned`, `sensitive_logged`, `attachments`, `content_prompts` |
 | `mart.agg_tool_period` | `bucket`, `tool`, `sanctioned_state` | the twelve above plus `detections`, `rollup_events`, `degraded_events` |
 | `mart.agg_tool_user_period` | `bucket`, `tool`, `sanctioned_state`, `subject` | `submissions`, `bytes_total` |
+| `mart.v_tool_first_seen` | `tool` | — (a list, windowed on `first_seen`) |
 | `mart.agg_org_period` | `bucket`, `department`, `population`, `tool` | `submissions`, `users` |
 | `mart.agg_team_period` | `bucket`, `team`, `tool` | `submissions`, `users` |
 | `mart.agg_class_period` | `bucket`, `class`, `tool`, `severity`, `classifier_version` | `submissions`, `users`, `max_score`, `degraded_events`, `flagged`, `flagged_blocked`, `flagged_warned`, `flagged_logged` |
@@ -224,7 +226,7 @@ Every template declares exactly these parameters; anything else is an error.
 
 | Template | Source | Parameters | Notes |
 |---|---|---|---|
-| `q1_tools_ranked` | `mart.v_tool_usage` | `window`, `bucket`, `limit`, `tool`, `sanctioned_state` | rank by `submissions`, tie-break `tool`; `mart.v_tool_usage` has no `detections`/`rollup_events`/`degraded_events` (`meta.warnings` says so; use `mart.agg_tool_period`) |
+| `q1_tools_ranked` | `mart.v_tool_usage` | `window`, `bucket`, `limit`, `tool`, `sanctioned_state` | rank by `submissions`, tie-break `tool`; `mart.v_tool_usage` has no `detections`/`rollup_events`/`degraded_events` (`meta.warnings` says so; use `mart.agg_tool_period`); unfiltered, the people with usage counted once each, split by the sanction of the tools they used, and the active people in the directory and on enrolled devices, in `meta.extras.people` |
 | `q2_unsanctioned_users` | `mart.agg_tool_user_period` | `window`, `bucket`, `limit`, `tool`, `subject`, `sanctioned_state` | subject-bearing → audited; the state defaults to `unsanctioned`, and `unknown` is a separate call; the k cell is the `(bucket, tool)` group; ordered by tool then person, never by volume; one response bounded by `limit` (default and maximum 500); > 7 days unscoped is refused |
 | `q3_team_growth` | `mart.agg_team_period` | `window`, `bucket`, `limit`, `team` | one series per team, named in `team_name`; the people with usage, those in any team, and the number of teams in `meta.extras.team_coverage` |
 | `q4_class_mix` | `mart.agg_class_period` | `window`, `bucket`, `limit`, `dimensions`, `class`, `severity` | `dimensions` ⊆ `{class, tool, severity, classifier_version}`, ≤ 3; default `[class, severity]` |

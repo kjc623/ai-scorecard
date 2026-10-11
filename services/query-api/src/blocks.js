@@ -196,6 +196,43 @@ export function teamCoverageStatement(query) {
 }
 
 /**
+ * The people who sent a prompt in the window, each counted once however many tools and buckets
+ * they used, split by whether those tools are sanctioned; a tool with no decision is not
+ * sanctioned. Beside them, the people they are out of: the active people the directory lists, and
+ * the people last signed in on an enrolled device, for a tenant with no directory.
+ *
+ * @param {{from:string,to:string,bucket:string|null}} query
+ */
+export function peopleStatement(query) {
+  const bucketSize = query.bucket && NATIVE_BUCKETS.includes(query.bucket) ? query.bucket : 'day';
+  return Object.freeze({
+    id: 'people',
+    text: [
+      'WITH used AS (',
+      '  SELECT u.user_ref,',
+      "         bool_or(coalesce(s.sanctioned_state, 'unknown') = 'sanctioned') AS sanctioned,",
+      "         bool_or(coalesce(s.sanctioned_state, 'unknown') <> 'sanctioned') AS other",
+      '    FROM mart.agg_tool_user_period u',
+      '    LEFT JOIN ref.tool_catalogue c ON c.tool_fingerprint = u.tool_fingerprint',
+      '    LEFT JOIN ops.tool_sanction s ON s.tenant_id = u.tenant_id AND s.tool_key = c.app_key',
+      '   WHERE u.tenant_id = ops.current_tenant()',
+      '     AND u.bucket_start >= $1::timestamptz AND u.bucket_start < $2::timestamptz',
+      '     AND u.bucket_size = $3::text',
+      '   GROUP BY u.user_ref)',
+      'SELECT count(*)::bigint AS people,',
+      '       count(*) FILTER (WHERE sanctioned AND NOT other)::bigint AS people_sanctioned_only,',
+      '       count(*) FILTER (WHERE sanctioned AND other)::bigint AS people_both,',
+      '       count(*) FILTER (WHERE other AND NOT sanctioned)::bigint AS people_unsanctioned_only,',
+      "       (SELECT count(*) FROM ops.user_dim d WHERE d.tenant_id = ops.current_tenant() AND d.status = 'active')::bigint AS directory_people,",
+      '       (SELECT count(DISTINCT d.last_user_ref) FROM ops.device d',
+      '         WHERE d.tenant_id = ops.current_tenant() AND d.revoked_at IS NULL)::bigint AS device_people',
+      '  FROM used',
+    ].join('\n'),
+    params: Object.freeze([query.window.from, query.window.to, bucketSize]),
+  });
+}
+
+/**
  * Late flush: a device that was offline and flushes its spool spikes received time, not behaviour.
  * Both clocks are on `ingest.submission`, so rows where `received_at - first_occurred_at` exceeds
  * an hour annotate the series as a flush.

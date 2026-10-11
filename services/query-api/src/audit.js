@@ -43,6 +43,7 @@ const ACTION_BY_SOURCE = Object.freeze({
   'mart.v_tool_usage': AUDIT_ACTIONS.aggregate_read,
   'mart.agg_tool_period': AUDIT_ACTIONS.aggregate_read,
   'mart.agg_tool_user_period': AUDIT_ACTIONS.aggregate_read,
+  'mart.v_tool_first_seen': AUDIT_ACTIONS.aggregate_read,
   'mart.agg_org_period': AUDIT_ACTIONS.aggregate_read,
   'mart.agg_team_period': AUDIT_ACTIONS.aggregate_read,
   'mart.agg_class_period': AUDIT_ACTIONS.aggregate_read,

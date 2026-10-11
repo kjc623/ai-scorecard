@@ -356,7 +356,7 @@ export const SOURCES = Object.freeze({
     requiresSubjectScope: false,
     indexes: Object.freeze([
       'mart.agg_tool_user_period PK (tenant_id, bucket_start, bucket_size, tool_fingerprint, user_ref)',
-      'mart.agg_tool_user_period (tenant_id, tool_fingerprint, bucket_start DESC, bucket_size)',
+      'mart.agg_tool_user_period agg_tool_user_period_by_tool (tenant_id, tool_fingerprint, bucket_size, bucket_start) INCLUDE (user_ref)',
     ]),
     // SANCTION is joined present-tense from ops.tool_sanction through the catalogue, exactly as Q1
     // does: a decision made after a bucket was written changes what the next read says about it,
@@ -374,6 +374,51 @@ export const SOURCES = Object.freeze({
     warnings: Object.freeze([
       'An unscoped window beyond 7 days is refused by the cost guard when subject is a grouping dimension.',
       'sanctioned_state is present-tense configuration joined at read time (the decision on the tool the fingerprint belongs to, ops.tool_sanction through ref.tool_catalogue), never a property of the aggregate row; NULL means no decision, or a fingerprint outside the catalogue, rendered as `unknown`, never as `unsanctioned`.',
+    ]),
+  }),
+
+  'mart.v_tool_first_seen': Object.freeze({
+    id: 'mart.v_tool_first_seen',
+    kind: 'list',
+    label: 'The day each tool first sent a prompt (mart.v_tool_first_seen)',
+    from: 'mart.v_tool_first_seen f',
+    tenantColumn: 'f.tenant_id',
+    costClass: 'operational',
+    time: { name: 'first_seen', sql: 'f.first_seen', type: 'timestamp', maxDays: 366 },
+    bucket: null,
+    dimensions: Object.freeze({
+      tool: dim('tool', 'f.tool_fingerprint', 'text', { startsWith: true, ...TOOL_CARD }),
+    }),
+    measures: Object.freeze({}),
+    grain: Object.freeze(['first_seen', 'tool']),
+    order: Object.freeze([
+      { dim: 'first_seen', dir: 'desc' },
+      { dim: 'tool', dir: 'asc' },
+    ]),
+    // A count of people, never who they are.
+    subjectBearing: false,
+    requiresSubjectScope: false,
+    indexes: Object.freeze([
+      'mart.agg_tool_period PK (tenant_id, bucket_start, bucket_size, tool_fingerprint)',
+      'mart.agg_tool_user_period agg_tool_user_period_by_tool (tenant_id, tool_fingerprint, bucket_size, bucket_start) INCLUDE (user_ref)',
+    ]),
+    // A tool is named and judged as the rest of the console names and judges it: by the catalogue
+    // app its fingerprints belong to. Its people are everyone who has sent it a prompt, which is
+    // everyone since it first appeared.
+    listSelect: Object.freeze([
+      'f.first_seen AS first_seen',
+      'f.tool_fingerprint AS "tool"',
+      'f.tool_key AS tool_key',
+      'ops.tool_display_name(f.tool_fingerprint) AS tool_name',
+      '(SELECT ts.sanctioned_state FROM ops.tool_sanction ts WHERE ts.tenant_id = f.tenant_id AND ts.tool_key = f.tool_key) AS sanctioned_state',
+      "(SELECT count(DISTINCT u.user_ref) FROM mart.agg_tool_user_period u WHERE u.tenant_id = f.tenant_id AND u.tool_fingerprint = ANY (f.fingerprints) AND u.bucket_size = 'day' AND u.bucket_start >= f.first_seen) AS people",
+    ]),
+    columns: Object.freeze({
+      first_seen: dim('first_seen', 'f.first_seen', 'timestamp'),
+    }),
+    warnings: Object.freeze([
+      'A tool counts from the first day it sent a prompt that this tenant recorded, so every tool in use when collection began is first seen that day.',
+      'sanctioned_state is the decision as it stands now; NULL means no decision, or a fingerprint outside the catalogue.',
     ]),
   }),
 
@@ -1336,6 +1381,7 @@ export const SOURCE_WATERMARK = Object.freeze({
   'mart.v_tool_usage': 'mart.agg_tool_period',
   'mart.agg_tool_period': 'mart.agg_tool_period',
   'mart.agg_tool_user_period': 'mart.agg_tool_user_period',
+  'mart.v_tool_first_seen': 'mart.agg_tool_period',
   'mart.agg_org_period': 'mart.agg_org_period',
   'mart.agg_team_period': 'mart.agg_team_period',
   'mart.agg_class_period': 'mart.agg_class_period',
