@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/dedup"
+	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
@@ -146,6 +148,49 @@ func TestPipelineUnclassifiedAttachmentDegradesTheRecord(t *testing.T) {
 	}
 	if len(env.Labels) != 1 || env.Labels[0].Class != "legal_commercial" {
 		t.Fatalf("labels = %+v, want the prompt's labels kept", env.Labels)
+	}
+}
+
+// A custom label reaches the classifier as terms and an attached file's name as a label, and both
+// are what the enforcement hook and the envelope see.
+func TestPipelineAppliesTheCustomLabels(t *testing.T) {
+	sink := &recordingSink{}
+	b := m1Bundle()
+	b.CustomLabels = []policy.CustomLabel{
+		{Label: "custom_invoices", FileNames: []string{"invoice*"}},
+		{Label: "custom_project_falcon", Words: []string{"falcon"}, CustomerNames: []string{"Acme Corp"}},
+		{Label: "custom_cad", FileExtensions: []string{"dwg"}},
+	}
+	p := newTestPipeline(t, sink, b)
+	var reqs []protocol.ClassifyRequest
+	p.Classifier = classifierFunc(func(req protocol.ClassifyRequest) (protocol.ClassifyResponse, error) {
+		reqs = append(reqs, req)
+		return protocol.ClassifyResponse{ClassifierVersion: "rel-1", Confidence: protocol.ConfidenceHigh,
+			Labels: []protocol.Label{{Class: "custom_project_falcon", Score: protocol.CustomLabelScore}}}, nil
+	})
+	var calls []enforceCall
+	obs := attachmentObservation(&countingReader{body: invoice})
+	obs.Enforce = recordingHook(&calls)
+	if _, err := p.Process(context.Background(), obs); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	want := []protocol.CustomLabelTerms{{Label: "custom_project_falcon", Terms: []string{"falcon", "Acme Corp"}}}
+	for i, r := range reqs {
+		if !reflect.DeepEqual(r.CustomLabels, want) {
+			t.Errorf("classify request %d carries custom labels %+v, want %+v", i, r.CustomLabels, want)
+		}
+	}
+	if len(calls) != 1 || !calls[0].known || !reflect.DeepEqual(calls[0].labels, []string{"custom_project_falcon", "custom_invoices"}) {
+		t.Fatalf("the hook saw %+v, want the classifier's custom label and the file's", calls)
+	}
+	var env struct {
+		Labels []protocol.Label `json:"labels"`
+	}
+	if err := json.Unmarshal(sink.last().Payload, &env); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.Labels) != 2 || env.Labels[1] != (protocol.Label{Class: "custom_invoices", Score: protocol.CustomLabelScore}) {
+		t.Fatalf("labels = %+v, want the file's custom label after the classifier's", env.Labels)
 	}
 }
 

@@ -364,7 +364,7 @@ test('the only endpoints the pages call are the query endpoint, the two content 
     ['/admin/v1/', 'deployment/keys'], ['/admin/v1/', 'scim/tokens'],
     ['/admin/v1/', 'settings'], ['/admin/v1/', 'settings/collection-mode'], ['/admin/v1/', 'settings/scope-override'],
     ['/admin/v1/', 'settings/retention'], ['/admin/v1/', 'settings/content-search'], ['/admin/v1/', 'settings/tools'],
-    ['/admin/v1/', 'settings/endpoint'], ['/admin/v1/', 'settings/tls-inspection'], ['/admin/v1/', 'settings/rules'],
+    ['/admin/v1/', 'settings/endpoint'], ['/admin/v1/', 'settings/tls-inspection'], ['/admin/v1/', 'settings/rules'], ['/admin/v1/', 'settings/custom-labels'],
     ['/admin/v1/', 'settings/kill-switch'], ['/admin/v1/', 'directory'], ['/admin/v1/', 'teams'],
   ].map((parts) => parts.join(''));
   const others = files.map((rel) => readFileSync(join(ROOT, rel), 'utf8')).join('\n');

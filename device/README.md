@@ -82,6 +82,9 @@ not name them by digest within two minutes. The observation's bytes are classifi
 bytes are discarded: the envelope carries only the name, size and digest, and nothing is written
 to the spool or the content store.
 
+An observation's attachments also take the bundle's custom labels whose file types or file name
+patterns (`*` and `?`, whatever their case) match an attachment's name.
+
 ## The user-session helper
 
 On Windows the service starts `capture-core --user-helper` in every session with a signed-in user

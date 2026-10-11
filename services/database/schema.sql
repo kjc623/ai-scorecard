@@ -473,7 +473,8 @@ CREATE TABLE ops.endpoint_tool_setting (
 
 -- The tenant's enforcement rules, in order, delivered in the policy bundle's rules list. The device
 -- applies the first rule whose every non-empty match list matches. The list is replaced as a whole,
--- so position is dense from 0. A label must be a ref.data_class code (ops.enforce_rule_labels).
+-- so position is dense from 0. A label must be a ref.data_class code or one of the tenant's custom
+-- labels (ops.enforce_rule_labels).
 CREATE TABLE ops.enforcement_rule (
   tenant_id   uuid NOT NULL REFERENCES ops.tenant(tenant_id),
   position    int NOT NULL CHECK (position >= 0),
@@ -492,6 +493,31 @@ CREATE TABLE ops.enforcement_rule (
     AND match - ARRAY['labels','tools','categories','sanction','routes'] = '{}'::jsonb
     AND NOT jsonb_path_exists(match, 'strict $.* ? (@.type() != "array")')
     AND NOT jsonb_path_exists(match, 'strict $.*[*] ? (@.type() != "string")', '{}', true))
+);
+
+-- The tenant's own labels, set on the Settings page beside the enforcement rules and delivered in
+-- the policy bundle's custom_labels. The device labels a prompt with one when its text holds one of
+-- the words or customer names as whole words in any case, or a file attached to it has one of the
+-- extensions or a name matching one of the file name patterns (* and ? are wildcards). The label is
+-- the class code the envelope carries and an enforcement rule names; the display name is what people
+-- see. A label a rule names cannot be deleted (ops.guard_custom_label_in_use).
+CREATE TABLE ops.custom_label (
+  tenant_id     uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  label         text NOT NULL CHECK (label ~ '^custom_[a-z0-9_]{1,56}$'),
+  display_name  text NOT NULL CHECK (char_length(display_name) BETWEEN 1 AND 80 AND display_name = btrim(display_name)),
+  terms         jsonb NOT NULL,
+  updated_by    text NOT NULL,
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, label),
+  CONSTRAINT custom_label_display_name_unique UNIQUE (tenant_id, display_name) DEFERRABLE INITIALLY DEFERRED,
+  -- terms holds the four lists, each an array of strings, with at least one term among them.
+  CONSTRAINT custom_label_terms_shape CHECK (
+    jsonb_typeof(terms) = 'object'
+    AND terms ?& ARRAY['words','customer_names','file_extensions','file_names']
+    AND terms - ARRAY['words','customer_names','file_extensions','file_names'] = '{}'::jsonb
+    AND NOT jsonb_path_exists(terms, 'strict $.* ? (@.type() != "array")')
+    AND NOT jsonb_path_exists(terms, 'strict $.*[*] ? (@.type() != "string")', '{}', true)
+    AND jsonb_path_exists(terms, '$.*[*]'))
 );
 
 -- The tenant's tripped kill switches, one per interception route, set on the Settings page and
@@ -1945,8 +1971,8 @@ CREATE TRIGGER scope_overrides_within_requested
   BEFORE INSERT OR UPDATE OF collection_mode, ceiling_mode, scope_overrides ON ops.tenant
   FOR EACH ROW EXECUTE FUNCTION ops.enforce_scope_overrides();
 
--- An enforcement rule's labels are classifier classes: a label outside ref.data_class could never
--- match, so the rule is refused rather than stored silently inert.
+-- An enforcement rule's labels are classifier classes or the tenant's custom labels: any other
+-- label could never match, so the rule is refused rather than stored silently inert.
 CREATE FUNCTION ops.enforce_rule_labels() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -1959,9 +1985,10 @@ BEGIN
   SELECT l INTO v_label
     FROM jsonb_array_elements_text(NEW.match->'labels') AS l
    WHERE NOT EXISTS (SELECT 1 FROM ref.data_class c WHERE c.class_code = l)
+     AND NOT EXISTS (SELECT 1 FROM ops.custom_label c WHERE c.tenant_id = NEW.tenant_id AND c.label = l)
    LIMIT 1;
   IF FOUND THEN
-    RAISE EXCEPTION 'enforcement rule % names label % outside ref.data_class', NEW.rule_id, v_label
+    RAISE EXCEPTION 'enforcement rule % names label %, which is neither a data class nor a custom label of the tenant', NEW.rule_id, v_label
       USING ERRCODE = 'check_violation', CONSTRAINT = 'enforcement_rule_labels_known';
   END IF;
   RETURN NEW;
@@ -1970,6 +1997,28 @@ END $$;
 CREATE TRIGGER enforcement_rule_labels_known
   BEFORE INSERT OR UPDATE OF match ON ops.enforcement_rule
   FOR EACH ROW EXECUTE FUNCTION ops.enforce_rule_labels();
+
+-- A custom label an enforcement rule names stays while the rule does: deleting it would leave the
+-- rule naming a label nothing produces.
+CREATE FUNCTION ops.guard_custom_label_in_use() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_rule text;
+BEGIN
+  SELECT r.rule_id INTO v_rule
+    FROM ops.enforcement_rule r
+   WHERE r.tenant_id = OLD.tenant_id AND r.match->'labels' ? OLD.label
+   LIMIT 1;
+  IF FOUND THEN
+    RAISE EXCEPTION 'custom label % is named by enforcement rule %', OLD.label, v_rule
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'custom_label_in_use';
+  END IF;
+  RETURN OLD;
+END $$;
+
+CREATE TRIGGER custom_label_in_use
+  BEFORE DELETE ON ops.custom_label
+  FOR EACH ROW EXECUTE FUNCTION ops.guard_custom_label_in_use();
 
 -- The audit hash chain: each row hashes its predecessor in the same tenant. The per-tenant advisory
 -- lock stops two concurrent writers from reading the same predecessor and forking the chain.
@@ -2380,7 +2429,8 @@ DECLARE
     -- ops
     'ops.user_dim', 'ops.device', 'ops.device_credential', 'ops.collector_state',
     'ops.policy_bundle', 'ops.tool_sanction', 'ops.notice_acknowledgement', 'ops.retention_policy',
-    'ops.endpoint_setting', 'ops.endpoint_tool_setting', 'ops.enforcement_rule', 'ops.kill_switch',
+    'ops.endpoint_setting', 'ops.endpoint_tool_setting', 'ops.enforcement_rule', 'ops.custom_label',
+    'ops.kill_switch',
     'ops.audit', 'ops.grant', 'ops.content', 'ops.retrieval_grant', 'ops.finding_review',
     'ops.erasure_receipt', 'ops.export', 'ops.erasure_request',
     'ops.aggregate_watermark', 'ops.coverage_snapshot',
@@ -2475,6 +2525,9 @@ GRANT SELECT, INSERT, UPDATE ON ops.tenant, ops.user_dim, ops.device, ops.device
 -- The enforcement rules are replaced as a whole list: the old rows are deleted and the new inserted
 -- in one transaction.
 GRANT SELECT, INSERT, DELETE ON ops.enforcement_rule TO sac_control;
+GRANT SELECT, INSERT, DELETE ON ops.custom_label TO sac_control;
+-- The label is the code rules and envelopes name, so it is never renamed.
+GRANT UPDATE (display_name, terms, updated_by, updated_at) ON ops.custom_label TO sac_control;
 -- A kill switch is tripped (inserted), given a new reason (updated) and cleared (deleted).
 GRANT SELECT, INSERT, UPDATE, DELETE ON ops.kill_switch TO sac_control;
 -- Deciding a content grant reads the tenant's budget; a stored upload adds its bytes to the day's

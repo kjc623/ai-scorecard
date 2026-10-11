@@ -205,6 +205,8 @@ type PolicyInputs struct {
 	Endpoint       EndpointSettings
 	// Rules is the tenant's enforcement rules, in order.
 	Rules []EnforcementRule
+	// CustomLabels is the tenant's custom labels, by display name.
+	CustomLabels []CustomLabel
 	// SanctionedTools is the catalogue fingerprints of the tools the tenant has sanctioned
 	// (ops.tool_sanction), sorted.
 	SanctionedTools []string
@@ -354,8 +356,11 @@ type Settings struct {
 	Tools                []ToolDecision
 	Devices              []DeviceMode
 	Endpoint             EndpointSettings
-	// DataClasses is ref.data_class's codes, sorted: the labels an enforcement rule may name.
+	// DataClasses is ref.data_class's codes, sorted: with CustomLabels, the labels an enforcement
+	// rule may name.
 	DataClasses []string
+	// CustomLabels is the tenant's custom labels, by display name.
+	CustomLabels []CustomLabel
 	// AppCategories is the categories of the catalog's apps, sorted: the categories an enforcement
 	// rule may name.
 	AppCategories []string
@@ -394,8 +399,11 @@ var (
 	ErrUnknownEndpointTool = errors.New("store: endpoint tool key unknown")
 
 	ErrUnknownTool = errors.New("store: tool key unknown")
-	// ErrUnknownRuleLabel is an enforcement rule naming a label outside ref.data_class.
-	ErrUnknownRuleLabel = errors.New("store: enforcement rule label is not a data class")
+	// ErrUnknownRuleLabel is an enforcement rule naming a label that is neither in ref.data_class
+	// nor one of the tenant's custom labels.
+	ErrUnknownRuleLabel = errors.New("store: enforcement rule label is not a data class or custom label")
+	// ErrCustomLabelInUse is a custom label list leaving out a label an enforcement rule names.
+	ErrCustomLabelInUse = errors.New("store: custom label is named by an enforcement rule")
 	// ErrUnknownKillSwitchRoute is a kill switch for a route outside KillSwitchRoutes.
 	ErrUnknownKillSwitchRoute = errors.New("store: kill switch route unknown")
 )
@@ -485,9 +493,14 @@ type Store interface {
 	// tenant does not exist.
 	EnforcementRules(ctx context.Context, tenantID string) ([]EnforcementRule, error)
 	// ReplaceEnforcementRules replaces the tenant's whole ordered list in one transaction and audits
-	// the previous and the new list. ErrUnknownRuleLabel when a rule names a label outside
-	// ref.data_class; the list in force is then unchanged.
+	// the previous and the new list. ErrUnknownRuleLabel when a rule names a label that is neither
+	// in ref.data_class nor a custom label of the tenant; the list in force is then unchanged.
 	ReplaceEnforcementRules(ctx context.Context, tenantID string, rules []EnforcementRule, audit AuditEntry) error
+	// ReplaceCustomLabels replaces the tenant's custom labels in one transaction and audits the
+	// previous and the new list: a label left out is deleted, the others are written. A label's code
+	// never changes. ErrCustomLabelInUse when a label left out is named by an enforcement rule; the
+	// list in force is then unchanged.
+	ReplaceCustomLabels(ctx context.Context, tenantID string, labels []CustomLabel, audit AuditEntry) error
 	// SetKillSwitch trips (on) or clears the tenant's kill switch for one route and audits the
 	// previous and the new state. A switch takes effect at the trip's audit.OccurredAt; tripping a
 	// tripped switch changes its reason and keeps its effective time. ErrUnknownKillSwitchRoute when
