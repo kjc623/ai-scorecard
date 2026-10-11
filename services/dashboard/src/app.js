@@ -563,10 +563,6 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   });
   // Deployment's buttons name their action in data-dep; Settings' controls name theirs in data-action.
   document.addEventListener('click', (event) => {
-    // An open "+ Add a Team" menu closes on any click outside it, and once a way is chosen.
-    for (const menu of document.querySelectorAll?.('details.add-menu[open]') ?? []) {
-      if (!menu.contains(event.target) || event.target?.closest?.('[data-team]')) menu.removeAttribute('open');
-    }
     const teamTarget = event.target?.closest?.('[data-team]');
     if (teamTarget && !teamTarget.disabled) {
       event.preventDefault();
@@ -618,10 +614,6 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       // Emptying the search shows everything again, as clearing a search box does elsewhere.
       if (teamField === 'query' && event.target.value === '' && editor.state.term !== '') editor.search();
     }
-  });
-  document.addEventListener('keydown', (event) => {
-    if (event.key !== 'Escape') return;
-    for (const menu of document.querySelectorAll?.('details.add-menu[open]') ?? []) menu.removeAttribute('open');
   });
   await render();
 

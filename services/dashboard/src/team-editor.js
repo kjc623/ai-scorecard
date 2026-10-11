@@ -2,12 +2,10 @@
 // action in it.
 //
 // A team is any mix of the people an admin ticks and the groups, departments, organisational units
-// and other teams it includes, whose members the directory decides. The three ways to add one
-// differ in what they list: Manual lists everyone Sundial knows and the other teams; IdP Group and
-// SCIM list what the identity provider has synced (people, groups, departments, units) and the
-// other teams. Sundial keeps one directory whichever way it was filled, so the two list the same
-// objects; IdP Group's search also asks Microsoft Entra ID for groups not synced yet, which are
-// imported when the team is saved. Editing a team lists everything, with what it holds ticked.
+// and other teams it includes, whose members the directory decides. The pop-up lists all of them,
+// whichever way the directory was filled (SCIM or the read from Microsoft Entra ID), with a type
+// filter and a search; with the directory read on, the search also asks Entra for groups not synced
+// yet, which are imported when the team is saved. Editing a team ticks what it holds.
 //
 // A team cannot include a team that already includes it, so those are listed but cannot be ticked.
 //
@@ -16,13 +14,6 @@
 // read. DOM-free, like directory.js: a test drives it without a browser.
 
 import { buildPeopleDocument } from './dsl.js';
-
-/** The ways to add a team, in the order the menu offers them, and the list each opens on. */
-export const TEAM_KINDS = Object.freeze({
-  idp: Object.freeze({ id: 'idp', label: 'IdP Group', filter: 'group' }),
-  scim: Object.freeze({ id: 'scim', label: 'SCIM', filter: 'all' }),
-  manual: Object.freeze({ id: 'manual', label: 'Manual', filter: 'all' }),
-});
 
 /** The kinds of object the filter offers: what the directory holds, and the other teams. */
 export const OBJECT_TYPES = Object.freeze({
@@ -34,10 +25,8 @@ export const OBJECT_TYPES = Object.freeze({
   team: 'Teams',
 });
 
-/** The types a pop-up lists, in the order "All" shows them. Manual lists people and teams only. */
-export function offeredTypes(state) {
-  return state.kind === 'manual' ? ['team', 'user'] : ['group', 'department', 'org_unit', 'team', 'user'];
-}
+/** The types the list shows, in the order "All" shows them. */
+const LISTED = Object.freeze(['group', 'department', 'org_unit', 'team', 'user']);
 
 const PAGE = 200;
 /** control-api takes at most this many people in one create or change. */
@@ -51,7 +40,6 @@ const TEAMS = Object.freeze({ ...LIST, includes: Object.freeze({}) });
 const CLOSED = Object.freeze({
   open: false,
   mode: null,
-  kind: null,
   team: null,
   read: Object.freeze({ pending: false, problem: null }),
   name: '',
@@ -162,7 +150,7 @@ function itemsOf(state, type) {
 
 /** What the list shows for a state: the synced groups, departments and units, the teams, then the people. */
 export function visibleItems(state) {
-  const types = state.filter === 'all' ? offeredTypes(state) : [state.filter];
+  const types = state.filter === 'all' ? LISTED : [state.filter];
   return types.flatMap((type) => itemsOf(state, type));
 }
 
@@ -178,9 +166,9 @@ export function blockedReason(state, item) {
   return reaches(state.teams.includes, item.id, state.team.team_id) ? `${item.name} already includes this team.` : null;
 }
 
-/** May the search ask Entra? In IdP Group and in an edit, with the directory read on: a group found there is imported by it. */
+/** May the search ask Entra? Only with the directory read on: a group found there is imported by it. */
 export function entraSearchable(state) {
-  return (state.kind === 'idp' || state.mode === 'edit') && Boolean(state.directory?.graph_available && state.directory?.entra_connected && state.directory?.sync);
+  return Boolean(state.directory?.graph_available && state.directory?.entra_connected && state.directory?.sync);
 }
 
 /**
@@ -210,9 +198,8 @@ export function createTeamEditor({ admin, query, onChange = () => {}, onSaved = 
     set({ people: Object.freeze({ ...state.people, pending: true, problem: null }) });
     let people;
     try {
-      // IdP Group and SCIM list the people the directory synced; Manual and an edit list everyone.
-      const synced = state.kind === 'idp' || state.kind === 'scim';
-      const envelope = await query.run(buildPeopleDocument({ search: state.term, synced, cursor, limit: PAGE }));
+      // Everyone Sundial knows: people a directory synced, and people seen only on a device.
+      const envelope = await query.run(buildPeopleDocument({ search: state.term, synced: false, cursor, limit: PAGE }));
       people = envelope?.error || !Array.isArray(envelope?.data)
         ? Object.freeze({ ...PEOPLE, rows: state.people.rows, problem: Object.freeze({ code: envelope?.error?.code ?? envelope?.result_state ?? 'refused', message: envelope?.error?.message ?? 'The people list was refused.' }) })
         : Object.freeze({
@@ -264,15 +251,10 @@ export function createTeamEditor({ admin, query, onChange = () => {}, onSaved = 
     if (seq === session) set({ directory: answer.state === 'available' ? answer.data : null });
   }
 
-  /** Open the pop-up to add a team of one kind, and read what it lists. */
-  async function open(kind) {
-    if (!TEAM_KINDS[kind]) return state;
+  /** Open the pop-up to add a team, and read everything it lists. */
+  async function open() {
     session += 1;
-    set({ ...CLOSED, open: true, mode: 'create', kind, filter: TEAM_KINDS[kind].filter });
-    if (kind === 'manual') {
-      await Promise.all([readTeams(), readPeople()]);
-      return state;
-    }
+    set({ ...CLOSED, open: true, mode: 'create', filter: 'all' });
     await Promise.all([readDirectory(), readGroups(), readValues('departments', 'department'), readValues('units', 'org_unit'), readTeams(), readPeople()]);
     return state;
   }
@@ -317,13 +299,13 @@ export function createTeamEditor({ admin, query, onChange = () => {}, onSaved = 
   }
 
   function setFilter(type) {
-    if (state.open && (type === 'all' || offeredTypes(state).includes(type))) set({ filter: type });
+    if (state.open && (type === 'all' || LISTED.includes(type))) set({ filter: type });
     return state;
   }
 
   /** Search what the list shows: people by the start of their name, everything else by any part of it. */
   async function search() {
-    if (!state.open || (!state.kind && state.mode !== 'edit')) return state;
+    if (!state.open) return state;
     const seq = session;
     set({ term: state.query.trim(), groups: Object.freeze({ ...state.groups, entra: Object.freeze([]) }) });
     const reads = [readPeople()];
@@ -386,7 +368,7 @@ export function createTeamEditor({ admin, query, onChange = () => {}, onSaved = 
     const name = state.name.trim();
     const picked = Object.values(state.picked);
     if (name === '') return fail('Name your team.');
-    if (picked.length === 0) return fail(state.kind === 'manual' ? 'Tick the people or teams in the team.' : 'Tick the people, groups, departments, units or teams in the team.');
+    if (picked.length === 0) return fail('Tick the people, groups, departments, units or teams in the team.');
     const [first = [], ...rest] = chunks(picked.filter((p) => p.type === 'user').map((p) => p.ref));
     const body = { name, members: first, includes: picked.filter((p) => p.type !== 'user').map(includeOf) };
     set({ pending: 'save', problem: null });
@@ -468,7 +450,7 @@ export function createTeamEditor({ admin, query, onChange = () => {}, onSaved = 
   /** One entry point for the pop-up's controls: `data-team` names the action, the other data-* its argument. */
   function act(dataset = {}) {
     switch (dataset.team) {
-      case 'open': return open(dataset.kind);
+      case 'open': return open();
       case 'edit': return edit(dataset.id);
       case 'close': return Promise.resolve(close());
       case 'filter': return Promise.resolve(setFilter(dataset.value));
