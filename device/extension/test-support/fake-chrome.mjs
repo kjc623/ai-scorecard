@@ -72,8 +72,8 @@ export function createFakeChrome() {
         },
       },
       onCompleted: {
-        addListener(handler, filter) {
-          listeners.onCompleted[0] = { handler, filter };
+        addListener(handler, filter, extra) {
+          listeners.onCompleted[0] = { handler, filter, extra: extra || [] };
         },
       },
     },
@@ -196,6 +196,10 @@ export function createFakeChrome() {
     },
     completeListener() {
       return listeners.onCompleted[0] ? listeners.onCompleted[0].handler : null;
+    },
+    /** The `extraInfoSpec` the response lane was registered with: Chrome hands over only what it names. */
+    completeExtra() {
+      return listeners.onCompleted[0] ? listeners.onCompleted[0].extra.slice() : null;
     },
   };
 }

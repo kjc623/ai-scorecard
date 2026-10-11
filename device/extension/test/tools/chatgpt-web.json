@@ -1,0 +1,44 @@
+{
+  "tool": "ChatGPT (web)",
+  "app_key": "chatgpt_web",
+  "source": {
+    "kind": "documented",
+    "from": "the form body seen on the reference VM while fixing prompt extraction (pull request 42); the path is the conversation endpoint the catalogue names",
+    "checked": "2026-10-11"
+  },
+  "typed": "summarise this week's sales figures",
+  "request": {
+    "url": "https://chatgpt.com/backend-api/f/conversation",
+    "method": "POST",
+    "form": {
+      "assistantMessageId": [
+        "pending-2d9f789d-34d6-4eb4-b0e0-0fac380bcbeb"
+      ],
+      "chatRequirementsToken": [
+        "gAAAAABqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+      ],
+      "conversationState": [
+        "{\"messages\":[],\"parentMessageId\":\"client-created-root\",\"userMessageCount\":0}"
+      ],
+      "prompt": [
+        "summarise this week's sales figures"
+      ],
+      "proofToken": [
+        "gAAAAABpppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream; charset=utf-8"
+    }
+  },
+  "expect": {
+    "events": 2,
+    "observed": true,
+    "attributed": true,
+    "prompt": false,
+    "why": "the request matches on its own and its observation carries the typed text, but when the response completes the extension sends a second observation of the same submission whose content is the first one's base64 encoded again, so the prompt is also stored as base64 text"
+  }
+}
