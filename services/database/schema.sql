@@ -1669,6 +1669,21 @@ CREATE TABLE mart.agg_class_period (
   PRIMARY KEY (tenant_id, bucket_start, bucket_size, class_code, tool_fingerprint, severity, classifier_version)
 );
 
+-- Prompts per enforcement rule: those the rule decided, split by what the route did. A row is kept
+-- by the rule's id, so a rule since removed keeps its history. A prompt no rule matched, recorded
+-- under policy.default, has no row.
+CREATE TABLE mart.agg_rule_period (
+  tenant_id        uuid NOT NULL,
+  bucket_start     timestamptz NOT NULL,
+  bucket_size      text NOT NULL CHECK (bucket_size IN ('hour','day')),
+  rule_id          text NOT NULL,
+  matches          bigint NOT NULL CHECK (matches >= 0),
+  blocked          bigint NOT NULL DEFAULT 0 CHECK (blocked >= 0),
+  warned           bigint NOT NULL DEFAULT 0 CHECK (warned >= 0),
+  logged           bigint NOT NULL DEFAULT 0 CHECK (logged >= 0),
+  PRIMARY KEY (tenant_id, bucket_start, bucket_size, rule_id)
+);
+
 -- Usage per team, from ops.user_dim. Empty for a tenant without a directory sync.
 CREATE TABLE mart.agg_org_period (
   tenant_id        uuid NOT NULL,
@@ -2481,7 +2496,7 @@ DECLARE
     -- mart
     'mart.finding', 'mart.agg_tool_period', 'mart.agg_tool_user_period',
     'mart.agg_class_period', 'mart.agg_org_period', 'mart.agg_user_period',
-    'mart.agg_device_period', 'mart.agg_team_period'
+    'mart.agg_device_period', 'mart.agg_team_period', 'mart.agg_rule_period'
   ];
 BEGIN
   FOREACH t IN ARRAY tenant_tables LOOP
@@ -2671,8 +2686,12 @@ GRANT INSERT ON ops.audit TO sac_vault;
 GRANT SELECT ON ingest.submission, ingest.observation TO sac_query;
 GRANT SELECT ON mart.finding, mart.agg_tool_period, mart.agg_tool_user_period,
       mart.agg_class_period, mart.agg_org_period, mart.agg_user_period, mart.agg_device_period,
-      mart.agg_team_period, mart.v_device_liveness, mart.v_tool_usage, mart.v_finding,
-      mart.v_tenant_suspension_impact, mart.v_person, mart.v_team_member_period TO sac_query;
+      mart.agg_team_period, mart.agg_rule_period, mart.v_device_liveness, mart.v_tool_usage,
+      mart.v_finding, mart.v_tenant_suspension_impact, mart.v_person, mart.v_team_member_period TO sac_query;
+-- The enforcement rules, for the matches per rule on Insights: what each rule matches and does, and
+-- the names of the custom labels it names. Never who last edited a rule.
+GRANT SELECT (tenant_id, position, rule_id, action, match) ON ops.enforcement_rule TO sac_query;
+GRANT SELECT (tenant_id, label, display_name) ON ops.custom_label TO sac_query;
 -- Team names and members, for the Teams page. Membership through a group is read through the
 -- provisioned person's canonical ref and status, never their sealed resource.
 GRANT SELECT ON ops.team, ops.team_member, ops.team_include, ops.v_team_member, ops.scim_group,
@@ -2698,7 +2717,8 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ingest.observation, ingest.submission TO
 GRANT SELECT, INSERT, UPDATE, DELETE ON ingest.rejected TO sac_ops;
 GRANT SELECT, INSERT, UPDATE, DELETE ON mart.finding, mart.agg_tool_period,
       mart.agg_tool_user_period, mart.agg_class_period, mart.agg_org_period,
-      mart.agg_user_period, mart.agg_device_period, mart.agg_team_period TO sac_ops;
+      mart.agg_user_period, mart.agg_device_period, mart.agg_team_period,
+      mart.agg_rule_period TO sac_ops;
 -- The team rollup reads each team's members as of the pass.
 GRANT SELECT ON ops.team, ops.team_member, ops.team_include, ops.v_team_member, ops.scim_group_member
   TO sac_ops;

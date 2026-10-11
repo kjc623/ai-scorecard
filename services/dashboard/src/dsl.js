@@ -156,6 +156,26 @@ export function buildTeamMembersDocument({ window, teams, limit = 1000 }) {
 }
 
 /**
+ * The prompts each enforcement rule decided in the window, for Insights. The rows are summed per
+ * rule on the page, so the read takes the coarsest bucket the window allows: a week over day rows,
+ * the hour for a window shorter than a day. The limit keeps a tenant with many rules within the
+ * cell cap; a response it cut short says so.
+ *
+ * @param {{window: {from: string, to: string, bucket?: string}}} input
+ */
+export function buildRuleMatchesDocument({ window }) {
+  return Object.freeze({
+    query_version: QUERY_VERSION,
+    source: 'mart.agg_rule_period',
+    bucket: window.bucket === 'hour' ? 'hour' : 'week',
+    dimensions: Object.freeze(['rule']),
+    measures: Object.freeze(['matches', 'blocked', 'warned', 'logged']),
+    window: checkWindow(window),
+    limit: 1999,
+  });
+}
+
+/**
  * Build a template request. A template parameter that the template does not declare is refused,
  * because a typo in a parameter name would otherwise answer a broader question than the one asked.
  *

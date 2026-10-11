@@ -7,7 +7,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildListDocument, buildTemplate, windowFor, DashboardQueryError } from '../src/dsl.js';
+import { buildListDocument, buildRuleMatchesDocument, buildTemplate, windowFor, DashboardQueryError } from '../src/dsl.js';
 import { SOURCES, TEMPLATES, TEMPLATE_NAMES, WINDOWS } from '../src/vocab.js';
 
 const WINDOW = { from: '2026-09-24T00:00:00Z', to: '2026-10-01T00:00:00Z' };
@@ -59,8 +59,23 @@ test('a list document names a windowless list source and filters only on its own
   refuses(() => buildListDocument('ops.collector_state', { device: '' }, 100), 'type_mismatch');
 });
 
+test('the matches per rule read the coarsest bucket the window allows, one row per rule and bucket', () => {
+  const now = new Date('2026-10-01T12:00:00Z');
+  assert.deepEqual(buildRuleMatchesDocument({ window: windowFor('d30', now) }), {
+    query_version: '1',
+    source: 'mart.agg_rule_period',
+    bucket: 'week',
+    dimensions: ['rule'],
+    measures: ['matches', 'blocked', 'warned', 'logged'],
+    window: { from: '2026-09-01T12:00:00.000Z', to: '2026-10-01T12:00:00.000Z' },
+    limit: 1999,
+  });
+  assert.equal(buildRuleMatchesDocument({ window: windowFor('h24', now) }).bucket, 'hour', 'a day has no week to sum into');
+  refuses(() => buildRuleMatchesDocument({ window: { from: WINDOW.to, to: WINDOW.from } }), 'bad_window');
+});
+
 test('the vocabularies here are complete enough to describe every source and template', () => {
-  assert.equal(Object.keys(SOURCES).length, 16);
+  assert.equal(Object.keys(SOURCES).length, 18);
   assert.equal(TEMPLATE_NAMES.length, 10);
   for (const [name, spec] of Object.entries(SOURCES)) {
     assert.ok(spec.kind === 'aggregate' || spec.kind === 'list', `${name} has a kind`);

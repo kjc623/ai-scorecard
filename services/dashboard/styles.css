@@ -266,7 +266,7 @@ a.tile { display: block; text-decoration: none; color: inherit; }
 .v-vocab-revoked, .v-vocab-never_reported, .v-vocab-broken, .v-vocab-blocked { background: var(--bad-bg); color: var(--bad); }
 .v-vocab-degraded, .v-vocab-stale, .v-vocab-disputed, .v-vocab-low, .v-vocab-warned, .v-vocab-uploaded, .v-vocab-partial { background: var(--warn-bg); color: var(--warn); }
 .v-vocab-sanctioned, .v-vocab-healthy, .v-vocab-reporting, .v-vocab-confirmed, .v-vocab-high { background: var(--ok-bg); color: var(--ok); }
-.v-vocab-unknown, .v-vocab-not_captured, .v-vocab-local_only, .v-vocab-open { background: var(--hatch); color: var(--ink-soft); }
+.v-vocab-unknown, .v-vocab-not_captured, .v-vocab-local_only, .v-vocab-open, .v-vocab-removed { background: var(--hatch); color: var(--ink-soft); }
 /* A finding's severity is keyed apart from the other vocabularies: "high" is a serious state here, where elsewhere it is a strong signal. */
 .v-vocab-severity_critical { background: var(--bad-bg); color: var(--bad); }
 .v-vocab-severity_high { background: var(--warn-bg); color: var(--warn); }

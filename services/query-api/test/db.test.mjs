@@ -364,3 +364,45 @@ test('teams and their people read under their current names, and people list by 
     },
   );
 });
+
+test('the rules list names the custom labels and tools each rule names, and the matches per rule read beside it', { skip: SKIP }, async () => {
+  await scratch(
+    async (client) => {
+      await client.query(
+        `INSERT INTO ops.custom_label (tenant_id, label, display_name, terms, updated_by)
+         VALUES (ops.current_tenant(), 'custom_falcon', 'Project Falcon',
+                 '{"words":["falcon"],"customer_names":[],"file_extensions":[],"file_names":[]}', 'db-test')`,
+      );
+      await client.query(
+        `INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, message, updated_by) VALUES
+           (ops.current_tenant(), 0, 'falcon.block', 'block', '{"labels":["custom_falcon","credential"]}', 'No.', 'db-test'),
+           (ops.current_tenant(), 1, 'chatgpt.warn', 'warn', '{"tools":["chatgpt_web"]}', 'Careful.', 'db-test')`,
+      );
+      await client.query(
+        `INSERT INTO mart.agg_rule_period (tenant_id, bucket_start, bucket_size, rule_id, matches, blocked, warned, logged) VALUES
+           (ops.current_tenant(), '2026-09-02', 'day', 'falcon.block', 3, 3, 0, 0),
+           (ops.current_tenant(), '2026-09-03', 'day', 'falcon.block', 2, 1, 0, 1),
+           (ops.current_tenant(), '2026-09-03', 'hour', 'falcon.block', 2, 1, 0, 1),
+           (ops.current_tenant(), '2026-09-04', 'day', 'removed.rule', 1, 0, 1, 0)`,
+      );
+    },
+    async (client, tenant) => {
+      const ctx = { now: NOW, tenant, actorId: 'db-test', cursorKey: KEY };
+      const rules = await executePlan(plan({ query_version: '1', source: 'ops.enforcement_rule', filters: [], limit: 100 }, ctx), { ...ctx, client: nested(client) });
+      assert.deepEqual(rules.data.map((r) => [r.position, r.rule, r.action]), [[0, 'falcon.block', 'block'], [1, 'chatgpt.warn', 'warn']]);
+      assert.deepEqual(rules.data[0].label_names, { custom_falcon: 'Project Falcon' }, 'a built-in label needs no name');
+      assert.deepEqual(rules.data[1].tool_names, { chatgpt_web: 'ChatGPT (web)' });
+      assert.ok(!('updated_by' in rules.data[0]), 'who edited a rule is not read');
+
+      const matches = await executePlan(
+        plan({ query_version: '1', source: 'mart.agg_rule_period', bucket: 'month', dimensions: ['rule'], measures: ['matches', 'blocked', 'warned', 'logged'], window: WINDOW }, ctx),
+        { ...ctx, client: nested(client) },
+      );
+      assert.deepEqual(
+        matches.data.map((r) => [r.rule, r.matches, r.blocked, r.warned, r.logged]),
+        [['falcon.block', 5, 4, 0, 1], ['removed.rule', 1, 0, 1, 0]],
+        'day rows only, summed per rule; a removed rule keeps its count',
+      );
+    },
+  );
+});

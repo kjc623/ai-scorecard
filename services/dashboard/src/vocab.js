@@ -144,6 +144,21 @@ export const SOURCES = Object.freeze({
     answers: 'Q4',
     note: 'submissions counts submissions carrying the class: the rows fan out and are not additive',
   }),
+  'mart.agg_rule_period': Object.freeze({
+    kind: 'aggregate',
+    label: 'Prompts per enforcement rule',
+    dimensions: Object.freeze(['bucket', 'rule']),
+    measures: Object.freeze(['matches', 'blocked', 'warned', 'logged']),
+    note: 'counted under the rule id the device applied: a removed rule keeps its count, and a prompt no rule matched has none',
+  }),
+  'ops.enforcement_rule': Object.freeze({
+    kind: 'list',
+    label: 'Enforcement rules',
+    dimensions: Object.freeze(['rule', 'position', 'action']),
+    measures: Object.freeze([]),
+    noWindow: true,
+    note: 'the rules as they stand now, in the order a device applies them, with the names of the custom labels and tools each names',
+  }),
   'mart.agg_user_period': Object.freeze({
     kind: 'aggregate',
     label: 'One person over time',

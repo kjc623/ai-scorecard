@@ -2,7 +2,8 @@
 
 The analyst-facing web application: Overview, Insights (Exposure: the prompts that matched an
 enforcement rule on one of their labels, what happened to them, the tools they went to and the
-labels involved, each against the period before), Usage (tools, data classes, teams, and users: the
+labels involved, each against the period before, and every enforcement rule with the prompts it
+matched), Usage (tools, data classes, teams, and users: the
 people list and each person's page), Devices, Audit trail, Settings (Settings, Deployment, Identity
 Providers), and the Search page, where an analyst lists events, findings,
 devices and audit entries, opens a device to see each of its collectors with its state and cause,

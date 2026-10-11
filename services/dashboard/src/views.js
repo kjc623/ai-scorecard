@@ -12,6 +12,7 @@ import { emptyStateFor, measureOf, vocabOf } from './states.js';
 import { formatBytes, formatCount, formatInstant, formatLabels, formatPercent, formatScore, plural } from './format.js';
 import { SOURCES, TEMPLATES, UNRECOGNISED_TOOL, SITE_PREFIX, COLLECTION_MODE_LABELS, WINDOWS } from './vocab.js';
 import { EXPLORE_DATASETS, encodeExploreHash } from './explore-model.js';
+import { RULE_ACTION_LABELS, RULE_CATEGORIES, RULE_MATCH_FIELDS, RULE_MATCH_TITLES, RULE_ROUTES } from './settings.js';
 
 /** A total over a set of cells. A set in which no cell carries the measure has no total. */
 export function sumMeasure(state, measure) {
@@ -445,9 +446,9 @@ function reportingTile(cov) {
 
 /** What happened to a sensitive prompt. A rule that only logs it lets it through, so logged reads as allowed. */
 const OUTCOMES = Object.freeze([
-  Object.freeze({ key: 'allowed', label: 'Allowed', measure: 'sensitive_logged', flagged: 'flagged_logged' }),
-  Object.freeze({ key: 'blocked', label: 'Blocked', measure: 'sensitive_blocked', flagged: 'flagged_blocked' }),
-  Object.freeze({ key: 'warned', label: 'Warned', measure: 'sensitive_warned', flagged: 'flagged_warned' }),
+  Object.freeze({ key: 'allowed', label: 'Allowed', action: 'logged', measure: 'sensitive_logged', flagged: 'flagged_logged' }),
+  Object.freeze({ key: 'blocked', label: 'Blocked', action: 'blocked', measure: 'sensitive_blocked', flagged: 'flagged_blocked' }),
+  Object.freeze({ key: 'warned', label: 'Warned', action: 'warned', measure: 'sensitive_warned', flagged: 'flagged_warned' }),
 ]);
 
 /** Search's events list with filters, at the window given when Search offers it, else the widest it does. */
@@ -712,6 +713,84 @@ function exposedTable(classes, { emptyText }) {
   });
 }
 
+const RULE_MATCHES = Object.freeze(['matches', 'blocked', 'warned', 'logged']);
+/** A rule's action, keyed by the outcome it produces so it takes that outcome's colour. */
+const RULE_ACTION_KEYS = Object.freeze({ allow: 'allowed', warn: 'warned', block: 'blocked' });
+const CATEGORY_TEXT = Object.freeze(Object.fromEntries(RULE_CATEGORIES.map((c) => [c.key, c.label])));
+const ROUTE_TEXT = Object.freeze(Object.fromEntries(RULE_ROUTES.map((r) => [r.key, r.label])));
+
+/** What a rule matches, in words: a custom label and a tool by the names the read carried. */
+function ruleConditionsText(rule) {
+  const match = rule.match ?? {};
+  const name = (field, value) => ({
+    labels: rule.label_names?.[value],
+    tools: rule.tool_names?.[value],
+    categories: CATEGORY_TEXT[value],
+    sanction: SANCTION_TEXT[value],
+    routes: ROUTE_TEXT[value],
+  })[field] ?? value;
+  const parts = RULE_MATCH_FIELDS
+    .filter((field) => Array.isArray(match[field]) && match[field].length > 0)
+    .map((field) => `${RULE_MATCH_TITLES[field]}: ${match[field].map((value) => name(field, value)).join(' or ')}`);
+  return parts.length > 0 ? parts.join('; ') : 'Any prompt';
+}
+
+/**
+ * Every enforcement rule, in the order a device applies it, with the prompts it matched in the
+ * window split by what happened to them. A rule that matched none is listed with zeros, and a rule
+ * since removed is listed after the rest under its id. Without the rules, the rows are the ids the
+ * matches name; without the matches, the rules are listed with their counts absent.
+ */
+function rulesTable(rules, matches) {
+  const known = rules && !rules.isRefusal ? rules.data : null;
+  const counted = matches && !matches.isRefusal ? matches : null;
+  const groups = new Map((counted ? foldCells(counted, 'rule', { sum: RULE_MATCHES, max: [] }) : []).map((g) => [g.key, g]));
+  const count = (id, measure) => (groups.has(id) ? foldedMeasure(groups.get(id), measure).value ?? 0 : 0);
+  const counts = (id) => Object.fromEntries(RULE_MATCHES.map((m) => [m, counted ? count(id, m) : null]));
+  const rows = (known ?? []).map((rule, i) => Object.freeze({
+    rule: Object.freeze({ primary: rule.rule, mono: true, secondary: `Rule ${i + 1} · ${ruleConditionsText(rule)}` }),
+    action: RULE_ACTION_KEYS[rule.action] ?? 'unknown',
+    action_text: RULE_ACTION_LABELS[rule.action] ?? String(rule.action ?? 'unknown'),
+    ...counts(String(rule.rule)),
+  }));
+  const configured = new Set((known ?? []).map((rule) => String(rule.rule)));
+  for (const group of [...groups.values()].filter((g) => !configured.has(g.key)).sort(byMeasure('matches'))) {
+    rows.push(Object.freeze({
+      rule: Object.freeze({ primary: group.key, mono: true, secondary: known ? 'No longer a rule' : null }),
+      action: known ? 'removed' : 'unknown',
+      action_text: known ? 'Removed' : 'Not read',
+      ...counts(group.key),
+    }));
+  }
+  let summary = null;
+  if (known && counted && known.length > 0) {
+    const quiet = known.filter((rule) => count(String(rule.rule), 'matches') === 0).length;
+    summary = quiet === 0 ? 'Every rule matched at least one prompt in this window.'
+      : quiet === known.length ? 'No rule matched a prompt in this window.'
+        : `${formatCount(known.length - quiet)} of ${formatCount(known.length)} rules matched a prompt in this window; ${formatCount(quiet)} matched none.`;
+  } else if (known && !counted) {
+    summary = 'The prompts each rule matched could not be read for this window.';
+  }
+  const emptyText = known ? 'No enforcement rule is set, so every prompt is logged. Rules are set in Settings.'
+    : rules?.isRefusal ? `The rules could not be read: ${rules.error?.message ?? rules.resultState}.`
+      : 'The rules could not be read.';
+  return Object.freeze({
+    kind: 'table',
+    ...tableFrom({ data: rows }, {
+      title: 'Rules',
+      columns: [
+        column('rule', 'Rule', 'stack'),
+        column('action', 'Action', 'status'),
+        column('matches', 'Matched', 'measure'),
+        ...OUTCOMES.map((o) => column(o.action, o.label, 'measure')),
+      ],
+      emptyText,
+    }),
+    ...(summary ? { summary } : {}),
+    breakdowns: false,
+  });
+}
+
 /** Sensitive prompts per bucket, each bucket split by what happened to them. */
 function exposureSeries(usage) {
   if (!(usage.meta?.source ?? '').startsWith('mart.')) return [];
@@ -746,8 +825,10 @@ function exposureSeries(usage) {
  * @param {object} input.usage       view state for tool usage over the window (Q1)
  * @param {object} [input.previous]  the same read over the previous period
  * @param {object} [input.classes]   view state for the class mix over the window (Q4)
+ * @param {object} [input.rules]     view state for the enforcement rules as they stand
+ * @param {object} [input.ruleMatches] view state for the prompts each rule matched in the window
  */
-export function insightsView({ usage, previous = null, classes = null }, { preset = 'd7', link = toolHref } = {}) {
+export function insightsView({ usage, previous = null, classes = null, rules = null, ruleMatches = null }, { preset = 'd7', link = toolHref } = {}) {
   const period = previousPeriod(preset);
   const before = comparable(previous);
   const notes = [
@@ -756,7 +837,9 @@ export function insightsView({ usage, previous = null, classes = null }, { prese
     'Sensitive prompts are counted against the rules as they stand now, so a rule edited today can change the figures for recent days.',
     'A prompt with two labels a rule names is counted under each in What was exposed.',
     'What was exposed lists the built-in data classes: a prompt a rule matched on a custom label counts in the figures above it, but has no row there.',
+    'Rules counts every prompt each rule matched. A rule that names no label matches on tool, category, sanction or route alone, so its prompts are not sensitive and are not in the figures above.',
   ];
+  if (ruleMatches?.meta?.truncated) notes.push('Not every rule\'s matches could be read for this window, so Rules undercounts; a shorter window reads them all.');
   const prompts = sumMeasure(usage, 'submissions');
   const sensitive = sumMeasure(usage, 'sensitive');
   if (sensitive.kind === 'number' && sensitive.value === 0 && prompts.kind === 'number' && prompts.value > 0) {
@@ -779,6 +862,7 @@ export function insightsView({ usage, previous = null, classes = null }, { prese
     blocks: Object.freeze([
       rankExposure(usage, before, { link: link ? (fingerprint) => link(fingerprint, preset) : null, period, emptyText: emptyLine(usage, 'No sensitive prompt in this window.') }),
       exposedTable(classes, { emptyText: exposedEmpty }),
+      rulesTable(rules, ruleMatches),
     ]),
     series: Object.freeze(exposureSeries(usage)),
     tables: Object.freeze([]),
