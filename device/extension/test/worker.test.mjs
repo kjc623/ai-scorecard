@@ -113,7 +113,7 @@ test('M0: with no bundle at all, no body-bearing listener is installed', async (
 });
 
 test('M0: a request to an M0 host is observed for identity and volume, and NOT retained, hashed or sent as content', async () => {
-  const h = await started();
+  const h = await started({ bundle: { version: 'b0', tenant_default_mode: 'm0' } });
   const secret = JSON.stringify(CHAT_BODY);
   // The extension is asked about an M0 destination. The fake hands over a requestBody anyway —
   // which is the hostile case: even if bytes arrive, the pipeline must not read them.
@@ -146,7 +146,7 @@ test('M0: a request to an M0 host is observed for identity and volume, and NOT r
 });
 
 test('M0: the body bytes handed to the metadata lane are not even looked at', async () => {
-  const h = await started();
+  const h = await started({ bundle: { version: 'b0', tenant_default_mode: 'm0' } });
   // A body that would fail a strict UTF-8 decode: if it were read and decoded, the pipeline would
   // have produced a digest over it. It must produce neither.
   const detail = chromeRequest({
@@ -287,6 +287,40 @@ test('an over-cap body is sized and hashed, emitted degraded, and never held who
   assert.ok(decoded.byteLength <= cap, 'only the prefix was ever held, and the frame carries no more than that');
   assert.equal(await h.core.lastComputedDigest(), obs.content_digest, 'the digest describes the prefix that was actually carried');
   assert.equal(obs.degraded_reason, 'content_over_cap', 'an over-cap body is degraded, never reported as "clean"');
+});
+
+// ── one observation per request ─────────────────────────────────────────────────────────────
+
+test('a submission Chrome hands to both listeners is observed once, with its content', async () => {
+  const h = await started();
+  await h.fake.dispatch(chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
+  await settle();
+  const frames = observationFrames(h.core);
+  assert.equal(frames.length, 1, 'one request, one observation');
+  assert.equal(frames[0].has_content, true);
+  assert.equal(h.app.health.counters.snapshot().counters.observed, 1);
+});
+
+test('a body the predicate rejects is not observed again without its content', async () => {
+  const h = await started();
+  // A client's own request on a chat path: a POST with a long token and nothing a person typed.
+  await h.fake.dispatch(chromeRequest({
+    url: 'https://chat.example-ai.invalid/backend-api/sentinel/chat-requirements',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ p: `gAAAAAC${'x'.repeat(400)}` }),
+  }));
+  await settle();
+  assert.equal(observationFrames(h.core).length, 0);
+  assert.equal(h.app.health.counters.snapshot().counters.skipped_not_generative, 1);
+});
+
+test('a request whose body Chrome does not hand over is observed once, as metadata', async () => {
+  const h = await started();
+  await h.fake.dispatch(chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' } }));
+  await settle();
+  const frames = observationFrames(h.core);
+  assert.equal(frames.length, 1);
+  assert.equal(frames[0].has_content, false);
 });
 
 // ── form bodies ─────────────────────────────────────────────────────────────────────────────
@@ -450,8 +484,7 @@ test('an allow rule records logged under its own id, with decided_locally: true'
 
 test('a WebSocket handshake is captured as identity and volume only, and the frames are not', async () => {
   const h = await started();
-  await h.fake.drive(
-    'metadata',
+  await h.fake.dispatch(
     chromeRequest({
       requestId: 'ws1',
       url: 'wss://chat.example-ai.invalid/socket',
