@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readState } from '../src/states.js';
 import { renderRanking, renderScreen, renderShare, renderSparkline, renderTable } from '../src/render.js';
-import { devicesView, foldCells, postureView, rankTools, sanctionShare, teamView, teamsView, toolsView } from '../src/views.js';
+import { devicesView, foldCells, postureView, rankTools, sanctionShare, teamView, teamsView, toolView, toolsView } from '../src/views.js';
 import { createDashboard } from '../src/app.js';
 import { createQueryApi } from '../src/transport.js';
 import { DEVICE_ROWS, TEAM_MEMBER_ROWS, TEAM_ROWS, TOOL_ROWS, fixtureTransport } from './fixtures.mjs';
@@ -194,6 +194,7 @@ test('the Teams screen ranks the teams and lists the admin\'s quiet teams with a
   assert.deepEqual(view.tables, [], 'each team\'s people are on Users and on the team\'s own screen');
   assert.ok(view.notes.some((n) => /used AI in this window; 2,680 are in at least one team and 1,530 are in none/.test(n)));
   const ranking = view.blocks[0];
+  assert.equal(ranking.title, 'Teams by usage');
   assert.deepEqual(ranking.items.map((i) => [i.label, i.value.value]), [['Engineering', 2210], ['Finance', 812], ['Legal', 7], ['Marketing', 0]], 'by submissions, then the team with no usage');
   assert.equal(ranking.items[0].href, '#teams?team=7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001');
   assert.equal(ranking.items[0].sublabel, '640 members · Group eng-all');
@@ -357,13 +358,41 @@ test('two or more unrecognised tools are one line in the ranking, and are listed
   assert.deepEqual(ranking.items[0].chip, { key: 'unknown', text: 'No decision yet' });
   assert.deepEqual(ranking.items[0].meta[0], { label: 'people', value: { kind: 'number', value: 2 } }, 'people is the largest cell, a floor, not 2+1+1');
   const view = toolsView(state, { preset: 'd30' });
-  const listed = view.tables.find((t) => t.title === 'Unrecognised tools');
+  const listed = view.tables.find((t) => t.title === 'Not in the tool catalogue');
   assert.deepEqual(listed.rows.map((r) => [r.row.fingerprint_cell.primary, r.row.submissions, r.row.href]), [['tls_aaaa', 5, '#tools?tool=tls_aaaa&preset=d30'], ['tls_bbbb', 3, '#tools?tool=tls_bbbb&preset=d30'], ['tls_cccc', 1, '#tools?tool=tls_cccc&preset=d30']]);
   assert.equal(listed.rowHref, 'href');
   assert.equal(view.blocks[0].items[1].href, '#tools?tool=tls_f412811be7ac6539&preset=d30', 'a drill-down keeps the window it was read in');
   const one = readState(envelope('ok', { data: [state.data[0], state.data[3]], freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' } }));
   assert.equal(toolsView(one).tables.length, 0, 'one unrecognised tool is its own line, so there is nothing to list beneath');
   assert.equal(rankTools(one).items[0].sublabel, 'tls_aaaa');
+});
+
+test('a site the catalogue does not name is a line of its own, named by its host, and listed for review', () => {
+  const state = readState(envelope('ok', {
+    data: [
+      { bucket: '2026-09-30T00:00:00Z', tool: 'host:claude.ai', tool_name: 'claude.ai', sanctioned_state: null, submissions: 6, users: 2, bytes_total: 300 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'app:chatgpt_web', tool_name: 'ChatGPT (web)', sanctioned_state: 'sanctioned', submissions: 4, users: 3 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'tls_aaaa', tool_name: 'Unrecognised tool', sanctioned_state: 'unknown', submissions: 1, users: 1 },
+    ],
+    freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' },
+  }));
+  const ranking = rankTools(state);
+  assert.deepEqual(ranking.items.map((i) => [i.label, i.sublabel, i.mono]), [
+    ['claude.ai', 'Not in the tool catalogue', false],
+    ['ChatGPT (web)', null, false],
+    ['Unrecognised tool', 'tls_aaaa', false],
+  ], 'a site is not folded with the fingerprints: its host already says where the prompts went');
+  assert.equal(ranking.items[0].subMono, false, 'the note is prose, not a fingerprint');
+  assert.deepEqual(ranking.items[0].chip, { key: 'unknown', text: 'No decision yet' });
+  const view = toolsView(state);
+  const listed = view.tables.find((t) => t.title === 'Not in the tool catalogue');
+  assert.deepEqual(listed.rows.map((r) => [r.row.fingerprint_cell.primary, r.row.fingerprint_cell.mono, r.row.submissions, r.row.href]),
+    [['claude.ai', false, 6, '#tools?tool=host%3Aclaude.ai'], ['tls_aaaa', true, 1, '#tools?tool=tls_aaaa']]);
+  const alone = readState(envelope('ok', { data: [state.data[0], state.data[1]], freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' } }));
+  assert.deepEqual(toolsView(alone).tables.map((t) => [t.title, t.rows.length]), [['Not in the tool catalogue', 1]], 'one site is still listed for review');
+  const site = toolView({ usage: state }, { tool: 'host:claude.ai' });
+  assert.equal(site.title, 'claude.ai');
+  assert.equal(site.subtitle, 'A site the tool catalogue does not name.');
 });
 
 test('a window with no cell draws no chart; the empty ranking says why', () => {

@@ -3164,6 +3164,163 @@ BEGIN
 END $$;
 
 -- =====================================================================================
+-- T85  Custom labels
+-- =====================================================================================
+
+-- Tenant B's label, written as the superuser: tenant A can neither see it nor name it in a rule.
+INSERT INTO ops.custom_label (tenant_id, label, display_name, terms, updated_by)
+VALUES (:tb, 'custom_b_only', 'B only', '{"words": ["bravo"], "customer_names": [], "file_extensions": [], "file_names": []}', 'admin-b');
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  t constant uuid := '11111111-1111-7111-8111-111111111111';
+  m jsonb;
+  l text;
+  n int;
+BEGIN
+  INSERT INTO ops.custom_label (tenant_id, label, display_name, terms, updated_by) VALUES
+    (t, 'custom_project_falcon', 'Project Falcon',
+     '{"words": ["falcon", "project falcon"], "customer_names": ["Acme Corp"], "file_extensions": ["dwg"], "file_names": ["falcon-*.xlsx"]}', 'admin-a'),
+    (t, 'custom_cad', 'CAD drawings', '{"words": [], "customer_names": [], "file_extensions": ["dwg", "step"], "file_names": []}', 'admin-a');
+
+  -- Each refused terms value, one at a time.
+  FOREACH m IN ARRAY ARRAY[
+    '[]', '{}', '{"words": ["a"]}',
+    '{"words": [], "customer_names": [], "file_extensions": [], "file_names": []}',
+    '{"words": "falcon", "customer_names": [], "file_extensions": [], "file_names": []}',
+    '{"words": [1], "customer_names": [], "file_extensions": [], "file_names": []}',
+    '{"words": ["a"], "customer_names": [], "file_extensions": [], "file_names": [], "other": []}'
+  ]::jsonb[] LOOP
+    BEGIN
+      INSERT INTO ops.custom_label (tenant_id, label, display_name, terms, updated_by)
+      VALUES (t, 'custom_refused', 'Refused', m, 'admin-a');
+      RAISE EXCEPTION 'FAIL T85 the terms % were accepted', m;
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+  FOREACH l IN ARRAY ARRAY['falcon', 'custom_', 'custom_Falcon', 'credential', 'custom_' || repeat('x', 57)] LOOP
+    BEGIN
+      INSERT INTO ops.custom_label (tenant_id, label, display_name, terms, updated_by)
+      VALUES (t, l, 'Refused', '{"words": ["a"], "customer_names": [], "file_extensions": [], "file_names": []}', 'admin-a');
+      RAISE EXCEPTION 'FAIL T85 the label % was accepted', l;
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+  FOREACH l IN ARRAY ARRAY['', ' Padded', repeat('x', 81)] LOOP
+    BEGIN
+      INSERT INTO ops.custom_label (tenant_id, label, display_name, terms, updated_by)
+      VALUES (t, 'custom_refused', l, '{"words": ["a"], "customer_names": [], "file_extensions": [], "file_names": []}', 'admin-a');
+      RAISE EXCEPTION 'FAIL T85 the display name "%" was accepted', l;
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+
+  -- A rule names the tenant's custom labels beside the data classes, never another tenant's.
+  INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, message, updated_by)
+  VALUES (t, 5, 'block_falcon', 'block', '{"labels": ["custom_project_falcon", "credential"]}', 'Not for AI tools.', 'admin-a');
+  BEGIN
+    INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, updated_by)
+    VALUES (t, 6, 'refused', 'block', '{"labels": ["custom_b_only"]}', 'admin-a');
+    RAISE EXCEPTION 'FAIL T85 a rule named another tenant''s custom label';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+
+  -- A label a rule names cannot be deleted; once no rule names it, it can.
+  BEGIN
+    DELETE FROM ops.custom_label WHERE label = 'custom_project_falcon';
+    RAISE EXCEPTION 'FAIL T85 a custom label a rule names was deleted';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  DELETE FROM ops.custom_label WHERE label = 'custom_cad';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T85 a custom label no rule names was not deleted';
+  END IF;
+
+  -- The display name and terms change in place; the label never does.
+  UPDATE ops.custom_label SET display_name = 'Falcon', terms = terms || '{"words": ["falcon"]}'
+   WHERE label = 'custom_project_falcon';
+  BEGIN
+    UPDATE ops.custom_label SET label = 'custom_renamed' WHERE label = 'custom_project_falcon';
+    RAISE EXCEPTION 'FAIL T85 control-api renamed a custom label';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+
+  SELECT count(*) INTO n FROM ops.custom_label;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T85 tenant A saw % custom labels, want its own 1', n;
+  END IF;
+  DELETE FROM ops.custom_label WHERE tenant_id = '22222222-2222-7222-8222-222222222222';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T85 tenant A deleted tenant B''s custom labels';
+  END IF;
+  BEGIN
+    INSERT INTO ops.custom_label (tenant_id, label, display_name, terms, updated_by)
+    VALUES ('22222222-2222-7222-8222-222222222222', 'custom_planted', 'Planted', '{"words": ["a"], "customer_names": [], "file_extensions": [], "file_names": []}', 'admin-a');
+    RAISE EXCEPTION 'FAIL T85 tenant A wrote a custom label for tenant B';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+
+  DELETE FROM ops.enforcement_rule WHERE rule_id = 'block_falcon';
+  RAISE NOTICE 'PASS T85 custom labels take the four term lists, are isolated per tenant, and stay while a rule names them';
+END $$;
+RESET ROLE;
+
+SET ROLE sac_query;
+DO $$
+BEGIN
+  BEGIN
+    PERFORM 1 FROM ops.custom_label;
+    RAISE EXCEPTION 'FAIL T85 query-api can read the custom labels';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+END $$;
+RESET ROLE;
+
+-- =====================================================================================
+-- T86  Tool names
+-- =====================================================================================
+
+DO $$
+DECLARE
+  bad text;
+BEGIN
+  -- The browser extension names a request after an app known by its inference domains alone, so a
+  -- web tool with another kind of signal could not be named from the browser.
+  SELECT string_agg(DISTINCT c.app_key, ', ') INTO bad
+    FROM ref.tool_catalogue c
+   WHERE c.signal_kind = 'extension'
+     AND (EXISTS (SELECT 1 FROM ref.app_signal s WHERE s.app_key = c.app_key AND s.kind <> 'inference_domain')
+          OR NOT EXISTS (SELECT 1 FROM ref.app_signal s WHERE s.app_key = c.app_key AND s.kind = 'inference_domain'));
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T86 web tools not known by their inference domains alone: %', bad;
+  END IF;
+END $$;
+
+SET ROLE sac_query;
+DO $$
+BEGIN
+  IF ops.tool_display_name('host:claude.ai') IS DISTINCT FROM 'claude.ai' THEN
+    RAISE EXCEPTION 'FAIL T86 a destination no app claims is not shown as its host';
+  END IF;
+  IF ops.tool_display_name('host:') IS DISTINCT FROM 'Unrecognised tool' THEN
+    RAISE EXCEPTION 'FAIL T86 a destination with no host has a name';
+  END IF;
+  IF ops.tool_display_name('tf2:a64fvqypthxcqzcwgpxxeeo4kvhk5onujlq22qafww3ql422pxyq') IS DISTINCT FROM 'ChatGPT (web)' THEN
+    RAISE EXCEPTION 'FAIL T86 prompts stored under m.chatgpt.com''s fingerprint are not ChatGPT (web)';
+  END IF;
+  IF ops.tool_display_name('tf2:never_catalogued') IS DISTINCT FROM 'Unrecognised tool' THEN
+    RAISE EXCEPTION 'FAIL T86 an uncatalogued fingerprint has a name';
+  END IF;
+  RAISE NOTICE 'PASS T86 web tools are known by their domains; a destination no app claims is shown as its host, nothing else is guessed';
+END $$;
+RESET ROLE;
+
+-- =====================================================================================
 -- Report
 -- =====================================================================================
 

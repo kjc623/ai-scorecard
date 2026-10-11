@@ -1,8 +1,8 @@
 // Package settings is the Settings admin API: the audited, admin-only reads and writes behind the
 // dashboard's Settings page. It changes a tenant's collection mode (and its narrower per-tool
 // overrides), event and content retention, tool sanction decisions, the content search tier, the
-// endpoint collector switches, TLS inspection, the ordered enforcement rules and the interception
-// routes' kill switches.
+// endpoint collector switches, TLS inspection, the ordered enforcement rules, the custom labels they
+// may name and the interception routes' kill switches.
 //
 // Every route requires a product access token carrying the admin role (resolved by the injected
 // Authenticator); the tenant is the token's, never the request's. Every write is audited with the
@@ -75,6 +75,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /admin/v1/settings/tls-inspection", h.handleTLSInspection)
 	mux.HandleFunc("GET /admin/v1/settings/rules", h.handleGetRules)
 	mux.HandleFunc("PUT /admin/v1/settings/rules", h.handlePutRules)
+	mux.HandleFunc("PUT /admin/v1/settings/custom-labels", h.handlePutCustomLabels)
 	mux.HandleFunc("PUT /admin/v1/settings/kill-switch/{route}", h.handleKillSwitch)
 }
 
@@ -150,8 +151,10 @@ type settingsJSON struct {
 	Tools                []toolJSON        `json:"tools"`
 	Devices              []deviceJSON      `json:"devices"`
 	Endpoint             endpointJSON      `json:"endpoint"`
-	// DataClasses is the labels an enforcement rule may name.
+	// DataClasses is the classifier's labels, which an enforcement rule may name.
 	DataClasses []string `json:"data_classes"`
+	// CustomLabels is the tenant's own labels, which an enforcement rule may also name.
+	CustomLabels []customLabelJSON `json:"custom_labels"`
 	// AppCategories is the app catalog's categories, which an enforcement rule may name.
 	AppCategories []string `json:"app_categories"`
 	// KillSwitches is the tripped kill switches, by route; a route without one is not listed.
@@ -220,6 +223,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 		TLSInspection:        s.TLSInspection,
 		Tools:                []toolJSON{}, Devices: []deviceJSON{},
 		DataClasses:   append([]string{}, s.DataClasses...),
+		CustomLabels:  customLabelsJSON(s.CustomLabels),
 		AppCategories: append([]string{}, s.AppCategories...),
 		KillSwitches:  []killSwitchJSON{},
 	}
@@ -728,7 +732,7 @@ func (h *Handler) handlePutRules(w http.ResponseWriter, r *http.Request) {
 		h.audit(p, "tenant.enforcement_rules.set", "tenant", p.Tenant, now, nil))
 	switch {
 	case errors.Is(err, store.ErrUnknownRuleLabel):
-		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "a rule names a label that is not a data class"))
+		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest, "a rule names a label that is neither a data class nor a custom label"))
 		return
 	case errors.Is(err, store.ErrUnknownTenant):
 		h.fail(w, apierr.New(http.StatusForbidden, apierr.CodeUnknownTenant, "the tenant is unknown to this deployment"))
@@ -742,7 +746,7 @@ func (h *Handler) handlePutRules(w http.ResponseWriter, r *http.Request) {
 
 // validRules refuses every value the device's bundle validation would refuse, and the values the
 // database refuses that can be checked here, naming the rule and the field. Labels are checked
-// against ref.data_class by the database.
+// against ref.data_class and the tenant's custom labels by the database.
 func validRules(in []ruleJSON) ([]store.EnforcementRule, error) {
 	if len(in) > store.MaxEnforcementRules {
 		return nil, apierr.Detailed(http.StatusBadRequest, apierr.CodeInvalidRequest,

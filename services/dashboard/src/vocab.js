@@ -14,6 +14,9 @@ export const QUERY_VERSION = '1';
 /** The name ops.tool_display_name gives a fingerprint the tool catalogue does not list. */
 export const UNRECOGNISED_TOOL = 'Unrecognised tool';
 
+/** How a destination no catalogued app claims is fingerprinted, `host:<host>`; it is named by its host. */
+export const SITE_PREFIX = 'host:';
+
 /** The collection modes as the console names them, wherever a mode is shown. */
 export const COLLECTION_MODE_LABELS = Object.freeze({ m0: 'M0 · metadata', m1: 'M1 · digest & labels', m2: 'M2 · excerpt', m3: 'M3 · prompt' });
 
@@ -47,7 +50,7 @@ export const ADMIN_TEAMS_ENDPOINT = '/admin/v1/teams';
  * The admin API behind Settings → Settings. control-api's, admin-only and audited, like Deployment:
  * collection mode and its narrower per-tool overrides, event and content retention, tool sanction
  * decisions, the content search tier, the endpoint collector switches, TLS inspection, the
- * enforcement rules and the interception routes' kill switches. These are the only writes this client makes, besides Deployment's. A tool's endpoint switches are at
+ * enforcement rules, the custom labels they may name and the interception routes' kill switches. These are the only writes this client makes, besides Deployment's. A tool's endpoint switches are at
  * /tools/<tool_key> under the endpoint settings; a route's kill switch is at /<route> under the kill
  * switch endpoint.
  */
@@ -60,6 +63,7 @@ export const ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT = '/admin/v1/settings/tools';
 export const ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT = '/admin/v1/settings/endpoint';
 export const ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT = '/admin/v1/settings/tls-inspection';
 export const ADMIN_SETTINGS_RULES_ENDPOINT = '/admin/v1/settings/rules';
+export const ADMIN_SETTINGS_CUSTOM_LABELS_ENDPOINT = '/admin/v1/settings/custom-labels';
 export const ADMIN_SETTINGS_KILL_SWITCH_ENDPOINT = '/admin/v1/settings/kill-switch';
 
 /**

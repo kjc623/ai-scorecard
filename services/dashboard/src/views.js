@@ -10,7 +10,7 @@
 
 import { emptyStateFor, measureOf, vocabOf } from './states.js';
 import { formatBytes, formatCount, formatInstant, formatLabels, formatPercent, formatScore, plural } from './format.js';
-import { SOURCES, TEMPLATES, UNRECOGNISED_TOOL, COLLECTION_MODE_LABELS, WINDOWS } from './vocab.js';
+import { SOURCES, TEMPLATES, UNRECOGNISED_TOOL, SITE_PREFIX, COLLECTION_MODE_LABELS, WINDOWS } from './vocab.js';
 import { EXPLORE_DATASETS, encodeExploreHash } from './explore-model.js';
 
 /** A total over a set of cells. A set in which no cell carries the measure has no total. */
@@ -254,13 +254,17 @@ function mergeGroups(groups, key, first) {
 }
 
 const isUnrecognised = (group) => toolName(group.first) === UNRECOGNISED_TOOL;
+/** A destination no catalogued app claims, named by its host. */
+const isSite = (group) => String(group.key).startsWith(SITE_PREFIX);
+const NOT_CATALOGUED = 'Not in the tool catalogue';
 
 /**
  * The tools in use, by submissions over the window, each a link to its own screen. Rank is a
  * volume and never a sanction signal: the sanction is its own chip, in its own colour. Two or
  * more fingerprints the catalogue does not name are one line: each is a tool only by its hash, and
  * a run of identical "Unrecognised tool" lines says nothing a reader can act on; the fingerprints
- * are listed on their own under the Tools ranking.
+ * are listed on their own under the Tools ranking. A site the catalogue does not name is a line of
+ * its own, named by its host and marked as not catalogued.
  */
 export function rankTools(state, { title = 'Tools in use', href = null, moreLabel = 'All tools', limit = null, link = toolHref, emptyText = 'No tool was in use in this window.' } = {}) {
   const groups = foldCells(state, 'tool');
@@ -281,8 +285,9 @@ export function rankTools(state, { title = 'Tools in use', href = null, moreLabe
       label: name,
       mono: name === group.key,
       title: folded ? 'Tools the shared catalogue does not name, together' : `Tool fingerprint ${group.key}`,
-      sublabel: folded ? `${plural(group.count, 'fingerprint', 'fingerprints')} the catalogue does not name` : name === UNRECOGNISED_TOOL ? group.key : null,
-      subMono: !folded,
+      sublabel: folded ? `${plural(group.count, 'fingerprint', 'fingerprints')} the catalogue does not name`
+        : isSite(group) ? NOT_CATALOGUED : name === UNRECOGNISED_TOOL ? group.key : null,
+      subMono: !folded && !isSite(group),
       chip: sanctionChip(group.first.sanctioned_state ?? 'unknown'),
       value: submissions,
       share: shareOf(submissions, total),
@@ -309,15 +314,17 @@ export function rankTools(state, { title = 'Tools in use', href = null, moreLabe
 }
 
 /**
- * The fingerprints the catalogue does not name, one line each with its figures, so a tool the
- * ranking folds is still reachable. Nothing when there are fewer than two, since the ranking
- * then lists the one by itself.
+ * The sites and fingerprints the catalogue does not name, one line each with its figures: what to
+ * review for the catalogue, and the way to a tool the ranking folds. Nothing when the only one is a
+ * single fingerprint, which the ranking already lists by itself.
  */
-export function unrecognisedTools(state, { link = toolHref } = {}) {
-  const groups = foldCells(state, 'tool').filter(isUnrecognised).sort(byMeasure('submissions'));
-  if (groups.length < 2) return null;
+export function uncataloguedTools(state, { link = toolHref } = {}) {
+  const groups = foldCells(state, 'tool').filter((group) => isSite(group) || isUnrecognised(group)).sort(byMeasure('submissions'));
+  if (!groups.some(isSite) && groups.length < 2) return null;
   const rows = groups.map((group) => Object.freeze({
-    fingerprint_cell: Object.freeze({ primary: group.key, mono: true, title: `Tool fingerprint ${group.key}` }),
+    fingerprint_cell: isSite(group)
+      ? Object.freeze({ primary: toolName(group.first), mono: false, title: `${NOT_CATALOGUED}: ${group.key}` })
+      : Object.freeze({ primary: group.key, mono: true, title: `Tool fingerprint ${group.key}` }),
     submissions: foldedMeasure(group, 'submissions').value ?? null,
     users: foldedMeasure(group, 'users').value ?? null,
     bytes_total: foldedMeasure(group, 'bytes_total').value ?? null,
@@ -326,15 +333,15 @@ export function unrecognisedTools(state, { link = toolHref } = {}) {
   }));
   return Object.freeze({
     ...tableFrom({ data: rows }, {
-      title: 'Unrecognised tools',
+      title: NOT_CATALOGUED,
       columns: [
-        column('fingerprint_cell', 'Fingerprint', 'stack'),
+        column('fingerprint_cell', 'Site or fingerprint', 'stack'),
         column('submissions', 'Prompts', 'measure'),
         column('users', 'People', 'measure'),
         column('bytes_total', 'Data sent', 'measure-bytes'),
         column('last_active', 'Last active', 'instant'),
       ],
-      emptyText: 'Every tool in this window is named.',
+      emptyText: 'Every tool in this window is in the catalogue.',
     }),
     rowHref: 'href',
     breakdowns: false,
@@ -748,6 +755,7 @@ export function insightsView({ usage, previous = null, classes = null }, { prese
     'Allowed counts the sensitive prompts the matching rule only logged, and those sent by a route that cannot block.',
     'Sensitive prompts are counted against the rules as they stand now, so a rule edited today can change the figures for recent days.',
     'A prompt with two labels a rule names is counted under each in What was exposed.',
+    'What was exposed lists the built-in data classes: a prompt a rule matched on a custom label counts in the figures above it, but has no row there.',
   ];
   const prompts = sumMeasure(usage, 'submissions');
   const sensitive = sumMeasure(usage, 'sensitive');
@@ -808,7 +816,7 @@ export function toolsView(state, { link = toolHref, preset = null } = {}) {
     blocks: Object.freeze([
       rankTools(state, { title: 'Tools by prompts', link: linkTo, emptyText: emptyLine(state, 'No tool was in use in this window.') }),
     ]),
-    tables: Object.freeze([unrecognisedTools(state, { link: linkTo })].filter(Boolean)),
+    tables: Object.freeze([uncataloguedTools(state, { link: linkTo })].filter(Boolean)),
     // A window with no cell has no shape to draw: the ranking's empty line says why.
     series: Object.freeze(state.data.length > 0 ? [seriesFrom(state, { measure: 'submissions', title: seriesTitle(state) })] : []),
     ...shared(state, [
@@ -850,7 +858,8 @@ export function toolView({ usage, people = null, findings = null, names = {} }, 
   }
   if (findings?.isRefusal) notes.push(`Findings could not be read: ${findings.error?.message ?? findings.resultState}.`);
   return screen('tool', name, null, 'mart.v_tool_usage', {
-    subtitle: name === String(tool) ? 'A tool known only by its fingerprint.' : `Fingerprint ${tool}`,
+    subtitle: String(tool).startsWith(SITE_PREFIX) ? 'A site the tool catalogue does not name.'
+      : name === String(tool) ? 'A tool known only by its fingerprint.' : `Fingerprint ${tool}`,
     badges: Object.freeze(sanction ? [sanctionChip(sanction)] : []),
     actions: Object.freeze([
       Object.freeze({ label: 'Prompts and events', href: `${exploreHref}#events?tool=${encodeURIComponent(String(tool))}` }),
@@ -1009,7 +1018,7 @@ function rankTeams(state, { teams = null, link = teamHref, emptyText }) {
   }
   return Object.freeze({
     kind: 'ranking',
-    title: 'Teams by prompts',
+    title: 'Teams by usage',
     href: null,
     emptyText,
     itemLabel: 'Team',

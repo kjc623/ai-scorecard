@@ -265,7 +265,7 @@ test('a bucket-size predicate keeps hour rows out of a day total, and counts arr
   );
 });
 
-test('the tool display name resolves a catalogue entry and an unknown fingerprint', { skip: SKIP }, async () => {
+test('the tool display name resolves a catalogue entry, a site no app claims and an unknown fingerprint', { skip: SKIP }, async () => {
   await scratch(
     null,
     async (client) => {
@@ -275,6 +275,7 @@ test('the tool display name resolves a catalogue entry and an unknown fingerprin
       const { rows: [expected] } = await client.query('SELECT display_name FROM ref.tool_catalogue WHERE tool_fingerprint = $1', [catalogued.tool_fingerprint]);
       assert.equal(await name(catalogued.tool_fingerprint), expected.display_name);
       assert.equal(await name('tls_never_seen_anywhere'), 'Unrecognised tool');
+      assert.equal(await name('host:claude.ai'), 'claude.ai', 'a destination no app claims is shown as its host');
     },
   );
 });

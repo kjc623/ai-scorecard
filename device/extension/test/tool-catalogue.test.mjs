@@ -1,85 +1,92 @@
 /**
- * test/tool-catalogue.test.mjs — the web tools the extension observes are named in the shared
+ * test/tool-catalogue.test.mjs — the web tools the extension observes are named from the shared
  * catalogue, and the names cannot silently drift from what the extension emits.
  *
- * The extension derives a `tf2:` fingerprint from the destination host alone, so one tool yields
- * one fingerprint per host it is reached at. This file enumerates the hosts of each web tool,
- * computes their fingerprints with the extension's own code, and checks every one is seeded in
- * services/database/schema.sql under the expected display name. If the derivation changes
- * or a catalogue row is removed, the computed fingerprint is no longer present and the check fails,
- * so the catalogue cannot drift from the derivation unnoticed.
+ * The extension names a request after the app whose inference domain covers its host, from the app
+ * catalog in the policy bundle. This file runs the extension's own resolver over the catalog seeded
+ * in services/database/schema.sql, and looks the result up in the tool catalogue seeded there: every
+ * web tool's hosts, a host under a tool's domain that no row lists, a domain an installed app shares
+ * with a web service, and a host no app claims. It also checks that every `tf2:` row is the
+ * fingerprint of the host its evidence names, so the prompts stored under it keep their tool.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { webcrypto } from 'node:crypto';
+import { createHash } from 'node:crypto';
 
-import { computeToolFingerprint } from '../src/tool-fingerprint.js';
+import { toolFingerprint } from '../src/tool-fingerprint.js';
+import { bundleCatalog, toolCatalogue } from '../test-support/tool-replay.mjs';
 
-const SCHEMA = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'services', 'database', 'schema.sql');
+const catalog = bundleCatalog();
+const catalogue = toolCatalogue();
 
-/** SHA-256 via Node's WebCrypto: real digests, no chrome.*. */
-const adapter = { crypto: webcrypto };
-
-// The hosts of the web tools the extension observes. A tool's fingerprint comes from its host alone,
-// so each host is one fingerprint, whatever the request to it carries.
-const RECORDS = [
-  ['ChatGPT (web)', 'https://chatgpt.com/backend-api/conversation'],
-  ['ChatGPT (web)', 'https://chat.openai.com/backend-api/conversation'],
-  ['Gemini (web)', 'https://gemini.google.com/'],
-  ['Perplexity (web)', 'https://www.perplexity.ai/'],
-];
-
-/** A request record shaped the way the extension hands one to the fingerprint. */
-function webRequest(url) {
-  return { url, method: 'POST', headers: { 'content-type': 'application/json' }, size_bytes: 0, bytes: null };
+/** The display name the dashboard shows for a request to `url`, or null when nothing names it. */
+function named(url, apps = catalog) {
+  return catalogue.get(toolFingerprint(apps, url))?.display_name ?? null;
 }
 
-/** fingerprint -> expected display name, computed with the extension's own derivation. */
-async function computedFingerprints() {
-  const out = new Map();
-  for (const [name, url] of RECORDS) {
-    const { fingerprint } = await computeToolFingerprint(adapter, webRequest(url));
-    out.set(fingerprint, name);
-  }
-  return out;
-}
-
-/** The catalogue seed in schema.sql, keyed by fingerprint, with its display name. */
-function parseCatalogue(source) {
-  const start = source.indexOf('INSERT INTO ref.tool_catalogue');
-  assert.notEqual(start, -1, 'the ref.tool_catalogue seed is present in schema.sql');
-  const end = source.indexOf(';', start);
-  assert.notEqual(end, -1, 'the ref.tool_catalogue seed terminates');
-  const rows = new Map();
-  // The fingerprint and display name are always the first two single-quoted columns. The evidence
-  // JSONB holds double quotes but never single quotes, so a bare quoted scan is unambiguous.
-  const re = /\(\s*'([^']+)'\s*,\s*'([^']+)'/g;
-  for (const m of source.slice(start, end).matchAll(re)) rows.set(m[1], m[2]);
-  return rows;
-}
-
-test('every canonical extension fingerprint is catalogued under its display name', async () => {
-  const catalogue = parseCatalogue(readFileSync(SCHEMA, 'utf8'));
-  const computed = await computedFingerprints();
-  assert.equal(computed.size, RECORDS.length, 'one fingerprint per host');
-  for (const [fingerprint, name] of computed) {
-    assert.match(fingerprint, /^tf2:/, 'the extension fingerprint carries the tf2: prefix');
-    assert.equal(catalogue.get(fingerprint), name,
-      `${name} fingerprint ${fingerprint} is not seeded under its display name`);
+test('every web tool is named at each of its hosts, including one no row lists', () => {
+  for (const [name, url] of [
+    ['ChatGPT (web)', 'https://chatgpt.com/backend-api/f/conversation'],
+    ['ChatGPT (web)', 'https://m.chatgpt.com/backend-api/f/conversation'],
+    ['ChatGPT (web)', 'https://any-new-host.chatgpt.com/backend-api/some/new/path'],
+    ['ChatGPT (web)', 'https://chat.openai.com/backend-api/conversation'],
+    ['Gemini (web)', 'https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate'],
+    ['Perplexity (web)', 'https://www.perplexity.ai/rest/sse/perplexity_ask'],
+    ['Perplexity (web)', 'https://perplexity.ai/rest/sse/perplexity_ask'],
+  ]) {
+    assert.equal(named(url), name, url);
   }
 });
 
-test('removing any one catalogue row leaves that fingerprint unnamed', async () => {
-  const source = readFileSync(SCHEMA, 'utf8');
-  const computed = await computedFingerprints();
-  for (const [fingerprint, name] of computed) {
-    const reduced = parseCatalogue(source);
-    reduced.delete(fingerprint);
-    assert.equal(reduced.get(fingerprint), undefined,
-      `removing the ${name} row ${fingerprint} must leave it unnamed`);
+test('a web tool is named by its domain: without it, a host the catalogue does not list is unnamed', () => {
+  const without = catalog.map((app) => app.app_key !== 'chatgpt_web' ? app
+    : { ...app, signals: app.signals.filter((s) => s.value !== '.chatgpt.com').concat({ platform: 'any', kind: 'inference_domain', value: 'chatgpt.com' }) });
+  assert.equal(named('https://chatgpt.com/', without), 'ChatGPT (web)', 'the exact host still names it');
+  assert.equal(toolFingerprint(without, 'https://m.chatgpt.com/backend-api/f/conversation'), 'host:m.chatgpt.com');
+  assert.equal(named('https://m.chatgpt.com/backend-api/f/conversation', without), null, 'a host under the domain is not ChatGPT without the domain');
+});
+
+test('a browser request is named after the web service, never an installed app that shares its domain', () => {
+  assert.equal(toolFingerprint(catalog, 'https://chatgpt.com/backend-api/f/conversation'), 'app:chatgpt_web', 'ChatGPT Desktop also lists chatgpt.com');
+  assert.equal(toolFingerprint(catalog, 'https://api.anthropic.com/v1/messages'), 'app:anthropic_api', 'Claude Code also lists api.anthropic.com');
+  assert.equal(toolFingerprint(catalog, 'https://api.perplexity.ai/chat/completions'), 'app:perplexity_api', 'an exact host beats a domain');
+  assert.equal(toolFingerprint(catalog, 'https://claude.ai/api/organizations/o/chat_conversations/c/completion'), 'host:claude.ai',
+    'only Claude Desktop lists claude.ai, and a browser is not Claude Desktop');
+});
+
+test('a host no app claims is named by itself', () => {
+  assert.equal(toolFingerprint(catalog, 'https://chat.example-ai.invalid/v1/chat/completions'), 'host:chat.example-ai.invalid');
+  assert.equal(toolFingerprint(catalog, 'https://Chat.Example-AI.invalid.:8443/v1/chat'), 'host:chat.example-ai.invalid', 'lower-case, without a port or a trailing dot');
+  assert.equal(toolFingerprint([], 'https://chatgpt.com/'), 'host:chatgpt.com', 'with no catalog in force');
+  const long = `${'a'.repeat(60)}.${'b'.repeat(60)}.example-ai.invalid`;
+  assert.equal(toolFingerprint(catalog, `https://${long}/`), 'host:example-ai.invalid', 'a host too long for a fingerprint is named by its registered domain');
+});
+
+test('every tf2 row is the fingerprint of the host its evidence names', () => {
+  const rows = [...catalogue].filter(([fingerprint]) => fingerprint.startsWith('tf2:'));
+  assert.ok(rows.some(([, row]) => row.evidence.host === 'm.chatgpt.com'), 'the prompts stored under m.chatgpt.com are named');
+  for (const [fingerprint, row] of rows) {
+    assert.equal(row.signal_kind, 'extension', fingerprint);
+    assert.equal(tf2(row.evidence.host), fingerprint, `${row.display_name} at ${row.evidence.host}`);
   }
 });
+
+/** "tf2:" + base32(sha256(canonical({v: 2, host}))): the fingerprint of a prompt stored by its host. */
+function tf2(host) {
+  const digest = createHash('sha256').update(JSON.stringify({ host, v: 2 })).digest();
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz234567';
+  let out = '';
+  let acc = 0;
+  let bits = 0;
+  for (const byte of digest) {
+    acc = (acc << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      out += alphabet[(acc >> bits) & 31];
+    }
+  }
+  if (bits > 0) out += alphabet[(acc << (5 - bits)) & 31];
+  return `tf2:${out}`;
+}

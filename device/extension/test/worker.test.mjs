@@ -73,6 +73,22 @@ test('a tool whose own mode is M0 is emitted without content, even on the body l
   assert.equal(obs.content_digest, undefined, 'not hashed either');
 });
 
+test('a web tool is named after its app at any host under its domain, and its mode follows it there', async () => {
+  const catalog = [
+    { app_key: 'example_desktop', category: 'chat_assistant', signals: [
+      { platform: 'any', kind: 'inference_domain', value: '.example-ai.invalid' },
+      { platform: 'windows', kind: 'windows_exe', value: 'example.exe' },
+    ] },
+    { app_key: 'example_web', category: 'chat_assistant', signals: [{ platform: 'any', kind: 'inference_domain', value: '.example-ai.invalid' }] },
+  ];
+  const h = await started({ bundle: { version: 'b1', tenant_default_mode: 'm1', tool_modes: { 'app:example_web': 'm0' }, catalog } });
+  await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
+  await settle();
+  const obs = h.core.lastObservation();
+  assert.equal(obs.tool_fingerprint, 'app:example_web', 'a browser request is the web tool, never the installed app that shares its domain');
+  assert.equal(obs.has_content, false, 'the tool\'s own mode applies at a host its catalog entry never listed');
+});
+
 test('with population or device scopes in the bundle the mode is capture-core\'s answer to mode_query', async () => {
   for (const [answer, reads] of [
     ['m0', false],
@@ -86,7 +102,7 @@ test('with population or device scopes in the bundle the mode is capture-core\'s
     await settle();
     const query = h.core.received.find((m) => m.type === TYPE.MODE_QUERY);
     assert.ok(query, 'capture-core was asked');
-    assert.match(query.body.tool_fingerprint, /^tf2:/, 'about this tool');
+    assert.equal(query.body.tool_fingerprint, 'host:chat.example-ai.invalid', 'about this tool');
     assert.equal(h.core.lastObservation().has_content, reads, `answer ${answer}`);
   }
 });
@@ -180,7 +196,7 @@ test('a chat submission on the body lane is emitted with content, digest and ide
   assert.equal(Buffer.from(decoded).toString('utf8'), bodyText, 'the decoded content is the payload as sent');
   assert.equal(await h.core.lastComputedDigest(), obs.content_digest, 'and its digest matches content_digest');
   assert.equal(obs.content_is_binary, undefined);
-  assert.ok(obs.tool_fingerprint.startsWith('tf2:'), 'the versioned fingerprint prefix');
+  assert.equal(obs.tool_fingerprint, 'host:chat.example-ai.invalid', 'a destination no catalogued app claims is named by its host');
   assert.equal(obs.route, 'ext.web_request');
   assert.equal(obs.size_bytes, Buffer.byteLength(bodyText));
 });
@@ -499,7 +515,7 @@ test('a WebSocket handshake is captured as identity and volume only, and the fra
   assert.ok(obs, 'the handshake is captured, so tool identity and a session count are obtainable');
   assert.equal(obs.has_content, false);
   assert.equal(obs.content, undefined);
-  assert.match(obs.tool_fingerprint, /^tf2:/);
+  assert.equal(obs.tool_fingerprint, 'host:chat.example-ai.invalid');
   const queued = h.app.queue.size();
   assert.equal(queued, 0);
 });
@@ -681,6 +697,7 @@ test('a weak submission is upgraded when the response contract agrees, on the hi
   const observations = observationFrames(h.core);
   assert.ok(observations.length >= 1, 'the response contract produced an observation the request alone did not');
   assert.equal(observations[observations.length - 1].route, 'ext.page_context', 'the canonical route for this evidence');
+  assert.equal(observations[observations.length - 1].tool_fingerprint, 'host:saas.example-ai.invalid', 'named by its destination, like every other observation');
   const counters = h.app.health.counters.snapshot().counters;
   assert.ok(counters.emitted >= 1);
 });
@@ -920,5 +937,5 @@ test('an automation marker raises the context evidence but is never required', a
   await settle();
   const obs = h.core.lastObservation();
   assert.ok(obs, 'identity and volume are mandatory for mode C and are met without any DOM access');
-  assert.match(obs.tool_fingerprint, /^tf2:/);
+  assert.equal(obs.tool_fingerprint, 'host:agent.example-ai.invalid');
 });

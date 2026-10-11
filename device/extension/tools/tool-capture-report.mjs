@@ -7,12 +7,13 @@
 //
 // A row whose result differs from its fixture's expectation is marked, and the exit code is 1.
 
-import { extensionCatalogue, loadFixtures, replay } from '../test-support/tool-replay.mjs';
+import { bundleCatalog, loadFixtures, replay, toolCatalogue } from '../test-support/tool-replay.mjs';
 
-const catalogue = extensionCatalogue();
+const catalogue = toolCatalogue();
+const catalog = bundleCatalog();
 const rows = [];
 for (const fixture of loadFixtures()) {
-  const got = await replay(fixture, { catalogue });
+  const got = await replay(fixture, { catalogue, catalog });
   const expected = fixture.expect;
   const asExpected = got.events.length === expected.events
     && got.observed === expected.observed

@@ -185,6 +185,9 @@ func (s *SQLStore) Settings(ctx context.Context, tenantID string) (Settings, err
 		if out.DataClasses, err2 = dataClasses(ctx, tx); err2 != nil {
 			return err2
 		}
+		if out.CustomLabels, err2 = customLabels(ctx, tx, tenantID); err2 != nil {
+			return err2
+		}
 		if out.KillSwitches, err2 = killSwitches(ctx, tx, tenantID); err2 != nil {
 			return err2
 		}

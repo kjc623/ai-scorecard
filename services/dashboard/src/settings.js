@@ -3,8 +3,8 @@
 // The page an admin uses to change what the tenant collects and keeps: the collection mode (within
 // the ceiling) with an optional narrower per-tool override, the event and content retention
 // periods, the sanction decision per tool, the content search tier, which endpoint collectors
-// run on the devices, whether devices inspect TLS, the ordered enforcement rules, and the kill
-// switches that stop decryption and enforcement on an interception route. Every read and write goes
+// run on the devices, whether devices inspect TLS, the ordered enforcement rules, the custom labels
+// those rules may name, and the kill switches that stop decryption and enforcement on an interception route. Every read and write goes
 // through the admin api (transport.js), which control-api answers for an admin only and audits with
 // the real actor, the old value and the new value.
 //
@@ -132,6 +132,77 @@ function wire(rule) {
   return out;
 }
 
+/** A custom label's lists, in the order the editor shows them. */
+export const CUSTOM_LABEL_FIELDS = Object.freeze(['words', 'customer_names', 'file_extensions', 'file_names']);
+
+export const MAX_CUSTOM_LABELS = 50;
+export const MAX_CUSTOM_LABEL_TERMS = 200;
+const MAX_LABEL_NAME = 80;
+const MAX_TERM = 100;
+const FILE_EXTENSION = /^[a-z0-9]+(\.[a-z0-9]+)*$/;
+
+/**
+ * The terms a typed list holds: one per line, or for file extensions also separated by commas or
+ * spaces, trimmed, extensions without their leading dot and lower-cased, with repeats dropped
+ * whatever their case.
+ */
+export function parseTerms(field, text) {
+  const raw = String(text ?? '').split(field === 'file_extensions' ? /[\n,\s]+/ : /\n/);
+  const out = [];
+  for (let term of raw) {
+    term = term.trim();
+    if (field === 'file_extensions') term = term.replace(/^\./, '').toLowerCase();
+    if (term !== '' && !out.some((t) => t.toLowerCase() === term.toLowerCase())) out.push(term);
+  }
+  return out;
+}
+
+/**
+ * The code a new label is saved under: custom_ and its name in lower-case letters, digits and "_",
+ * with a number added when another label has it. The code never changes once saved, so a rename
+ * keeps what rules and recorded events name.
+ */
+export function customLabelCode(name, taken = []) {
+  const slug = String(name ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'label';
+  for (let n = 1; ; n++) {
+    const suffix = n === 1 ? '' : `_${n}`;
+    const code = `custom_${slug.slice(0, 56 - suffix.length).replace(/_+$/, '')}${suffix}`;
+    if (!taken.includes(code)) return code;
+  }
+}
+
+/**
+ * Why a custom label cannot be saved as written, or null. `others` is the rest of the list, whose
+ * names it must not repeat.
+ */
+export function customLabelProblem(label, others = []) {
+  const problem = (message) => Object.freeze({ code: 'invalid_custom_label', message });
+  const name = label.display_name.trim();
+  if (name === '' || [...name].length > MAX_LABEL_NAME) return problem(`Give the label a name of at most ${MAX_LABEL_NAME} characters.`);
+  if (others.some((l) => l.display_name.trim().toLowerCase() === name.toLowerCase())) return problem(`Another label is already called ${name}.`);
+  const terms = CUSTOM_LABEL_FIELDS.reduce((n, f) => n + label[f].length, 0);
+  if (terms === 0) return problem('Add at least one word, customer name, file type or file name.');
+  if (terms > MAX_CUSTOM_LABEL_TERMS) return problem(`A label holds at most ${MAX_CUSTOM_LABEL_TERMS} terms; this one has ${terms}.`);
+  for (const term of [...label.words, ...label.customer_names]) {
+    if ([...term].length > MAX_TERM) return problem(`"${term.slice(0, 24)}…" is longer than ${MAX_TERM} characters.`);
+    if (!/[\p{L}\p{N}]/u.test(term)) return problem(`"${term}" needs a letter or a digit.`);
+  }
+  for (const ext of label.file_extensions) {
+    if (ext.length > 16 || !FILE_EXTENSION.test(ext)) return problem(`"${ext}" is not a file type such as pdf or tar.gz.`);
+  }
+  for (const file of label.file_names) {
+    if (/[\/\\[\]]/.test(file) || [...file].length > 255) return problem(`"${file}" must be a file name without / \\ [ or ].`);
+    if (file.replace(/[*?]/g, '') === '') return problem(`"${file}" needs more than wildcards.`);
+  }
+  return null;
+}
+
+const BLANK_LABEL = Object.freeze({
+  label: null, display_name: '',
+  ...Object.fromEntries(CUSTOM_LABEL_FIELDS.map((f) => [f, ''])),
+});
+
 /** The rank of each collection mode, mirrored from the database's ops.mode_rank. */
 const MODE_RANK = Object.freeze({ m0: 0, m1: 1, m2: 2, m3: 3 });
 
@@ -169,6 +240,9 @@ const IDLE = Object.freeze({
   // draft is the list being edited, null while it is the one read; editor is the rule open for
   // editing, at index (null for a new rule).
   rules: Object.freeze({ draft: null, editor: null, pending: null, problem: null }),
+  // editor is the custom label open for editing: its code (null for a new label), its name and
+  // each list as typed. Every save writes the whole list.
+  labels: Object.freeze({ editor: null, pending: null, problem: null }),
   // reasons holds the reason code typed for each route; pending is the route being written.
   killSwitch: Object.freeze({ pending: null, problem: null, reasons: Object.freeze({}) }),
 });
@@ -179,6 +253,7 @@ const onOff = (value) => (value === 'on' ? true : value === 'off' ? false : null
 const NOT_READ = Object.freeze({ code: 'endpoint_not_reported', message: 'The current endpoint settings were not read; reload the page and try again.' });
 const TLS_NOT_READ = Object.freeze({ code: 'tls_inspection_not_reported', message: 'The current TLS inspection setting was not read; reload the page and try again.' });
 const RULES_NOT_READ = Object.freeze({ code: 'rules_not_reported', message: 'The current rules were not read; reload the page and try again.' });
+const LABELS_NOT_READ = Object.freeze({ code: 'custom_labels_not_reported', message: 'The current custom labels were not read; reload the page and try again.' });
 const KILL_SWITCHES_NOT_READ = Object.freeze({ code: 'kill_switches_not_reported', message: 'The current kill switches were not read; reload the page and try again.' });
 const REASON_REQUIRED = Object.freeze({ code: 'invalid_reason_code', message: 'Give a reason code: a lower-case letter, then lower-case letters, digits, "_", "." or "-" (at most 64).' });
 
@@ -508,6 +583,94 @@ export function createSettings({ admin, onChange = () => {} }) {
     return load({ quiet: true });
   }
 
+  // --- Custom labels: each save writes the whole list ------------------------------------------
+
+  function setLabels(patch) {
+    set({ labels: Object.freeze({ ...state.labels, ...patch }) });
+    return state;
+  }
+
+  function labelsEditable() {
+    if (state.status !== 'ready' || state.labels.pending) return false;
+    if (state.data.custom_labels === null) {
+      setLabels({ problem: LABELS_NOT_READ });
+      return false;
+    }
+    return true;
+  }
+
+  /** Open a label for editing by its code, or a new one (null). */
+  function openLabel(code) {
+    if (!labelsEditable()) return state;
+    const list = state.data.custom_labels;
+    if (code === null) {
+      if (list.length >= MAX_CUSTOM_LABELS) return setLabels({ problem: Object.freeze({ code: 'too_many_custom_labels', message: `A tenant holds at most ${MAX_CUSTOM_LABELS} custom labels.` }) });
+      return setLabels({ editor: Object.freeze({ ...BLANK_LABEL, problem: null }), problem: null });
+    }
+    const label = list.find((l) => l.label === code);
+    if (!label) return state;
+    return setLabels({
+      editor: Object.freeze({ label: label.label, display_name: label.display_name,
+        ...Object.fromEntries(CUSTOM_LABEL_FIELDS.map((f) => [f, label[f].join(f === 'file_extensions' ? ', ' : '\n')])), problem: null }),
+      problem: null,
+    });
+  }
+
+  /** A typed field of the open label. Held without a repaint, so the field keeps its focus. */
+  function setLabelDraft(field, value) {
+    const editor = state.labels.editor;
+    if (!editor || !['display_name', ...CUSTOM_LABEL_FIELDS].includes(field)) return;
+    state = Object.freeze({ ...state, labels: Object.freeze({ ...state.labels, editor: Object.freeze({ ...editor, [field]: String(value ?? '') }) }) });
+  }
+
+  function cancelLabel() {
+    if (state.labels.pending) return state;
+    return setLabels({ editor: null, problem: null });
+  }
+
+  /** The list as control-api takes it. */
+  function wireLabels(list) {
+    return list.map((l) => ({ label: l.label, display_name: l.display_name, ...Object.fromEntries(CUSTOM_LABEL_FIELDS.map((f) => [f, [...l[f]]])) }));
+  }
+
+  async function writeLabels(list) {
+    const answer = await admin.setCustomLabels(wireLabels(list));
+    if (answer.state !== 'done') return setLabels({ pending: null, problem: answer.error });
+    setLabels({ editor: null, pending: null, problem: null });
+    return load({ quiet: true });
+  }
+
+  /** Save the open label, if it is valid: the list is written with it added or replaced. */
+  async function saveLabel() {
+    const editor = state.labels.editor;
+    if (!editor || !labelsEditable()) return state;
+    const list = state.data.custom_labels;
+    const others = list.filter((l) => l.label !== editor.label);
+    const label = Object.freeze({
+      label: editor.label ?? customLabelCode(editor.display_name.trim(), list.map((l) => l.label)),
+      display_name: editor.display_name.trim(),
+      ...Object.fromEntries(CUSTOM_LABEL_FIELDS.map((f) => [f, parseTerms(f, editor[f])])),
+    });
+    const problem = customLabelProblem(label, others);
+    if (problem) return setLabels({ editor: Object.freeze({ ...editor, problem }) });
+    setLabels({ pending: 'save', editor: Object.freeze({ ...editor, problem: null }), problem: null });
+    return writeLabels(editor.label === null ? [...list, label] : list.map((l) => (l.label === label.label ? label : l)));
+  }
+
+  /** Delete a label no saved rule names; a label a rule names is refused here, as control-api would. */
+  async function deleteLabel(code) {
+    if (!labelsEditable() || state.labels.editor) return state;
+    const list = state.data.custom_labels;
+    const label = list.find((l) => l.label === code);
+    if (!label) return state;
+    const naming = (state.data.rules ?? []).filter((r) => r.match.labels.includes(code)).map((r) => r.rule_id);
+    if (naming.length > 0) {
+      return setLabels({ problem: Object.freeze({ code: 'custom_label_in_use', message: `Rule ${naming.join(', ')} names ${label.display_name}; take the label out of the rule first.` }) });
+    }
+    setLabels({ pending: code, problem: null });
+    return writeLabels(list.filter((l) => l.label !== code));
+  }
+
   /** One entry point for the page's buttons and controls, named by data-action. */
   function act(dataset = {}) {
     const index = dataset.index === undefined ? null : Number(dataset.index);
@@ -535,9 +698,14 @@ export function createSettings({ admin, onChange = () => {} }) {
       case 'rule-cancel': return Promise.resolve(cancelRule());
       case 'rules-discard': return Promise.resolve(discardRules());
       case 'rules-save': return saveRules();
+      case 'label-add': return Promise.resolve(openLabel(null));
+      case 'label-edit': return Promise.resolve(dataset.label ? openLabel(dataset.label) : state);
+      case 'label-cancel': return Promise.resolve(cancelLabel());
+      case 'label-save': return saveLabel();
+      case 'label-delete': return deleteLabel(dataset.label);
       default: return Promise.resolve(state);
     }
   }
 
-  return Object.freeze({ get state() { return state; }, load, chooseMode, setScopeOverride, setRetentionDraft, saveRetention, setContentSearch, setToolSanction, setEndpointCollector, setEndpointTool, setTLSInspection, setKillSwitchReason, setKillSwitch, setRuleDraft, act });
+  return Object.freeze({ get state() { return state; }, load, chooseMode, setScopeOverride, setRetentionDraft, saveRetention, setContentSearch, setToolSanction, setEndpointCollector, setEndpointTool, setTLSInspection, setKillSwitchReason, setKillSwitch, setRuleDraft, setLabelDraft, act });
 }

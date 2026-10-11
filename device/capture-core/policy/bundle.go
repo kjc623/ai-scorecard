@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"sort"
@@ -222,6 +223,69 @@ type RuleMatch struct {
 	Routes     []protocol.Route `json:"routes"`
 }
 
+var customLabelPattern = regexp.MustCompile(`^custom_[a-z0-9_]{1,56}$`)
+
+// CustomLabel is one of the tenant's own labels. A prompt is labelled with Label when its text holds
+// one of the words or customer names as whole words in any case (the classifier matches them, over
+// the prompt and the documents attached to it), or a file attached to it has one of the extensions
+// or a name matching one of the file name patterns, in any case, with * and ? as wildcards.
+type CustomLabel struct {
+	Label          string   `json:"label"`
+	Words          []string `json:"words"`
+	CustomerNames  []string `json:"customer_names"`
+	FileExtensions []string `json:"file_extensions"`
+	FileNames      []string `json:"file_names"`
+}
+
+// ClassifyTerms is the custom labels' words and customer names as the classifier takes them, or nil
+// when no label has any.
+func (b *Bundle) ClassifyTerms() []protocol.CustomLabelTerms {
+	if b == nil {
+		return nil
+	}
+	var out []protocol.CustomLabelTerms
+	for _, l := range b.CustomLabels {
+		terms := append(append([]string{}, l.Words...), l.CustomerNames...)
+		if len(terms) > 0 {
+			out = append(out, protocol.CustomLabelTerms{Label: l.Label, Terms: terms})
+		}
+	}
+	return out
+}
+
+// FileLabels returns, in bundle order and once each, the custom labels a file named one of names
+// carries: by its extension, or by a file name pattern that matches the whole name.
+func (b *Bundle) FileLabels(names []string) []string {
+	if b == nil || len(names) == 0 {
+		return nil
+	}
+	var out []string
+	for _, l := range b.CustomLabels {
+		if slices.ContainsFunc(names, func(n string) bool { return l.matchesFile(n) }) {
+			out = append(out, l.Label)
+		}
+	}
+	return out
+}
+
+func (l CustomLabel) matchesFile(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if n == "" {
+		return false
+	}
+	for _, ext := range l.FileExtensions {
+		if strings.HasSuffix(n, "."+strings.ToLower(ext)) {
+			return true
+		}
+	}
+	for _, p := range l.FileNames {
+		if ok, err := path.Match(strings.ToLower(p), n); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
+
 // CatalogCategories is the closed set of app catalog categories.
 var CatalogCategories = []string{"chat_assistant", "coding_agent", "ide_assistant", "ide", "local_runtime", "inference_api", "ai_feature"}
 
@@ -269,8 +333,8 @@ type CatalogSignal struct {
 
 // Bundle is the device-side view of the signed policy bundle: the collection mode per scope,
 // the interception allowlist, the loopback port map, kill switches, device retention, the
-// CLI shim configuration, the endpoint collectors, the enforcement rules, the sanctioned
-// tools and the app catalog.
+// CLI shim configuration, the endpoint collectors, the enforcement rules, the custom labels,
+// the sanctioned tools and the app catalog.
 //
 // Unknown fields are rejected rather than ignored (see Open): a device that does not
 // understand a policy field must not enforce a policy it has only partly read, and the
@@ -308,6 +372,9 @@ type Bundle struct {
 
 	// Rules is the enforcement rules in order.
 	Rules []Rule `json:"rules"`
+	// CustomLabels is the tenant's own labels, which a rule's labels list may name beside the
+	// classifier's classes.
+	CustomLabels []CustomLabel `json:"custom_labels,omitempty"`
 	// SanctionedTools is the tool fingerprints the tenant has sanctioned.
 	SanctionedTools []string `json:"sanctioned_tools"`
 
@@ -671,6 +738,9 @@ func (b *Bundle) Validate() error {
 	if err := validRules(b.Rules); err != nil {
 		return err
 	}
+	if err := validCustomLabels(b.CustomLabels); err != nil {
+		return err
+	}
 	if err := validCatalog(b.Catalog); err != nil {
 		return err
 	}
@@ -728,6 +798,32 @@ func validRules(rules []Rule) error {
 		for _, route := range r.Match.Routes {
 			if !route.Valid() {
 				return fmt.Errorf("policy: rule %s matches route %q outside the closed vocabulary", r.RuleID, route)
+			}
+		}
+	}
+	return nil
+}
+
+// validCustomLabels refuses a custom label the device could not apply as written: a label outside
+// the pattern or listed twice, an empty term, or a file name pattern path.Match cannot read.
+func validCustomLabels(labels []CustomLabel) error {
+	seen := make(map[string]bool, len(labels))
+	for _, l := range labels {
+		if !customLabelPattern.MatchString(l.Label) {
+			return fmt.Errorf("policy: custom label %q is outside the pattern %s", l.Label, customLabelPattern)
+		}
+		if seen[l.Label] {
+			return fmt.Errorf("policy: custom label %q is listed twice", l.Label)
+		}
+		seen[l.Label] = true
+		for _, list := range [][]string{l.Words, l.CustomerNames, l.FileExtensions, l.FileNames} {
+			if slices.ContainsFunc(list, func(t string) bool { return strings.TrimSpace(t) == "" }) {
+				return fmt.Errorf("policy: custom label %s has an empty term", l.Label)
+			}
+		}
+		for _, p := range l.FileNames {
+			if _, err := path.Match(p, ""); err != nil {
+				return fmt.Errorf("policy: custom label %s has a file name pattern path.Match cannot read", l.Label)
 			}
 		}
 	}

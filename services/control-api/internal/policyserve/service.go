@@ -2,8 +2,8 @@
 //
 // A tenant's bundle is composed from what the database says about it: the tenant's ceiling as the
 // default collection mode, its TLS inspection setting and the tool catalogue's TLS hosts as the
-// interception scope, the tenant's endpoint collector settings, its enforcement rules, the tools
-// it has sanctioned, the app catalog, its tripped kill switches and the local model servers it
+// interception scope, the tenant's endpoint collector settings, its enforcement rules and custom
+// labels, the tools it has sanctioned, the app catalog, its tripped kill switches and the local model servers it
 // captures. It is signed with the vendor's Ed25519 policy key in the envelope the agent
 // verifies, and stored with the exact signed bytes. A new version is minted only when the
 // composition or the signing key differs from the latest stored bundle; otherwise the stored bytes
@@ -323,6 +323,7 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 		},
 		Endpoint:        composeEndpoint(in.Endpoint),
 		Rules:           composeRules(in.Rules, in.ToolFingerprints),
+		CustomLabels:    composeCustomLabels(in.CustomLabels),
 		SanctionedTools: sanctioned(in.SanctionedTools),
 		Catalog:         composeCatalog(in.Catalog),
 		KillSwitches:    composeKillSwitches(in.KillSwitches),
@@ -444,6 +445,19 @@ func composeRules(rules []store.EnforcementRule, fingerprints map[string][]strin
 			Match: RuleMatch{Labels: list(m.Labels), Tools: tools, Categories: list(m.Categories),
 				Sanction: list(m.Sanction), Routes: list(m.Routes)}})
 	}
+	return out
+}
+
+// composeCustomLabels is the bundle's custom labels, sorted by label so a rename alone does not
+// change the bundle: the device needs what marks a prompt, not the name people see.
+func composeCustomLabels(labels []store.CustomLabel) []CustomLabel {
+	list := func(v []string) []string { return append([]string{}, v...) }
+	out := make([]CustomLabel, 0, len(labels))
+	for _, l := range labels {
+		out = append(out, CustomLabel{Label: l.Label, Words: list(l.Words), CustomerNames: list(l.CustomerNames),
+			FileExtensions: list(l.FileExtensions), FileNames: list(l.FileNames)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Label < out[j].Label })
 	return out
 }
 

@@ -92,6 +92,7 @@ var routes = []struct{ method, path, body string }{
 	{"PUT", "/admin/v1/settings/tls-inspection", `{"enabled":true}`},
 	{"GET", "/admin/v1/settings/rules", ""},
 	{"PUT", "/admin/v1/settings/rules", `{"rules":[]}`},
+	{"PUT", "/admin/v1/settings/custom-labels", `{"custom_labels":[]}`},
 	{"PUT", "/admin/v1/settings/kill-switch/proxy.tls", `{"on":true,"reason_code":"app_breakage"}`},
 }
 

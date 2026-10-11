@@ -535,6 +535,67 @@ func TestComposeKillSwitches(t *testing.T) {
 	}
 }
 
+// TestComposeCustomLabels: a tenant without custom labels gets no custom_labels member, so a device
+// that predates them keeps accepting its bundle; labels are served sorted by label without their
+// display names, so a rename alone mints nothing, and a changed term mints a new version.
+func TestComposeCustomLabels(t *testing.T) {
+	r := newRig(t, nil)
+	ctx := context.Background()
+	audit := store.AuditEntry{TenantID: tenantA, ActorType: store.ActorUser, ActorID: "admin@contoso.example",
+		Action: "tenant.custom_labels.set", ObjectType: "tenant", ObjectID: tenantA}
+
+	v1, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := payloadOf(t, v1.Envelope); p["custom_labels"] != nil {
+		t.Fatalf("custom_labels without any = %v, want none", p["custom_labels"])
+	}
+
+	falcon := store.CustomLabel{Label: "custom_project_falcon", DisplayName: "Project Falcon", Words: []string{"falcon"},
+		CustomerNames: []string{"Acme Corp"}}
+	cad := store.CustomLabel{Label: "custom_cad", DisplayName: "Z drawings", FileExtensions: []string{"dwg"}}
+	if err := r.store.ReplaceCustomLabels(ctx, tenantA, []store.CustomLabel{falcon, cad}, audit); err != nil {
+		t.Fatal(err)
+	}
+	r.now = r.now.Add(time.Minute)
+	v2, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newer(v2.Version, v1.Version) {
+		t.Fatalf("new labels: version %s, want newer than %s", v2.Version, v1.Version)
+	}
+	want := canonical(t, `[
+	  {"label":"custom_cad","words":[],"customer_names":[],"file_extensions":["dwg"],"file_names":[]},
+	  {"label":"custom_project_falcon","words":["falcon"],"customer_names":["Acme Corp"],"file_extensions":[],"file_names":[]}]`)
+	if got := sectionOf(t, v2.Envelope, "custom_labels"); got != want {
+		t.Fatalf("custom_labels:\n got %s\nwant %s", got, want)
+	}
+
+	falcon.DisplayName = "Falcon"
+	if err := r.store.ReplaceCustomLabels(ctx, tenantA, []store.CustomLabel{falcon, cad}, audit); err != nil {
+		t.Fatal(err)
+	}
+	r.now = r.now.Add(time.Minute)
+	if v3, err := r.svc.Current(ctx, tenantA); err != nil || v3.Version != v2.Version {
+		t.Fatalf("a rename: version %s (%v), want %s unchanged", v3.Version, err, v2.Version)
+	}
+
+	falcon.Words = []string{"falcon", "peregrine"}
+	if err := r.store.ReplaceCustomLabels(ctx, tenantA, []store.CustomLabel{falcon, cad}, audit); err != nil {
+		t.Fatal(err)
+	}
+	r.now = r.now.Add(time.Minute)
+	v4, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newer(v4.Version, v2.Version) || !strings.Contains(sectionOf(t, v4.Envelope, "custom_labels"), `"peregrine"`) {
+		t.Fatalf("a new word: version %s after %s, custom_labels %s", v4.Version, v2.Version, sectionOf(t, v4.Envelope, "custom_labels"))
+	}
+}
+
 // TestComposeCatalog: a deployment without a catalog serves an empty list, named in the payload;
 // the catalog is served sorted by app key and each app's signals by platform, kind and value,
 // whatever order the store read it in, so re-reading it in another order mints nothing, and a
@@ -919,9 +980,16 @@ func TestServedBundleVerifiesWithTheDevicesVerifier(t *testing.T) {
 	if err := r.store.SetTLSInspection(context.Background(), tenantA, true, audit); err != nil {
 		t.Fatal(err)
 	}
-	// Rules using every field and match list, and two sanctioned tools.
+	// A custom label with every list, and rules using every field and match list, one naming the
+	// custom label, and two sanctioned tools.
+	if err := r.store.ReplaceCustomLabels(context.Background(), tenantA, []store.CustomLabel{
+		{Label: "custom_project_falcon", DisplayName: "Project Falcon", Words: []string{"falcon"}, CustomerNames: []string{"Acme Corp"},
+			FileExtensions: []string{"dwg"}, FileNames: []string{"falcon-*.xlsx"}},
+	}, audit); err != nil {
+		t.Fatal(err)
+	}
 	if err := r.store.ReplaceEnforcementRules(context.Background(), tenantA, []store.EnforcementRule{
-		{RuleID: "block_credentials", Action: "block", Match: store.RuleMatch{Labels: []string{"credential"}, Tools: []string{"cursor"},
+		{RuleID: "block_credentials", Action: "block", Match: store.RuleMatch{Labels: []string{"credential", "custom_project_falcon"}, Tools: []string{"cursor"},
 			Categories: []string{"ide"}, Sanction: []string{"unsanctioned"}, Routes: []string{"proxy.tls", "tool.hook"}},
 			Message: "Remove the credential and try again.", Link: "https://intranet.example/ai"},
 		{RuleID: "allow.rest", Action: "allow"},
@@ -1014,7 +1082,7 @@ func main() {
 		return string(raw)
 	}
 	_, killed := b.KillSwitchFor("proxy.loopback")
-	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, b.Interception.Enabled, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Interception.PacListen, b.Intercepts("api.openai.com", 443), sorted(b.Endpoint), sorted(b.Rules), sorted(b.SanctionedTools), sorted(b.Catalog), b.AppsByPort(11434), b.Category("cursor"), sorted(b.KillSwitches), killed, sorted(b.Loopback))
+	fmt.Println("OK", res.Outcome, b.Version, b.TenantDefault, b.Interception.Enabled, len(b.Interception.SeedHosts), b.CLIShim.ProxyAddr, b.Interception.PacListen, b.Intercepts("api.openai.com", 443), sorted(b.Endpoint), sorted(b.Rules), sorted(b.SanctionedTools), sorted(b.Catalog), b.AppsByPort(11434), b.Category("cursor"), sorted(b.KillSwitches), killed, sorted(b.Loopback), sorted(b.CustomLabels), b.FileLabels([]string{"Falcon-Q3.xlsx"}))
 }
 `
 	for name, body := range map[string]string{"go.mod": gomod, "main.go": program} {
@@ -1038,10 +1106,11 @@ func main() {
 	want := "OK accepted " + resp.BundleVersion + " m3 true 3 " + policyserve.DefaultProxyListen + " " + policyserve.PACListen + " true " + endpointOf(t, resp.SignedBundle) +
 		" " + sectionOf(t, resp.SignedBundle, "rules") + " " + sectionOf(t, resp.SignedBundle, "sanctioned_tools") +
 		" " + sectionOf(t, resp.SignedBundle, "catalog") + " [ollama] ide " + sectionOf(t, resp.SignedBundle, "kill_switches") + " true " +
-		sectionOf(t, resp.SignedBundle, "loopback")
+		sectionOf(t, resp.SignedBundle, "loopback") + " " + sectionOf(t, resp.SignedBundle, "custom_labels") + " [custom_project_falcon]"
 	if !strings.Contains(want, `"link":"https://intranet.example/ai"`) || !strings.Contains(want, `"routes":["proxy.tls","tool.hook"]`) || !strings.Contains(want, `["app:claude_code","app:cursor","tls_9230903190dcf0dc"]`) ||
 		!strings.Contains(want, `{"app_key":"continue","category":"ide_assistant","signals":[]}`) || !strings.Contains(want, `"value":"%USERPROFILE%\\.ollama\\models"`) ||
-		!strings.Contains(want, `"tool_fingerprint":"app:ollama"`) || !strings.Contains(want, `"cool_down_seconds":300`) {
+		!strings.Contains(want, `"tool_fingerprint":"app:ollama"`) || !strings.Contains(want, `"cool_down_seconds":300`) ||
+		!strings.Contains(want, `[{"customer_names":["Acme Corp"],"file_extensions":["dwg"],"file_names":["falcon-*.xlsx"],"label":"custom_project_falcon","words":["falcon"]}]`) {
 		t.Fatalf("the served bundle does not carry the rules, sanctioned tools and catalog under test: %s", want)
 	}
 	if got := strings.TrimSpace(string(out)); !strings.HasSuffix(got, want) {

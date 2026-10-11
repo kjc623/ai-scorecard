@@ -11,6 +11,7 @@ import { COLLECTION_MODE_LABELS } from './vocab.js';
 import {
   COLLECTION_MODES, SANCTION_STATES, ENDPOINT_COLLECTORS, ENDPOINT_TOOLS, effectiveMode, modeIncreaseNeedsConfirmation, searchTierAllowed,
   RULE_ACTIONS, RULE_CATEGORIES, RULE_SANCTIONS, RULE_ROUTES, RULE_MATCH_FIELDS, MAX_RULES, MAX_RULE_MESSAGE, KILL_SWITCH_ROUTES,
+  CUSTOM_LABEL_FIELDS, MAX_CUSTOM_LABELS,
 } from './settings.js';
 
 const MODE_LABELS = COLLECTION_MODE_LABELS;
@@ -301,7 +302,8 @@ const ROUTE_LABELS = Object.freeze(Object.fromEntries(RULE_ROUTES.map((r) => [r.
 /** The options each condition picker offers, as [value, label]: the known set, plus any value a rule already holds. */
 function matchOptions(field, data, current) {
   const known = {
-    labels: () => (data.data_classes ?? []).map((c) => [c, c]),
+    labels: () => (data.data_classes ?? []).map((c) => [c, c])
+      .concat((data.custom_labels ?? []).map((l) => [l.label, l.display_name])),
     tools: () => data.tools.map((t) => [t.tool_key, t.display_name ?? t.tool_key]),
     categories: () => {
       const present = data.app_categories ?? [];
@@ -320,6 +322,7 @@ function matchValueLabel(field, value, data) {
   if (field === 'tools') return data.tools.find((t) => t.tool_key === value)?.display_name ?? value;
   if (field === 'categories') return CATEGORY_LABELS[value] ?? value;
   if (field === 'routes') return ROUTE_LABELS[value] ?? value;
+  if (field === 'labels') return (data.custom_labels ?? []).find((l) => l.label === value)?.display_name ?? value;
   return value;
 }
 
@@ -339,7 +342,7 @@ function stRuleEditor(state) {
     const current = rule.match[f];
     const options = matchOptions(f, data, current);
     const items = options.length === 0
-      ? `<span class="v-absent">${(f === 'labels' && data.data_classes === null) || (f === 'categories' && data.app_categories === null) ? 'not reported' : 'none known yet'}</span>`
+      ? `<span class="v-absent">${(f === 'labels' && data.data_classes === null && data.custom_labels === null) || (f === 'categories' && data.app_categories === null) ? 'not reported' : 'none known yet'}</span>`
       : `<div class="seg dp-seg" style="flex-wrap:wrap;border-radius:14px" role="group" aria-label="${escapeHtml(MATCH_TITLES[f])}">`
         + options.map(([value, label]) => `<button type="button" class="seg-item" aria-pressed="${current.includes(value)}" data-action="rule-match" data-field="${f}" data-value="${escapeHtml(value)}">${escapeHtml(label)}</button>`).join('')
         + '</div>';
@@ -360,6 +363,70 @@ function stRuleEditor(state) {
     + '</div>'
     + stProblem(problem, 'Not kept.')
     + '</div>';
+}
+
+const LABEL_FIELD_TITLES = Object.freeze({
+  words: 'Words', customer_names: 'Customer names', file_extensions: 'File types', file_names: 'File names',
+});
+const LABEL_FIELD_HINTS = Object.freeze({
+  words: 'One word or phrase per line. Matched as whole words, whatever their case.',
+  customer_names: 'One name per line. Matched as whole words, whatever their case.',
+  file_extensions: 'Separated by commas, e.g. pdf, dwg, tar.gz.',
+  file_names: 'One per line; * stands for any characters and ? for one, e.g. Q3 forecast*.xlsx.',
+});
+
+function stLabelEditor(state) {
+  const editor = state.labels.editor;
+  const busy = Boolean(state.labels.pending);
+  const off = busy ? ' disabled' : '';
+  const lists = CUSTOM_LABEL_FIELDS.map((f) => `<label class="dp-label" for="st-label-${f}">${escapeHtml(LABEL_FIELD_TITLES[f])}</label>`
+    + `<textarea class="dp-input" id="st-label-${f}" data-label-draft="${f}" rows="${f === 'file_extensions' ? 1 : 3}" spellcheck="false"${off}>${escapeHtml(editor[f])}</textarea>`
+    + `<span class="dp-sub">${escapeHtml(LABEL_FIELD_HINTS[f])}</span>`).join('');
+  return `<div class="dp-form" data-label-editor="${escapeHtml(editor.label ?? 'new')}">`
+    + `<p class="dp-note"><strong>${editor.label === null ? 'New label' : escapeHtml(editor.display_name || editor.label)}</strong></p>`
+    + '<label class="dp-label" for="st-label-display_name">Name</label>'
+    + `<input class="dp-input" id="st-label-display_name" data-label-draft="display_name" value="${escapeHtml(editor.display_name)}" maxlength="80" placeholder="Project Falcon" autocomplete="off"${off}>`
+    + lists
+    + '<div class="dp-actions">'
+    + stButton(busy ? 'Saving…' : 'Save label', { action: 'label-save' }, { kind: 'primary', small: true, disabled: busy })
+    + stButton('Cancel', { action: 'label-cancel' }, { kind: 'quiet', small: true, disabled: busy })
+    + '</div>'
+    + stProblem(editor.problem, 'Not saved.')
+    + '</div>';
+}
+
+function labelTerms(values) {
+  return values.length ? values.map((v) => `<span class="v-text">${escapeHtml(v)}</span>`).join(', ') : '<span class="v-absent">none</span>';
+}
+
+function stCustomLabels(state) {
+  const list = state.data.custom_labels;
+  if (list === null) {
+    return stCard('Custom labels', '<p><span class="v-absent">not reported</span> The server did not send the custom labels.</p>'
+      + stProblem(state.labels.problem), { wide: true });
+  }
+  const busy = Boolean(state.labels.pending);
+  const locked = busy || Boolean(state.labels.editor);
+  const rows = list.map((l) => '<tr>'
+    + `<td><span class="v-text">${escapeHtml(l.display_name)}</span><span class="dp-sub"><code>${escapeHtml(l.label)}</code></span></td>`
+    + CUSTOM_LABEL_FIELDS.map((f) => `<td>${labelTerms(l[f])}</td>`).join('')
+    + '<td class="dp-action">'
+    + stButton('Edit', { action: 'label-edit', label: l.label }, { kind: 'quiet', small: true, disabled: locked })
+    + stButton(state.labels.pending === l.label ? 'Deleting…' : 'Delete', { action: 'label-delete', label: l.label }, { kind: 'quiet', small: true, disabled: locked })
+    + '</td></tr>').join('');
+  const empty = list.length === 0 ? '<tr class="row-empty"><td colspan="6">No custom labels.</td></tr>' : '';
+  const body = '<p>Your own labels, for the words, customer names, file types and file names that matter to your organisation. A device labels a prompt with one when the prompt\'s text holds one of its words or customer names, or an attached file has one of its types or names; an enforcement rule can then name it like any built-in label. A saved label reaches each device on its next policy poll.</p>'
+    + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Label</th>'
+    + CUSTOM_LABEL_FIELDS.map((f) => `<th scope="col">${escapeHtml(LABEL_FIELD_TITLES[f])}</th>`).join('')
+    + '<th scope="col"><span class="sr">Edit</span></th></tr></thead>'
+    + `<tbody>${rows}${empty}</tbody></table></div>`
+    + (state.labels.editor ? stLabelEditor(state) : '')
+    + '<div class="dp-actions">'
+    + stButton('Add label', { action: 'label-add' }, { small: true, disabled: locked || list.length >= MAX_CUSTOM_LABELS })
+    + '</div>'
+    + (busy && !state.labels.editor ? '<p class="dp-note" role="status">Saving…</p>' : '')
+    + stProblem(state.labels.problem);
+  return stCard('Custom labels', body, { wide: true });
 }
 
 function stRules(state) {
@@ -441,6 +508,7 @@ export function renderSettings(state, { eyebrow = 'Settings' } = {}) {
     + stTools(state)
     + `<div class="dp-grid">${stTLSInspection(state)}${stKillSwitch(state)}</div>`
     + stEndpoint(state)
+    + stCustomLabels(state)
     + stRules(state)
     + stDevices(state)
     + notes

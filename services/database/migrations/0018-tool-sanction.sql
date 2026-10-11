@@ -130,8 +130,10 @@ UPDATE ops.enforcement_rule r
 ALTER TABLE ops.enforcement_rule FORCE ROW LEVEL SECURITY;
 
 -- The reads: the view joins the catalogue to the tool's decision, and the name comes from the
--- catalogue alone.
-CREATE OR REPLACE VIEW mart.v_tool_usage
+-- catalogue alone. It is dropped and created rather than replaced, because over a schema whose view
+-- has since gained columns a replacement would have to drop them, which Postgres refuses.
+DROP VIEW IF EXISTS mart.v_tool_usage;
+CREATE VIEW mart.v_tool_usage
 WITH (security_invoker = true) AS
 SELECT a.tenant_id,
        a.bucket_start,
@@ -151,6 +153,7 @@ SELECT a.tenant_id,
   LEFT JOIN ops.tool_sanction s
     ON s.tenant_id = a.tenant_id
    AND s.tool_key = c.app_key;
+GRANT SELECT ON mart.v_tool_usage TO sac_query;
 
 CREATE OR REPLACE FUNCTION ops.tool_display_name(p_tool_fingerprint text)
 RETURNS text

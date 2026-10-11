@@ -236,7 +236,7 @@ func (r *Relay) decide(ev protocol.HookEvaluate, peer hostinfo.User, received ti
 	var labels []string
 	var classified *core.Classified
 	if res.ReadsContent() && !ev.OverCap && ev.PromptText != "" {
-		classified = r.classify(res.Mode, ev.PromptText)
+		classified = r.classify(b, res.Mode, ev.PromptText)
 	}
 	known := classified != nil
 	if known {
@@ -274,7 +274,7 @@ func canEnforce(tool, event string) bool {
 
 // classify labels the prompt within ClassifyBudget. It returns nil, the labels unknown, when the
 // classification did not complete.
-func (r *Relay) classify(mode protocol.CollectionMode, text string) *core.Classified {
+func (r *Relay) classify(b *policy.Bundle, mode protocol.CollectionMode, text string) *core.Classified {
 	if r.cfg.Classifier == nil {
 		return nil
 	}
@@ -282,11 +282,12 @@ func (r *Relay) classify(mode protocol.CollectionMode, text string) *core.Classi
 	defer cancel()
 	content := []byte(text)
 	resp, err := r.cfg.Classifier.Classify(ctx, protocol.ClassifyRequest{
-		Content:   content,
-		Mode:      mode,
-		MediaType: promptMediaType,
-		BudgetMS:  ClassifyBudget.Milliseconds(),
-		Budget:    ClassifyBudget,
+		Content:      content,
+		Mode:         mode,
+		MediaType:    promptMediaType,
+		BudgetMS:     ClassifyBudget.Milliseconds(),
+		Budget:       ClassifyBudget,
+		CustomLabels: b.ClassifyTerms(),
 	})
 	if err != nil || resp.Validate() != nil || resp.Confidence == protocol.ConfidenceDegraded {
 		return nil

@@ -133,7 +133,9 @@ CREATE TABLE ref.app (
 );
 
 -- What identifies an app on a device. An inference_domain is an exact host or, with a leading dot,
--- a host suffix; a model_store may begin with %USERPROFILE% or ~, expanded per user.
+-- the domain and every host under it. The browser extension names a request after an app known by
+-- its inference domains alone, so a web tool reached at a new host under its domain keeps its name.
+-- A model_store may begin with %USERPROFILE% or ~, expanded per user.
 CREATE TABLE ref.app_signal (
   app_key   text NOT NULL REFERENCES ref.app,
   platform  text NOT NULL CHECK (platform IN ('windows','macos','linux','any')),
@@ -148,7 +150,8 @@ CREATE TABLE ref.app_signal (
 -- never emit a brand, only a fingerprint of what they observed; this table names the common ones
 -- and links each to its app in ref.app, the unit a tenant sanctions. signal_kind and evidence record
 -- how a fingerprint was derived, so a row can be regenerated and reviewed. An `endpoint` row is a
--- catalog app's own fingerprint, `app:<app_key>`.
+-- catalog app's own fingerprint, `app:<app_key>`. A browser request no app claims carries
+-- `host:<host>`, which no row lists and which is shown as its host.
 CREATE TABLE ref.tool_catalogue (
   tool_fingerprint  text PRIMARY KEY,
   display_name      text NOT NULL,
@@ -473,7 +476,8 @@ CREATE TABLE ops.endpoint_tool_setting (
 
 -- The tenant's enforcement rules, in order, delivered in the policy bundle's rules list. The device
 -- applies the first rule whose every non-empty match list matches. The list is replaced as a whole,
--- so position is dense from 0. A label must be a ref.data_class code (ops.enforce_rule_labels).
+-- so position is dense from 0. A label must be a ref.data_class code or one of the tenant's custom
+-- labels (ops.enforce_rule_labels).
 CREATE TABLE ops.enforcement_rule (
   tenant_id   uuid NOT NULL REFERENCES ops.tenant(tenant_id),
   position    int NOT NULL CHECK (position >= 0),
@@ -492,6 +496,31 @@ CREATE TABLE ops.enforcement_rule (
     AND match - ARRAY['labels','tools','categories','sanction','routes'] = '{}'::jsonb
     AND NOT jsonb_path_exists(match, 'strict $.* ? (@.type() != "array")')
     AND NOT jsonb_path_exists(match, 'strict $.*[*] ? (@.type() != "string")', '{}', true))
+);
+
+-- The tenant's own labels, set on the Settings page beside the enforcement rules and delivered in
+-- the policy bundle's custom_labels. The device labels a prompt with one when its text holds one of
+-- the words or customer names as whole words in any case, or a file attached to it has one of the
+-- extensions or a name matching one of the file name patterns (* and ? are wildcards). The label is
+-- the class code the envelope carries and an enforcement rule names; the display name is what people
+-- see. A label a rule names cannot be deleted (ops.guard_custom_label_in_use).
+CREATE TABLE ops.custom_label (
+  tenant_id     uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  label         text NOT NULL CHECK (label ~ '^custom_[a-z0-9_]{1,56}$'),
+  display_name  text NOT NULL CHECK (char_length(display_name) BETWEEN 1 AND 80 AND display_name = btrim(display_name)),
+  terms         jsonb NOT NULL,
+  updated_by    text NOT NULL,
+  updated_at    timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, label),
+  CONSTRAINT custom_label_display_name_unique UNIQUE (tenant_id, display_name) DEFERRABLE INITIALLY DEFERRED,
+  -- terms holds the four lists, each an array of strings, with at least one term among them.
+  CONSTRAINT custom_label_terms_shape CHECK (
+    jsonb_typeof(terms) = 'object'
+    AND terms ?& ARRAY['words','customer_names','file_extensions','file_names']
+    AND terms - ARRAY['words','customer_names','file_extensions','file_names'] = '{}'::jsonb
+    AND NOT jsonb_path_exists(terms, 'strict $.* ? (@.type() != "array")')
+    AND NOT jsonb_path_exists(terms, 'strict $.*[*] ? (@.type() != "string")', '{}', true)
+    AND jsonb_path_exists(terms, '$.*[*]'))
 );
 
 -- The tenant's tripped kill switches, one per interception route, set on the Settings page and
@@ -1779,9 +1808,9 @@ SELECT a.tenant_id,
     ON s.tenant_id = a.tenant_id
    AND s.tool_key = c.app_key;
 
--- A fingerprint's display name: the shared catalogue's, else "Unrecognised tool". The raw
--- fingerprint is never shown as a name, because it would read like a known tool with a bad label;
--- it travels separately on every row.
+-- A fingerprint's display name: the shared catalogue's; for `host:<host>`, a destination no app
+-- claims, the host; else "Unrecognised tool". Any other raw fingerprint is never shown as a name,
+-- because it would read like a known tool with a bad label; it travels separately on every row.
 CREATE FUNCTION ops.tool_display_name(p_tool_fingerprint text)
 RETURNS text
 LANGUAGE sql STABLE AS $$
@@ -1789,6 +1818,7 @@ LANGUAGE sql STABLE AS $$
     (SELECT c.display_name
        FROM ref.tool_catalogue c
       WHERE c.tool_fingerprint = p_tool_fingerprint),
+    nullif(substring(p_tool_fingerprint FROM '^host:(.*)$'), ''),
     'Unrecognised tool')
 $$;
 
@@ -1971,8 +2001,8 @@ CREATE TRIGGER scope_overrides_within_requested
   BEFORE INSERT OR UPDATE OF collection_mode, ceiling_mode, scope_overrides ON ops.tenant
   FOR EACH ROW EXECUTE FUNCTION ops.enforce_scope_overrides();
 
--- An enforcement rule's labels are classifier classes: a label outside ref.data_class could never
--- match, so the rule is refused rather than stored silently inert.
+-- An enforcement rule's labels are classifier classes or the tenant's custom labels: any other
+-- label could never match, so the rule is refused rather than stored silently inert.
 CREATE FUNCTION ops.enforce_rule_labels() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -1985,9 +2015,10 @@ BEGIN
   SELECT l INTO v_label
     FROM jsonb_array_elements_text(NEW.match->'labels') AS l
    WHERE NOT EXISTS (SELECT 1 FROM ref.data_class c WHERE c.class_code = l)
+     AND NOT EXISTS (SELECT 1 FROM ops.custom_label c WHERE c.tenant_id = NEW.tenant_id AND c.label = l)
    LIMIT 1;
   IF FOUND THEN
-    RAISE EXCEPTION 'enforcement rule % names label % outside ref.data_class', NEW.rule_id, v_label
+    RAISE EXCEPTION 'enforcement rule % names label %, which is neither a data class nor a custom label of the tenant', NEW.rule_id, v_label
       USING ERRCODE = 'check_violation', CONSTRAINT = 'enforcement_rule_labels_known';
   END IF;
   RETURN NEW;
@@ -1996,6 +2027,28 @@ END $$;
 CREATE TRIGGER enforcement_rule_labels_known
   BEFORE INSERT OR UPDATE OF match ON ops.enforcement_rule
   FOR EACH ROW EXECUTE FUNCTION ops.enforce_rule_labels();
+
+-- A custom label an enforcement rule names stays while the rule does: deleting it would leave the
+-- rule naming a label nothing produces.
+CREATE FUNCTION ops.guard_custom_label_in_use() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  v_rule text;
+BEGIN
+  SELECT r.rule_id INTO v_rule
+    FROM ops.enforcement_rule r
+   WHERE r.tenant_id = OLD.tenant_id AND r.match->'labels' ? OLD.label
+   LIMIT 1;
+  IF FOUND THEN
+    RAISE EXCEPTION 'custom label % is named by enforcement rule %', OLD.label, v_rule
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'custom_label_in_use';
+  END IF;
+  RETURN OLD;
+END $$;
+
+CREATE TRIGGER custom_label_in_use
+  BEFORE DELETE ON ops.custom_label
+  FOR EACH ROW EXECUTE FUNCTION ops.guard_custom_label_in_use();
 
 -- The audit hash chain: each row hashes its predecessor in the same tenant. The per-tenant advisory
 -- lock stops two concurrent writers from reading the same predecessor and forking the chain.
@@ -2413,7 +2466,8 @@ DECLARE
     -- ops
     'ops.user_dim', 'ops.device', 'ops.device_credential', 'ops.collector_state',
     'ops.policy_bundle', 'ops.tool_sanction', 'ops.notice_acknowledgement', 'ops.retention_policy',
-    'ops.endpoint_setting', 'ops.endpoint_tool_setting', 'ops.enforcement_rule', 'ops.kill_switch',
+    'ops.endpoint_setting', 'ops.endpoint_tool_setting', 'ops.enforcement_rule', 'ops.custom_label',
+    'ops.kill_switch',
     'ops.audit', 'ops.grant', 'ops.content', 'ops.retrieval_grant', 'ops.finding_review',
     'ops.erasure_receipt', 'ops.export', 'ops.erasure_request',
     'ops.aggregate_watermark', 'ops.coverage_snapshot',
@@ -2508,6 +2562,9 @@ GRANT SELECT, INSERT, UPDATE ON ops.tenant, ops.user_dim, ops.device, ops.device
 -- The enforcement rules are replaced as a whole list: the old rows are deleted and the new inserted
 -- in one transaction.
 GRANT SELECT, INSERT, DELETE ON ops.enforcement_rule TO sac_control;
+GRANT SELECT, INSERT, DELETE ON ops.custom_label TO sac_control;
+-- The label is the code rules and envelopes name, so it is never renamed.
+GRANT UPDATE (display_name, terms, updated_by, updated_at) ON ops.custom_label TO sac_control;
 -- A kill switch is tripped (inserted), given a new reason (updated) and cleared (deleted).
 GRANT SELECT, INSERT, UPDATE, DELETE ON ops.kill_switch TO sac_control;
 -- Deciding a content grant reads the tenant's budget; a stored upload adds its bytes to the day's
@@ -2853,8 +2910,8 @@ INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES
   ('chatgpt_desktop',     'any',       'inference_domain',        'chatgpt.com'),
   ('chatgpt_desktop',     'macos',     'macos_bundle_id',         'com.openai.chat'),
   ('chatgpt_desktop',     'macos',     'macos_bundle_id',         'com.openai.codex'),
+  ('chatgpt_web',         'any',       'inference_domain',        '.chatgpt.com'),
   ('chatgpt_web',         'any',       'inference_domain',        'chat.openai.com'),
-  ('chatgpt_web',         'any',       'inference_domain',        'chatgpt.com'),
   ('claude_code',         'any',       'cli_binary',              'claude'),
   ('claude_code',         'any',       'inference_domain',        'api.anthropic.com'),
   ('claude_code',         'any',       'npm_package',             '@anthropic-ai/claude-code'),
@@ -2878,7 +2935,7 @@ INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES
   ('deepseek_api',        'any',       'inference_domain',        'api.deepseek.com'),
   ('gemini_cli',          'any',       'cli_binary',              'gemini'),
   ('gemini_cli',          'any',       'npm_package',             '@google/gemini-cli'),
-  ('gemini_web',          'any',       'inference_domain',        'gemini.google.com'),
+  ('gemini_web',          'any',       'inference_domain',        '.gemini.google.com'),
   ('github_copilot',      'any',       'ide_extension_id',        'github.copilot-chat'),
   ('google_ai_api',       'any',       'inference_domain',        '.aiplatform.googleapis.com'),
   ('google_ai_api',       'any',       'inference_domain',        'generativelanguage.googleapis.com'),
@@ -2907,7 +2964,7 @@ INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES
   ('openai_api',          'any',       'inference_domain',        'api.openai.com'),
   ('openrouter',          'any',       'inference_domain',        'openrouter.ai'),
   ('perplexity_api',      'any',       'inference_domain',        'api.perplexity.ai'),
-  ('perplexity_web',      'any',       'inference_domain',        'www.perplexity.ai'),
+  ('perplexity_web',      'any',       'inference_domain',        '.perplexity.ai'),
   ('together_ai',         'any',       'inference_domain',        'api.together.xyz'),
   ('vllm',                'any',       'listen_port',             '8000'),
   ('vscode',              'macos',     'macos_bundle_id',         'com.microsoft.VSCode'),
@@ -2921,10 +2978,12 @@ INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES
 --   * `tls` rows: the egress proxy's fingerprint of a destination, "tls_" + the first eight bytes
 --     (lowercase hex) of sha256("tls|" + lowercased host + "|" + path without leading or trailing
 --     slashes). One tool may have several paths, so several rows. evidence names the host and path.
---   * `extension` rows: the browser extension's "tf2:" + base32(sha256(canonical({v: 2, host}))),
---     one per host the tool is reached at. evidence names the host.
+--   * `extension` rows: a browser prompt stored under "tf2:" + base32(sha256(canonical({v: 2,
+--     host}))), one row per host. evidence names the host. The extension names a web tool by its
+--     app's own `app:` fingerprint, found from the app's inference domains.
 --   * `process` rows: the process detector's "proc_" + image signature.
--- A fingerprint not listed here renders as "Unrecognised tool" and belongs to no tool.
+-- A fingerprint not listed here belongs to no tool: `host:<host>` renders as its host, any other as
+-- "Unrecognised tool".
 INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_kind, evidence, app_key) VALUES
   ('tls_b6681b043244c43f', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/v1/messages"}', 'claude_code'),
   ('tls_5a5a41ed0bf50d9d', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/v1/messages/count_tokens"}', 'claude_code'),
@@ -2956,6 +3015,7 @@ INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_k
   ('tls_544b80dcc1446f8b', 'Together AI', 'together', 'tls', '{"host":"api.together.xyz","path":"/v1/chat/completions"}', 'together_ai'),
   ('tls_4fb4f5cb98d7a1c3', 'Cohere API', 'cohere', 'tls', '{"host":"api.cohere.ai","path":"/v1/chat"}', 'cohere_api'),
   ('tf2:de4s6yclxfhnumvdm3ubzgd5jveiwkzapelxdcj2qdzd72qrridq', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com"}', 'chatgpt_web'),
+  ('tf2:a64fvqypthxcqzcwgpxxeeo4kvhk5onujlq22qafww3ql422pxyq', 'ChatGPT (web)', 'openai', 'extension', '{"host":"m.chatgpt.com"}', 'chatgpt_web'),
   ('tf2:mespeqbrgr4vb7rqmmrubxuglidtpu3e5xpjd7dwqkm2evicbwla', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chat.openai.com"}', 'chatgpt_web'),
   ('tf2:6lwajg7v6mwycbn43eszknx6p3sqfegfsk6tj2p4yqovdd32mnfq', 'Gemini (web)', 'google', 'extension', '{"host":"gemini.google.com"}', 'gemini_web'),
   ('tf2:vjlb4hsqpngtmkhd4gwtgmcorqo26q2ezy7vp4erdqysbawzdx2q', 'Perplexity (web)', 'perplexity', 'extension', '{"host":"www.perplexity.ai"}', 'perplexity_web'),

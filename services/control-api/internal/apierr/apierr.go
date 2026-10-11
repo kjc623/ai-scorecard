@@ -63,6 +63,7 @@ const (
 	CodeScopeOverrideTooWide     = "scope_override_too_wide"
 	CodeSearchTierRequiresMode   = "search_tier_requires_mode"
 	CodeRetentionOutOfRange      = "retention_out_of_range"
+	CodeCustomLabelInUse         = "custom_label_in_use"
 )
 
 // Error is a decided failure. Message is written for the caller; Cause, when set, is logged and

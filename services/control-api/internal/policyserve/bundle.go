@@ -30,6 +30,9 @@ type Bundle struct {
 	// Rules is the tenant's enforcement rules in order; the first that matches decides. Never
 	// omitted, so the drift test sees the name.
 	Rules []Rule `json:"rules"`
+	// CustomLabels is the tenant's own labels, sorted by label, which a rule's labels list may name
+	// beside the classifier's classes. Omitted when the tenant has none.
+	CustomLabels []CustomLabel `json:"custom_labels,omitempty"`
 	// SanctionedTools is the tool fingerprints the tenant has sanctioned, sorted: what a rule's
 	// sanction list is decided against.
 	SanctionedTools []string `json:"sanctioned_tools"`
@@ -113,6 +116,17 @@ type RuleMatch struct {
 	Categories []string `json:"categories"`
 	Sanction   []string `json:"sanction"`
 	Routes     []string `json:"routes"`
+}
+
+// CustomLabel is one custom label: the device labels a prompt with Label when its text holds one of
+// the words or customer names as whole words in any case, or a file attached to it has one of the
+// extensions or a name matching one of the file name patterns. Every list is sent.
+type CustomLabel struct {
+	Label          string   `json:"label"`
+	Words          []string `json:"words"`
+	CustomerNames  []string `json:"customer_names"`
+	FileExtensions []string `json:"file_extensions"`
+	FileNames      []string `json:"file_names"`
 }
 
 // Interception is the decryption scope. The per-device root CA is deliberately absent: the device
