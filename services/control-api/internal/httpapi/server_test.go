@@ -48,7 +48,7 @@ type contentStore struct {
 }
 
 func (c *contentStore) EventContext(_ context.Context, _, deviceID, _ string) (*content.EventContext, error) {
-	ec := &content.EventContext{CeilingMode: "m3", BudgetBytesPerDay: 1 << 20}
+	ec := &content.EventContext{CeilingMode: "m3", ContentSearch: "full_text"}
 	if deviceID == c.device {
 		ec.Found, ec.Kind, ec.CollectionMode, ec.ContentState = true, "prompt", "m3", "local_only"
 	}

@@ -334,6 +334,10 @@ export function renderExploreText(state) {
     + '<button type="button" class="x-btn x-btn-quiet" data-act="text-clear">Back to the list</button></div></div>';
   const ignored = exploreTextIgnored(text);
   if (text.status === 'loading') return `<div class="x-text-panel" aria-busy="true">${head}${ignored}<p class="x-sub" role="status">Searching</p></div>`;
+  if (text.status === 'refused' && text.problem?.code === 'search_disabled') {
+    return `<div class="x-text-panel">${head}${ignored}<div class="x-content-problem" role="alert">`
+      + '<p>Prompts are not stored, so there is nothing to search. An admin can turn on <a href="index.html#settings">Store and search prompts</a> in Settings; prompts sent after that can be found here.</p></div></div>';
+  }
   if (text.status === 'refused') return `<div class="x-text-panel">${head}${ignored}${exploreContentProblem(text.problem)}</div>`;
   if (text.hits.length === 0) {
     return `<div class="x-text-panel">${head}${ignored}<p class="x-sub">No uploaded prompt contains every one of those words.</p></div>`;

@@ -203,14 +203,14 @@ CREATE TABLE ops.tenant (
   -- override must not exceed the requested mode, so it can never widen collection; enforced by
   -- enforce_scope_overrides (section 8).
   scope_overrides              jsonb NOT NULL DEFAULT '{}'::jsonb,
-  -- Content search tier:
+  -- Content search tier, which is also whether prompt content is stored at all: at 'disabled' no
+  -- content upload is granted. Tenant creation sets 'full_text' at an M3 ceiling, so prompts are
+  -- stored and searchable unless an admin turns that off.
   --   disabled          structured filtering only (tool, user, date, class, rule, severity)
   --   attachment_names  adds substring and fuzzy search over attachment filenames (collected at M1)
   --   full_text         adds full-text search over prompt text (collected at M3)
   content_search               text NOT NULL DEFAULT 'disabled'
                                  CHECK (content_search IN ('disabled','attachment_names','full_text')),
-  -- Ceiling on content bytes accepted per day; it bounds the one cost that grows with usage.
-  content_budget_bytes_per_day bigint NOT NULL DEFAULT 0 CHECK (content_budget_bytes_per_day >= 0),
   -- 'clear': devices send, and reads return, the hostname and the submitting account name.
   -- 'hashed': devices send only a hostname hash and no account name.
   device_identity              text NOT NULL DEFAULT 'clear'
@@ -546,7 +546,8 @@ CREATE TABLE ops.grant (
   requested_at      timestamptz NOT NULL DEFAULT now(),
   decided_at        timestamptz,
   decision          text NOT NULL CHECK (decision IN ('pending','granted','denied','expired','voided')),
-  denial_reason     text CHECK (denial_reason IN ('retention_expired','not_policy_relevant','over_budget','mode_not_permitted')),
+  -- 'over_budget' is kept for grants decided while a daily byte budget applied.
+  denial_reason     text CHECK (denial_reason IN ('retention_expired','not_policy_relevant','over_budget','mode_not_permitted','storage_off')),
   -- When a granted upload must have happened by.
   expires_at        timestamptz,
   used_at           timestamptz,

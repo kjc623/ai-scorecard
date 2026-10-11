@@ -14,12 +14,10 @@ const (
 	sqlSetTenant = `SELECT set_config('app.tenant_id', $1, true)`
 
 	// sqlEventContext reads the event as this device's observation, the submission it belongs to,
-	// and the tenant's ceiling, budget and content bytes so far today, in one row. No row means the
-	// tenant is unknown; a NULL kind means the device has no such event.
+	// and the tenant's ceiling and content search setting, in one row. No row means the tenant is
+	// unknown; a NULL kind means the device has no such event.
 	sqlEventContext = `
-SELECT t.ceiling_mode, t.content_budget_bytes_per_day,
-       coalesce((SELECT u.content_bytes_added FROM ops.usage_daily u
-                  WHERE u.tenant_id = t.tenant_id AND u.usage_day = (now() AT TIME ZONE 'utc')::date), 0),
+SELECT t.ceiling_mode, t.content_search,
        o.kind, o.collection_mode, o.expires_at, s.submission_id::text, s.content_state
   FROM ops.tenant t
   LEFT JOIN ingest.observation o
@@ -94,7 +92,7 @@ func (s *SQLStore) EventContext(ctx context.Context, tenantID, deviceID, eventID
 		var kind, mode, submission, state sql.NullString
 		var expires sql.NullTime
 		err := tx.QueryRowContext(ctx, sqlEventContext, tenantID, eventID, deviceID).Scan(
-			&ec.CeilingMode, &ec.BudgetBytesPerDay, &ec.BytesAddedToday,
+			&ec.CeilingMode, &ec.ContentSearch,
 			&kind, &mode, &expires, &submission, &state)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil

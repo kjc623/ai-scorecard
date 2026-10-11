@@ -2,8 +2,9 @@
 // upload to content-vault.
 //
 // The device asks for a grant for one event (POST /v1/content/grant). The decision reads only
-// server-side state: the device's own observation of that event, the tenant's ceiling, retention
-// and daily content budget (the content stored today plus this object's declared size). A granted device then sends the content once (POST /v1/content);
+// server-side state: the device's own observation of that event, the tenant's ceiling and
+// retention, and whether the tenant stores prompts at all (its content search setting is not
+// disabled). A granted device then sends the content once (POST /v1/content);
 // control-api checks the grant and the body's digest and forwards the body to content-vault, which
 // claims the grant, encrypts the content and stores it. There is no bulk grant and no tenant-wide
 // upload credential: every upload is bound to a decision about one event.
@@ -26,7 +27,7 @@ import (
 const (
 	DenyModeNotPermitted = "mode_not_permitted"
 	DenyRetentionExpired = "retention_expired"
-	DenyOverBudget       = "over_budget"
+	DenyStorageOff       = "storage_off"
 )
 
 // Decisions as ops.grant.decision stores them.
@@ -49,9 +50,9 @@ type EventContext struct {
 	SubmissionID   string
 	ContentState   string
 
-	CeilingMode       string
-	BudgetBytesPerDay int64
-	BytesAddedToday   int64
+	CeilingMode string
+	// ContentSearch is the tenant's content search setting; at "disabled" no prompt is stored.
+	ContentSearch string
 
 	// Grant is the most recent grant for the event, when there is one.
 	Grant *Grant
@@ -183,8 +184,8 @@ func deny(ec *EventContext, req protocol.ContentGrantRequest, now time.Time) str
 		return DenyModeNotPermitted
 	case !ec.ExpiresAt.IsZero() && !now.Before(ec.ExpiresAt):
 		return DenyRetentionExpired
-	case ec.BytesAddedToday+req.RawSizeBytes > ec.BudgetBytesPerDay:
-		return DenyOverBudget
+	case ec.ContentSearch == "" || ec.ContentSearch == "disabled":
+		return DenyStorageOff
 	}
 	return ""
 }
