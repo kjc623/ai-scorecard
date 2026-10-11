@@ -25,10 +25,10 @@ SET client_min_messages = notice;
 -- Fixtures
 -- =====================================================================================
 
-INSERT INTO ops.tenant (tenant_id, name, status, residency_region, ceiling_mode, content_budget_bytes_per_day)
+INSERT INTO ops.tenant (tenant_id, name, status, residency_region, ceiling_mode)
 VALUES
-  (:ta, 'Tenant A (M3 ceiling)', 'active', 'eastus', 'm3', 107374182400),
-  (:tb, 'Tenant B (M1 ceiling)', 'active', 'eastus', 'm1', 0);
+  (:ta, 'Tenant A (M3 ceiling)', 'active', 'eastus', 'm3'),
+  (:tb, 'Tenant B (M1 ceiling)', 'active', 'eastus', 'm1');
 
 INSERT INTO ops.device (tenant_id, device_id, os, managed_state)
 VALUES (:ta, :dev_a, 'windows', 'managed'),

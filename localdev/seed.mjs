@@ -27,8 +27,8 @@ export function seedSQL({ directoryKey, oidcClientSecret, deploymentKeys }, { te
   for (const [name, t] of Object.entries(tenants)) {
     const sealed = seal(directoryKey, t.id, oidcClientSecret, nonce);
     statements.push(`
-INSERT INTO ops.tenant (tenant_id, name, status, residency_region, ceiling_mode, content_search, content_budget_bytes_per_day)
-VALUES (${lit(t.id)}, ${lit(t.name)}, 'active', ${lit(region)}, ${lit(t.ceiling)}, ${lit(t.contentSearch)}, ${Number(t.contentBudgetBytesPerDay)})
+INSERT INTO ops.tenant (tenant_id, name, status, residency_region, ceiling_mode, content_search)
+VALUES (${lit(t.id)}, ${lit(t.name)}, 'active', ${lit(region)}, ${lit(t.ceiling)}, ${lit(t.contentSearch)})
 ON CONFLICT (tenant_id) DO NOTHING;
 
 INSERT INTO ops.identity_connection (tenant_id, provider, issuer, client_id, client_secret_enc, scopes, roles_claim, role_map,

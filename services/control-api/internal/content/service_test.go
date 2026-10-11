@@ -84,7 +84,7 @@ func m3Event() EventContext {
 	return EventContext{
 		Found: true, Kind: "prompt", CollectionMode: "m3", ExpiresAt: time.Now().Add(time.Hour),
 		SubmissionID: submission, ContentState: "not_captured",
-		CeilingMode: "m3", BudgetBytesPerDay: 1 << 20,
+		CeilingMode: "m3", ContentSearch: "full_text",
 	}
 }
 
@@ -128,7 +128,7 @@ func TestGrantDecisions(t *testing.T) {
 		{name: "bad event id", req: func(r *protocol.ContentGrantRequest) { r.EventID = "x" }, code: apierr.CodeSchemaViolation},
 		{name: "ceiling below m3", ec: func(e *EventContext) { e.CeilingMode = "m2" }, reason: DenyModeNotPermitted},
 		{name: "retention expired", ec: func(e *EventContext) { e.ExpiresAt = time.Now().Add(-time.Minute) }, reason: DenyRetentionExpired},
-		{name: "over budget", ec: func(e *EventContext) { e.BytesAddedToday = 1<<20 - 100 }, reason: DenyOverBudget},
+		{name: "prompt storage off", ec: func(e *EventContext) { e.ContentSearch = "disabled" }, reason: DenyStorageOff},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			ec := m3Event()
@@ -243,7 +243,7 @@ func TestUploadRefusals(t *testing.T) {
 		}, code: string(protocol.ReasonGrantExpired)},
 		{name: "denied", mutate: func(u *Upload, st *fakeStore, _ *fakeVault) {
 			g := st.grants[u.GrantID]
-			g.Decision, g.DenialReason = DecisionDenied, DenyOverBudget
+			g.Decision, g.DenialReason = DecisionDenied, DenyStorageOff
 			st.grants[u.GrantID] = g
 		}, code: apierr.CodeForbidden},
 		{name: "already stored", mutate: func(_ *Upload, _ *fakeStore, v *fakeVault) { v.err = &VaultError{Status: 409, Code: "already_stored"} }, code: string(protocol.ReasonGrantConsumed)},

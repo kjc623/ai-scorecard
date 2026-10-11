@@ -45,7 +45,7 @@ func TestGrantAndUsageAgainstPostgres(t *testing.T) {
 		q    string
 		args []any
 	}{
-		{`UPDATE ops.tenant SET ceiling_mode = 'm3', content_budget_bytes_per_day = 1000 WHERE tenant_id = $1::uuid`, []any{tenant}},
+		{`UPDATE ops.tenant SET ceiling_mode = 'm3', content_search = 'full_text' WHERE tenant_id = $1::uuid`, []any{tenant}},
 		{`INSERT INTO ops.device (tenant_id, device_id, os) VALUES ($1::uuid, $2::uuid, 'windows')`, []any{tenant, device}},
 		{`INSERT INTO ingest.submission (tenant_id, submission_id, dedup_key, dedup_weak_key, kind, prompt_kind, device_id,
 		     user_ref, tool_fingerprint, first_occurred_at, last_occurred_at, received_at, collection_mode, size_bytes,
@@ -97,7 +97,10 @@ func TestGrantAndUsageAgainstPostgres(t *testing.T) {
 		t.Fatalf("content usage = %d, %v; want 600", used, err)
 	}
 
-	// The budget now refuses a second object of the same size on another event.
+	// With prompt storage switched off, another event's content is refused.
+	if _, err := owner.ExecContext(ctx, `UPDATE ops.tenant SET content_search = 'disabled' WHERE tenant_id = $1::uuid`, tenant); err != nil {
+		t.Fatalf("switch storage off: %v", err)
+	}
 	second := pgtest.UUID(t)
 	if _, err := owner.ExecContext(ctx, `INSERT INTO ingest.observation (tenant_id, event_id, device_id, user_ref,
 	     tool_fingerprint, direction, kind, prompt_kind, occurred_at, received_at, monotonic_offset_ms, source, confidence,
@@ -109,7 +112,7 @@ func TestGrantAndUsageAgainstPostgres(t *testing.T) {
 	}
 	req.EventID = second
 	denied, err := svc.Decide(ctx, tenant, device, req)
-	if err != nil || denied.State != protocol.ContentGrantDenied || denied.Reason != content.DenyOverBudget {
-		t.Fatalf("over budget = %+v, %v", denied, err)
+	if err != nil || denied.State != protocol.ContentGrantDenied || denied.Reason != content.DenyStorageOff {
+		t.Fatalf("storage off = %+v, %v", denied, err)
 	}
 }

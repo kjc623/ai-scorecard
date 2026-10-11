@@ -120,6 +120,23 @@ test('a search with no match says so, and a refused search shows its reason', as
   assert.match(renderExploreText(busy.explorer.state), /concurrency limit/);
 });
 
+test('a search refused because prompts are not stored points to the Settings switch', async () => {
+  const content = createContentApi({
+    transport: {
+      search: async () => ({ state: 'refused', error: { code: 'search_disabled', message: 'content search is disabled for this tenant' } }),
+      retrieve: async () => ({ state: 'refused' }),
+      readUrl: async () => ({ state: 'refused' }),
+    },
+  });
+  const stub = createExploreFake({ now, scenario: 'realistic' });
+  const explorer = createExplorer({ api: createQueryApi({ transport: stub }), content, now });
+  await explorer.searchText('capital');
+  assert.equal(explorer.state.text.status, 'refused');
+  const html = renderExploreText(explorer.state);
+  assert.match(html, /Prompts are not stored, so there is nothing to search\./);
+  assert.match(html, /<a href="index\.html#settings">Store and search prompts<\/a>/);
+});
+
 test('a page with no content path says so instead of searching', async () => {
   const { explorer } = explorerFor('realistic', { withContent: false });
   await explorer.searchText('capital');

@@ -8,12 +8,11 @@
 import { escapeHtml } from './render.js';
 import { formatInstant } from './format.js';
 import {
-  COLLECTION_MODES, SEARCH_TIERS, SANCTION_STATES, ENDPOINT_COLLECTORS, ENDPOINT_TOOLS, effectiveMode, modeIncreaseNeedsConfirmation, searchTierAllowed,
+  COLLECTION_MODES, SANCTION_STATES, ENDPOINT_COLLECTORS, ENDPOINT_TOOLS, effectiveMode, modeIncreaseNeedsConfirmation, searchTierAllowed,
   RULE_ACTIONS, RULE_CATEGORIES, RULE_SANCTIONS, RULE_ROUTES, RULE_MATCH_FIELDS, MAX_RULES, MAX_RULE_MESSAGE, KILL_SWITCH_ROUTES,
 } from './settings.js';
 
 const MODE_LABELS = Object.freeze({ m0: 'M0 · metadata', m1: 'M1 · digest & labels', m2: 'M2 · excerpt', m3: 'M3 · prompt' });
-const SEARCH_LABELS = Object.freeze({ disabled: 'Off', attachment_names: 'Attachment names', full_text: 'Full text' });
 
 function stInstant(iso, absent = 'not reported') {
   return iso ? `<span class="v-time" title="${escapeHtml(iso)}">${escapeHtml(formatInstant(iso))}</span>` : `<span class="v-absent">${escapeHtml(absent)}</span>`;
@@ -174,18 +173,24 @@ function stTools(state) {
   return stCard('Tool sanction', body, { wide: true });
 }
 
+/**
+ * One switch: whether prompts are stored, and so can be searched and read. On is the full-text
+ * search tier, off is disabled; a prompt is uploaded only while it is on.
+ */
 function stSearch(state) {
   const data = state.data;
   const current = data.content_search ?? 'disabled';
   const ceiling = data.ceiling_mode ?? 'm0';
   const pending = state.search.pending;
-  const seg = SEARCH_TIERS.map((t) => {
-    const allowed = searchTierAllowed(t, ceiling);
-    return segItem(SEARCH_LABELS[t], t, current, { action: 'search', value: t }, { disabled: Boolean(pending) || !allowed });
-  }).join('');
-  const reason = ceiling !== 'm3' && ceiling !== 'm0' ? 'Full text needs an M3 ceiling.' : ceiling === 'm0' ? 'Search over names and text needs content the M0 ceiling never collects.' : '';
-  return stCard('Content search', `<div class="seg dp-seg" role="group" aria-label="Content search tier">${seg}</div>`
-    + `<p class="dp-note"${pending ? ' role="status"' : ''}>${pending ? 'Saving…' : escapeHtml(reason)}</p>`
+  const seg = segItem('On', 'full_text', current, { action: 'search', value: 'full_text' }, { disabled: Boolean(pending) || !searchTierAllowed('full_text', ceiling) })
+    + segItem('Off', 'disabled', current, { action: 'search', value: 'disabled' }, { disabled: Boolean(pending) });
+  const note = ceiling !== 'm3'
+    ? 'Needs an M3 ceiling: below it, devices never send prompt text.'
+    : current === 'disabled'
+      ? 'Prompts stay on the devices, so the Search page finds none.'
+      : 'Prompts are kept for the content retention period, and can be searched and read on the Search page.';
+  return stCard('Store and search prompts', `<div class="seg dp-seg" role="group" aria-label="Store and search prompts">${seg}</div>`
+    + `<p class="dp-note"${pending ? ' role="status"' : ''}>${pending ? 'Saving…' : escapeHtml(note)}</p>`
     + stProblem(state.search.problem));
 }
 

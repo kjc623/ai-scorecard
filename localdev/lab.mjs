@@ -32,11 +32,11 @@ export const OIDC_CLIENT_ID = 'sac-control';
 export const TENANTS = Object.freeze({
   lab: Object.freeze({
     id: '10ca1ab0-0000-4000-8000-000000000001', name: 'Lab', realm: 'lab', domain: 'lab.test',
-    ceiling: 'm3', contentSearch: 'full_text', contentBudgetBytesPerDay: 1024 ** 3,
+    ceiling: 'm3', contentSearch: 'full_text',
   }),
   sample: Object.freeze({
     id: '5a3c0de0-7e57-4a11-9000-0000000d3a01', name: 'Northwind Freight (sample)', realm: 'sample', domain: 'sample.test',
-    ceiling: 'm2', contentSearch: 'attachment_names', contentBudgetBytesPerDay: 0,
+    ceiling: 'm2', contentSearch: 'attachment_names',
   }),
 });
 

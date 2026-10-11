@@ -114,8 +114,27 @@ test('populated: requested mode, the applied device mode, retention and sanction
   assert.match(page, /LAPTOP-1/);
   assert.match(page, /Applied mode/, 'the devices table shows the mode each device actually applied');
   assert.match(page, /<span class="v-vocab v-vocab-m">m2<\/span>/, 'the device\'s applied mode (m2) is shown, not only the requested mode (m3)');
-  assert.match(page, /Full text/, 'the three search tiers are offered');
+  assert.match(page, /Store and search prompts/, 'prompt storage is one switch');
+  assert.doesNotMatch(page, /Attachment names|Full text|bytes|MB/, 'no search tiers and no byte allowance are offered');
   assert.match(page, /unsanctioned/);
+});
+
+test('the prompt switch turns storage and search on as one setting, and says what off means', async () => {
+  const sent = [];
+  const { controller, html } = await loaded({
+    [GET]: () => ({ status: 200, body: populated({ content_search: 'disabled' }) }),
+    'PUT /admin/v1/settings/content-search': (spec) => { sent.push(spec.body); return { status: 204 }; },
+  });
+  assert.match(html(), /aria-pressed="true" data-action="search" data-value="disabled">Off</);
+  assert.match(html(), /Prompts stay on the devices, so the Search page finds none\./);
+  await controller.act({ action: 'search', value: 'full_text' });
+  assert.deepEqual(sent, [{ content_search: 'full_text' }]);
+});
+
+test('below an M3 ceiling the prompt switch cannot be turned on', async () => {
+  const { html } = await loaded({ [GET]: () => ({ status: 200, body: populated({ ceiling_mode: 'm2', content_search: 'disabled' }) }) });
+  assert.match(html(), /data-action="search" data-value="full_text" disabled>On</);
+  assert.match(html(), /Needs an M3 ceiling/);
 });
 
 // ---------------------------------------------------------------------------------------------
