@@ -11,6 +11,9 @@
 /** The DSL version this client speaks. A different version is not a downgrade, it is a rejection. */
 export const QUERY_VERSION = '1';
 
+/** The name ops.tool_display_name gives a fingerprint the tool catalogue does not list. */
+export const UNRECOGNISED_TOOL = 'Unrecognised tool';
+
 /**
  * The endpoints this client may call. test/guarantees.test.mjs asserts there are no others.
  *

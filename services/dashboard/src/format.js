@@ -25,6 +25,14 @@ export function formatBytes(value) {
   return `${value < 0 ? '-' : ''}${rendered} ${units[unit]}`;
 }
 
+/** A share of a whole as a whole percentage; a share too small to round to one says so rather than reading as nothing. */
+export function formatPercent(share) {
+  if (typeof share !== 'number' || !Number.isFinite(share)) return '—';
+  const pct = share * 100;
+  if (pct > 0 && pct < 1) return '<1%';
+  return `${Math.round(pct)}%`;
+}
+
 /** A score is a proportion; two decimals is all the information a MaxScore has. */
 export function formatScore(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
