@@ -204,6 +204,20 @@ const DEVICE_CARD = { cardinality: 5000 };
 const CONFIDENCE_CARD = { cardinality: 4 };
 const MERGE_CONF_CARD = { cardinality: 2 };
 
+/**
+ * A tool's sensitive prompts (its enforcement rule matched on a label the rule names) by outcome,
+ * and the attachments its prompts described beside the prompts collected with content, the only
+ * ones that can describe one.
+ */
+const EXPOSURE_MEASURES = Object.freeze({
+  sensitive: measure('sensitive', 't.sensitive'),
+  sensitive_blocked: measure('sensitive_blocked', 't.sensitive_blocked'),
+  sensitive_warned: measure('sensitive_warned', 't.sensitive_warned'),
+  sensitive_logged: measure('sensitive_logged', 't.sensitive_logged'),
+  attachments: measure('attachments', 't.attachments'),
+  content_prompts: measure('content_prompts', 't.content_prompts'),
+});
+
 /** The sealed-format guard: a `source` value is only ever one of these keys. */
 export const SOURCES = Object.freeze({
   // -------------------------------------------------------------------------------------------
@@ -233,6 +247,7 @@ export const SOURCES = Object.freeze({
       blocked: measure('blocked', 't.blocked'),
       warned: measure('warned', 't.warned'),
       logged: measure('logged', 't.logged'),
+      ...EXPOSURE_MEASURES,
     }),
     grain: Object.freeze(['bucket', 'tool']),
     order: Object.freeze([
@@ -282,6 +297,7 @@ export const SOURCES = Object.freeze({
       detections: measure('detections', 't.detections'),
       rollup_events: measure('rollup_events', 't.rollup_events'),
       degraded_events: measure('degraded_events', 't.degraded_events'),
+      ...EXPOSURE_MEASURES,
     }),
     grain: Object.freeze(['bucket', 'tool']),
     order: Object.freeze([
@@ -481,6 +497,10 @@ export const SOURCES = Object.freeze({
       users: measure('users', 'c.users', { agg: 'max', semantics: 'distinct_lower_bound' }),
       max_score: measure('max_score', 'c.max_score', { agg: 'max', nonNegative: false }),
       degraded_events: measure('degraded_events', 'c.degraded_events'),
+      flagged: measure('flagged', 'c.flagged'),
+      flagged_blocked: measure('flagged_blocked', 'c.flagged_blocked'),
+      flagged_warned: measure('flagged_warned', 'c.flagged_warned'),
+      flagged_logged: measure('flagged_logged', 'c.flagged_logged'),
     }),
     grain: Object.freeze(['bucket', 'class', 'tool', 'severity', 'classifier_version']),
     order: Object.freeze([
@@ -1028,6 +1048,7 @@ export const SOURCES = Object.freeze({
       's.size_bytes AS size_bytes',
       's.winning_fidelity AS winning_fidelity',
       's.observed_routes AS observed_routes',
+      's.attachment_count AS attachment_count',
     ]),
     /** Columns usable as filters and as order keys but not as grouping dimensions. */
     columns: Object.freeze({
@@ -1038,6 +1059,8 @@ export const SOURCES = Object.freeze({
       expires_at: dim('expires_at', 's.expires_at', 'timestamp'),
       size_bytes: dim('size_bytes', 's.size_bytes', 'number', { nullable: true }),
       observation_count: dim('observation_count', 's.observation_count', 'number'),
+      // NULL when the prompt described no attachment, which every M0 prompt is.
+      attachment_count: dim('attachment_count', 's.attachment_count', 'number', { nullable: true }),
     }),
     warnings: Object.freeze([
       'No bucketing and no measures on this source: any time-bucketed number comes from mart, and this source serves a bounded, cursor-paged list.',

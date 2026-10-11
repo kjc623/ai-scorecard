@@ -593,7 +593,7 @@ test('enforcement rules: the card shows the ordered list, each condition by its 
   assert.match(rows[0], /Remove the credential and try again\./);
   assert.match(rows[0], /https:\/\/intranet\.example\/ai/);
   assert.match(rows[1], /v-vocab-allow/);
-  assert.match(rows[1], /Any submission/);
+  assert.match(rows[1], /Any prompt/);
   assert.match(rows[1], /<span class="v-absent">none<\/span>/, 'an allow with no message says none');
   // The first rule cannot move up, the last cannot move down.
   assert.match(rows[0], /data-action="rule-up" data-index="0" disabled/);
@@ -602,7 +602,7 @@ test('enforcement rules: the card shows the ordered list, each condition by its 
   assert.doesNotMatch(card, /data-action="rules-save"/, 'nothing to save before a change');
 
   const none = await withRules({ rules: [] });
-  assert.match(rulesCard(none.html()), /No rules\. Every submission is logged\./);
+  assert.match(rulesCard(none.html()), /No rules\. Every prompt is logged\./);
 });
 
 test('enforcement rules: the editor offers the data classes, the tools, the catalog categories, sanction and the routes', async () => {
@@ -670,7 +670,7 @@ test('enforcement rules: add, edit, move and delete change a draft; saving sends
   await controller.act({ action: 'rule-delete', index: '2' });
   const shown = rulesCard(html());
   assert.ok(shown.indexOf('Use the approved coding agent.') < shown.indexOf('Take the credential out first.'), 'the moved rule is shown first');
-  assert.doesNotMatch(shown, /Any submission/, 'the deleted rule is gone');
+  assert.doesNotMatch(shown, /Any prompt/, 'the deleted rule is gone');
 
   await controller.act({ action: 'rules-save' });
   const sent = puts(requests);

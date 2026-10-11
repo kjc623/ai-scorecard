@@ -76,7 +76,7 @@ test('the Users page lists each team\'s people by team and name, never by volume
   });
   const limited = (await viewer.load('person', { filters: {} })).view;
   assert.ok(!limited.tables.some((t) => t.title === 'Users'), 'no roster for a role that may not see people');
-  assert.ok(limited.notes.some((n) => /does not show each person's submissions/.test(n)));
+  assert.ok(limited.notes.some((n) => /does not show each person's prompts/.test(n)));
   assert.ok(limited.tables.some((t) => t.title === 'People'), 'the directory still shows');
   const searched = [];
   const searching = createDashboard({ api: createQueryApi({ transport: { send: (body) => { searched.push(body); return transport.send(body); } } }), now: () => new Date('2026-10-01T12:00:00Z') });

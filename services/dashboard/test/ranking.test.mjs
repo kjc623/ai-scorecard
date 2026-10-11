@@ -133,10 +133,10 @@ test('a sparkline draws every point to one scale and lists the values for a read
 test('the Tools screen is the share above the tiles, then the ranking, with the chart below and no per-bucket table', async () => {
   const { view } = await dashboardFor().load('tools', {});
   assert.deepEqual(view.lead.map((b) => [b.kind, b.title]), [['share', 'Applications']]);
-  assert.deepEqual(view.tiles.map((t) => t.label), ['Submissions', 'Blocked', 'Data sent']);
+  assert.deepEqual(view.tiles.map((t) => t.label), ['Prompts', 'Blocked', 'Data sent']);
   assert.deepEqual(view.blocks.map((b) => b.kind), ['ranking']);
   assert.deepEqual(view.tables, []);
-  assert.equal(view.series[0].title, 'Submissions per day');
+  assert.equal(view.series[0].title, 'Prompts per day');
   const html = renderScreen(view, SHELL);
   assert.ok(html.indexOf('<h3>Applications</h3>') < html.indexOf('class="tiles"'), 'the share sits above the tiles');
   assert.match(html, /Coverage is partial/);
@@ -245,7 +245,7 @@ test('a team\'s own screen reads that team only, and lists its people by name', 
   assert.equal(view.tiles[0].value.text, '2,210', 'this team\'s figure, not every team\'s');
   assert.equal(view.tiles[2].value.text, '3', 'this team\'s people');
   const roster = view.tables[0];
-  assert.deepEqual(roster.columns.map((c) => c.label), ['User', 'Submissions']);
+  assert.deepEqual(roster.columns.map((c) => c.label), ['User', 'Prompts']);
   assert.deepEqual(roster.rows.map((r) => r.row.name), ['Ada Lovelace', 'Grace Hopper', 'u_1b77'], 'by name');
   assert.equal(roster.groupBy, undefined);
 });
@@ -446,7 +446,7 @@ test('a tool\'s screen marks a tool with no recorded decision as unknown, names 
   const dashboard = createDashboard({ api, now: NOW });
   const { view } = await dashboard.load('tools', { preset: 'd30', filters: { tool: 'tls_b6681b043244c43f' } });
   const roster = view.tables.find((t) => t.title === 'People using it');
-  assert.deepEqual(roster.columns.map((c) => c.label), ['User', 'Submissions', 'Data sent']);
+  assert.deepEqual(roster.columns.map((c) => c.label), ['User', 'Prompts', 'Data sent']);
   assert.deepEqual(roster.rows.map((r) => [r.row.subject, r.row.name]), [['u_9a02', 'Bob Jones'], ['u_4f21', null]], 'a name the directory knows; a reference it does not stays a reference');
   const html = renderScreen(view, SHELL);
   assert.match(html, /<a class="cell-link" href="#person\?subject=u_9a02" title="User reference u_9a02">Bob Jones<\/a>/);
@@ -468,7 +468,8 @@ test('a tool\'s screen marks a tool with no recorded decision as unknown, names 
 test('the Overview tiles open the screens they summarise', async () => {
   const { view } = await dashboardFor().load('posture', { preset: 'd30' });
   assert.deepEqual(view.tiles.map((t) => [t.label, t.href ?? null]), [
-    ['Submissions', '#tools?preset=d30'], ['Users', '#person'], ['Devices reporting', '#devices'],
+    ['Prompts', '#tools?preset=d30'], ['Attachments', 'explore.html#events?window=d30&attachments=yes'],
+    ['Sensitive prompts', '#insights?preset=d30'], ['Users', '#person'], ['Devices reporting', '#devices'],
   ]);
   assert.equal(view.blocks[1].href, '#tools?preset=d30');
   assert.ok(view.blocks[1].items.every((i) => i.href === null || i.href.endsWith('&preset=d30')));

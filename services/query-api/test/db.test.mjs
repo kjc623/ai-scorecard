@@ -68,21 +68,21 @@ function nested(client) {
 
 const DEVICE = '00000000-0000-4000-8000-0000000000d1';
 
-function submissionRow(id, { labels = null, action = 'logged', promptKind = null, receivedAt = '2026-09-02T00:00:00Z' } = {}) {
-  return [id, `sha256:${id.replace(/-/g, '').padEnd(64, '0')}`, promptKind, labels === null ? null : JSON.stringify(labels), action, receivedAt];
+function submissionRow(id, { labels = null, action = 'logged', promptKind = null, receivedAt = '2026-09-02T00:00:00Z', attachments = null } = {}) {
+  return [id, `sha256:${id.replace(/-/g, '').padEnd(64, '0')}`, promptKind, labels === null ? null : JSON.stringify(labels), action, receivedAt, attachments];
 }
 
 async function seedSubmissions(client, rows) {
   await client.query("INSERT INTO ops.device (tenant_id, device_id, os, managed_state) VALUES (ops.current_tenant(), $1, 'linux', 'managed')", [DEVICE]);
-  for (const [id, weakKey, promptKind, labels, action, receivedAt] of rows) {
+  for (const [id, weakKey, promptKind, labels, action, receivedAt, attachments] of rows) {
     await client.query(
       `INSERT INTO ingest.submission
          (tenant_id, submission_id, dedup_weak_key, kind, prompt_kind, device_id, user_ref, tool_fingerprint,
           first_occurred_at, last_occurred_at, received_at, collection_mode, labels, policy_action,
-          winning_source, winning_fidelity, observed_routes, content_state, expires_at)
+          winning_source, winning_fidelity, observed_routes, content_state, expires_at, attachment_count)
        VALUES (ops.current_tenant(), $1, $2, 'prompt', $3, $4, 'user_ref_0001', 'tool_a',
-               $6, $6, $6, 'm3', $5::jsonb, $7, 'proxy.tls', 50, ARRAY['proxy.tls'], 'not_captured', '2026-12-01T00:00:00Z')`,
-      [id, weakKey, promptKind, DEVICE, labels, receivedAt, action],
+               $6, $6, $6, 'm3', $5::jsonb, $7, 'proxy.tls', 50, ARRAY['proxy.tls'], 'not_captured', '2026-12-01T00:00:00Z', $8)`,
+      [id, weakKey, promptKind, DEVICE, labels, receivedAt, action, attachments],
     );
   }
 }
@@ -212,6 +212,21 @@ test('the class filter matches a labelled event and composes with another filter
       assert.equal(await count([{ field: 'class', op: 'eq', value: 'payment_card' }]), 1);
       assert.equal(await count([{ field: 'class', op: 'eq', value: 'payment_card' }, { field: 'action', op: 'eq', value: 'logged' }]), 1);
       assert.equal(await count([{ field: 'class', op: 'eq', value: 'payment_card' }, { field: 'action', op: 'eq', value: 'blocked' }]), 0);
+    },
+  );
+});
+
+test('attachments: yes lists the events that described an attachment, with their count', { skip: SKIP }, async () => {
+  await scratch(
+    (client) => seedSubmissions(client, [
+      submissionRow('00000000-0000-4000-8000-0000000000e1', { attachments: 2 }),
+      submissionRow('00000000-0000-4000-8000-0000000000e2', { attachments: null }),
+    ]),
+    async (client, tenant) => {
+      const read = plan({ query_version: '1', template: 'q8_activity', params: { window: WINDOW, attachments: 'yes', limit: 50 } }, { now: NOW, tenant, actorId: 'db-test' })
+        .statements.find((s) => s.id === 'read');
+      const rows = (await client.query(read.text, read.params)).rows;
+      assert.deepEqual(rows.map((r) => [r.submission_id, Number(r.attachment_count)]), [['00000000-0000-4000-8000-0000000000e1', 2]]);
     },
   );
 });

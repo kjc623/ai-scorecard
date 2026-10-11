@@ -153,6 +153,93 @@ func TestRollupTeams(t *testing.T) {
 	expect(t, tx, "emptied console team", team, "", tenant, console)
 }
 
+// TestRollupSensitive checks that a prompt is sensitive only when its enforcement rule matched on
+// a label the rule names, that each outcome is counted apart, that a class is flagged only when its
+// rule names it, and that attachments are summed beside the prompts able to describe one.
+func TestRollupSensitive(t *testing.T) {
+	tx := pgtest.Tx(t, pgtest.Open(t))
+	tenant, device := pgtest.Tenant(t, tx)
+	ev := events{tenant: tenant, device: device}
+	const from, to = "2026-01-15T00:00:00Z", "2026-01-16T00:00:00Z"
+	const bucket = "2026-01-15T00:00:00Z"
+
+	pgtest.Exec(t, tx, `INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, match, updated_by) VALUES
+	  ($1, 0, 'pii.block',  'block', '{"labels":["customer_pii"]}', 'test'),
+	  ($1, 1, 'pii.warn',   'warn',  '{"labels":["customer_pii"],"sanction":["sanctioned"]}', 'test'),
+	  ($1, 2, 'tool.block', 'block', '{"tools":["toolA"]}', 'test'),
+	  ($1, 3, 'cred.allow', 'allow', '{"labels":["credential"]}', 'test')`, tenant)
+
+	decided := func(m map[string]any, rule, action string) map[string]any {
+		m["policy_decision"] = map[string]any{"rule_id": rule, "action": action, "decided_locally": true}
+		return m
+	}
+	attached := func(m map[string]any, names ...string) map[string]any {
+		atts := []map[string]any{}
+		for _, n := range names {
+			atts = append(atts, map[string]any{"name": n})
+		}
+		m["attachments"] = atts
+		return m
+	}
+	pii := []label{{Class: "customer_pii", Score: 0.9}}
+	at := func(h int) string { return fmt.Sprintf("2026-01-15T1%d:00:00Z", h) }
+
+	// Blocked on its label, with two attachments.
+	ev.record(t, tx, at(0), attached(decided(ev.prompt(40, "userA", "toolA", at(0), pii, "blocked", "high", 10), "pii.block", "blocked"), "a.xlsx", "b.pdf"))
+	// Warned on its label; only the class the rule names is flagged.
+	ev.record(t, tx, at(1), attached(decided(ev.prompt(41, "userA", "toolA", at(1),
+		[]label{{Class: "customer_pii", Score: 0.8}, {Class: "source_code", Score: 0.6}}, "warned", "high", 10), "pii.warn", "warned"), "c.txt"))
+	// Blocked by a rule that names no label: blocked, not sensitive.
+	ev.record(t, tx, at(2), decided(ev.prompt(42, "userB", "toolA", at(2),
+		[]label{{Class: "source_code", Score: 0.7}}, "blocked", "high", 10), "tool.block", "blocked"))
+	// A label no rule matched on.
+	ev.record(t, tx, at(3), decided(ev.prompt(43, "userB", "toolA", at(3),
+		[]label{{Class: "credential", Score: 0.7}}, "logged", "high", 10), "policy.default", "logged"))
+	// Allowed by a rule that names its label: sensitive, and logged.
+	ev.record(t, tx, at(4), decided(ev.prompt(44, "userB", "toolA", at(4),
+		[]label{{Class: "credential", Score: 0.9}}, "logged", "high", 10), "cred.allow", "logged"))
+	// An M0 prompt carries no content, so it cannot describe an attachment.
+	m0 := decided(ev.base(45, "userC", "toolA", at(5)), "policy.default", "logged")
+	for k, v := range map[string]any{"direction": "egress", "kind": "prompt", "source": "ext.page_context", "collection_mode": "m0", "size_bytes": 10} {
+		m0[k] = v
+	}
+	ev.record(t, tx, at(5), m0)
+
+	pgtest.AsJobs(t, tx)
+	runBucket(t, tx, tenant, BucketDay, from, to)
+	expect(t, tx, "tool row",
+		`SELECT submissions||'|'||blocked||'|'||sensitive||'|'||sensitive_blocked||'|'||sensitive_warned||'|'||sensitive_logged||'|'||attachments||'|'||content_prompts
+		   FROM mart.agg_tool_period WHERE tenant_id = $1 AND tool_fingerprint = 'toolA' AND bucket_start = $2::timestamptz`,
+		"6|2|3|1|1|1|3|5", tenant, bucket)
+	pgtest.AsOwner(t, tx)
+	expect(t, tx, "the view carries the same figures",
+		`SELECT sensitive||'|'||sensitive_logged||'|'||attachments||'|'||content_prompts
+		   FROM mart.v_tool_usage WHERE tenant_id = $1 AND tool_fingerprint = 'toolA' AND bucket_start = $2::timestamptz`,
+		"3|1|3|5", tenant, bucket)
+	pgtest.AsJobs(t, tx)
+	expect(t, tx, "class rows",
+		`SELECT string_agg(class_code||'|'||submissions||'|'||flagged||'|'||b||'|'||w||'|'||l, ',' ORDER BY class_code)
+		   FROM (SELECT class_code, sum(submissions) AS submissions, sum(flagged) AS flagged,
+		                sum(flagged_blocked) AS b, sum(flagged_warned) AS w, sum(flagged_logged) AS l
+		           FROM mart.agg_class_period
+		          WHERE tenant_id = $1 AND bucket_start = $2::timestamptz GROUP BY class_code) c`,
+		"credential|2|1|0|0|1,customer_pii|2|2|1|1|0,source_code|2|0|0|0|0", tenant, bucket)
+	expect(t, tx, "attachment counts",
+		`SELECT string_agg(coalesce(attachment_count::text, 'none'), ',' ORDER BY first_occurred_at)
+		   FROM ingest.submission WHERE tenant_id = $1`,
+		"2,1,none,none,none,none", tenant)
+
+	// A rule that no longer names the label stops making its prompts sensitive on the next pass.
+	pgtest.AsOwner(t, tx)
+	pgtest.Exec(t, tx, `UPDATE ops.enforcement_rule SET match = '{"tools":["toolA"]}' WHERE tenant_id = $1 AND rule_id = 'cred.allow'`, tenant)
+	pgtest.AsJobs(t, tx)
+	runBucket(t, tx, tenant, BucketDay, from, to)
+	expect(t, tx, "sensitive after the rule changed",
+		`SELECT sensitive||'|'||sensitive_logged FROM mart.agg_tool_period
+		  WHERE tenant_id = $1 AND tool_fingerprint = 'toolA' AND bucket_start = $2::timestamptz`,
+		"2|0", tenant, bucket)
+}
+
 func TestRollupHourBuckets(t *testing.T) {
 	tx := pgtest.Tx(t, pgtest.Open(t))
 	tenant, device := pgtest.Tenant(t, tx)

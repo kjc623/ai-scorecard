@@ -225,6 +225,10 @@ code {
 .tile .card-core { padding: 20px 22px; display: flex; flex-direction: column; gap: 6px; }
 .tile:first-child { grid-column: span 2; }
 .tile:first-child .tile-value { font-size: 52px; }
+/* Five tiles share one row where it fits, the first no wider than the rest. */
+.tiles:has(> .tile:nth-child(5)) { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.tiles:has(> .tile:nth-child(5)) > .tile:first-child { grid-column: auto; }
+.tiles:has(> .tile:nth-child(5)) > .tile:first-child .tile-value { font-size: 44px; }
 a.tile { display: block; text-decoration: none; color: inherit; }
 .tile-link:hover .tile-more { text-decoration: underline; }
 .tile-split { margin-top: 10px; }
@@ -340,6 +344,37 @@ tr.row-empty td { color: var(--ink-soft); font-style: italic; }
 .share-bar { height: 10px; }
 .dist-pct { font: 11px/1 var(--mono); color: var(--ink-soft); }
 .block-empty { margin: 0; padding: 0 22px 20px; color: var(--ink-soft); font-style: italic; }
+/* The sentence a block leads with, above its list. */
+.block-summary { margin: 0; padding: 0 22px 14px; font-size: 14px; color: var(--ink); }
+
+/* What happened to a sensitive prompt: allowed is the accent; blocked and warned keep their state colours. */
+.dist-seg.v-vocab-allowed, .dist-dot.v-vocab-allowed, .bar-seg.v-vocab-allowed { background: var(--accent); }
+.bar-seg.v-vocab-blocked { background: var(--bad); }
+.bar-seg.v-vocab-warned { background: var(--warn); }
+
+/* A funnel: its stages left to right, the last split into outcomes under one bar. */
+.funnel { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 14px 18px; padding: 4px 22px 22px; }
+.funnel-step { display: flex; flex-direction: column; gap: 4px; min-width: 128px; }
+.funnel-label { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em; color: var(--ink-soft); }
+.funnel-value { font: 400 32px/1.1 var(--serif); letter-spacing: -0.02em; color: var(--ink); }
+.funnel-detail, .funnel-change { font-size: 12.5px; color: var(--ink-soft); }
+.funnel-up, .funnel-down { color: var(--ink); }
+.funnel-arrow { align-self: center; width: 18px; height: 1px; background: var(--line-strong); position: relative; }
+.funnel-arrow::after { content: ""; position: absolute; right: 0; top: -3px; border: 3.5px solid transparent; border-left-color: var(--line-strong); border-right: 0; }
+.funnel-outcomes { flex: 1 1 320px; display: flex; flex-direction: column; gap: 12px; }
+.funnel-bar { height: 10px; }
+.funnel-split { display: flex; flex-wrap: wrap; gap: 14px 28px; }
+.funnel-split .funnel-value { font-size: 24px; }
+
+/* A stacked bar: its parts from the foot up, each in its own colour. */
+.bar-stack {
+  display: flex; flex-direction: column-reverse; gap: 1px; width: 100%; height: calc(var(--h, 0) * 1%); min-height: 2px;
+  border-radius: 6px 6px 0 0; overflow: hidden; transform-origin: bottom; transition: opacity .3s var(--ease);
+}
+.bar-seg { flex-basis: 0; min-height: 1px; }
+.bars:hover .bar-stack { opacity: .45; }
+.bars .bar:hover .bar-stack, .bars .bar:focus-visible .bar-stack { opacity: 1; }
+.series-legend { margin: -10px 0 0; padding: 0 22px 18px 60px; }
 
 /* A ranked list: one row per item, a thin bar with a rounded data end, the number beside it, the
    facts, then the shape of its series. Every number is in the text; the bar only draws it. */
@@ -404,6 +439,13 @@ tr.row-group:first-child th { border-top: 0; padding-top: 4px; }
   transition: opacity .3s var(--ease), transform .3s var(--ease);
 }
 .bar:hover::after, .bar:focus-visible::after { opacity: 1; transform: translate(-50%, 0); }
+/* A stacked bar's tip names each part, so it wraps rather than running off a narrow page. */
+.bars-stacked .bar::after { width: max-content; max-width: min(240px, 50vw); white-space: normal; border-radius: 10px; }
+/* A tip at either end of a long series opens inward, so it stays on the page. */
+.bars:not(.bars-few) .bar:nth-child(-n+3)::after { left: 0; transform: translate(0, 4px); }
+.bars:not(.bars-few) .bar:nth-last-child(-n+3)::after { left: auto; right: 0; transform: translate(0, 4px); }
+.bars:not(.bars-few) .bar:nth-child(-n+3):is(:hover, :focus-visible)::after,
+.bars:not(.bars-few) .bar:nth-last-child(-n+3):is(:hover, :focus-visible)::after { transform: none; }
 .series-unavailable { color: var(--ink-soft); font-style: italic; margin: 0; padding: 0 22px 20px; }
 
 /* The reading notes: there when wanted, one line when not. */
@@ -563,7 +605,7 @@ td.dp-action { text-align: right; white-space: nowrap; }
   .screen > :nth-child(4) { animation-delay: .15s; }
   .screen > :nth-child(5) { animation-delay: .2s; }
   .screen > :nth-child(n+6) { animation-delay: .25s; }
-  .bar-fill { animation: grow-y .9s var(--ease) both; animation-delay: calc(var(--i, 0) * 28ms + .2s); }
+  .bar-fill, .bar-stack { animation: grow-y .9s var(--ease) both; animation-delay: calc(var(--i, 0) * 28ms + .2s); }
   .cell-bar { animation: grow-x .9s var(--ease) both; animation-delay: .25s; }
   .rank-fill { animation: grow-x .9s var(--ease) both; animation-delay: calc(var(--i, 0) * 28ms + .2s); }
 }
@@ -575,6 +617,11 @@ td.dp-action { text-align: right; white-space: nowrap; }
 /* ── narrow screens: the navigation becomes a floating bar that opens over the page ───────── */
 @media (max-width: 900px) {
   .shell { grid-template-columns: minmax(0, 1fr); }
+  .funnel { flex-direction: column; }
+  .funnel-arrow { display: none; }
+  .funnel-outcomes { flex-basis: auto; align-self: stretch; }
+  .funnel-split { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .funnel-split .funnel-step { min-width: 0; }
   .side { position: sticky; top: 0; height: auto; padding: 10px 12px 0; }
   .side-inner { height: auto; gap: 0; padding: 10px 12px; border-radius: 9999px; overflow: visible; }
   .menu {

@@ -9,8 +9,9 @@
 // kept apart in another.
 
 import { emptyStateFor, measureOf, vocabOf } from './states.js';
-import { formatBytes, formatCount, formatInstant, formatLabels, formatScore, plural } from './format.js';
-import { SOURCES, TEMPLATES, UNRECOGNISED_TOOL, SITE_PREFIX, COLLECTION_MODE_LABELS } from './vocab.js';
+import { formatBytes, formatCount, formatInstant, formatLabels, formatPercent, formatScore, plural } from './format.js';
+import { SOURCES, TEMPLATES, UNRECOGNISED_TOOL, SITE_PREFIX, COLLECTION_MODE_LABELS, WINDOWS } from './vocab.js';
+import { EXPLORE_DATASETS, encodeExploreHash } from './explore-model.js';
 
 /** A total over a set of cells. A set in which no cell carries the measure has no total. */
 export function sumMeasure(state, measure) {
@@ -115,7 +116,10 @@ export function rankedCells(state, measure, key) {
 // One figure per tool or team: the window's cells folded, then ranked or shared
 // ---------------------------------------------------------------------------------------------
 
-const ADDITIVE = Object.freeze(['submissions', 'bytes_total', 'blocked', 'warned', 'logged']);
+const ADDITIVE = Object.freeze([
+  'submissions', 'bytes_total', 'blocked', 'warned', 'logged',
+  'sensitive', 'sensitive_blocked', 'sensitive_warned', 'sensitive_logged', 'attachments', 'content_prompts',
+]);
 const DISTINCT = Object.freeze(['users']);
 
 /**
@@ -302,7 +306,7 @@ export function rankTools(state, { title = 'Tools in use', href = null, moreLabe
     moreLabel,
     emptyText,
     itemLabel: 'Tool',
-    valueLabel: 'Submissions',
+    valueLabel: 'Prompts',
     metaLabels: Object.freeze(['People', 'Blocked', 'Data sent']),
     trendLabel: 'Trend',
     items: Object.freeze(items),
@@ -332,7 +336,7 @@ export function uncataloguedTools(state, { link = toolHref } = {}) {
       title: NOT_CATALOGUED,
       columns: [
         column('fingerprint_cell', 'Site or fingerprint', 'stack'),
-        column('submissions', 'Submissions', 'measure'),
+        column('submissions', 'Prompts', 'measure'),
         column('users', 'People', 'measure'),
         column('bytes_total', 'Data sent', 'measure-bytes'),
         column('last_active', 'Last active', 'instant'),
@@ -439,6 +443,65 @@ function reportingTile(cov) {
     });
 }
 
+/** What happened to a sensitive prompt. A rule that only logs it lets it through, so logged reads as allowed. */
+const OUTCOMES = Object.freeze([
+  Object.freeze({ key: 'allowed', label: 'Allowed', measure: 'sensitive_logged', flagged: 'flagged_logged' }),
+  Object.freeze({ key: 'blocked', label: 'Blocked', measure: 'sensitive_blocked', flagged: 'flagged_blocked' }),
+  Object.freeze({ key: 'warned', label: 'Warned', measure: 'sensitive_warned', flagged: 'flagged_warned' }),
+]);
+
+/** Search's events list with filters, at the window given when Search offers it, else the widest it does. */
+function searchEventsLink(filters, preset) {
+  const dataset = EXPLORE_DATASETS.events;
+  const wanted = preset ?? dataset.defaultWindow;
+  const windowPreset = dataset.windows.includes(wanted) ? wanted : dataset.windows[dataset.windows.length - 1];
+  return {
+    href: `explore.html${encodeExploreHash({ dataset, windowPreset, filters })}`,
+    moreLabel: windowPreset === wanted ? 'Search' : `Search, ${WINDOWS[windowPreset].label.toLowerCase()}`,
+  };
+}
+
+const METADATA_ONLY = 'metadata-only collection (M0)';
+
+/**
+ * Every file attached to a prompt in the window, opening the prompts that carried one. A prompt
+ * sent at metadata-only collection cannot describe an attachment, so its count is unknown rather
+ * than zero: the tile says how many prompts it counted on, and a window with none says so.
+ */
+function attachmentsTile(usage, { preset }) {
+  const attachments = sumMeasure(usage, 'attachments');
+  const described = sumMeasure(usage, 'content_prompts');
+  const prompts = sumMeasure(usage, 'submissions');
+  const link = searchEventsLink({ attachments: 'yes' }, preset);
+  if (attachments.kind !== 'number' || described.kind !== 'number') return tile('Attachments', { kind: 'absent', text: '—' }, absentNote(usage), link);
+  if (described.value === 0 && prompts.kind === 'number' && prompts.value > 0) {
+    return tile('Attachments', { kind: 'absent', text: '—' }, `Not collected: every prompt in this window was sent at ${METADATA_ONLY}, which does not describe attachments.`);
+  }
+  const partly = prompts.kind === 'number' && described.value < prompts.value;
+  return tile('Attachments', { kind: 'number', text: formatCount(attachments.value) },
+    partly
+      ? `Counted on ${formatCount(described.value)} of ${formatCount(prompts.value)} prompts: ${METADATA_ONLY} does not describe attachments.`
+      : 'Files attached to prompts in this window.',
+    link);
+}
+
+/** The prompts that matched an enforcement rule on one of their labels, out of every prompt, split by what happened to them. */
+function sensitiveTile(usage, { href }) {
+  const sensitive = sumMeasure(usage, 'sensitive');
+  const prompts = sumMeasure(usage, 'submissions');
+  const options = { href, moreLabel: 'Insights' };
+  if (sensitive.kind !== 'number') return tile('Sensitive prompts', { kind: 'absent', text: '—' }, absentNote(usage), options);
+  return tile('Sensitive prompts', { kind: 'number', text: formatCount(sensitive.value) },
+    prompts.kind === 'number' ? `of ${formatCount(prompts.value)} prompts matched a rule on their labels` : null,
+    {
+      ...options,
+      trend: trendOf(usage, 'sensitive'),
+      split: sensitive.value > 0
+        ? Object.freeze(OUTCOMES.map((o) => Object.freeze({ key: o.key, label: o.label, count: sumMeasure(usage, o.measure).value ?? 0 })))
+        : null,
+    });
+}
+
 /**
  * The landing page: what a customer wants at a glance, each figure opening the screen that holds
  * the rest of it. Usage comes from its own question; when it does not come back its panels are
@@ -471,7 +534,9 @@ export function postureView({ devices, tools = null, coverage }, { preset = null
   return screen('posture', 'Overview', null, null, {
     subtitle: null,
     tiles: Object.freeze([
-      measureTile('Submissions', usage, 'submissions', formatCount, { trend: trendOf(usage), href: at('#tools'), moreLabel: 'Tools' }),
+      measureTile('Prompts', usage, 'submissions', formatCount, { trend: trendOf(usage), href: at('#tools'), moreLabel: 'Tools' }),
+      attachmentsTile(usage, { preset }),
+      sensitiveTile(usage, { href: at('#insights') }),
       peopleTile(usage, 'Users', { href: '#person', moreLabel: 'Users' }),
       reportingTile(cov),
     ]),
@@ -487,11 +552,246 @@ export function postureView({ devices, tools = null, coverage }, { preset = null
 }
 
 // ---------------------------------------------------------------------------------------------
+// Insights: Exposure
+// ---------------------------------------------------------------------------------------------
+
+/** The period of the same length just before the window, in words: "the previous 7 days". */
+function previousPeriod(preset) {
+  return (WINDOWS[preset] ?? WINDOWS.d7).label.replace(/^Last /, 'the previous ');
+}
+
+/** A read of the previous period that can be compared with: one that answered, in full. */
+function comparable(previous) {
+  return previous && !previous.isRefusal && (previous.resultState === 'ok' || previous.resultState === 'empty') ? previous : null;
+}
+
+/** A total over the previous period; a read that answered with no cell is a zero. */
+function previousTotal(previous, measure) {
+  if (!previous) return null;
+  return previous.data.length === 0 ? { kind: 'number', value: 0 } : sumMeasure(previous, measure);
+}
+
+/** How a count moved against the previous period. Nothing unless both counts are known. */
+function changeOf(current, previous, period) {
+  if (current?.kind !== 'number' || previous?.kind !== 'number') return null;
+  if (previous.value === 0) {
+    return Object.freeze(current.value === 0
+      ? { direction: 'flat', text: `None in ${period} either` }
+      : { direction: 'up', text: `None in ${period}` });
+  }
+  const ratio = (current.value - previous.value) / previous.value;
+  if (Math.abs(ratio) < 0.005) return Object.freeze({ direction: 'flat', text: `Same as ${period}` });
+  return Object.freeze({
+    direction: ratio > 0 ? 'up' : 'down',
+    text: `${ratio > 0 ? '+' : '−'}${Math.max(1, Math.round(Math.abs(ratio) * 100))}% on ${period}`,
+  });
+}
+
+/** One measure per bucket over a set of cells, for a sparkline. */
+function bucketTrend(rows, measure) {
+  const byBucket = new Map();
+  for (const row of rows) {
+    const value = measureOf(row, measure);
+    if (value.kind === 'number') byBucket.set(row.bucket ?? 'total', (byBucket.get(row.bucket ?? 'total') ?? 0) + value.value);
+  }
+  return Object.freeze([...byBucket.entries()]
+    .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+    .map(([bucket, value]) => Object.freeze({ bucket, value })));
+}
+
+const countValue = (value) => (value.kind === 'number' ? { kind: 'number', text: formatCount(value.value) } : { kind: 'absent', text: '—' });
+
+/**
+ * Prompts, then the sensitive ones as a share of them, then what happened to those: each stage
+ * with its change on the previous period.
+ */
+function exposureFunnel(usage, previous, { period, emptyText }) {
+  const prompts = sumMeasure(usage, 'submissions');
+  const sensitive = sumMeasure(usage, 'sensitive');
+  const shareText = (part, whole, of) => (part.kind === 'number' && whole.kind === 'number' && whole.value > 0 ? `${formatPercent(part.value / whole.value)} of ${of}` : null);
+  const stage = (key, label, value, detail, measure) => Object.freeze({
+    key, label, value: countValue(value), count: value.value ?? 0, detail, change: changeOf(value, previousTotal(previous, measure), period),
+  });
+  return Object.freeze({
+    kind: 'funnel',
+    title: 'Exposure',
+    stages: Object.freeze([
+      stage('prompts', 'Prompts', prompts, null, 'submissions'),
+      stage('sensitive', 'Sensitive prompts', sensitive, shareText(sensitive, prompts, 'prompts'), 'sensitive'),
+    ]),
+    outcomes: Object.freeze(OUTCOMES.map((o) => {
+      const value = sumMeasure(usage, o.measure);
+      return stage(o.key, o.label, value, shareText(value, sensitive, 'sensitive prompts'), o.measure);
+    })),
+    emptyText: prompts.kind === 'number' ? null : emptyText,
+  });
+}
+
+/**
+ * The tools sensitive prompts went to, ranked by them, each with how many were allowed, blocked
+ * and warned, and its change on the previous period. Above it, the sensitive prompts allowed to
+ * tools that are not sanctioned.
+ */
+function rankExposure(usage, previous, { link, period, emptyText }) {
+  const groups = foldCells(usage, 'tool').filter((group) => (foldedMeasure(group, 'sensitive').value ?? 0) > 0).sort(byMeasure('sensitive'));
+  const before = previous ? new Map(foldCells(previous, 'tool').map((group) => [group.key, group])) : null;
+  const total = totalOf(groups, 'sensitive');
+  const items = groups.map((group) => {
+    const name = toolName(group.first);
+    const sensitive = foldedMeasure(group, 'sensitive');
+    const earlier = before ? (before.has(group.key) ? foldedMeasure(before.get(group.key), 'sensitive') : { kind: 'number', value: 0 }) : null;
+    return Object.freeze({
+      key: group.key,
+      href: link ? link(group.key) : null,
+      label: name,
+      mono: name === group.key,
+      title: `Tool fingerprint ${group.key}`,
+      sublabel: [name === UNRECOGNISED_TOOL ? group.key : null, changeOf(sensitive, earlier, period)?.text].filter(Boolean).join(' · ') || null,
+      chip: sanctionChip(group.first.sanctioned_state ?? 'unknown'),
+      value: sensitive,
+      share: shareOf(sensitive, total),
+      meta: Object.freeze(OUTCOMES.map((o) => Object.freeze({ label: o.label.toLowerCase(), value: foldedMeasure(group, o.measure) }))),
+      trend: bucketTrend(group.rows, 'sensitive'),
+    });
+  });
+  const allowedTo = (state) => groups
+    .filter((group) => (group.first.sanctioned_state ?? 'unknown') === state)
+    .reduce((n, group) => n + (foldedMeasure(group, 'sensitive_logged').value ?? 0), 0);
+  const unsanctioned = allowedTo('unsanctioned');
+  const undecided = allowedTo('unknown');
+  const summary = groups.length === 0 ? null : [
+    unsanctioned === 0
+      ? 'No sensitive prompt was allowed to an unsanctioned tool'
+      : `${plural(unsanctioned, 'sensitive prompt was', 'sensitive prompts were')} allowed to unsanctioned tools`,
+    undecided > 0 ? `, and ${formatCount(undecided)} to tools with no decision yet` : '',
+    '.',
+  ].join('');
+  return Object.freeze({
+    kind: 'ranking',
+    title: 'Where sensitive prompts went',
+    href: null,
+    summary,
+    emptyText,
+    itemLabel: 'Tool',
+    valueLabel: 'Sensitive',
+    metaLabels: Object.freeze(OUTCOMES.map((o) => o.label)),
+    trendLabel: 'Trend',
+    items: Object.freeze(items),
+  });
+}
+
+/**
+ * The labels rules matched, each with its sensitive prompts and what happened to them. A prompt
+ * with two such labels is in both rows, so the rows are not summed.
+ */
+function exposedTable(classes, { emptyText }) {
+  const measures = ['flagged', ...OUTCOMES.map((o) => o.flagged)];
+  const rows = classes && !classes.isRefusal
+    ? foldCells(classes, 'class', { sum: measures, max: [] })
+      .filter((group) => (foldedMeasure(group, 'flagged').value ?? 0) > 0)
+      .sort(byMeasure('flagged'))
+      .map((group) => Object.freeze({
+        class: group.key,
+        severity: group.first.severity ?? null,
+        ...Object.fromEntries(measures.map((m) => [m, foldedMeasure(group, m).value ?? null])),
+      }))
+    : [];
+  return Object.freeze({
+    kind: 'table',
+    ...tableFrom({ data: rows }, {
+      title: 'What was exposed',
+      columns: [
+        column('class', 'Label', 'vocab'),
+        column('severity', 'Severity', 'vocab'),
+        column('flagged', 'Sensitive prompts', 'measure'),
+        ...OUTCOMES.map((o) => column(o.flagged, o.label, 'measure')),
+      ],
+      emptyText,
+    }),
+    breakdowns: false,
+  });
+}
+
+/** Sensitive prompts per bucket, each bucket split by what happened to them. */
+function exposureSeries(usage) {
+  if (!(usage.meta?.source ?? '').startsWith('mart.')) return [];
+  const byBucket = new Map();
+  for (const row of usage.data) {
+    const bucket = row.bucket ?? 'total';
+    if (!byBucket.has(bucket)) byBucket.set(bucket, new Map(OUTCOMES.map((o) => [o.key, 0])));
+    const parts = byBucket.get(bucket);
+    for (const o of OUTCOMES) {
+      const value = measureOf(row, o.measure);
+      if (value.kind === 'number') parts.set(o.key, parts.get(o.key) + value.value);
+    }
+  }
+  const points = [...byBucket.entries()]
+    .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+    .map(([bucket, parts]) => Object.freeze({
+      bucket,
+      value: { kind: 'number', value: [...parts.values()].reduce((a, b) => a + b, 0) },
+      parts: Object.freeze(OUTCOMES.map((o) => Object.freeze({ key: o.key, label: o.label, value: parts.get(o.key) }))),
+    }));
+  if (!points.some((p) => p.value.value > 0)) return [];
+  return [Object.freeze({ title: seriesTitle(usage, 'Sensitive prompts'), points: Object.freeze(points), unavailable: false, reason: null })];
+}
+
+/**
+ * Insights, Exposure: the prompts that matched an enforcement rule on a label the rule names, as
+ * a share of every prompt; what happened to them; the tools they went to; the labels involved;
+ * and the shape over the window. Every count is compared with the period of the same length just
+ * before it, when that period could be read.
+ *
+ * @param {object} input
+ * @param {object} input.usage       view state for tool usage over the window (Q1)
+ * @param {object} [input.previous]  the same read over the previous period
+ * @param {object} [input.classes]   view state for the class mix over the window (Q4)
+ */
+export function insightsView({ usage, previous = null, classes = null }, { preset = 'd7', link = toolHref } = {}) {
+  const period = previousPeriod(preset);
+  const before = comparable(previous);
+  const notes = [
+    'A prompt is sensitive when the enforcement rule it matched names one of its labels; only the labels that rule names count for it.',
+    'Allowed counts the sensitive prompts the matching rule only logged, and those sent by a route that cannot block.',
+    'Sensitive prompts are counted against the rules as they stand now, so a rule edited today can change the figures for recent days.',
+    'A prompt with two labels a rule names is counted under each in What was exposed.',
+    'What was exposed lists the built-in data classes: a prompt a rule matched on a custom label counts in the figures above it, but has no row there.',
+  ];
+  const prompts = sumMeasure(usage, 'submissions');
+  const sensitive = sumMeasure(usage, 'sensitive');
+  if (sensitive.kind === 'number' && sensitive.value === 0 && prompts.kind === 'number' && prompts.value > 0) {
+    notes.unshift('No prompt in this window matched a rule that names one of its labels. Nothing counts as sensitive until an enforcement rule names a label; rules are set in Settings.');
+  }
+  notes.push(before
+    ? `Each change compares this window with ${period}.`
+    : `${period[0].toUpperCase()}${period.slice(1)} could not be read, so no change is shown.`);
+  const degraded = classes && !classes.isRefusal ? sumMeasure(classes, 'degraded_events') : null;
+  if (degraded?.kind === 'number' && degraded.value > 0) {
+    notes.push(`${formatCount(degraded.value)} events in this window could not be classified, so they carry no label and none is counted as sensitive.`);
+  }
+  const exposedEmpty = !classes ? 'The labels could not be read for this window.'
+    : classes.isRefusal ? `The labels could not be read: ${classes.error?.message ?? classes.resultState}.`
+      : emptyLine(classes, 'No label a rule names was found in this window.');
+  return screen('insights', 'Insights', null, 'mart.v_tool_usage', {
+    subtitle: 'Exposure: the prompts that matched an enforcement rule on their labels, where they went and what happened to them.',
+    lead: Object.freeze([exposureFunnel(usage, before, { period, emptyText: emptyLine(usage, 'No prompts in this window.') })]),
+    tiles: Object.freeze([]),
+    blocks: Object.freeze([
+      rankExposure(usage, before, { link: link ? (fingerprint) => link(fingerprint, preset) : null, period, emptyText: emptyLine(usage, 'No sensitive prompt in this window.') }),
+      exposedTable(classes, { emptyText: exposedEmpty }),
+    ]),
+    series: Object.freeze(exposureSeries(usage)),
+    tables: Object.freeze([]),
+    ...shared(usage, notes),
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
 // The ten questions
 // ---------------------------------------------------------------------------------------------
 
 /** The chart's title names the bucket the series was served in. */
-function seriesTitle(state, what = 'Submissions') {
+function seriesTitle(state, what = 'Prompts') {
   const bucket = state.meta?.applied_bucket ?? state.meta?.requested_bucket ?? null;
   return bucket ? `${what} per ${bucket}` : `${what} per bucket`;
 }
@@ -504,23 +804,23 @@ function seriesTitle(state, what = 'Submissions') {
 export function toolsView(state, { link = toolHref, preset = null } = {}) {
   const linkTo = link ? (fingerprint) => link(fingerprint, preset) : null;
   return screen('tools', 'Tools', null, 'mart.v_tool_usage', {
-    subtitle: 'Every AI tool seen in this window, by submissions. Open a tool to see who uses it and what was sent.',
+    subtitle: 'Every AI tool seen in this window, by prompts. Open a tool to see who uses it and what was sent.',
     lead: Object.freeze([
       sanctionShare(state, { emptyText: emptyLine(state, 'No tool was detected in this window.') }),
     ]),
     tiles: Object.freeze([
-      measureTile('Submissions', state, 'submissions', formatCount, { trend: trendOf(state) }),
+      measureTile('Prompts', state, 'submissions', formatCount, { trend: trendOf(state) }),
       measureTile('Blocked', state, 'blocked'),
       measureTile('Data sent', state, 'bytes_total', formatBytes),
     ]),
     blocks: Object.freeze([
-      rankTools(state, { title: 'Tools by submissions', link: linkTo, emptyText: emptyLine(state, 'No tool was in use in this window.') }),
+      rankTools(state, { title: 'Tools by prompts', link: linkTo, emptyText: emptyLine(state, 'No tool was in use in this window.') }),
     ]),
     tables: Object.freeze([uncataloguedTools(state, { link: linkTo })].filter(Boolean)),
     // A window with no cell has no shape to draw: the ranking's empty line says why.
     series: Object.freeze(state.data.length > 0 ? [seriesFrom(state, { measure: 'submissions', title: seriesTitle(state) })] : []),
     ...shared(state, [
-      'Rank is by submissions with a deterministic tie-break, and is never a sanction signal.',
+      'Rank is by prompts with a deterministic tie-break, and is never a sanction signal.',
       'Unknown is its own answer: a tool with no decision renders as unknown, never as unsanctioned.',
       'A tool\'s people is the most counted in any one period, a floor for the window: a person active on two days is counted on both.',
     ]),
@@ -529,7 +829,7 @@ export function toolsView(state, { link = toolHref, preset = null } = {}) {
 
 /**
  * One tool: its figures over the window, who is using it, and the findings it produced. The
- * people are a roster in the API's order, with their submissions; a role that may not see people
+ * people are a roster in the API's order, with their prompts; a role that may not see people
  * sees the totals and is told why the roster is missing.
  */
 export function toolView({ usage, people = null, findings = null, names = {} }, { tool, preset = null, exploreHref = 'explore.html' }) {
@@ -566,7 +866,7 @@ export function toolView({ usage, people = null, findings = null, names = {} }, 
       Object.freeze({ label: 'All tools', href: withPreset('#tools', preset) }),
     ]),
     tiles: Object.freeze([
-      foldedTile('Submissions', group, 'submissions', formatCount, { trend: group && group.trend.length > 1 ? group.trend : null }),
+      foldedTile('Prompts', group, 'submissions', formatCount, { trend: group && group.trend.length > 1 ? group.trend : null }),
       foldedTile('People (lower bound)', group, 'users'),
       foldedTile('Blocked', group, 'blocked'),
       foldedTile('Data sent', group, 'bytes_total', formatBytes),
@@ -576,7 +876,7 @@ export function toolView({ usage, people = null, findings = null, names = {} }, 
         title: 'People using it',
         columns: [
           column('name', 'User', 'person'),
-          column('submissions', 'Submissions', 'measure'),
+          column('submissions', 'Prompts', 'measure'),
           column('bytes_total', 'Data sent', 'measure-bytes'),
         ],
         emptyText: emptyLine(people, 'Nobody used this tool in this window.'),
@@ -606,7 +906,7 @@ export function unsanctionedView(state) {
   return screen('unsanctioned', 'Unsanctioned', TEMPLATES.q2_unsanctioned_users.title, 'mart.agg_tool_user_period', {
     subtitle: 'Which tools are unsanctioned, and which people are using them. Subject-bearing: this read is audited.',
     tiles: Object.freeze([
-      measureTile('Submissions', state, 'submissions'),
+      measureTile('Prompts', state, 'submissions'),
       tile('Tools involved', { kind: 'number', text: formatCount(tools.size) }, null),
       tile('People in this page', { kind: 'number', text: formatCount(state.data.length) }, 'A page count, not a fleet total.'),
     ]),
@@ -616,7 +916,7 @@ export function unsanctionedView(state) {
         columns: [
           column('tool', 'Tool'),
           column('subject', 'User', 'person'),
-          column('submissions', 'Submissions', 'measure'),
+          column('submissions', 'Prompts', 'measure'),
           column('bytes_total', 'Bytes', 'measure-bytes'),
         ],
         emptyText: 'Nobody used an unsanctioned tool in this window.',
@@ -633,7 +933,7 @@ export function unsanctionedView(state) {
  * The people behind the team totals, by team and then by name: a roster with numbers, not a
  * ranking. Null when there was nothing to read; a refusal says why the people are missing.
  */
-function teamMembersTable(members, { byTeam = true, title = 'Submissions by person' } = {}) {
+function teamMembersTable(members, { byTeam = true, title = 'Prompts by person' } = {}) {
   const byName = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), undefined, { sensitivity: 'base' });
   const rows = [...members.data].sort((a, b) => byName(a.team_name, b.team_name) || byName(a.name, b.name) || byName(a.subject, b.subject));
   return Object.freeze({
@@ -641,7 +941,7 @@ function teamMembersTable(members, { byTeam = true, title = 'Submissions by pers
     columns: Object.freeze([
       ...(byTeam ? [column('team_name', 'Team')] : []),
       column('name', 'User', 'person'),
-      column('submissions', 'Submissions', 'measure'),
+      column('submissions', 'Prompts', 'measure'),
     ]),
     // The team heads its run of people rather than repeating on every line.
     ...(byTeam ? { groupBy: 'team_name' } : {}),
@@ -654,8 +954,8 @@ function teamMembersNotes(members) {
   if (!members) return [];
   if (members.isRefusal) {
     return [members.resultState === 'unauthorised_role'
-      ? 'Your role does not show each person\'s submissions; an analyst or admin sees them.'
-      : `Each person's submissions could not be read: ${members.error?.message ?? members.resultState}.`];
+      ? 'Your role does not show each person\'s prompts; an analyst or admin sees them.'
+      : `Each person's prompts could not be read: ${members.error?.message ?? members.resultState}.`];
   }
   const notes = ['Each person is listed under every team they are in, ordered by team and name. Reading this list is audited.'];
   if (members.meta?.truncated) notes.push(`Only the first ${formatCount(members.data.length)} people are listed.`);
@@ -679,7 +979,7 @@ function teamFacts(team) {
 }
 
 /**
- * The teams, as one ranked list by submissions, each opening its own screen. A team the admin
+ * The teams, as one ranked list by prompts, each opening its own screen. A team the admin
  * list knows that has no usage is listed at the end with a zero, so a quiet team is seen rather
  * than dropped; under partial coverage that zero is a floor like every other figure on the page,
  * and the coverage line says so. A read that could not say lists nothing.
@@ -722,7 +1022,7 @@ function rankTeams(state, { teams = null, link = teamHref, emptyText }) {
     href: null,
     emptyText,
     itemLabel: 'Team',
-    valueLabel: 'Submissions',
+    valueLabel: 'Prompts',
     metaLabels: Object.freeze(['People']),
     trendLabel: 'Trend',
     items: Object.freeze(items),
@@ -782,7 +1082,7 @@ export function teamView(state, { team, members = null, teams = null, preset = n
     subtitle: facts ? `${facts}. A team counts the usage of the people in it now.` : 'One team\'s usage. A team counts the usage of the people in it now.',
     actions: Object.freeze([Object.freeze({ label: 'All teams', href: withPreset('#teams', preset) })]),
     tiles: Object.freeze([
-      foldedTile('Submissions', group, 'submissions', formatCount, { trend: group && group.trend.length > 1 ? group.trend : null }),
+      foldedTile('Prompts', group, 'submissions', formatCount, { trend: group && group.trend.length > 1 ? group.trend : null }),
       foldedTile('People (lower bound)', group, 'users'),
       tile('People listed', listed === null ? { kind: 'absent', text: '—' } : { kind: 'number', text: formatCount(listed) },
         listed === null ? 'The roster could not be read.' : 'Members who sent a prompt in this window.'),
@@ -803,12 +1103,12 @@ export function classesView(state) {
     notes.push('This response carries no degraded_events measure, so classifier health for this window is unknown.');
   }
   if (classTotal !== null) {
-    notes.push(`The non-additive total for the same window is ${formatCount(classTotal)} submissions, from a different source: class rows fan out and must not be summed as submissions.`);
+    notes.push(`The non-additive total for the same window is ${formatCount(classTotal)} prompts, from a different source: class rows fan out and must not be summed as prompts.`);
   }
   return screen('classes', 'Data classes', TEMPLATES.q4_class_mix.title, 'mart.agg_class_period', {
     subtitle: 'Sensitive-data classes, with the classifier health that produced them.',
     tiles: Object.freeze([
-      measureTile('Class-carrying submissions (fan-out)', state, 'submissions'),
+      measureTile('Class-carrying prompts (fan-out)', state, 'submissions'),
       measureTile('People (lower bound)', state, 'users'),
       measureTile('Max score', state, 'max_score', formatScore),
       tile('Non-additive total', classTotal === null ? { kind: 'absent', text: '—' } : { kind: 'number', text: formatCount(classTotal) },
@@ -816,13 +1116,13 @@ export function classesView(state) {
     ]),
     tables: Object.freeze([
       tableFrom(state, {
-        title: 'Classes by submissions',
+        title: 'Classes by prompts',
         columns: [
           column('class', 'Class', 'vocab'),
           column('severity', 'Severity', 'vocab'),
           column('tool', 'Tool'),
           column('classifier_version', 'Classifier', 'vocab'),
-          column('submissions', 'Submissions carrying it', 'measure'),
+          column('submissions', 'Prompts carrying it', 'measure'),
           column('users', 'People', 'measure'),
           column('max_score', 'Max score', 'measure-score'),
           column('degraded_events', 'Degraded', 'measure'),
@@ -830,13 +1130,13 @@ export function classesView(state) {
         emptyText: 'No sensitive data was classified in this window.',
       }),
     ]),
-    series: Object.freeze([seriesFrom(state, { measure: 'submissions', title: 'Class-carrying submissions per bucket' })]),
+    series: Object.freeze([seriesFrom(state, { measure: 'submissions', title: 'Class-carrying prompts per bucket' })]),
     ...shared(state, notes),
   });
 }
 
 export function personView(state, { subject, person = null, exploreHref = 'explore.html' }) {
-  const series = seriesFrom(state, { measure: 'submissions', title: 'Submissions per day' });
+  const series = seriesFrom(state, { measure: 'submissions', title: 'Prompts per day' });
   const flush = state.meta?.extras?.flush_check?.[0] ?? null;
   const notes = [];
   if (flush) {
@@ -852,7 +1152,7 @@ export function personView(state, { subject, person = null, exploreHref = 'explo
       Object.freeze({ label: 'All people', href: '#person' }),
     ]),
     tiles: Object.freeze([
-      measureTile('Submissions', state, 'submissions'),
+      measureTile('Prompts', state, 'submissions'),
       measureTile('Tools used', state, 'tools_used'),
       measureTile('Block events', state, 'block_events'),
       measureTile('Bytes', state, 'bytes_total', formatBytes),
@@ -862,7 +1162,7 @@ export function personView(state, { subject, person = null, exploreHref = 'explo
         title: 'Daily series',
         columns: [
           column('bucket', 'Day', 'instant'),
-          column('submissions', 'Submissions', 'measure'),
+          column('submissions', 'Prompts', 'measure'),
           column('tools_used', 'Tools', 'measure'),
           column('block_events', 'Blocked', 'measure'),
         ],
@@ -880,7 +1180,7 @@ export function personView(state, { subject, person = null, exploreHref = 'explo
 /**
  * The people the directory and the devices know, by name, to open one person's page. It has no
  * usage column to sort by: it is a directory, not a ranking. Above it, when read, each team's
- * people with their submissions in the window, by team and then by name.
+ * people with their prompts in the window, by team and then by name.
  */
 export function peopleView(state, { search = '', members = null } = {}) {
   const next = state.page?.next_cursor ?? null;

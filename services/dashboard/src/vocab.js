@@ -75,7 +75,10 @@ export const SOURCES = Object.freeze({
     kind: 'aggregate',
     label: 'Tool usage (view)',
     dimensions: Object.freeze(['bucket', 'tool', 'sanctioned_state']),
-    measures: Object.freeze(['submissions', 'users', 'bytes_total', 'blocked', 'warned', 'logged']),
+    measures: Object.freeze([
+      'submissions', 'users', 'bytes_total', 'blocked', 'warned', 'logged',
+      'sensitive', 'sensitive_blocked', 'sensitive_warned', 'sensitive_logged', 'attachments', 'content_prompts',
+    ]),
     answers: 'Q1',
     note: 'sanctioned state is joined at read time; a tool with no decision arrives as unknown, never as unsanctioned',
   }),
@@ -86,6 +89,7 @@ export const SOURCES = Object.freeze({
     measures: Object.freeze([
       'submissions', 'users', 'bytes_total', 'blocked', 'warned', 'logged',
       'detections', 'rollup_events', 'degraded_events',
+      'sensitive', 'sensitive_blocked', 'sensitive_warned', 'sensitive_logged', 'attachments', 'content_prompts',
     ]),
     answers: 'Q1',
     note: 'detection-only and rollup-only tools appear here and not in the view',
@@ -136,7 +140,7 @@ export const SOURCES = Object.freeze({
     kind: 'aggregate',
     label: 'Sensitive-data class mix',
     dimensions: Object.freeze(['bucket', 'class', 'tool', 'severity', 'classifier_version']),
-    measures: Object.freeze(['submissions', 'users', 'max_score', 'degraded_events']),
+    measures: Object.freeze(['submissions', 'users', 'max_score', 'degraded_events', 'flagged', 'flagged_blocked', 'flagged_warned', 'flagged_logged']),
     answers: 'Q4',
     note: 'submissions counts submissions carrying the class: the rows fan out and are not additive',
   }),
@@ -268,7 +272,7 @@ export const TEMPLATES = Object.freeze({
     title: 'What happened in this window, for this tool or person?',
     source: 'ingest.submission',
     screen: 'activity',
-    params: Object.freeze(['window', 'limit', 'cursor', 'subject', 'tool', 'device', 'class', 'content_state', 'action', 'mode', 'department', 'prompt_kind', 'prompt_kind_not']),
+    params: Object.freeze(['window', 'limit', 'cursor', 'subject', 'tool', 'device', 'class', 'content_state', 'action', 'mode', 'department', 'prompt_kind', 'prompt_kind_not', 'attachments']),
   }),
   q9_event_detail: Object.freeze({
     question: 9,

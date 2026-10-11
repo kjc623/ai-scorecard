@@ -131,6 +131,11 @@ func LastCompleteBucket(bucketSize string, now time.Time) (time.Time, error) {
 // a data-modifying CTE, so one statement replaces the window. %[1]s is the date_trunc field, which
 // is also the bucket_size value the rows carry.
 
+// A prompt is sensitive when the enforcement rule it matched names a label the prompt carries:
+// the rule matched on that label. A rule that names no label matched on tool, category, sanction
+// or route alone. The rule is read as it stands when the bucket is computed.
+const ruleLabelSQL = `er.match->'labels' @> jsonb_build_array(l.value->>'class')`
+
 // toolPeriodSQL is the per-tool usage behind the tool inventory. It is the only aggregate that
 // also carries the detection, rollup and degraded measures, because a tool known only from a
 // process detection has no submissions and would otherwise vanish from the inventory.
@@ -146,8 +151,21 @@ WITH src AS (
          count(*) FILTER (WHERE s.kind = 'prompt' AND s.policy_action = 'logged')   AS logged,
          count(*) FILTER (WHERE s.kind = 'discovery')                               AS detections,
          count(*) FILTER (WHERE s.kind = 'usage_rollup')                            AS rollup_events,
-         count(*) FILTER (WHERE s.confidence = 'degraded')                          AS degraded_events
+         count(*) FILTER (WHERE s.confidence = 'degraded')                          AS degraded_events,
+         count(*) FILTER (WHERE s.kind = 'prompt' AND f.sensitive)                  AS sensitive,
+         count(*) FILTER (WHERE s.kind = 'prompt' AND f.sensitive AND s.policy_action = 'blocked') AS sensitive_blocked,
+         count(*) FILTER (WHERE s.kind = 'prompt' AND f.sensitive AND s.policy_action = 'warned')  AS sensitive_warned,
+         count(*) FILTER (WHERE s.kind = 'prompt' AND f.sensitive AND s.policy_action = 'logged')  AS sensitive_logged,
+         coalesce(sum(s.attachment_count) FILTER (WHERE s.kind = 'prompt'), 0)::bigint AS attachments,
+         count(*) FILTER (WHERE s.kind = 'prompt' AND s.collection_mode <> 'm0')    AS content_prompts
     FROM ingest.submission s
+    LEFT JOIN ops.enforcement_rule er ON er.tenant_id = s.tenant_id AND er.rule_id = s.policy_rule_id
+    CROSS JOIN LATERAL (
+      SELECT EXISTS (SELECT 1
+                       FROM jsonb_array_elements(CASE WHEN jsonb_typeof(s.labels) = 'array'
+                                                      THEN s.labels ELSE '[]'::jsonb END) AS l(value)
+                      WHERE ` + ruleLabelSQL + `) AS sensitive
+    ) f
    WHERE s.tenant_id = $1 AND s.received_at >= $2 AND s.received_at < $3
    GROUP BY 1, 2
 ),
@@ -159,17 +177,23 @@ gone AS (
                       WHERE src.bucket_start = m.bucket_start AND src.tool_fingerprint = m.tool_fingerprint)
 )
 INSERT INTO mart.agg_tool_period (tenant_id, bucket_start, bucket_size, tool_fingerprint,
-  submissions, users, bytes_total, blocked, warned, logged, detections, rollup_events, degraded_events)
+  submissions, users, bytes_total, blocked, warned, logged, detections, rollup_events, degraded_events,
+  sensitive, sensitive_blocked, sensitive_warned, sensitive_logged, attachments, content_prompts)
 SELECT $1, src.bucket_start, %[1]s, src.tool_fingerprint,
        src.submissions, src.users, src.bytes_total, src.blocked, src.warned, src.logged,
-       src.detections, src.rollup_events, src.degraded_events
+       src.detections, src.rollup_events, src.degraded_events,
+       src.sensitive, src.sensitive_blocked, src.sensitive_warned, src.sensitive_logged,
+       src.attachments, src.content_prompts
   FROM src
 ON CONFLICT (tenant_id, bucket_start, bucket_size, tool_fingerprint) DO UPDATE
   SET submissions = EXCLUDED.submissions, users = EXCLUDED.users,
       bytes_total = EXCLUDED.bytes_total, blocked = EXCLUDED.blocked,
       warned = EXCLUDED.warned, logged = EXCLUDED.logged,
       detections = EXCLUDED.detections, rollup_events = EXCLUDED.rollup_events,
-      degraded_events = EXCLUDED.degraded_events`
+      degraded_events = EXCLUDED.degraded_events,
+      sensitive = EXCLUDED.sensitive, sensitive_blocked = EXCLUDED.sensitive_blocked,
+      sensitive_warned = EXCLUDED.sensitive_warned, sensitive_logged = EXCLUDED.sensitive_logged,
+      attachments = EXCLUDED.attachments, content_prompts = EXCLUDED.content_prompts`
 
 // toolUserPeriodSQL is usage per tool per person. It counts prompts only, because a rollup or a
 // detection is not a submission by a person.
@@ -209,12 +233,14 @@ WITH labelled AS (
          s.tool_fingerprint,
          coalesce(r.severity, dc.default_severity) AS severity,
          coalesce(s.classifier_version, '') AS classifier_version,
-         s.submission_id, s.user_ref, s.confidence,
-         coalesce((l.value->>'score')::numeric, 0) AS score
+         s.submission_id, s.user_ref, s.confidence, s.policy_action,
+         coalesce((l.value->>'score')::numeric, 0) AS score,
+         coalesce(` + ruleLabelSQL + `, false) AS flagged
     FROM ingest.submission s
     CROSS JOIN LATERAL jsonb_array_elements(s.labels) AS l(value)
     JOIN ref.data_class dc ON dc.class_code = l.value->>'class'
     LEFT JOIN ref.rule r ON r.rule_id = l.value->>'rule_id'
+    LEFT JOIN ops.enforcement_rule er ON er.tenant_id = s.tenant_id AND er.rule_id = s.policy_rule_id
    WHERE s.tenant_id = $1 AND s.received_at >= $2 AND s.received_at < $3
      AND s.kind = 'prompt'
      AND s.labels IS NOT NULL AND jsonb_typeof(s.labels) = 'array'
@@ -224,7 +250,11 @@ src AS (
          count(DISTINCT submission_id) AS submissions,
          count(DISTINCT user_ref)      AS users,
          max(score)                    AS max_score,
-         count(DISTINCT submission_id) FILTER (WHERE confidence = 'degraded') AS degraded_events
+         count(DISTINCT submission_id) FILTER (WHERE confidence = 'degraded') AS degraded_events,
+         count(DISTINCT submission_id) FILTER (WHERE flagged) AS flagged,
+         count(DISTINCT submission_id) FILTER (WHERE flagged AND policy_action = 'blocked') AS flagged_blocked,
+         count(DISTINCT submission_id) FILTER (WHERE flagged AND policy_action = 'warned')  AS flagged_warned,
+         count(DISTINCT submission_id) FILTER (WHERE flagged AND policy_action = 'logged')  AS flagged_logged
     FROM labelled
    GROUP BY 1, 2, 3, 4, 5
 ),
@@ -238,14 +268,18 @@ gone AS (
                         AND src.classifier_version = m.classifier_version)
 )
 INSERT INTO mart.agg_class_period (tenant_id, bucket_start, bucket_size, class_code,
-  tool_fingerprint, severity, classifier_version, submissions, users, max_score, degraded_events)
+  tool_fingerprint, severity, classifier_version, submissions, users, max_score, degraded_events,
+  flagged, flagged_blocked, flagged_warned, flagged_logged)
 SELECT $1, src.bucket_start, %[1]s, src.class_code, src.tool_fingerprint, src.severity, src.classifier_version,
-       src.submissions, src.users, src.max_score, src.degraded_events
+       src.submissions, src.users, src.max_score, src.degraded_events,
+       src.flagged, src.flagged_blocked, src.flagged_warned, src.flagged_logged
   FROM src
 ON CONFLICT (tenant_id, bucket_start, bucket_size, class_code, tool_fingerprint, severity,
              classifier_version) DO UPDATE
   SET submissions = EXCLUDED.submissions, users = EXCLUDED.users,
-      max_score = EXCLUDED.max_score, degraded_events = EXCLUDED.degraded_events`
+      max_score = EXCLUDED.max_score, degraded_events = EXCLUDED.degraded_events,
+      flagged = EXCLUDED.flagged, flagged_blocked = EXCLUDED.flagged_blocked,
+      flagged_warned = EXCLUDED.flagged_warned, flagged_logged = EXCLUDED.flagged_logged`
 
 // orgPeriodSQL is usage by department. It is empty for a tenant with no directory sync, because
 // department and population live in ops.user_dim and a person with no row there cannot be
