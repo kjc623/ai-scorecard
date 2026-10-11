@@ -12,7 +12,7 @@ import { emptyStateFor, measureOf, vocabOf } from './states.js';
 import { formatBytes, formatCount, formatInstant, formatLabels, formatPercent, formatScore, plural } from './format.js';
 import { SOURCES, TEMPLATES, UNRECOGNISED_TOOL, SITE_PREFIX, COLLECTION_MODE_LABELS, WINDOWS } from './vocab.js';
 import { EXPLORE_DATASETS, encodeExploreHash } from './explore-model.js';
-import { RULE_ACTION_LABELS, RULE_CATEGORIES, RULE_MATCH_FIELDS, RULE_MATCH_TITLES, RULE_ROUTES } from './settings.js';
+import { RULE_ACTION_LABELS, RULE_CATEGORIES, RULE_MATCH_FIELDS, RULE_MATCH_TITLES, RULE_ROUTES } from './rules.js';
 
 /** A total over a set of cells. A set in which no cell carries the measure has no total. */
 export function sumMeasure(state, measure) {

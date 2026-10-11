@@ -407,10 +407,11 @@ export function createAdminApi({ transport }) {
     setTLSInspection(enabled) {
       return done({ method: 'PUT', path: ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT, body: { enabled } });
     },
+    /** The rules in order, and who the values their users name are. */
     async rules() {
       const answer = await call({ method: 'GET', path: ADMIN_SETTINGS_RULES_ENDPOINT });
       if (!ok(answer.status) || !Array.isArray(answer.body?.rules)) return refused(answer);
-      return { state: 'available', data: normaliseRules(answer.body.rules) };
+      return { state: 'available', data: normaliseRules(answer.body.rules), users: normaliseRuleUsers(answer.body.users) };
     },
     /** The whole ordered list: control-api replaces the tenant's rules with exactly these. */
     setRules(rules) {
@@ -605,7 +606,22 @@ export function normaliseRules(rules) {
       Object.freeze((Array.isArray(r.match?.[f]) ? r.match[f] : []).filter((v) => typeof v === 'string'))]))),
     message: typeof r.message === 'string' ? r.message : '',
     link: typeof r.link === 'string' ? r.link : '',
+    users: Object.freeze((Array.isArray(r.users) ? r.users : []).filter((v) => typeof v === 'string' && v !== '')),
+    enabled: r.enabled !== false,
   })));
+}
+
+/**
+ * Who each value a rule's users hold is, by value: its name, how many people it reaches, and
+ * whether it still exists. A value the server did not name is absent.
+ */
+export function normaliseRuleUsers(users) {
+  const out = {};
+  for (const u of Array.isArray(users) ? users : []) {
+    if (!u || typeof u !== 'object' || typeof u.value !== 'string' || u.value === '') continue;
+    out[u.value] = Object.freeze({ name: typeof u.name === 'string' ? u.name : '', members: nullableNumber(u.members), found: u.found !== false });
+  }
+  return Object.freeze(out);
 }
 
 /** The endpoint collector switches: null when the server sent none, and null for a switch it left out. */

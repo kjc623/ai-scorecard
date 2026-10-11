@@ -8,13 +8,14 @@
 import { escapeHtml } from './render.js';
 
 /**
- * The navigation: seven destinations, with the three usage screens under one group and the admin's
- * settings under another. Every other screen is reached from a row or a switch on one of these. A
- * signed-in role sees only the items it may use (session.js).
+ * The navigation: the top-level destinations, with the three usage screens under one group and the
+ * admin's settings under another. Every other screen is reached from a row or a switch on one of
+ * these. A signed-in role sees only the items it may use (session.js).
  */
 export const NAV_GROUPS = Object.freeze([
   { group: null, icon: 'overview', ids: ['posture'], labels: { posture: 'Overview' } },
   { group: null, icon: 'insights', ids: ['insights'], labels: { insights: 'Insights' } },
+  { group: null, icon: 'rules', ids: ['rules'], labels: { rules: 'Rules' } },
   { group: 'Usage', icon: 'usage', ids: ['tools', 'teams', 'person'], labels: { tools: 'Tools', teams: 'Teams', person: 'Users' } },
   { group: null, icon: 'collection', ids: ['devices'], labels: { devices: 'Devices' } },
   { group: null, icon: 'governance', ids: ['audit'], labels: { audit: 'Audit trail' } },
@@ -25,13 +26,13 @@ const NAV_FOLDED = Object.freeze(NAV_GROUPS.filter((g) => g.folded).map((g) => g
 
 /**
  * The navigation as renderNav takes it. `page` prefixes each screen link, so a sibling page links
- * back into the dashboard; the Explore page sits under Insights, as a top-level link, on both.
+ * back into the dashboard; the Explore page sits under Rules, as a top-level link, on both.
  */
 export function shellNavItems({ page = '', questionOf = () => null } = {}) {
   const items = NAV_GROUPS.flatMap(({ group, icon, ids, labels }) => ids.map((id) => ({
     id, label: labels[id], question: questionOf(id), group, icon, groupIcon: icon, href: `${page}#${id}`,
   })));
-  const at = items.findIndex((item) => item.id === 'insights') + 1;
+  const at = items.findIndex((item) => item.id === 'rules') + 1;
   return [
     ...items.slice(0, at),
     { id: 'explore', label: 'Search', href: 'explore.html', icon: 'search', group: null },
