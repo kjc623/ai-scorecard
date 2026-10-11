@@ -53,7 +53,7 @@ test('the unsanctioned table is ordered by tool and person, never by volume', as
   assert.ok(view.notes.some((n) => /not a ranking/.test(n)));
 });
 
-test('the Users page lists each team\'s people by team and name, never by volume, and says when a role cannot see them', async () => {
+test('the Users page lists each team member once, by name, never by volume, and says when a role cannot see them', async () => {
   const sent = [];
   const transport = fixtureTransport();
   const dashboard = createDashboard({ api: createQueryApi({ transport: { send: (body) => { sent.push(body); return transport.send(body); } } }), now: () => new Date('2026-10-01T12:00:00Z') });
@@ -63,7 +63,12 @@ test('the Users page lists each team\'s people by team and name, never by volume
   assert.deepEqual(roster.filters, [{ field: 'team', op: 'in', value: ['7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0002', '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0003'] }], 'only the teams on the page are read');
   assert.equal(view.tables[0].title, 'Users', 'the roster sits first, under the search bar');
   const table = view.tables[0];
-  assert.deepEqual(table.rows.map((r) => `${r.row.team_name}/${r.row.name}`), ['Engineering/Ada Lovelace', 'Engineering/Grace Hopper', 'Engineering/u_1b77', 'Finance/Grace Hopper']);
+  assert.deepEqual(table.columns.map((c) => c.label), ['User', 'Teams', 'Prompts']);
+  assert.deepEqual(
+    table.rows.map((r) => [r.row.name, r.row.team_names, r.row.submissions]),
+    [['Ada Lovelace', 'Engineering', 3], ['Grace Hopper', 'Engineering, Finance', 17], ['u_1b77', 'Engineering', 40]],
+    'a person in two teams who sent prompts on two days is one row, with both teams and the prompts of both days',
+  );
   const html = renderScreen(view, SHELL);
   assert.ok(html.includes('href="#person?subject=u_9a02"'), 'a person opens their page');
   assert.ok(view.notes.some((n) => /Audited read: entry 8131/.test(n)));
