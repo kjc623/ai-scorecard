@@ -116,6 +116,15 @@ function corpus() {
     } else {
       requests.push({ label: `source ${id}`, request: { query_version: '1', source: id, filters: [], ...(source.time ? { window: WINDOW } : {}), limit: 20 } });
     }
+    if (source.dimensions.tool) {
+      // Every form of a tool filter: the fingerprints of the tools named, or their complement.
+      const base = requests[requests.length - 1].request;
+      const forms = [['eq', 'app:chatgpt_web'], ['in', ['app:chatgpt_web', 'tool_a']], ['ne', 'tool_a'], ['not_in', ['tool_a']]];
+      if (source.kind === 'aggregate') forms.push(['starts_with', 'app:']);
+      for (const [op, value] of forms) {
+        requests.push({ label: `source ${id} (tool ${op})`, request: { ...base, filters: [...base.filters, { field: 'tool', op, value }] } });
+      }
+    }
   }
   return requests;
 }
@@ -280,31 +289,89 @@ test('the tool display name resolves a catalogue entry, a site no app claims and
   );
 });
 
-test('Q1 names the tool each fingerprint belongs to, one key for every fingerprint of a tool', { skip: SKIP }, async () => {
-  let tool = null;
+test('one tool is one row in every listing, however many fingerprints it was seen under', { skip: SKIP }, async () => {
+  // ChatGPT (web) under an extension host hash, its own app id and a site its domain covers, beside
+  // a fingerprint no app claims, on two days, in every aggregate that carries a tool.
+  const chatgpt = ['tf2:a64fvqypthxcqzcwgpxxeeo4kvhk5onujlq22qafww3ql422pxyq', 'app:chatgpt_web', 'host:dbtest.chatgpt.com'];
+  const fingerprints = [...chatgpt, 'tls_never_seen_anywhere'];
+  const days = ['2026-09-02', '2026-09-03'];
+  const user = `u_${'e'.repeat(32)}`;
+  let classCode = null;
   await scratch(
     async (client) => {
-      tool = (await client.query(
-        'SELECT app_key, array_agg(tool_fingerprint ORDER BY tool_fingerprint) AS fingerprints FROM ref.tool_catalogue GROUP BY app_key HAVING count(*) >= 2 ORDER BY app_key LIMIT 1',
-      )).rows[0];
-      assert.ok(tool, 'the catalogue has a tool with two fingerprints');
-      for (const fingerprint of [...tool.fingerprints.slice(0, 2), 'tls_never_seen_anywhere']) {
-        await client.query(
-          `INSERT INTO mart.agg_tool_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, submissions, users, bytes_total)
-           VALUES (ops.current_tenant(), '2026-09-02T00:00:00Z', 'day', $1, 1, 1, 10)`,
-          [fingerprint],
-        );
+      classCode = (await client.query('SELECT class_code FROM ref.data_class ORDER BY class_code LIMIT 1')).rows[0].class_code;
+      const team = (await client.query(
+        "INSERT INTO ops.team (tenant_id, name, created_by) VALUES (ops.current_tenant(), 'Pilot', 'db-test') RETURNING team_id::text",
+      )).rows[0].team_id;
+      await client.query(
+        "INSERT INTO ops.device (tenant_id, device_id, os, managed_state) VALUES (ops.current_tenant(), $1, 'linux', 'managed')",
+        [DEVICE],
+      );
+      for (const day of days) {
+        for (const fingerprint of fingerprints) {
+          const args = [day, fingerprint];
+          await client.query("INSERT INTO mart.agg_tool_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, submissions, users, bytes_total) VALUES (ops.current_tenant(), $1, 'day', $2, 1, 1, 10)", args);
+          await client.query("INSERT INTO mart.agg_tool_user_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, user_ref, submissions, bytes_total) VALUES (ops.current_tenant(), $1, 'day', $2, $3, 1, 10)", [...args, user]);
+          await client.query("INSERT INTO mart.agg_org_period (tenant_id, bucket_start, bucket_size, department, population, tool_fingerprint, submissions, users) VALUES (ops.current_tenant(), $1, 'day', 'Engineering', 'directory', $2, 1, 1)", args);
+          await client.query("INSERT INTO mart.agg_team_period (tenant_id, bucket_start, bucket_size, team_id, tool_fingerprint, submissions, users) VALUES (ops.current_tenant(), $1, 'day', $3, $2, 1, 1)", [...args, team]);
+          await client.query("INSERT INTO mart.agg_class_period (tenant_id, bucket_start, bucket_size, class_code, tool_fingerprint, severity, classifier_version, submissions, users) VALUES (ops.current_tenant(), $1, 'day', $3, $2, 'high', 'v1', 1, 1)", [...args, classCode]);
+          await client.query(
+            `INSERT INTO ingest.submission
+               (tenant_id, submission_id, dedup_weak_key, kind, device_id, user_ref, tool_fingerprint,
+                first_occurred_at, last_occurred_at, received_at, collection_mode, policy_action,
+                winning_source, winning_fidelity, observed_routes, content_state, expires_at)
+             VALUES (ops.current_tenant(), gen_random_uuid(), 'sha256:' || md5($1 || $2) || md5($2 || $1), 'prompt', $3, $4, $2,
+                     $1::timestamptz + interval '1 hour', $1::timestamptz + interval '1 hour', $1::timestamptz + interval '1 hour',
+                     'm3', 'logged', 'proxy.tls', 50, ARRAY['proxy.tls'], 'not_captured', '2026-12-01T00:00:00Z')`,
+            [day, fingerprint, DEVICE, user],
+          );
+        }
       }
     },
     async (client, tenant) => {
-      const read = plan({ query_version: '1', template: 'q1_tools_ranked', params: { window: WINDOW, limit: 100 } }, { now: NOW, tenant, actorId: 'db-test' })
-        .statements.find((s) => s.id === 'read');
-      const keys = Object.fromEntries((await client.query(read.text, read.params)).rows.map((row) => [row.tool, row.tool_key]));
-      assert.deepEqual(keys, {
-        [tool.fingerprints[0]]: tool.app_key,
-        [tool.fingerprints[1]]: tool.app_key,
-        tls_never_seen_anywhere: null,
-      });
+      const ctx = { now: NOW, tenant, actorId: 'db-test', cursorKey: KEY };
+      const run = async (request) => executePlan(plan(request, ctx), { ...ctx, client: nested(client) });
+      const once = (label, rows, cell, expected = ['app:chatgpt_web', 'tls_never_seen_anywhere']) => {
+        const seen = new Set();
+        for (const row of rows) {
+          const key = JSON.stringify(cell(row));
+          assert.ok(!seen.has(key), `${label} shows ${key} twice`);
+          seen.add(key);
+        }
+        const tools = new Set(rows.map((row) => row.tool));
+        assert.deepEqual([...tools].sort(), expected, `${label} shows the tools ${[...tools]}`);
+        for (const row of rows) if (row.tool === 'app:chatgpt_web' && 'tool_name' in row) assert.equal(row.tool_name, 'ChatGPT (web)', label);
+      };
+
+      for (const id of SOURCE_IDS.filter((name) => SOURCES[name].kind === 'aggregate' && SOURCES[name].dimensions.tool)) {
+        const source = SOURCES[id];
+        const groupings = [['tool'], ...Object.keys(source.dimensions).filter((d) => !['tool', 'bucket', 'subject'].includes(d)).map((d) => ['tool', d])];
+        for (const dimensions of groupings) {
+          const measure = Object.keys(source.measures)[0];
+          const result = await run({ query_version: '1', source: id, bucket: 'day', dimensions, measures: [measure], filters: [], window: WINDOW, limit: 100 });
+          const label = `${id} by ${dimensions.join(', ')}`;
+          once(label, result.data, (row) => [row.bucket, ...dimensions.map((d) => row[d])]);
+          const total = result.data.filter((row) => row.tool === 'app:chatgpt_web').reduce((sum, row) => sum + Number(row[measure]), 0);
+          assert.equal(total, measure === 'bytes_total' ? 60 : 6, `${label}: ChatGPT (web) sums its fingerprints`);
+          const filtered = await run({ query_version: '1', source: id, bucket: 'day', dimensions, measures: [measure], filters: [{ field: 'tool', op: 'eq', value: chatgpt[2] }], window: WINDOW, limit: 100 });
+          assert.deepEqual([...new Set(filtered.data.map((row) => row.tool))], ['app:chatgpt_web'], `${label}: a fingerprint names its whole tool`);
+          assert.equal(filtered.data.length, days.length, `${label}: one row a day`);
+        }
+      }
+
+      const ranked = await run({ query_version: '1', template: 'q1_tools_ranked', params: { window: WINDOW, limit: 100 } });
+      once('Q1', ranked.data, (row) => [row.bucket, row.tool]);
+      const people = await run({ query_version: '1', template: 'q2_unsanctioned_users', params: { window: WINDOW, limit: 100, tool: chatgpt[0] } });
+      once('Q2', people.data, (row) => [row.bucket, row.tool, row.subject], ['app:chatgpt_web']);
+      const series = await run({ query_version: '1', template: 'q6_subject_series', params: { window: WINDOW, subject: user } });
+      assert.equal(Number(series.meta.extras.subject_tools[0].tools), 2, 'a person used two tools, not four');
+
+      const firstSeen = await run({ query_version: '1', source: 'mart.v_tool_first_seen', filters: [], window: WINDOW, limit: 50 });
+      once('first seen', firstSeen.data, (row) => row.tool);
+      const events = await run({ query_version: '1', source: 'ingest.submission', filters: [], window: WINDOW, limit: 50 });
+      assert.deepEqual([...new Set(events.data.map((row) => row.tool))].sort(), ['app:chatgpt_web', 'tls_never_seen_anywhere'], 'each event names the tool it counts as');
+      const named = await run({ query_version: '1', source: 'ingest.submission', filters: [{ field: 'tool', op: 'eq', value: 'app:chatgpt_web' }], window: WINDOW, limit: 50 });
+      assert.equal(named.data.length, chatgpt.length * days.length, 'the tool\'s events under every fingerprint');
     },
   );
 });
@@ -480,10 +547,10 @@ test('Q1 counts the people behind the usage once each, by the sanction of their 
 
       const firstSeen = await executePlan(plan({ query_version: '1', source: 'mart.v_tool_first_seen', filters: [], window: WINDOW, limit: 50 }, ctx), { ...ctx, client: nested(client) });
       assert.deepEqual(
-        firstSeen.data.map((r) => [r.first_seen.toISOString?.() ?? r.first_seen, r.tool, r.tool_key, r.sanctioned_state, Number(r.people)]),
+        firstSeen.data.map((r) => [r.first_seen.toISOString?.() ?? r.first_seen, r.tool, r.sanctioned_state, Number(r.people)]),
         [
-          ['2026-09-05T00:00:00.000Z', 'tls_never_seen_anywhere', null, null, 1],
-          ['2026-09-03T00:00:00.000Z', unsanctioned.fingerprint, unsanctioned.app_key, 'unsanctioned', 2],
+          ['2026-09-05T00:00:00.000Z', 'tls_never_seen_anywhere', null, 1],
+          ['2026-09-03T00:00:00.000Z', `app:${unsanctioned.app_key}`, 'unsanctioned', 2],
         ],
         'a tool first seen before the window is not new however new its fingerprint; a detection is not a prompt; its people include those since the window',
       );

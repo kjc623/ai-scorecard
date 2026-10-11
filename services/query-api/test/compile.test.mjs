@@ -41,7 +41,7 @@ test('every filter value is a bound parameter with an explicit cast', () => {
     }),
   );
   // A tool matches every fingerprint it was seen under; a prefix is tested on the tool itself.
-  assert.match(statement.text, /t\.tool_fingerprint = ANY \(\(SELECT ops\.tool_fingerprints\(ARRAY\[\$\d+::text\]\)\)\)/);
+  assert.match(statement.text, /t\.tool_fingerprint = ANY \(\(SELECT ops\.tool_fingerprints\(ARRAY\[\$\d+::text\]\)\)::text\[\]\)/);
   assert.match(statement.text, /starts_with\(t\.tool_id, \$\d+::text\)/);
   assert.match(statement.text, /t\.sanctioned_state = ANY\(\$\d+::text\[\]\)/);
   assert.ok(statement.text.includes('t.sanctioned_state IS NULL'));

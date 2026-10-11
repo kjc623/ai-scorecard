@@ -3336,6 +3336,83 @@ END $$;
 RESET ROLE;
 
 -- =====================================================================================
+-- T87  One tool, one id
+-- =====================================================================================
+
+-- ChatGPT (web) under an extension host hash, its own app id and a site its domain covers, and a
+-- site no app claims, all for tenant A; tenant B's site under the same domain is not tenant A's.
+INSERT INTO mart.agg_tool_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, submissions, users, bytes_total) VALUES
+  (:ta, '2031-01-02', 'day', 'tf2:a64fvqypthxcqzcwgpxxeeo4kvhk5onujlq22qafww3ql422pxyq', 3, 2, 30),
+  (:ta, '2031-01-02', 'day', 'app:chatgpt_web', 2, 1, 20),
+  (:ta, '2031-01-03', 'day', 'host:t87.chatgpt.com', 1, 1, 10),
+  (:ta, '2031-01-03', 'day', 'host:t87.example.org', 4, 1, 40),
+  (:ta, '2031-01-03', 'day', 'host:t87chatgpt.com', 1, 1, 10),
+  (:tb, '2031-01-03', 'day', 'host:t87b.chatgpt.com', 1, 1, 10);
+INSERT INTO ops.tool_sanction (tenant_id, tool_key, sanctioned_state, decided_by, decided_at)
+VALUES (:ta, 'chatgpt_web', 'sanctioned', 'admin-a', now())
+ON CONFLICT (tenant_id, tool_key) DO UPDATE SET sanctioned_state = 'sanctioned', decided_by = 'admin-a', decided_at = now();
+
+SET ROLE sac_query;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+DO $$
+DECLARE
+  chatgpt constant text[] := ARRAY['tf2:a64fvqypthxcqzcwgpxxeeo4kvhk5onujlq22qafww3ql422pxyq', 'app:chatgpt_web', 'host:t87.chatgpt.com'];
+  ids text[];
+  fps text[];
+  n bigint;
+  bad text;
+BEGIN
+  SELECT array_agg(DISTINCT t.tool_id ORDER BY t.tool_id) INTO ids FROM mart.v_tool_usage t WHERE t.bucket_start >= '2031-01-01';
+  IF ids IS DISTINCT FROM ARRAY['app:chatgpt_web', 'host:t87.example.org', 'host:t87chatgpt.com'] THEN
+    RAISE EXCEPTION 'FAIL T87 mart.v_tool_usage counts the rows as the tools %', ids;
+  END IF;
+  SELECT sum(t.submissions) INTO n FROM mart.v_tool_usage t WHERE t.bucket_start >= '2031-01-01' AND t.tool_id = 'app:chatgpt_web';
+  IF n IS DISTINCT FROM 6::bigint THEN
+    RAISE EXCEPTION 'FAIL T87 ChatGPT (web) has % prompts across its fingerprints, want 6', n;
+  END IF;
+  SELECT string_agg(t.tool_fingerprint, ', ') INTO bad FROM mart.v_tool_usage t
+   WHERE t.bucket_start >= '2031-01-01' AND t.tool_id = 'app:chatgpt_web' AND t.sanctioned_state IS DISTINCT FROM 'sanctioned';
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T87 % do not carry ChatGPT (web)''s decision', bad;
+  END IF;
+
+  SELECT count(*), max(f.fingerprints::text) INTO n, bad FROM mart.v_tool_first_seen f WHERE f.tool_fingerprint = 'app:chatgpt_web';
+  IF n <> 1 OR NOT (SELECT f.fingerprints @> chatgpt FROM mart.v_tool_first_seen f WHERE f.tool_fingerprint = 'app:chatgpt_web') THEN
+    RAISE EXCEPTION 'FAIL T87 ChatGPT (web) is first seen % times, under %', n, bad;
+  END IF;
+  IF EXISTS (SELECT 1 FROM mart.v_tool_first_seen f WHERE f.tool_fingerprint <> 'app:chatgpt_web' AND f.fingerprints && chatgpt) THEN
+    RAISE EXCEPTION 'FAIL T87 a fingerprint of ChatGPT (web) is first seen as another tool';
+  END IF;
+
+  FOREACH bad IN ARRAY chatgpt LOOP
+    fps := ops.tool_fingerprints(ARRAY[bad]);
+    IF NOT fps @> chatgpt OR fps && ARRAY['host:t87.example.org', 'host:t87chatgpt.com', 'host:t87b.chatgpt.com'] THEN
+      RAISE EXCEPTION 'FAIL T87 % matches the fingerprints %', bad, fps;
+    END IF;
+    IF ops.tool_id(bad) <> 'app:chatgpt_web' OR ops.tool_display_name(bad) <> 'ChatGPT (web)' THEN
+      RAISE EXCEPTION 'FAIL T87 % is the tool % named %', bad, ops.tool_id(bad), ops.tool_display_name(bad);
+    END IF;
+  END LOOP;
+  IF ops.tool_fingerprints(ARRAY['host:t87.example.org']) IS DISTINCT FROM ARRAY['host:t87.example.org']
+     OR ops.tool_id('host:t87chatgpt.com') <> 'host:t87chatgpt.com' OR ops.tool_fingerprints(ARRAY[NULL]::text[]) <> '{}' THEN
+    RAISE EXCEPTION 'FAIL T87 a site no app claims is not a tool of its own';
+  END IF;
+
+  -- The query service reads a row's tool through the catalogue and the host view, as ops.tool_id
+  -- resolves it.
+  SELECT string_agg(a.tool_fingerprint, ', ') INTO bad
+    FROM mart.agg_tool_period a
+    LEFT JOIN ref.tool_catalogue c ON c.tool_fingerprint = a.tool_fingerprint
+    LEFT JOIN mart.v_tool_host h ON h.tenant_id = a.tenant_id AND h.tool_fingerprint = a.tool_fingerprint
+   WHERE coalesce('app:' || coalesce(c.app_key, h.app_key), a.tool_fingerprint) IS DISTINCT FROM ops.tool_id(a.tool_fingerprint);
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T87 the joined tool of % is not ops.tool_id', bad;
+  END IF;
+  RAISE NOTICE 'PASS T87 a tool is one id, one name and one decision under every fingerprint it was seen under, in every tenant''s own rows';
+END $$;
+RESET ROLE;
+
+-- =====================================================================================
 -- Report
 -- =====================================================================================
 

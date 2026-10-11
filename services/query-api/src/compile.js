@@ -373,9 +373,10 @@ function compileFilter(filter, source, bind) {
 
   // A tool is recorded under several fingerprints, and its dimension groups them: equality and
   // membership match every fingerprint of the tools named, on the fingerprint column, so the
-  // filter keeps that column's index. The set is computed once per statement, not once per row.
+  // filter keeps that column's index. The set is a scalar subquery, computed once per statement,
+  // not once per row; the cast keeps Postgres from reading it as `= ANY (subquery)`.
   if (dimension.fingerprints) {
-    const members = (placeholder) => `${dimension.fingerprints} = ANY ((SELECT ops.tool_fingerprints(${placeholder})))`;
+    const members = (placeholder) => `${dimension.fingerprints} = ANY ((SELECT ops.tool_fingerprints(${placeholder}))::text[])`;
     switch (filter.op) {
       case 'eq':
         return members(`ARRAY[${bind(filter.value)}${cast}]`);

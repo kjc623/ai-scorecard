@@ -329,7 +329,7 @@ test('q2 names its people whatever the sanction once a tool is named, and asks t
   const named = plan({ query_version: '1', template: 'q2_unsanctioned_users', params: { window: WINDOW, tool: 'tls_outside_catalogue' } }, { now: NOW });
   const read = named.statements.find((s) => s.id === 'read');
   assert.ok(!/sanctioned_state = \$/.test(read.text), 'no state filter: a fingerprint outside the catalogue has no state and would match no list');
-  assert.match(read.text, /a\.tool_fingerprint = ANY \(\(SELECT ops\.tool_fingerprints\(ARRAY\[\$\d+::text\]\)\)\)/);
+  assert.match(read.text, /a\.tool_fingerprint = ANY \(\(SELECT ops\.tool_fingerprints\(ARRAY\[\$\d+::text\]\)\)::text\[\]\)/);
   const list = plan({ query_version: '1', template: 'q2_unsanctioned_users', params: { window: WINDOW } }, { now: NOW });
   const listRead = list.statements.find((s) => s.id === 'read');
   assert.match(listRead.text, /sanctioned_state = \$/);
