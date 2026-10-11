@@ -1,0 +1,45 @@
+{
+  "tool": "Perplexity (web)",
+  "app_key": "perplexity_web",
+  "source": {
+    "kind": "documented",
+    "from": "the perplexity_ask request built by github.com/helallao/perplexity-ai (perplexity/client.py), a client of the Perplexity web app",
+    "checked": "2026-10-11"
+  },
+  "typed": "summarise this week's sales figures",
+  "request": {
+    "url": "https://www.perplexity.ai/rest/sse/perplexity_ask",
+    "method": "POST",
+    "json": {
+      "query_str": "summarise this week's sales figures",
+      "params": {
+        "attachments": [],
+        "frontend_context_uuid": "3c9a7b1e-2d4f-4a6b-8c0d-1e2f3a4b5c6d",
+        "frontend_uuid": "7d8e9f0a-1b2c-4d3e-9f5a-6b7c8d9e0f1a",
+        "is_incognito": false,
+        "language": "en-US",
+        "last_backend_uuid": null,
+        "mode": "concise",
+        "model_preference": "turbo",
+        "source": "default",
+        "sources": [
+          "web"
+        ],
+        "version": "2.18"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream; charset=utf-8"
+    }
+  },
+  "expect": {
+    "events": 0,
+    "observed": false,
+    "attributed": false,
+    "prompt": false,
+    "why": "the typed text is in query_str and the model in model_preference, neither a name the predicate knows, and the path has no conversational word, so the request scores 0.15; the response cannot corroborate it because the response lane gets no headers"
+  }
+}
