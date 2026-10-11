@@ -202,15 +202,16 @@ test('the list reads like a rulebase: numbered rows, each criterion by name, Any
   const { html, requests } = await loaded();
   assert.ok(requests.some((r) => r.method === 'GET' && r.path === '/admin/v1/settings/rules'), 'the page reads the rules');
   const page = html();
-  assert.match(page, /<th scope="col">#<\/th><th scope="col">On<\/th><th scope="col">Name<\/th><th scope="col">Users and groups<\/th><th scope="col">Tool<\/th><th scope="col">Content<\/th><th scope="col">Action<\/th><th scope="col" class="num">Hits \(30d\)<\/th>/);
+  assert.match(page, /<th scope="col">#<\/th><th scope="col">On<\/th><th scope="col">Name<\/th><th scope="col">Users and groups<\/th><th scope="col">Tool<\/th><th scope="col">Content<\/th><th scope="col">Action<\/th><th scope="col" class="num" title="The prompts each rule decided in the last 30 days">Hits<\/th>/);
   const [first, second, third, fallback, ...rest] = rows(page);
   assert.equal(rest.length, 0);
 
   assert.match(first, /<td class="rl-num">1<\/td>/);
   assert.match(first, /role="switch" aria-checked="true" data-rl="toggle" data-index="0"/);
-  assert.match(first, /<span class="rl-name">allow_finance_falcon<\/span>/);
+  assert.match(first, /<button type="button" class="rl-name rl-open" data-rl="edit" data-index="0" aria-label="Edit rule 1, allow_finance_falcon" title="Edit rule 1">allow_finance_falcon<\/button>/, 'the name opens the rule');
+  assert.match(first, /<button type="button" class="rl-menu-item" data-rl="edit" data-index="0">Edit<\/button>/, 'and so does the row menu');
   assert.match(first, />Finance<span class="rl-kind">Group<\/span><\/span>/, 'a group by its name and kind');
-  assert.match(first, /title="Group · 12 people"/, 'with how many people it reaches');
+  assert.match(first, /title="Finance · Group · 12 people"/, 'with its name whole and how many people it reaches');
   assert.match(first, />Ada Lovelace<\/span>/, 'a person by name, with no kind');
   assert.match(first, />Project Falcon</, 'a custom label by its name');
   assert.match(first, /<span class="rl-action rl-action-allow">Allow<\/span>/);
@@ -274,9 +275,14 @@ test('a group since removed is marked not found; a rule whose people all reach n
   rules.users = [{ value: `group:${GONE}`, name: '', members: 0, found: false }, { value: 'department:Nowhere', name: 'Nowhere', members: 0, found: true }];
   const { html } = await loaded({ rules });
   const [first] = rows(html());
-  assert.match(first, /class="rl-tag rl-tag-gone" title="No longer exists, so it reaches nobody">group:00000000-0000-4000-8000-000000000999<span class="rl-kind">Group · not found<\/span>/);
+  assert.match(first, /<span class="rl-tag rl-tag-gone" title="No longer exists, so it reaches nobody">Group not found<\/span>/);
   assert.match(first, />Nowhere<span class="rl-kind">Department<\/span>/);
   assert.match(first, /Reaches nobody now, so devices are not sent it\./);
+  const named = servedRules();
+  named.rules[0].users = [`team:${OPS}`];
+  named.users = [{ value: `team:${OPS}`, name: 'Ops', members: 0, found: false }];
+  const [team] = rows((await loaded({ rules: named })).html());
+  assert.match(team, /<span class="rl-tag rl-tag-gone" title="Ops · No longer exists, so it reaches nobody">Ops<span class="rl-kind">Team · not found<\/span><\/span>/, 'a name still known is kept');
 });
 
 test('a rule an enabled rule above always catches is marked: it never decides a prompt', async () => {
@@ -386,7 +392,7 @@ test('the filter narrows the rows by name, person, group, tool or label, and tur
     page.setQuery(text);
     await page.act({ rl: 'filter' });
     const shown = rows(html()).filter((r) => r.startsWith(' class="rl-row'));
-    assert.deepEqual(shown.map((r) => r.match(/<span class="rl-name">([^<]+)</)[1]), ids, text);
+    assert.deepEqual(shown.map((r) => r.match(/class="rl-name rl-open"[^>]*>([^<]+)</)[1]), ids, text);
   }
   const filtered = html();
   assert.match(filtered, /1 of 3 rules · reordering is off while filtered/);
@@ -527,7 +533,7 @@ test('people, groups, departments, units and teams are picked from one list, and
   assert.match(panel(), /Nothing matches “bo”\./);
   await page.act({ rl: 'pick-close' });
   open = panel();
-  assert.match(open, /<ul class="rl-chosen-list"><li><span class="rl-tag" title="Team · 2 people">Ops<span class="rl-kind">Team<\/span><\/span><button type="button" class="rl-remove" data-rl="user" data-value="team:7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0002" aria-label="Take out Ops">×<\/button><\/li>/);
+  assert.match(open, /<ul class="rl-chosen-list"><li><span class="rl-tag" title="Ops · Team · 2 people">Ops<span class="rl-kind">Team<\/span><\/span><button type="button" class="rl-remove" data-rl="user" data-value="team:7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0002" aria-label="Take out Ops">×<\/button><\/li>/);
   assert.match(open, /data-rl="users-any">Any</);
 
   await page.act({ rl: 'apply' });

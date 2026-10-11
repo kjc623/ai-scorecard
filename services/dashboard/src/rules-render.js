@@ -96,15 +96,22 @@ function actionPill(action) {
 const reachesNobody = (who) => !who.found || who.members === 0;
 
 /**
- * A user value as a tag: its name and kind (a person has none), with how many people it reaches in
- * its title. A person the directory has no name for is shown by their reference.
+ * A user value as a tag: its name and kind (a person has none), with its name whole and how many
+ * people it reaches in its title. A person the directory has no name for is shown by their
+ * reference; a group or team since removed has no name left, so it is shown as not found.
  */
 function userTag(value, names) {
   const who = userOf(value, names);
   const kind = USER_KIND_LABELS[who.kind] ?? who.kind;
-  if (!who.found) return tag(who.name || value, { kind: `${kind} · not found`, title: 'No longer exists, so it reaches nobody', gone: true });
-  const title = [kind, who.members === null ? '' : plural(who.members, 'person', 'people')].filter(Boolean).join(' · ');
-  return tag(who.name || value, { kind: who.kind === 'user' ? '' : kind, title, gone: who.members === 0, mono: /^u_[0-9a-f]{32}$/.test(who.name) });
+  if (!who.found) {
+    const title = 'No longer exists, so it reaches nobody';
+    return who.name
+      ? tag(who.name, { kind: `${kind} · not found`, title: `${who.name} · ${title}`, gone: true })
+      : tag(`${kind} not found`, { title, gone: true });
+  }
+  const name = who.name || value;
+  const title = [name, kind, who.members === null ? '' : plural(who.members, 'person', 'people')].filter(Boolean).join(' · ');
+  return tag(name, { kind: who.kind === 'user' ? '' : kind, title, gone: who.members === 0, mono: /^u_[0-9a-f]{32}$/.test(who.name) });
 }
 
 function usersCell(rule, names) {
@@ -139,6 +146,7 @@ function iconButton(symbol, data, label, disabled) {
 function rowMenu(rule, i, n, { locked, reorder, last }) {
   const item = (label, rl, disabled, danger = false) => `<button type="button" class="rl-menu-item${danger ? ' rl-menu-danger' : ''}" data-rl="${rl}" data-index="${i}"${disabled ? ' disabled' : ''}>${escapeHtml(label)}</button>`;
   return `<details class="rl-menu"><summary class="btn btn-quiet btn-small" aria-label="More for rule ${n}">⋯</summary><div class="rl-menu-items">`
+    + item('Edit', 'edit', locked)
     + item('Clone', 'clone', locked)
     + item('Move to top', 'top', reorder || i === 0)
     + item('Move to bottom', 'bottom', reorder || last)
@@ -155,7 +163,8 @@ function ruleRow(state, list, rule, i, { vocab, names, locked, reorder, moved })
   const marker = (change === 'new' ? '<span class="rl-mark rl-mark-new">New</span>' : change === 'edited' ? '<span class="rl-mark">Edited</span>' : '')
     + (shifted ? '<span class="rl-mark">Moved</span>' : '');
   const off = rule.enabled ? '' : '<span class="rl-mark rl-mark-off">Off</span>';
-  const name = `<span class="rl-name">${escapeHtml(rule.rule_id)}</span>${marker}${off}`
+  // The name opens the rule, as a rulebase's does.
+  const name = `<button type="button" class="rl-name rl-open" data-rl="edit" data-index="${i}" aria-label="Edit rule ${n}, ${escapeHtml(rule.rule_id)}" title="Edit rule ${n}"${locked ? ' disabled' : ''}>${escapeHtml(rule.rule_id)}</button>${marker}${off}`
     + (rule.message ? `<span class="dp-sub rl-message">${escapeHtml(rule.message)}</span>` : '')
     + (rule.match.routes.length ? `<span class="dp-sub">Seen by ${escapeHtml(either(rule.match.routes.map((v) => vocab.name('routes', v))))}</span>` : '')
     + (rule.enabled && rule.users.length && rule.users.every((v) => reachesNobody(userOf(v, names)))
@@ -176,8 +185,7 @@ function ruleRow(state, list, rule, i, { vocab, names, locked, reorder, moved })
     + '<td class="rl-controls">'
     + iconButton('↑', { rl: 'up', index: String(i) }, `Move rule ${n} up`, reorder || i === 0)
     + iconButton('↓', { rl: 'down', index: String(i) }, `Move rule ${n} down`, reorder || last)
-    + depButton('Edit', { rl: 'edit', index: String(i) }, { kind: 'quiet', small: true, disabled: locked })
-    + rowMenu(rule, i, n, { locked, reorder: reorder, last })
+    + rowMenu(rule, i, n, { locked, reorder, last })
     + '</td></tr>';
 }
 
@@ -245,7 +253,7 @@ function rulesCard(state, options) {
     : `<span class="block-count">${formatCount(list.length)}</span>`;
   const head = '<thead><tr>'
     + '<th scope="col">#</th><th scope="col">On</th><th scope="col">Name</th><th scope="col">Users and groups</th>'
-    + '<th scope="col">Tool</th><th scope="col">Content</th><th scope="col">Action</th><th scope="col" class="num">Hits (30d)</th>'
+    + '<th scope="col">Tool</th><th scope="col">Content</th><th scope="col">Action</th><th scope="col" class="num" title="The prompts each rule decided in the last 30 days">Hits</th>'
     + '<th scope="col"><span class="sr">Order and edit</span></th></tr></thead>';
   return '<section class="card dp-card rl-card"><div class="card-core">'
     + `<header class="block-head"><h3>Rules</h3>${count}</header>`
