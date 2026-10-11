@@ -112,8 +112,8 @@ test('every source that shows a tool has a tool dimension, and returns no catalo
     assert.ok(!selects.some((sql) => /AS "?tool_key"?$/.test(sql)), `${id} returns a catalogue key: a reader keying on it and on tool would count one tool twice`);
   }
   assert.deepEqual(TOOL_SOURCES, [
-    'ingest.submission', 'mart.agg_class_period', 'mart.agg_org_period', 'mart.agg_team_period', 'mart.agg_tool_period',
-    'mart.agg_tool_user_period', 'mart.v_finding', 'mart.v_tool_first_seen', 'mart.v_tool_usage',
+    'ingest.submission', 'mart.agg_class_period', 'mart.agg_discovery_period', 'mart.agg_org_period', 'mart.agg_team_period',
+    'mart.agg_tool_period', 'mart.agg_tool_user_period', 'mart.v_finding', 'mart.v_tool_first_seen', 'mart.v_tool_usage',
   ], 'a new source that shows a tool is checked here');
 });
 

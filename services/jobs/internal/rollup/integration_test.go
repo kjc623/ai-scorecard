@@ -65,7 +65,7 @@ func TestRollupAgainstPostgreSQL(t *testing.T) {
 	expect(t, tx, "org rows without a directory",
 		`SELECT count(*)::text FROM mart.agg_org_period WHERE tenant_id = $1`, "0", tenant)
 	expect(t, tx, "day watermarks",
-		`SELECT count(*)::text FROM ops.aggregate_watermark WHERE tenant_id = $1 AND bucket_size = 'day'`, "7", tenant)
+		`SELECT count(*)::text FROM ops.aggregate_watermark WHERE tenant_id = $1 AND bucket_size = 'day'`, "8", tenant)
 
 	// A second run over the same inputs leaves the same values and the same number of rows.
 	runBucket(t, tx, tenant, BucketDay, from, to)
@@ -245,6 +245,66 @@ func TestRollupSensitive(t *testing.T) {
 		"2|0", tenant, bucket)
 }
 
+func TestRollupDiscovery(t *testing.T) {
+	tx := pgtest.Tx(t, pgtest.Open(t))
+	tenant, device := pgtest.Tenant(t, tx)
+	other := pgtest.NewUUID(t, tx)
+	pgtest.Exec(t, tx, `INSERT INTO ops.device (tenant_id, device_id, os) VALUES ($1, $2, 'windows')`, tenant, other)
+	a, b := events{tenant: tenant, device: device}, events{tenant: tenant, device: other}
+	const from, to = "2026-01-15T00:00:00Z", "2026-01-16T00:00:00Z"
+	const bucket = "2026-01-15T00:00:00Z"
+	found := func(e events, n int, tool, at, kind, basis, source string, extra map[string]any) {
+		m := e.base(n, "userA", tool, at)
+		for k, v := range map[string]any{"direction": "none", "kind": "discovery", "source": source,
+			"collection_mode": "m0", "discovery_type": kind, "detection_basis": basis} {
+			m[k] = v
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		e.record(t, tx, at, m)
+	}
+
+	// One app installed on both devices and reported twice by one of them; a runtime whose models
+	// differ by device; an uncatalogued process reaching one host from one device.
+	found(a, 60, "app:cursor", "2026-01-15T01:00:00Z", "app_installed", "installed_scan", "inv.scan", nil)
+	found(a, 61, "app:cursor", "2026-01-15T07:00:00Z", "app_installed", "installed_scan", "inv.scan", nil)
+	found(b, 62, "app:cursor", "2026-01-15T02:00:00Z", "app_installed", "installed_scan", "inv.scan", nil)
+	found(a, 63, "app:ollama", "2026-01-15T03:00:00Z", "local_model", "model_store", "inv.scan",
+		map[string]any{"model_names": []string{"llama3", "mistral"}})
+	found(b, 64, "app:ollama", "2026-01-15T04:00:00Z", "local_model", "model_store", "inv.scan",
+		map[string]any{"model_names": []string{"llama3"}})
+	found(b, 65, "exe:0123456789abcdef", "2026-01-15T05:00:00Z", "inference_connection", "flow_metadata", "net.flow",
+		map[string]any{"destination_host": "api.example.test"})
+	a.record(t, tx, "2026-01-15T06:00:00Z", a.prompt(66, "userA", "app:cursor", "2026-01-15T06:00:00Z",
+		[]label{{Class: "source_code", Score: 0.5}}, "logged", "high", 10))
+
+	rows := `SELECT string_agg(tool_fingerprint||'|'||discovery_type||'|'||item||'|'||devices||'|'||to_char(last_seen AT TIME ZONE 'UTC', 'HH24:MI'), ',' ORDER BY tool_fingerprint, discovery_type, item)
+	           FROM mart.agg_discovery_period WHERE tenant_id = $1 AND bucket_size = 'day' AND bucket_start = $2::timestamptz`
+	want := "app:cursor|app_installed||2|07:00,app:ollama|local_model|llama3|2|04:00,app:ollama|local_model|mistral|1|03:00," +
+		"exe:0123456789abcdef|inference_connection|api.example.test|1|05:00"
+
+	pgtest.AsJobs(t, tx)
+	runBucket(t, tx, tenant, BucketDay, from, to)
+	expect(t, tx, "discovery rows", rows, want, tenant, bucket)
+	runBucket(t, tx, tenant, BucketDay, from, to)
+	expect(t, tx, "discovery rows after re-run", rows, want, tenant, bucket)
+	runBucket(t, tx, tenant, BucketHour, "2026-01-15T03:00:00Z", "2026-01-15T05:00:00Z")
+	expect(t, tx, "hour buckets",
+		`SELECT string_agg(to_char(bucket_start AT TIME ZONE 'UTC', 'HH24')||'|'||item||'|'||devices, ',' ORDER BY bucket_start, item)
+		   FROM mart.agg_discovery_period WHERE tenant_id = $1 AND bucket_size = 'hour'`,
+		"03|llama3|1,03|mistral|1,04|llama3|1", tenant)
+
+	// A finding that expires takes its row with it.
+	pgtest.AsOwner(t, tx)
+	pgtest.Exec(t, tx, `SET LOCAL sac.retention_delete = on`)
+	pgtest.Exec(t, tx, `DELETE FROM ingest.observation WHERE tenant_id = $1 AND tool_fingerprint LIKE 'exe:%'`, tenant)
+	pgtest.AsJobs(t, tx)
+	runBucket(t, tx, tenant, BucketDay, from, to)
+	expect(t, tx, "rows after the connection is erased",
+		`SELECT count(*)::text FROM mart.agg_discovery_period WHERE tenant_id = $1 AND bucket_size = 'day'`, "3", tenant)
+}
+
 func TestRollupHourBuckets(t *testing.T) {
 	tx := pgtest.Tx(t, pgtest.Open(t))
 	tenant, device := pgtest.Tenant(t, tx)
@@ -417,7 +477,7 @@ func TestTenantPassAsJobsRole(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect(t, tx, "watermarks", `SELECT count(*)::text FROM ops.aggregate_watermark WHERE tenant_id = $1`,
-		fmt.Sprint(len(BucketSizes)*7), tenant)
+		fmt.Sprint(len(BucketSizes)*8), tenant)
 	expect(t, tx, "prompts in today's day bucket",
 		`SELECT sum(submissions)::text FROM mart.agg_tool_period
 		  WHERE tenant_id = $1 AND bucket_size = 'day' AND tool_fingerprint = 'toolA'`, "1", tenant)

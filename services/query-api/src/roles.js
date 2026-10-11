@@ -44,6 +44,7 @@ const SOURCE_CAPABILITY = Object.freeze({
   'mart.agg_team_period': 'aggregate',
   'mart.agg_class_period': 'aggregate',
   'mart.agg_rule_period': 'aggregate',
+  'mart.agg_discovery_period': 'aggregate',
   'ops.enforcement_rule': 'aggregate',
   'ops.coverage_snapshot': 'aggregate',
   'mart.agg_device_period': 'device',

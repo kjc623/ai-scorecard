@@ -92,6 +92,7 @@ func TestAggregatesCoverTheMartUsageTables(t *testing.T) {
 		"mart.agg_org_period":       false,
 		"mart.agg_team_period":      false,
 		"mart.agg_user_period":      false,
+		"mart.agg_discovery_period": false,
 	}
 	for _, a := range aggs {
 		if _, ok := want[a.Name]; !ok {

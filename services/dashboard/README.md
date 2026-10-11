@@ -5,9 +5,11 @@ people list and each person's page), Devices, Audit trail, Settings (Settings, D
 Providers), Archive (pre-production only: Insights, with Exposure, the prompts that matched an
 enforcement rule on one of their labels, what happened to them, the tools they went to and the
 labels involved, each against the period before, and every enforcement rule with the prompts it
-matched; and Adoption, how many people use AI out of the directory, split by the sanction of their
+matched; Adoption, how many people use AI out of the directory, split by the sanction of their
 tools, the applications that sent their first prompt in the window, and each day's or week's
-prompts by sanction), and the Search page, where an analyst lists events, findings,
+prompts by sanction; and Discovered, every AI application, CLI, IDE extension, local model and
+inference endpoint the devices' inventory scan found, with the prompts each sent, and the devices
+whose scan is not reporting), and the Search page, where an analyst lists events, findings,
 devices and audit entries, opens a device to see each of its collectors with its state and cause,
 searches prompt text, and reads an event's stored prompt. An admin adds, edits and deletes teams on
 Teams, from any mix of the people they tick and the groups, departments and units the identity

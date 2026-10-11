@@ -8,6 +8,7 @@
 //
 //   * ops.aggregate_watermark -> freshness;
 //   * ops.device + ops.coverage_snapshot -> coverage, including the enrolled denominator;
+//   * ops.device + ops.collector_state -> where the inventory scan stands, beside what it found;
 //   * a bounded EXISTS -> `newer_events_exist`;
 //   * mart.agg_tool_period -> the non-additive total for the class screen;
 //   * mart.agg_* -> the `unmapped` residual when the directory sync is partial;
@@ -116,6 +117,36 @@ export function deviceStatusStatement() {
       "                   AND last_seen_at > now() - interval '24 hours'",
       '                   AND NOT has_degraded) AS reporting',
       '  FROM base',
+    ].join('\n'),
+    params: Object.freeze([]),
+  });
+}
+
+/**
+ * Where the inventory scan stands on the enrolled fleet, for what device discovery found: a device
+ * whose scan is not reporting can hold tools no read can show. A scanner the signed policy switched
+ * off is counted apart from one that is not reporting, and a device whose scanner never reported is
+ * not scanned.
+ */
+export function inventoryScanStatement() {
+  return Object.freeze({
+    id: 'inventory_scan',
+    text: [
+      'WITH scan AS (',
+      '  SELECT CASE',
+      "           WHEN cs.error_code = 'disabled_by_policy' THEN 'switched_off'",
+      "           WHEN cs.state IN ('healthy', 'degraded') AND cs.last_report_at > now() - interval '24 hours' THEN 'scanned'",
+      "           ELSE 'not_scanned'",
+      '         END AS scan_state',
+      '    FROM ops.device d',
+      '    LEFT JOIN ops.collector_state cs',
+      "      ON cs.tenant_id = d.tenant_id AND cs.device_id = d.device_id AND cs.collector = 'inventory_scanner'",
+      '   WHERE d.tenant_id = ops.current_tenant() AND d.revoked_at IS NULL)',
+      'SELECT count(*) AS devices_enrolled,',
+      "       count(*) FILTER (WHERE scan_state = 'scanned') AS scanned,",
+      "       count(*) FILTER (WHERE scan_state = 'not_scanned') AS not_scanned,",
+      "       count(*) FILTER (WHERE scan_state = 'switched_off') AS switched_off",
+      '  FROM scan',
     ].join('\n'),
     params: Object.freeze([]),
   });
