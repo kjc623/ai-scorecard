@@ -271,7 +271,9 @@ export function rankTools(state, { title = 'Tools in use', href = null, moreLabe
     const submissions = foldedMeasure(group, 'submissions');
     return Object.freeze({
       key: group.key,
-      href: folded || !link ? null : link(group.key),
+      // The folded line opens the screen that lists its fingerprints, when this ranking is a
+      // summary of one; on that screen itself the list is just below.
+      href: folded ? href : link ? link(group.key) : null,
       label: name,
       mono: name === group.key,
       title: folded ? 'Tools the shared catalogue does not name, together' : `Tool fingerprint ${group.key}`,
@@ -582,7 +584,7 @@ export function toolsView(state, { link = toolHref, preset = null } = {}) {
     ...shared(state, [
       'Rank is by submissions with a deterministic tie-break, and is never a sanction signal.',
       'Unknown is its own answer: a tool with no decision renders as unknown, never as unsanctioned.',
-      'A tool\'s people is the most one cell counted, a floor for the window: a person active on two days is in two cells.',
+      'A tool\'s people is the most counted in any one period, a floor for the window: a person active on two days is counted on both.',
     ]),
   });
 }

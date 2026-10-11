@@ -195,13 +195,10 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
    */
   async function toolScreen(tool, ctx) {
     const usage = await ask('q1_tools_ranked', context({ preset: ctx.preset, filters: { tool }, now: now() }));
-    // The people read is scoped to the tool's present sanction, the one it answers for; a tool
-    // with no decision recorded is in the unknown state. A tool with no cell in the window has
-    // nobody to list.
-    const cells = usage.data.filter((row) => String(row.tool) === tool);
-    const sanction = cells.length > 0 ? cells.find((row) => row.sanctioned_state)?.sanctioned_state ?? 'unknown' : null;
-    const people = sanction
-      ? await refusable(() => ask('q2_unsanctioned_users', context({ preset: ctx.preset, filters: { tool, sanctioned_state: sanction }, now: now() })))
+    // The people read names the tool, so it lists its people whatever its sanction; a tool with
+    // no cell in the window has nobody to list.
+    const people = usage.data.some((row) => String(row.tool) === tool)
+      ? await refusable(() => ask('q2_unsanctioned_users', context({ preset: ctx.preset, filters: { tool }, now: now() })))
       : null;
     const findings = await refusable(() => ask('q5_findings', context({ preset: ctx.preset, filters: { tool }, now: now() })));
     return toolView({ usage, people, findings, names: await namesFor(people) }, { tool, preset: ctx.preset });

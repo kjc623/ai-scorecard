@@ -32,7 +32,7 @@ export function renderValue(value) {
     case 'number':
       return `<span class="v-number">${escapeHtml(value.text ?? formatCount(value.value))}</span>`;
     case 'vocab':
-      return `<span class="v-vocab v-vocab-${escapeHtml(String(value.text).replace(/[^a-z_]/gi, ''))}">${escapeHtml(value.text)}</span>`;
+      return `<span class="v-vocab ${vocabClass(value.key ?? value.text)}">${escapeHtml(value.text)}</span>`;
     case 'absent':
     default:
       return '<span class="v-absent" title="Not carried by this response">—</span>';
@@ -128,7 +128,7 @@ function renderCell(row, column, max = 0) {
   if (kind === 'vocab') {
     // A vocabulary value is rendered even when it is a value people forget: `unknown` and
     // `never_reported` are answers, and a blank would be indistinguishable from a missing field.
-    return raw === null || raw === undefined ? '<span class="v-vocab v-vocab-unknown">unknown</span>' : renderValue({ kind: 'vocab', text: raw });
+    return raw === null || raw === undefined ? '<span class="v-vocab v-vocab-unknown">unknown</span>' : renderValue({ kind: 'vocab', text: raw, key: vocabKey(key, raw) });
   }
   if (raw === null || raw === undefined) return renderValue({ kind: 'absent' });
   // The tool column shows the name the catalogue gives the fingerprint, with the fingerprint on
@@ -163,7 +163,7 @@ function renderBreakdowns(table) {
     }
     if (counts.size < 2 || counts.size > 6) continue;
     const parts = [...counts].sort((a, b) => b[1] - a[1]);
-    const cls = (value) => `v-vocab-${escapeHtml(value.replace(/[^a-z_]/gi, ''))}`;
+    const cls = (value) => vocabClass(vocabKey(column.key, value));
     blocks.push(
       `<div class="dist"><span class="dist-label">${escapeHtml(column.label)}</span>`
       + `<div class="dist-bar" role="img" aria-label="${escapeHtml(parts.map(([v, n]) => `${v}: ${n}`).join(', '))}">`
@@ -258,6 +258,8 @@ export function renderSparkline(points, { width = 96, height = 28 } = {}) {
 }
 
 const vocabClass = (key) => `v-vocab-${escapeHtml(String(key ?? '').replace(/[^a-z_]/gi, ''))}`;
+/** A finding's severity is keyed apart from the other vocabularies: "high" is a serious state here, where elsewhere it is a strong signal. */
+const vocabKey = (column, value) => (column === 'severity' ? `severity_${value}` : value);
 
 /** A block's frame: the same panel as a table, with its title, count and link to the whole. */
 function blockFrame(kind, block, inner, { count = 0, classes = '' } = {}) {

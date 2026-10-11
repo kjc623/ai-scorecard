@@ -137,9 +137,9 @@ test('a tool\'s own screen folds its usage, lists who uses it in the API\'s orde
   assert.deepEqual(view.badges, [{ key: 'unsanctioned', text: 'Unsanctioned' }]);
   assert.deepEqual(sent.filter((b) => b.template).map((b) => [b.template, b.params.tool, b.params.sanctioned_state]), [
     ['q1_tools_ranked', 'tls_b6681b043244c43f', undefined],
-    ['q2_unsanctioned_users', 'tls_b6681b043244c43f', 'unsanctioned'],
+    ['q2_unsanctioned_users', 'tls_b6681b043244c43f', undefined],
     ['q5_findings', 'tls_b6681b043244c43f', undefined],
-  ], 'every read is scoped to the tool, and the people read to its sanction');
+  ], 'every read is scoped to the tool, and the people read lists its people whatever its sanction');
   const lookup = sent.find((b) => b.source === 'mart.v_person');
   assert.deepEqual(lookup?.filters, [{ field: 'subject', op: 'in', value: ['u_9a02', 'u_4f21'] }], 'the roster\'s references are looked up by name, in one read');
   assert.deepEqual(view.actions.map((a) => a.href), ['explore.html#events?tool=tls_b6681b043244c43f', '#tools']);
@@ -402,12 +402,17 @@ test('a tool\'s screen marks a tool with no recorded decision as unknown, names 
   assert.match(html, /<a class="cell-link" href="#person\?subject=u_9a02" title="User reference u_9a02">Bob Jones<\/a>/);
   assert.match(html, /<a class="cell-link" href="#person\?subject=u_4f21" title="User reference u_4f21">u_4f21<\/a>/);
   assert.equal(view.actions[1].href, '#tools?preset=d30');
-  // No decision recorded: the people read is still made, scoped to the unknown state, and the badge says so.
+  // No decision recorded: the people read is still made, by tool alone, and the badge says so.
   const undecided = readState(envelope('ok', { data: [{ bucket: '2026-09-30T00:00:00Z', tool: 'tls_zzzz', tool_name: 'Unrecognised tool', submissions: 2, users: 1 }], freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' } }));
   const quiet = createDashboard({ api: createQueryApi({ transport: { send: (body) => { sent.push(body); return body.template === 'q1_tools_ranked' ? { ...undecided, result_state: 'ok', api_version: '1', query_version: '1', data: undecided.data, freshness: FRESH, coverage: COMPLETE, meta: undecided.meta } : transport.send(body); } } }), now: NOW });
   const unknown = (await quiet.load('tools', { filters: { tool: 'tls_zzzz' } })).view;
   assert.deepEqual(unknown.badges, [{ key: 'unknown', text: 'No decision yet' }]);
-  assert.equal(sent.find((b) => b.template === 'q2_unsanctioned_users' && b.params.tool === 'tls_zzzz')?.params.sanctioned_state, 'unknown');
+  const read = sent.find((b) => b.template === 'q2_unsanctioned_users' && b.params.tool === 'tls_zzzz');
+  assert.ok(read, 'the people read is made for a tool with cells');
+  assert.equal(read.params.sanctioned_state, undefined, 'a fingerprint outside the catalogue has no state to scope by');
+  const unsanctionedList = (await quiet.load('tools', { filters: { view: 'unsanctioned' } })).view;
+  assert.equal(unsanctionedList.id, 'unsanctioned');
+  assert.equal(sent.filter((b) => b.template === 'q2_unsanctioned_users' && !b.params.tool).pop()?.params.sanctioned_state, 'unsanctioned', 'the list without a tool is still the unsanctioned question');
 });
 
 test('the Overview tiles open the screens they summarise, and the findings table names the user', async () => {

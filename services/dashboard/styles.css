@@ -327,6 +327,9 @@ tr.row-empty td { color: var(--ink-soft); font-style: italic; }
 .dist-dot.v-vocab-degraded, .dist-dot.v-vocab-stale, .dist-dot.v-vocab-disputed, .dist-dot.v-vocab-low, .dist-dot.v-vocab-warned, .dist-dot.v-vocab-uploaded, .dist-dot.v-vocab-partial { background: var(--warn); }
 .dist-seg.v-vocab-sanctioned, .dist-seg.v-vocab-healthy, .dist-seg.v-vocab-reporting, .dist-seg.v-vocab-confirmed, .dist-seg.v-vocab-high,
 .dist-dot.v-vocab-sanctioned, .dist-dot.v-vocab-healthy, .dist-dot.v-vocab-reporting, .dist-dot.v-vocab-confirmed, .dist-dot.v-vocab-high { background: var(--ok); }
+.dist-seg.v-vocab-severity_critical, .dist-dot.v-vocab-severity_critical { background: var(--bad); }
+.dist-seg.v-vocab-severity_high, .dist-dot.v-vocab-severity_high { background: var(--warn); }
+.dist-seg.v-vocab-severity_medium, .dist-dot.v-vocab-severity_medium, .dist-seg.v-vocab-severity_low, .dist-dot.v-vocab-severity_low { background: var(--ink-faint); }
 /* People in a team against people in none: a part of the whole, not a state. */
 .dist-seg.v-vocab-in_team, .dist-dot.v-vocab-in_team { background: var(--accent); }
 .dist-seg.v-vocab-no_team, .dist-dot.v-vocab-no_team { background: var(--ink-faint); }

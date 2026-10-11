@@ -132,7 +132,9 @@ export const TEMPLATES = Object.freeze({
           query_version: '1',
           source: 'mart.v_tool_usage',
           bucket: bucketOf(params, 'day'),
-          dimensions: ['tool'],
+          // The sanction rides with the tool: one state per fingerprint, so grouping by it
+          // splits no row, and every row says whether its tool is sanctioned.
+          dimensions: ['tool', 'sanctioned_state'],
           measures: ['submissions', 'users', 'bytes_total', 'blocked', 'warned', 'logged'],
           filters: filtersOf([
             eq('tool', optionalStr(params, 'tool')),
@@ -163,8 +165,11 @@ export const TEMPLATES = Object.freeze({
     build(params) {
       // The question is "which are unsanctioned": the state filter is part of the question, not an
       // optional narrowing. `sanctioned_state` may name another state (e.g. `unknown` gets its own
-      // list), but omitting it answers the template's own question.
-      const sanctionState = oneOf(params, 'sanctioned_state', ['sanctioned', 'unsanctioned', 'unknown']) ?? 'unsanctioned';
+      // list), but omitting it answers the template's own question. Naming one tool changes the
+      // question to "who is using this tool", whatever its state: a fingerprint outside the
+      // catalogue has no state at all, and would otherwise match no list.
+      const tool = optionalStr(params, 'tool');
+      const sanctionState = oneOf(params, 'sanctioned_state', ['sanctioned', 'unsanctioned', 'unknown']) ?? (tool === undefined ? 'unsanctioned' : undefined);
       return {
         document: {
           query_version: '1',
@@ -173,7 +178,7 @@ export const TEMPLATES = Object.freeze({
           dimensions: ['tool', 'subject'],
           measures: ['submissions', 'bytes_total'],
           filters: filtersOf([
-            eq('tool', optionalStr(params, 'tool')),
+            eq('tool', tool),
             eq('subject', optionalStr(params, 'subject')),
             eq('sanctioned_state', sanctionState),
           ]),
@@ -186,7 +191,7 @@ export const TEMPLATES = Object.freeze({
         notes: [
           'Subject-bearing: this read is audited as it is served. It is not paged: one response is bounded by limit.',
           'An unscoped window beyond 7 days is refused by the cost guard, naming the narrowing that would make it servable.',
-          'Three states, not two: `unsanctioned`, `unknown` and `sanctioned` are separate answers, and `unknown` gets its own count and list. The default here is `unsanctioned`, the template\'s own question.',
+          'Three states, not two: `unsanctioned`, `unknown` and `sanctioned` are separate answers, and `unknown` gets its own count and list. The default here is `unsanctioned`, the template\'s own question; a read that names one tool lists its people whatever its state.',
           'The unsanctioned tool set is resolved at read time from the decision on the tool each fingerprint belongs to (mart.agg_tool_user_period ⋈ ref.tool_catalogue ⋈ ops.tool_sanction); its display name comes from ref.tool_catalogue. Both precomputed, nothing scans raw events.',
           'Ordered by tool and then by person, never by volume: this is a list, not a leaderboard.',
         ],
