@@ -8,26 +8,28 @@ const OTHER = '0a1b2c3d4e5f60718293a4b5c6d7e8f901234567';
 
 // `gh run list --workflow deploy.yml --branch main --json databaseId,headSha,status,conclusion,url,number,event`
 const runs = [
+  { databaseId: 9004, number: 204, headSha: OTHER, status: 'completed', conclusion: 'success', event: 'workflow_run', url: 'https://github.com/example/ai-scorecard/actions/runs/9004' },
   { databaseId: 9003, number: 203, headSha: OTHER, status: 'in_progress', conclusion: '', event: 'push', url: 'https://github.com/example/ai-scorecard/actions/runs/9003' },
   { databaseId: 9002, number: 202, headSha: SHA, status: 'completed', conclusion: 'success', event: 'workflow_dispatch', url: 'https://github.com/example/ai-scorecard/actions/runs/9002' },
   { databaseId: 9001, number: 201, headSha: SHA, status: 'completed', conclusion: 'success', event: 'push', url: 'https://github.com/example/ai-scorecard/actions/runs/9001' },
   { databaseId: 9000, number: 200, headSha: SHA, status: 'completed', conclusion: 'failure', event: 'push', url: 'https://github.com/example/ai-scorecard/actions/runs/9000' },
 ];
 
-test('the run for a commit is its newest push run', () => {
+test('the run for a commit is its newest run started by ci or a push', () => {
   const pick = selectRun(runs, SHA);
   assert.equal(pick.state, 'success');
   assert.equal(pick.run.databaseId, 9001, 'a manual run (another environment) is never the release');
   assert.equal(selectRun(runs, SHA.slice(0, 7).toUpperCase()).run.databaseId, 9001, 'an abbreviated sha selects it too');
+  assert.equal(selectRun(runs, OTHER).run.databaseId, 9004, 'a run ci started is the release');
 });
 
 test('a running, failed or missing run is reported as such', () => {
-  assert.deepEqual(selectRun(runs, OTHER), { state: 'running', run: runs[0] });
+  assert.deepEqual(selectRun(runs.slice(1), OTHER), { state: 'running', run: runs[1] });
   const failed = selectRun(runs.filter((r) => r.number !== 201), SHA);
   assert.equal(failed.state, 'failed');
   assert.equal(failed.run.url, 'https://github.com/example/ai-scorecard/actions/runs/9000');
-  assert.equal(selectRun([{ ...runs[2], status: 'queued', conclusion: '' }], SHA).state, 'running');
-  assert.equal(selectRun([{ ...runs[2], conclusion: 'cancelled' }], SHA).state, 'failed');
+  assert.equal(selectRun([{ ...runs[3], status: 'queued', conclusion: '' }], SHA).state, 'running');
+  assert.equal(selectRun([{ ...runs[3], conclusion: 'cancelled' }], SHA).state, 'failed');
   assert.deepEqual(selectRun(runs, 'abcdef1'), { state: 'missing' });
   assert.deepEqual(selectRun([], SHA), { state: 'missing' });
   assert.throws(() => selectRun(runs, 'main'), /not a commit sha/);

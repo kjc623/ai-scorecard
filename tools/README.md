@@ -33,3 +33,7 @@ component's own tests can do:
 | `check-config.mjs` | Every environment variable `azure/main.bicep` sets for an app or job, and every setting and secret `fly/` gives an app, is read by that component |
 | `check-invariants.mjs` | Structural properties: devices hold no database credential, the dashboard holds no SQL, query-api binds values, the spool is append-only, only content-vault touches stored content, collector health stays closed |
 | `check-vocab.mjs` | The extension and `device/protocol` spell every shared vocabulary the same way |
+
+`deploy-plan.mjs` is the deploy workflow's plan: the agent release and the Fly.io apps whose inputs
+changed since the last successful deploy. Its test checks that every path an app's Dockerfile copies
+is among that app's inputs.
