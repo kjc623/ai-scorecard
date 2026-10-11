@@ -134,6 +134,7 @@ export function bannersFor(envelope) {
   if (envelope.coverage?.state === 'partial') {
     banners.push({
       level: 'warning',
+      about: 'coverage',
       title: 'Coverage is partial',
       text: `${coverageText(envelope.coverage).text}. Every figure here is a floor, not a total.`,
     });
@@ -141,6 +142,7 @@ export function bannersFor(envelope) {
   if (envelope.coverage?.state === 'not_yet_covered') {
     banners.push({
       level: 'hatched',
+      about: 'coverage',
       title: 'Not yet covered',
       text: coverageText(envelope.coverage).text,
     });
@@ -148,6 +150,7 @@ export function bannersFor(envelope) {
   if (state === 'not_yet_covered') {
     banners.push({
       level: 'hatched',
+      about: 'coverage',
       title: 'Not yet covered',
       text: envelope.freshness?.reason === 'directory_not_synced'
         ? 'The directory has not been synchronised, so no team is known for any person. This is not a quiet team.'

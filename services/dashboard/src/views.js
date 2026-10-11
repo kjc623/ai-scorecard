@@ -8,7 +8,7 @@
 // path to a value, so an absent measure cannot be merged with a zero in one screen while being
 // kept apart in another.
 
-import { measureOf, vocabOf } from './states.js';
+import { emptyStateFor, measureOf, vocabOf } from './states.js';
 import { formatBytes, formatCount, formatInstant, formatLabels, formatScore } from './format.js';
 import { SOURCES, TEMPLATES } from './vocab.js';
 
@@ -131,6 +131,12 @@ function screen(id, title, question, source, body) {
 /** A state that carries nothing, for a panel whose read did not come back. */
 const NOTHING = Object.freeze({ data: Object.freeze([]), banners: Object.freeze([]), meta: Object.freeze({}) });
 
+/** An overview panel's empty line: a read that could not answer says so, never "none". */
+function emptyLine(state, none) {
+  const said = state ? emptyStateFor(state) : null;
+  return said && said.kind !== 'empty' ? `${said.title}. ${said.text}` : none;
+}
+
 /** A table with a link to the screen that shows the whole of it. */
 function linked(table, href) {
   return Object.freeze({ ...table, href });
@@ -162,11 +168,13 @@ export function postureView({ devices, tools = null, classes = null, findings = 
   const usage = tools ?? NOTHING;
   const open = (findings?.data ?? []).filter((row) => row.review_state === 'open').length;
 
-  // The same warning arrives with each read; it is said once.
+  // The same warning arrives with each read; it is said once. Coverage is not a banner here: the
+  // devices reporting tile carries it, and a panel that cannot answer says so in place.
   const banners = [];
   const said = new Set();
   for (const state of [devices, tools, classes, findings]) {
     for (const banner of state?.banners ?? []) {
+      if (banner.about === 'coverage') continue;
       const key = `${banner.level}|${banner.title}|${banner.text}`;
       if (said.has(key)) continue;
       said.add(key);
@@ -193,7 +201,7 @@ export function postureView({ devices, tools = null, classes = null, findings = 
           column('users', 'People', 'measure'),
           column('blocked', 'Blocked', 'measure'),
         ],
-        emptyText: 'No tool was in use in this window.',
+        emptyText: emptyLine(tools, 'No tool was in use in this window.'),
       }), '#tools'),
       linked(tableFrom(classes ?? NOTHING, {
         title: 'Data classes',
@@ -203,7 +211,7 @@ export function postureView({ devices, tools = null, classes = null, findings = 
           column('tool', 'Tool'),
           column('submissions', 'Submissions carrying it', 'measure'),
         ],
-        emptyText: 'No sensitive data was classified in this window.',
+        emptyText: emptyLine(classes, 'No sensitive data was classified in this window.'),
       }), '#tools?view=classes'),
       tableFrom(findings ?? NOTHING, {
         title: 'Findings',
@@ -215,7 +223,7 @@ export function postureView({ devices, tools = null, classes = null, findings = 
           column('tool', 'Tool'),
           column('review_state', 'Review', 'vocab'),
         ],
-        emptyText: 'No finding was raised in this window.',
+        emptyText: emptyLine(findings, 'No finding was raised in this window.'),
       }),
     ]),
     banners: Object.freeze(banners),

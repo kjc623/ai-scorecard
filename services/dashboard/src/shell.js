@@ -14,7 +14,7 @@ import { escapeHtml } from './render.js';
  */
 export const NAV_GROUPS = Object.freeze([
   { group: null, icon: 'overview', ids: ['posture'], labels: { posture: 'Overview' } },
-  { group: 'Usage', icon: 'usage', ids: ['tools', 'teams', 'person'], labels: { tools: 'Tools & data classes', teams: 'Teams', person: 'Users' } },
+  { group: 'Usage', icon: 'usage', ids: ['tools', 'teams', 'person'], labels: { tools: 'Tools', teams: 'Teams', person: 'Users' } },
   { group: null, icon: 'collection', ids: ['devices'], labels: { devices: 'Devices' } },
   { group: null, icon: 'governance', ids: ['audit'], labels: { audit: 'Audit trail' } },
   { group: 'Settings', icon: 'settings', ids: ['settings', 'deployment', 'directory'], labels: { settings: 'Settings', deployment: 'Deployment', directory: 'Directory & teams' } },

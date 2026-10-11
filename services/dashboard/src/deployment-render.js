@@ -247,7 +247,7 @@ function depSecret(state) {
   const created = state.scim.created;
   if (!created) return '';
   return '<div class="dp-secret">'
-    + '<p><strong>Copy this token now. It will not be shown again.</strong> Shadow AI Capture keeps only a hash of it. If it is lost, create another and revoke this one.</p>'
+    + '<p><strong>Copy this token now. It will not be shown again.</strong> Sundial keeps only a hash of it. If it is lost, create another and revoke this one.</p>'
     + '<div class="dp-secret-row">'
     + `<input class="dp-input dp-mono" id="dp-token" readonly aria-label="The new SCIM token, ${escapeHtml(created.label)}" value="${escapeHtml(created.token)}">`
     + depButton('Copy token', { dep: 'copy', what: 'token' }, { kind: 'primary' })
@@ -298,7 +298,7 @@ function depScim(state) {
     + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Label</th><th scope="col">Created</th><th scope="col">State</th><th scope="col"><span class="sr">Action</span></th></tr></thead>'
     + `<tbody>${rows}${empty}</tbody></table></div>`;
   const howto = '<details class="dp-howto"><summary>Set up provisioning in Microsoft Entra ID</summary><ol class="dp-steps">'
-    + '<li>In the Microsoft Entra admin center, open <b>Enterprise applications</b>, choose <b>New application</b>, then <b>Create your own application</b> and <b>Integrate any other application you don\'t find in the gallery</b>; name it, for example, Shadow AI Capture provisioning. Sign-in keeps using the Shadow AI Capture application you consented to: Entra does not provision through an application added by consent.</li>'
+    + '<li>In the Microsoft Entra admin center, open <b>Enterprise applications</b>, choose <b>New application</b>, then <b>Create your own application</b> and <b>Integrate any other application you don\'t find in the gallery</b>; name it, for example, Sundial provisioning. Sign-in keeps using the application you consented to: Entra does not provision through an application added by consent.</li>'
     + '<li>In the new application, open <b>Provisioning</b> and set the provisioning mode to <b>Automatic</b>.</li>'
     + '<li>Tenant URL: the SCIM base URL above. Secret token: a token created here. Choose <b>Test connection</b>, then save.</li>'
     + '<li>Under <b>Mappings</b>, open the user mapping and map <code>objectId</code> to <code>externalId</code>, so a person a device knows by their Entra object id is matched to their directory entry.</li>'
