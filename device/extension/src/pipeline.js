@@ -28,7 +28,7 @@ import {
   validateObservation,
 } from './messages.js';
 import { classifyWithResponse, CANDIDATE_FLOOR, predicateRequest } from './predicate.js';
-import { computeToolFingerprint } from './tool-fingerprint.js';
+import { toolFingerprint } from './tool-fingerprint.js';
 import { COOLDOWN_ERROR_CODE } from './native.js';
 
 /** Bounded: a service worker can be killed at any time, and an unanswered candidate must not accumulate. */
@@ -58,6 +58,11 @@ export function createPipeline({
   function nextClientId() {
     sequence += 1;
     return `c${sequence}`;
+  }
+
+  /** The tool a request went to, named from its destination by the catalog in force. */
+  function toolOf(url) {
+    return toolFingerprint(policy.rules().catalog, url);
   }
 
   /**
@@ -122,8 +127,6 @@ export function createPipeline({
     if (!shape.match && shape.score >= CANDIDATE_FLOOR) {
       holdCandidate({
         request_id: detail.requestId,
-        tool_fingerprint: null,
-        vector: null,
         shape,
         request,
         size_bytes: body.size,
@@ -142,14 +145,14 @@ export function createPipeline({
     // The mode decides what may be read, and only then is anything read. The tool's mode is keyed by
     // its fingerprint, which comes from the destination alone, so one tool keeps one fingerprint
     // whatever its own mode is and whatever the request carries.
-    const fingerprint = await computeToolFingerprint(adapter, request);
-    const gate = readBodyForMode(await resolveMode({ host, tool_fingerprint: fingerprint.fingerprint }), body);
+    const tool = toolOf(url);
+    const gate = readBodyForMode(await resolveMode({ host, tool_fingerprint: tool }), body);
     const mode = gate.mode;
 
     const decision = await decide({
       url,
       host,
-      tool_fingerprint: fingerprint.fingerprint,
+      tool_fingerprint: tool,
       tab_id: detail.tabId,
       request_id: detail.requestId,
     });
@@ -177,7 +180,7 @@ export function createPipeline({
       observationBody({
         client_id: nextClientId(),
         route: ROUTE.EXT_WEB_REQUEST,
-        tool_fingerprint: fingerprint.fingerprint,
+        tool_fingerprint: tool,
         occurred_at: new Date(clock()).toISOString(),
         monotonic_offset_ms: Math.max(0, Math.round(monotonic())),
         size_bytes: body.size,
@@ -193,7 +196,6 @@ export function createPipeline({
       {
         mode,
         gate,
-        fingerprint,
         shape,
         host,
         unread_reason: gate.unread_reason,
@@ -232,7 +234,7 @@ export function createPipeline({
     const shape = predicateRequest(shapeInput(detail, null, tab_context));
 
     const isSocket = detail.type === 'websocket' || /^wss?:/i.test(url);
-    if (isSocket) return captureHandshake({ detail, host, tab_context, shape });
+    if (isSocket) return captureHandshake({ detail, host, shape });
 
     // Without a body, "match" cannot be decided; the metadata subset of the evidence decides
     // whether an identity-and-volume observation is worth emitting.
@@ -241,12 +243,12 @@ export function createPipeline({
       return { cancel: false, queued: false, skipped: true, observation: null, mode: MODE.M0, candidate: null };
     }
 
-    const fingerprint = await computeToolFingerprint(adapter, shapeInput(detail, null, tab_context));
-    const gate = readBodyForMode(policy.modeFor({ host, tool_fingerprint: fingerprint.fingerprint }), null);
+    const tool = toolOf(url);
+    const gate = readBodyForMode(policy.modeFor({ host, tool_fingerprint: tool }), null);
     const decision = await decide({
       url,
       host,
-      tool_fingerprint: fingerprint.fingerprint,
+      tool_fingerprint: tool,
       tab_id: detail.tabId,
       request_id: detail.requestId,
     });
@@ -255,7 +257,7 @@ export function createPipeline({
       observationBody({
         client_id: nextClientId(),
         route: ROUTE.EXT_WEB_REQUEST,
-        tool_fingerprint: fingerprint.fingerprint,
+        tool_fingerprint: tool,
         occurred_at: new Date(clock()).toISOString(),
         monotonic_offset_ms: Math.max(0, Math.round(monotonic())),
         size_bytes: 0,
@@ -265,7 +267,6 @@ export function createPipeline({
       {
         mode: gate.mode,
         gate,
-        fingerprint,
         shape,
         host,
         unread_reason: 'mode_forbids_read',
@@ -278,13 +279,13 @@ export function createPipeline({
   }
 
   /** A WebSocket handshake is observed; the frames after it are not visible to webRequest. */
-  async function captureHandshake({ detail, host, tab_context, shape }) {
-    const fingerprint = await computeToolFingerprint(adapter, shapeInput(detail, null, tab_context));
-    const mode = policy.modeFor({ host, tool_fingerprint: fingerprint.fingerprint }).mode;
+  async function captureHandshake({ detail, host, shape }) {
+    const tool = toolOf(detail.url);
+    const mode = policy.modeFor({ host, tool_fingerprint: tool }).mode;
     const decision = await decide({
       url: detail.url,
       host,
-      tool_fingerprint: fingerprint.fingerprint,
+      tool_fingerprint: tool,
       tab_id: detail.tabId,
       request_id: detail.requestId,
     });
@@ -292,7 +293,7 @@ export function createPipeline({
       observationBody({
         client_id: nextClientId(),
         route: ROUTE.EXT_WEB_REQUEST,
-        tool_fingerprint: fingerprint.fingerprint,
+        tool_fingerprint: tool,
         occurred_at: new Date(clock()).toISOString(),
         monotonic_offset_ms: Math.max(0, Math.round(monotonic())),
         size_bytes: 0,
@@ -302,7 +303,6 @@ export function createPipeline({
       {
         mode,
         gate: { mode, resolution: { reason: 'websocket_handshake' }, bytes: null, unread_reason: 'websocket_frames_not_observable' },
-        fingerprint,
         shape,
         host,
         unread_reason: 'websocket_frames_not_observable',
@@ -341,12 +341,12 @@ export function createPipeline({
     if (!verdict.match) return { matched: false, reason: verdict.reason, score: verdict.score };
 
     // A held request's body was not kept, so a response contract can never become a way to read
-    // content.
+    // content. Its fingerprint comes from the destination, like every other observation's.
     const followUp = decorate(
       observationBody({
         client_id: 'pending',
         route: ROUTE.EXT_PAGE_CONTEXT,
-        tool_fingerprint: entry.tool_fingerprint || 'tf1:unread',
+        tool_fingerprint: toolOf(request.url),
         occurred_at: new Date(clock()).toISOString(),
         monotonic_offset_ms: Math.max(0, Math.round(monotonic())),
         size_bytes: entry.size_bytes,
@@ -356,7 +356,6 @@ export function createPipeline({
       {
         mode: entry.mode,
         gate: { mode: entry.mode, resolution: { reason: 'response_contract' }, bytes: null, unread_reason: null },
-        fingerprint: { fingerprint: entry.tool_fingerprint || 'tf1:unread', vector: entry.vector || {}, canonical: '' },
         shape: entry.shape,
         host: entry.host,
         unread_reason: null,
@@ -377,13 +376,12 @@ export function createPipeline({
   }
 
   function decorate(observation, ctx) {
-    const { mode, gate, fingerprint, shape, host, unread_reason, decision, detail } = ctx;
+    const { mode, gate, shape, host, unread_reason, decision, detail } = ctx;
     observation.mode_resolved = mode;
     observation.mode_reason = gate.resolution ? gate.resolution.reason : '';
     observation.policy_version = gate.resolution ? gate.resolution.policy_version : null;
     observation.unread_reason = unread_reason;
     observation.host = host;
-    observation.path_shape = fingerprint.vector.path_shape;
     observation.body_shape = shape.structure;
     observation.matched_evidence = shape.signals.filter((s) => s.weight > 0).map((s) => s.id);
     observation.decision_reason = decision ? decision.reason : '';

@@ -1,70 +1,77 @@
 /**
- * tool-fingerprint.js — `tool_fingerprint = "tf2:" + base32(SHA-256(canonical({v: 2, host})))`.
+ * tool-fingerprint.js — the tool a request went to, named from its destination host by the app
+ * catalog in the policy bundle:
  *
- * The fingerprint identifies the tool a request went to, so it is derived from the one signal that
- * is the same for every request to that tool: the destination host, lower-cased, without a port.
- * The path, the method, the content type and the body's shape vary from one prompt to the next and
- * belong to the predicate, which decides whether a request is a submission, never to the identity.
- * The `tf2:` prefix versions the derivation so it can change without silently re-keying history.
+ *   app:<app_key>  an app's inference domain covers the host: an exact host, or with a leading dot
+ *                  the domain and every host under it, the rule capture-core matches domains by;
+ *   host:<host>    no app claims the host, which then names itself.
  *
- * The egress proxy derives its own `tls_` fingerprint from the host and path, so one tool seen
- * through both routes yields one fingerprint per route; the catalogue names both.
+ * Only an app the catalog knows by its domains alone names a browser request. A desktop app or a
+ * command-line tool can share a domain with a web service (ChatGPT's desktop app and chatgpt.com),
+ * and a request from the browser is never that installed program. Of the apps whose domains cover
+ * the host, an exact host beats a domain and a longer domain beats a shorter one; the catalog's
+ * order breaks a tie.
+ *
+ * The path, the method and the body never name the tool: they vary between prompts to one tool and
+ * belong to the predicate, which decides whether a request is a submission.
  */
 
-import { sha256Hex } from './codec.js';
-import { hostOf } from './predicate.js';
+import { registeredDomain } from './predicate.js';
 
-/** RFC 4648 base32, unpadded, lower-case. */
-const B32 = 'abcdefghijklmnopqrstuvwxyz234567';
+/** The catalog signal kind a host is matched against. */
+export const INFERENCE_DOMAIN = 'inference_domain';
 
-export function base32(bytes) {
-  let out = '';
-  let acc = 0;
-  let bits = 0;
-  for (const b of bytes) {
-    acc = (acc << 8) | b;
-    bits += 8;
-    while (bits >= 5) {
-      bits -= 5;
-      out += B32[(acc >> bits) & 31];
-    }
+/** The longest tool fingerprint the event envelope accepts. */
+const MAX_FINGERPRINT = 128;
+
+/**
+ * @param {Array<{app_key?: string, signals?: Array<{kind?: string, value?: string}>}>} catalog  the bundle's
+ * @param {string} url  the request's URL
+ * @returns {string} `app:<app_key>`, or `host:<host>` when no app claims the host
+ */
+export function toolFingerprint(catalog, url) {
+  const host = destinationHost(url);
+  const app = appForHost(catalog, host);
+  if (app) return `app:${app}`;
+  const own = `host:${host}`;
+  return own.length <= MAX_FINGERPRINT ? own : `host:${registeredDomain(host)}`;
+}
+
+/** The request's host, lower-case, without a port or a trailing dot. */
+export function destinationHost(url) {
+  try {
+    return new URL(url).hostname.toLowerCase().replace(/\.$/, '');
+  } catch {
+    return '';
   }
-  if (bits > 0) out += B32[(acc << (5 - bits)) & 31];
-  return out;
-}
-
-/** Canonical (sorted, shape-replaced) form: two observations of one tool give one string. */
-export function canonical(vector) {
-  return JSON.stringify(vector, replacerSorted(vector));
-}
-
-function replacerSorted(vector) {
-  return function replacer(_key, value) {
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      const out = {};
-      for (const k of Object.keys(value).sort()) out[k] = value[k];
-      return out;
-    }
-    return value;
-  };
 }
 
 /**
- * @param {import('./adapter.js').Adapter} adapter
- * @param {{url?: string, host?: string}} req  the request record; only its destination is read
- * @returns {Promise<{fingerprint: string, vector: object, canonical: string}>}
+ * The key of the app the host belongs to, or null.
+ * @returns {string|null}
  */
-export async function computeToolFingerprint(adapter, req) {
-  const host = (hostOf(req?.url) || String(req?.host || '')).toLowerCase().replace(/:\d+$/, '');
-  const vector = { v: 2, host };
-  const canon = canonical(vector);
-  const hex = await sha256Hex(adapter.crypto, new TextEncoder().encode(canon));
-  const bytes = hexToBytes(hex);
-  return { fingerprint: `tf2:${base32(bytes)}`, vector, canonical: canon };
+export function appForHost(catalog, host) {
+  let best = null;
+  let bestRank = -1;
+  for (const app of Array.isArray(catalog) ? catalog : []) {
+    const signals = app && Array.isArray(app.signals) ? app.signals : [];
+    if (!app || typeof app.app_key !== 'string' || signals.length === 0) continue;
+    if (!signals.every((s) => s && s.kind === INFERENCE_DOMAIN)) continue;
+    for (const s of signals) {
+      const rank = matchRank(host, s.value);
+      if (rank > bestRank) {
+        best = app.app_key;
+        bestRank = rank;
+      }
+    }
+  }
+  return best;
 }
 
-function hexToBytes(hex) {
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  return out;
+/** How closely a domain pattern covers a host: -1 when it does not, and higher is closer. */
+function matchRank(host, pattern) {
+  const p = String(pattern ?? '').trim().toLowerCase().replace(/^\*/, '');
+  if (!host || !p) return -1;
+  if (p.startsWith('.')) return host === p.slice(1) || host.endsWith(p) ? p.length : -1;
+  return host === p ? Number.MAX_SAFE_INTEGER : -1;
 }

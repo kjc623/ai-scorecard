@@ -39,7 +39,8 @@ export const DEFAULT_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
  * @property {{seed_hosts?: string[]}} [interception]
  * @property {object[]} [rules]
  * @property {string[]} [sanctioned_tools]
- * @property {{app_key: string, category: string}[]} [catalog]   the fields the evaluator reads
+ * @property {{app_key: string, category: string, signals?: {platform: string, kind: string, value: string}[]}[]} [catalog]
+ *   the app catalog: the evaluator reads categories, the tool name inference domains
  */
 
 /**
@@ -150,7 +151,7 @@ export function createPolicyCache({ now = () => Date.now(), staleAfterMs = DEFAU
     current = null;
   }
 
-  /** The rules, the sanctioned tools and the app catalog, as the evaluator reads them; never authoritative. */
+  /** The rules, the sanctioned tools and the app catalog, as the evaluator and the tool name read them; never authoritative. */
   function rules() {
     if (!current) return { rules: [], sanctioned_tools: [], catalog: [] };
     const b = current.bundle;

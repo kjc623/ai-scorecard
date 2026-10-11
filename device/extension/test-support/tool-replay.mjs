@@ -6,7 +6,8 @@
  * the response's status and headers, and the text the person typed. The replay drives the request
  * through the body lane and its completion through the response lane, with only the fields Chrome
  * supplies: `onBeforeRequest` never carries request headers, and `onCompleted` carries response
- * headers only when the listener was registered with `responseHeaders`.
+ * headers only when the listener was registered with `responseHeaders`. The policy bundle in force
+ * carries the app catalog seeded in services/database/schema.sql, as control-api composes it.
  *
  * What reached capture-core is reported per tool, as the events one submission became and three
  * facts about them:
@@ -37,14 +38,50 @@ export function loadFixtures(dir = FIXTURES) {
     .map((f) => ({ file: f, ...JSON.parse(readFileSync(join(dir, f), 'utf8')) }));
 }
 
-/** The extension rows of the tool catalogue seed: fingerprint -> {display_name, app_key}. */
-export function extensionCatalogue(source = readFileSync(SCHEMA, 'utf8')) {
-  const start = source.indexOf('INSERT INTO ref.tool_catalogue');
-  const end = source.indexOf(';', start);
+const schemaSource = () => readFileSync(SCHEMA, 'utf8');
+
+/** The seed statement of schema.sql that starts with `head`, up to its semicolon. */
+function seed(source, head) {
+  const start = source.indexOf(head);
+  if (start === -1) throw new Error(`schema.sql has no ${head}`);
+  return source.slice(start, source.indexOf(';', start));
+}
+
+/** A ref.app seed row: app_key, display_name, vendor, category, source_url. */
+const APP_ROW = /\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'[^']*'\s*,\s*'([^']+)'\s*,\s*'[^']*'\s*\)/g;
+
+/** The app catalog as the policy bundle carries it: each ref.app row with its ref.app_signal rows, by app key. */
+export function bundleCatalog(source = schemaSource()) {
+  const apps = new Map();
+  for (const m of seed(source, 'INSERT INTO ref.app (').matchAll(APP_ROW)) apps.set(m[1], { app_key: m[1], category: m[3], signals: [] });
+  const signal = /\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'([^']*)'\s*\)/g;
+  for (const m of seed(source, 'INSERT INTO ref.app_signal').matchAll(signal)) {
+    apps.get(m[1]).signals.push({ platform: m[2], kind: m[3], value: m[4] });
+  }
+  return [...apps.values()].sort((a, b) => (a.app_key < b.app_key ? -1 : 1));
+}
+
+/**
+ * The tool catalogue seed with each app's own `app:` row: fingerprint -> {display_name, app_key,
+ * signal_kind, evidence}.
+ */
+export function toolCatalogue(source = schemaSource()) {
   const rows = new Map();
-  const re = /\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'[^']*'\s*,\s*'extension'\s*,\s*'[^']*'\s*,\s*'([^']+)'\s*\)/g;
-  for (const m of source.slice(start, end).matchAll(re)) rows.set(m[1], { display_name: m[2], app_key: m[3] });
+  const row = /\(\s*'([^']+)'\s*,\s*'([^']+)'\s*,\s*'[^']*'\s*,\s*'([a-z]+)'\s*,\s*'([^']*)'\s*,\s*'([^']+)'\s*\)/g;
+  for (const m of seed(source, 'INSERT INTO ref.tool_catalogue').matchAll(row)) {
+    rows.set(m[1], { display_name: m[2], signal_kind: m[3], evidence: JSON.parse(m[4]), app_key: m[5] });
+  }
+  for (const m of seed(source, 'INSERT INTO ref.app (').matchAll(APP_ROW)) {
+    rows.set(`app:${m[1]}`, { display_name: m[2], signal_kind: 'endpoint', evidence: {}, app_key: m[1] });
+  }
   return rows;
+}
+
+/** The web tools: the apps the catalogue names browser prompts for, app_key -> display name. */
+export function webTools(catalogue = toolCatalogue()) {
+  const out = new Map();
+  for (const row of catalogue.values()) if (row.signal_kind === 'extension') out.set(row.app_key, row.display_name);
+  return out;
 }
 
 /** The `requestBody` Chrome hands over: a form parsed, anything else as raw bytes. */
@@ -63,10 +100,10 @@ function headerList(headers) {
  * Replay one fixture in a fresh extension whose tenant reads content.
  * @returns {Promise<{observed: boolean, attributed: boolean, prompt: boolean, events: Array<{route: string, fingerprint: string, named: string|null, app_key: string|null, content: string|null}>, score: number, signals: string[]}>}
  */
-export async function replay(fixture, { catalogue = extensionCatalogue() } = {}) {
+export async function replay(fixture, { catalogue = toolCatalogue(), catalog = bundleCatalog() } = {}) {
   const h = createHarness();
   await h.app.start();
-  h.app.applyPolicy({ policy_version: 'replay', bundle: { version: 'replay', tenant_default_mode: 'm3' } });
+  h.app.applyPolicy({ policy_version: 'replay', bundle: { version: 'replay', tenant_default_mode: 'm3', catalog } });
   await settle();
   h.core.received.length = 0;
 

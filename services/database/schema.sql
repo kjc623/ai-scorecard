@@ -133,7 +133,9 @@ CREATE TABLE ref.app (
 );
 
 -- What identifies an app on a device. An inference_domain is an exact host or, with a leading dot,
--- a host suffix; a model_store may begin with %USERPROFILE% or ~, expanded per user.
+-- the domain and every host under it. The browser extension names a request after an app known by
+-- its inference domains alone, so a web tool reached at a new host under its domain keeps its name.
+-- A model_store may begin with %USERPROFILE% or ~, expanded per user.
 CREATE TABLE ref.app_signal (
   app_key   text NOT NULL REFERENCES ref.app,
   platform  text NOT NULL CHECK (platform IN ('windows','macos','linux','any')),
@@ -148,7 +150,8 @@ CREATE TABLE ref.app_signal (
 -- never emit a brand, only a fingerprint of what they observed; this table names the common ones
 -- and links each to its app in ref.app, the unit a tenant sanctions. signal_kind and evidence record
 -- how a fingerprint was derived, so a row can be regenerated and reviewed. An `endpoint` row is a
--- catalog app's own fingerprint, `app:<app_key>`.
+-- catalog app's own fingerprint, `app:<app_key>`. A browser request no app claims carries
+-- `host:<host>`, which no row lists and which is shown as its host.
 CREATE TABLE ref.tool_catalogue (
   tool_fingerprint  text PRIMARY KEY,
   display_name      text NOT NULL,
@@ -1779,9 +1782,9 @@ SELECT a.tenant_id,
     ON s.tenant_id = a.tenant_id
    AND s.tool_key = c.app_key;
 
--- A fingerprint's display name: the shared catalogue's, else "Unrecognised tool". The raw
--- fingerprint is never shown as a name, because it would read like a known tool with a bad label;
--- it travels separately on every row.
+-- A fingerprint's display name: the shared catalogue's; for `host:<host>`, a destination no app
+-- claims, the host; else "Unrecognised tool". Any other raw fingerprint is never shown as a name,
+-- because it would read like a known tool with a bad label; it travels separately on every row.
 CREATE FUNCTION ops.tool_display_name(p_tool_fingerprint text)
 RETURNS text
 LANGUAGE sql STABLE AS $$
@@ -1789,6 +1792,7 @@ LANGUAGE sql STABLE AS $$
     (SELECT c.display_name
        FROM ref.tool_catalogue c
       WHERE c.tool_fingerprint = p_tool_fingerprint),
+    nullif(substring(p_tool_fingerprint FROM '^host:(.*)$'), ''),
     'Unrecognised tool')
 $$;
 
@@ -2871,8 +2875,8 @@ INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES
   ('chatgpt_desktop',     'any',       'inference_domain',        'chatgpt.com'),
   ('chatgpt_desktop',     'macos',     'macos_bundle_id',         'com.openai.chat'),
   ('chatgpt_desktop',     'macos',     'macos_bundle_id',         'com.openai.codex'),
+  ('chatgpt_web',         'any',       'inference_domain',        '.chatgpt.com'),
   ('chatgpt_web',         'any',       'inference_domain',        'chat.openai.com'),
-  ('chatgpt_web',         'any',       'inference_domain',        'chatgpt.com'),
   ('claude_code',         'any',       'cli_binary',              'claude'),
   ('claude_code',         'any',       'inference_domain',        'api.anthropic.com'),
   ('claude_code',         'any',       'npm_package',             '@anthropic-ai/claude-code'),
@@ -2896,7 +2900,7 @@ INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES
   ('deepseek_api',        'any',       'inference_domain',        'api.deepseek.com'),
   ('gemini_cli',          'any',       'cli_binary',              'gemini'),
   ('gemini_cli',          'any',       'npm_package',             '@google/gemini-cli'),
-  ('gemini_web',          'any',       'inference_domain',        'gemini.google.com'),
+  ('gemini_web',          'any',       'inference_domain',        '.gemini.google.com'),
   ('github_copilot',      'any',       'ide_extension_id',        'github.copilot-chat'),
   ('google_ai_api',       'any',       'inference_domain',        '.aiplatform.googleapis.com'),
   ('google_ai_api',       'any',       'inference_domain',        'generativelanguage.googleapis.com'),
@@ -2925,7 +2929,7 @@ INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES
   ('openai_api',          'any',       'inference_domain',        'api.openai.com'),
   ('openrouter',          'any',       'inference_domain',        'openrouter.ai'),
   ('perplexity_api',      'any',       'inference_domain',        'api.perplexity.ai'),
-  ('perplexity_web',      'any',       'inference_domain',        'www.perplexity.ai'),
+  ('perplexity_web',      'any',       'inference_domain',        '.perplexity.ai'),
   ('together_ai',         'any',       'inference_domain',        'api.together.xyz'),
   ('vllm',                'any',       'listen_port',             '8000'),
   ('vscode',              'macos',     'macos_bundle_id',         'com.microsoft.VSCode'),
@@ -2939,10 +2943,12 @@ INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES
 --   * `tls` rows: the egress proxy's fingerprint of a destination, "tls_" + the first eight bytes
 --     (lowercase hex) of sha256("tls|" + lowercased host + "|" + path without leading or trailing
 --     slashes). One tool may have several paths, so several rows. evidence names the host and path.
---   * `extension` rows: the browser extension's "tf2:" + base32(sha256(canonical({v: 2, host}))),
---     one per host the tool is reached at. evidence names the host.
+--   * `extension` rows: a browser prompt stored under "tf2:" + base32(sha256(canonical({v: 2,
+--     host}))), one row per host. evidence names the host. The extension names a web tool by its
+--     app's own `app:` fingerprint, found from the app's inference domains.
 --   * `process` rows: the process detector's "proc_" + image signature.
--- A fingerprint not listed here renders as "Unrecognised tool" and belongs to no tool.
+-- A fingerprint not listed here belongs to no tool: `host:<host>` renders as its host, any other as
+-- "Unrecognised tool".
 INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_kind, evidence, app_key) VALUES
   ('tls_b6681b043244c43f', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/v1/messages"}', 'claude_code'),
   ('tls_5a5a41ed0bf50d9d', 'Claude Code', 'anthropic', 'tls', '{"host":"api.anthropic.com","path":"/v1/messages/count_tokens"}', 'claude_code'),
@@ -2974,6 +2980,7 @@ INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_k
   ('tls_544b80dcc1446f8b', 'Together AI', 'together', 'tls', '{"host":"api.together.xyz","path":"/v1/chat/completions"}', 'together_ai'),
   ('tls_4fb4f5cb98d7a1c3', 'Cohere API', 'cohere', 'tls', '{"host":"api.cohere.ai","path":"/v1/chat"}', 'cohere_api'),
   ('tf2:de4s6yclxfhnumvdm3ubzgd5jveiwkzapelxdcj2qdzd72qrridq', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com"}', 'chatgpt_web'),
+  ('tf2:a64fvqypthxcqzcwgpxxeeo4kvhk5onujlq22qafww3ql422pxyq', 'ChatGPT (web)', 'openai', 'extension', '{"host":"m.chatgpt.com"}', 'chatgpt_web'),
   ('tf2:mespeqbrgr4vb7rqmmrubxuglidtpu3e5xpjd7dwqkm2evicbwla', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chat.openai.com"}', 'chatgpt_web'),
   ('tf2:6lwajg7v6mwycbn43eszknx6p3sqfegfsk6tj2p4yqovdd32mnfq', 'Gemini (web)', 'google', 'extension', '{"host":"gemini.google.com"}', 'gemini_web'),
   ('tf2:vjlb4hsqpngtmkhd4gwtgmcorqo26q2ezy7vp4erdqysbawzdx2q', 'Perplexity (web)', 'perplexity', 'extension', '{"host":"www.perplexity.ai"}', 'perplexity_web'),
