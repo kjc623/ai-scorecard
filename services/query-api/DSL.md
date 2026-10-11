@@ -86,7 +86,7 @@ because their presence is an attempt rather than a typo:
 | `mart.agg_team_period` | aggregate | Q3 teams | PK + `(tenant, team_id, bucket_start DESC)` |
 | `mart.agg_class_period` | aggregate | Q4 classes | PK |
 | `mart.agg_rule_period` | aggregate | the prompts each enforcement rule decided, for Insights | PK |
-| `mart.agg_discovery_period` | aggregate | what device discovery found: the devices that reported each tool by kind of finding and item, with each tool's name, catalogue app (`tool_key`), `category`, sanction, `first_seen` and `last_seen`; where the inventory scan stands on the fleet in `meta.extras.inventory_scan`, for Insights | PK + `(tenant, tool_fingerprint, bucket_size, bucket_start)` |
+| `mart.agg_discovery_period` | aggregate | what device discovery found: the devices that reported each tool by kind of finding and item, with each tool's name, `category`, sanction, `first_seen` under any of its fingerprints and `last_seen`; where the inventory scan stands on the fleet in `meta.extras.inventory_scan`, for Insights | PK + `(tenant, tool_fingerprint, bucket_size, bucket_start)` |
 | `mart.agg_user_period` | aggregate | Q6 one subject | PK + `(tenant, user_ref, bucket_start DESC, bucket_size)` |
 | `mart.v_team_member_period` | aggregate | the people behind each team's total | `mart.agg_user_period` PK |
 | `mart.agg_device_period` | aggregate | Q7 history | PK |
@@ -133,14 +133,16 @@ Extra filter-only columns (not groupable): on `ingest.submission` — `submissio
 `ops.audit` — `audit_seq`, `occurred_at`, `object_id`; on `mart.v_device_liveness` — `enrolled_at`,
 `last_seen_at`, `revoked_at`, `spool_depth`, `spool_dropped_total`; on `mart.v_person` — `last_active_day`.
 
-Every source that shows a tool returns the raw fingerprint in `tool` and a display name in
-`tool_name`, resolved at read time from the shared `ref.tool_catalogue`, falling back to
-`Unrecognised tool`. `mart.v_tool_usage` also returns `tool_key`, the catalogue app the fingerprint
-belongs to (the unit a tenant sanctions, so several fingerprints of one tool share it), NULL for a
-fingerprint outside the catalogue. `sanctioned_state` is present-tense
-configuration joined at read time: the tenant's decision on the tool the fingerprint belongs to
-(`ops.tool_sanction` through the catalogue's `app_key`); NULL (no decision, or a fingerprint outside
-the catalogue) renders as `unknown`, never `unsanctioned`.
+Every source that shows a tool returns the tool in `tool` and its display name in `tool_name`,
+resolved at read time. A tool is what `ops.tool_id()` returns for a fingerprint: its catalogue app's
+own fingerprint, `app:<app_key>`, when the shared `ref.tool_catalogue` lists the fingerprint or, for a
+`host:<host>` fingerprint, when an app's inference domain covers the host; otherwise the fingerprint
+itself, named after its host or `Unrecognised tool`. Grouping by `tool` therefore gives one row per
+tool however many fingerprints it was seen under, which makes `users` a lower bound; `eq`/`in` on
+`tool` match every fingerprint of the tools named, whichever of them is given. An event's own
+fingerprint is in its detail (`q9_event_detail`). `sanctioned_state` is present-tense configuration
+joined at read time: the tenant's decision on the tool (`ops.tool_sanction`); NULL (no decision, or a
+tool outside the catalogue) renders as `unknown`, never `unsanctioned`.
 
 The event and finding lists carry the person's names beside the reference in `subject`:
 `subject_name` is the account name the device reported with the submission (NULL for a tenant whose
@@ -166,7 +168,7 @@ The window column is filterable under its own name (`received_at`, `detected_at`
 * `between` takes exactly `[low, high]`.
 * `is_null` takes no value. `eq: null` is rejected — use `is_null` (a `= NULL` predicate that
   silently matches nothing is exactly the class of bug this DSL exists to prevent).
-* `starts_with` is permitted **only** on `tool` fingerprints, on aggregate sources, and on
+* `starts_with` is permitted **only** on `tool`, on aggregate sources, and on
   `mart.v_person`'s `name_key`, a lower-cased name for a case-insensitive search; on
   `ingest.submission` and `mart.v_finding` it is `unsupported_query_shape / no_covering_index`,
   and the error names `fix.alternative_source: mart.agg_tool_period`.
@@ -233,7 +235,7 @@ Every template declares exactly these parameters; anything else is an error.
 | `q3_team_growth` | `mart.agg_team_period` | `window`, `bucket`, `limit`, `team` | one series per team, named in `team_name`; the people with usage, those in any team, and the number of teams in `meta.extras.team_coverage` |
 | `q4_class_mix` | `mart.agg_class_period` | `window`, `bucket`, `limit`, `dimensions`, `class`, `severity` | `dimensions` ⊆ `{class, tool, severity, classifier_version}`, ≤ 3; default `[class, severity]` |
 | `q5_findings` | `mart.v_finding` | `window`, `limit`, `cursor`, `severity`, `rule`, `review_state`, `subject`, `tool`, `class` | review state `open` means nobody has looked |
-| `q6_subject_series` | `mart.agg_user_period` | `subject` (**required**), `window`, `bucket`, `limit` | carries `meta.extras.flush_check` |
+| `q6_subject_series` | `mart.agg_user_period` | `subject` (**required**), `window`, `bucket`, `limit` | carries `meta.extras.flush_check`, and `meta.extras.subject_tools`, the tools the person used in the window, each counted once |
 | `q7_devices` | `mart.v_device_liveness` | `limit`, `cursor`, `liveness`, `collector_state`, `collector`, `device_os`, `managed_state`, `region` | **no window**; four liveness values stay distinct; one row per device, with its collectors' states summed; `collector` and `collector_state` filter on the device's set; fleet-wide counts in `meta.extras.device_status` |
 | `q8_activity` | `ingest.submission` | `window`, `limit`, `cursor`, `subject`, `tool`, `device`, `class`, `content_state`, `action`, `mode`, `department`, `prompt_kind`, `prompt_kind_not`, `attachments` | window ≤ 31 days; both clocks returned; `prompt_kind` includes only that kind and `prompt_kind_not` excludes it; `attachments: yes` keeps the events that described an attachment |
 | `q9_event_detail` | `ingest.submission` | `submission_id` (**required**), `received_at_hint` | single record; `data` is one row per observation, each carrying the submission's columns |

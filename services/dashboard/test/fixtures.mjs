@@ -203,8 +203,8 @@ const PEOPLE_ROW = Object.freeze({
 
 // Tools whose first prompt fell in the window, newest first.
 const FIRST_SEEN_ROWS = Object.freeze([
-  Object.freeze({ first_seen: '2026-09-29T00:00:00Z', tool: 'shadow_llm_gateway', tool_key: null, tool_name: 'Unrecognised tool', sanctioned_state: null, people: 2 }),
-  Object.freeze({ first_seen: '2026-09-26T00:00:00Z', tool: 'tls_b6681b043244c43f', tool_key: 'claude_code', tool_name: 'Claude Code', sanctioned_state: 'unsanctioned', people: 230 }),
+  Object.freeze({ first_seen: '2026-09-29T00:00:00Z', tool: 'shadow_llm_gateway', tool_name: 'Unrecognised tool', sanctioned_state: null, people: 2 }),
+  Object.freeze({ first_seen: '2026-09-26T00:00:00Z', tool: 'tls_b6681b043244c43f', tool_name: 'Claude Code', sanctioned_state: 'unsanctioned', people: 230 }),
 ]);
 
 // Prompts per day by the sanction of their tool; a tool with no decision has no state.
@@ -223,14 +223,14 @@ const SHIFT_ROWS = Object.freeze([
 const discovered = (tool, type, item, devices, extra) => Object.freeze({
   bucket: '2026-09-01T00:00:00Z', tool, discovery_type: type, item, devices, last_seen: '2026-09-30T08:00:00Z', ...extra,
 });
-const OLLAMA = Object.freeze({ tool_name: 'Ollama', tool_key: 'ollama', category: 'local_runtime', sanctioned_state: null, first_seen: '2026-09-12T00:00:00Z' });
+const OLLAMA = Object.freeze({ tool_name: 'Ollama', category: 'local_runtime', sanctioned_state: null, first_seen: '2026-09-12T00:00:00Z' });
 const DISCOVERY_ROWS = Object.freeze([
-  discovered('app:chatgpt_desktop', 'app_installed', '', 7, { tool_name: 'ChatGPT (desktop)', tool_key: 'chatgpt_desktop', category: 'chat_assistant', sanctioned_state: 'sanctioned', first_seen: '2026-08-02T00:00:00Z' }),
-  discovered('app:claude_code', 'cli_installed', '', 12, { tool_name: 'Claude Code', tool_key: 'claude_code', category: 'coding_agent', sanctioned_state: 'unsanctioned', first_seen: '2026-08-02T00:00:00Z', last_seen: '2026-09-30T09:00:00Z' }),
+  discovered('app:chatgpt_desktop', 'app_installed', '', 7, { tool_name: 'ChatGPT (desktop)', category: 'chat_assistant', sanctioned_state: 'sanctioned', first_seen: '2026-08-02T00:00:00Z' }),
+  discovered('app:claude_code', 'cli_installed', '', 12, { tool_name: 'Claude Code', category: 'coding_agent', sanctioned_state: 'unsanctioned', first_seen: '2026-08-02T00:00:00Z', last_seen: '2026-09-30T09:00:00Z' }),
   discovered('app:ollama', 'app_installed', '', 5, OLLAMA),
   discovered('app:ollama', 'local_model', 'llama3', 4, OLLAMA),
   discovered('app:ollama', 'local_model', 'mistral', 1, { ...OLLAMA, last_seen: '2026-09-28T08:00:00Z' }),
-  discovered('exe:0123456789abcdef', 'inference_connection', 'api.example.test', 1, { tool_name: 'Unrecognised tool', tool_key: null, category: null, sanctioned_state: null, first_seen: '2026-09-29T00:00:00Z' }),
+  discovered('exe:0123456789abcdef', 'inference_connection', 'api.example.test', 1, { tool_name: 'Unrecognised tool', category: null, sanctioned_state: null, first_seen: '2026-09-29T00:00:00Z' }),
 ]);
 
 /** Where the inventory scan stands on the enrolled fleet, beside what it found. */
@@ -448,7 +448,7 @@ const REALISTIC = Object.freeze({
     meta: {
       source: 'mart.agg_user_period',
       applied_bucket: 'day',
-      extras: { flush_check: [{ rows_in_window: 902, late_flush_rows: 118 }] },
+      extras: { flush_check: [{ rows_in_window: 902, late_flush_rows: 118 }], subject_tools: [{ tools: 5 }] },
     },
   }),
   q7_devices: ok({

@@ -14,11 +14,10 @@ import { COMPLETE, FRESH, envelope, fakeDocument } from './helpers.mjs';
 
 const NOW = () => new Date('2026-10-01T12:00:00Z');
 
-/** The prompts per tool in the window: Claude Code under two fingerprints, Ollama under one. */
+/** The prompts per tool in the window, each counted under all of its fingerprints. */
 const PROMPT_ROWS = Object.freeze([
-  { bucket: '2026-09-01T00:00:00Z', tool: 'tls_b6681b043244c43f', tool_key: 'claude_code', tool_name: 'Claude Code', submissions: 800 },
-  { bucket: '2026-09-01T00:00:00Z', tool: 'app:claude_code', tool_key: 'claude_code', tool_name: 'Claude Code', submissions: 12 },
-  { bucket: '2026-09-01T00:00:00Z', tool: 'app:ollama', tool_key: 'ollama', tool_name: 'Ollama', submissions: 30 },
+  { bucket: '2026-09-01T00:00:00Z', tool: 'app:claude_code', tool_name: 'Claude Code', submissions: 812 },
+  { bucket: '2026-09-01T00:00:00Z', tool: 'app:ollama', tool_name: 'Ollama', submissions: 30 },
 ]);
 
 const foundOf = (data = DISCOVERY_ROWS, meta = {}) => readState(envelope('ok', {
@@ -61,14 +60,14 @@ test('each application is one row, local models and inference endpoints first, t
   assert.equal(ollama.tool_cell.secondary, 'llama3, mistral', 'the models it holds');
   assert.deepEqual(ollama.tool_cell.chip, { key: 'unknown', text: 'No decision yet' });
   assert.equal(process.tool_cell.secondary, 'api.example.test · exe:0123456789abcdef', 'the host it reached, and the fingerprint that tells it apart');
-  assert.equal(claude.href, '#tools?tool=tls_b6681b043244c43f', 'opens the Tools row that sent most of its prompts');
+  assert.equal(claude.href, '#tools?tool=app%3Aclaude_code', 'opens its Tools row');
   assert.equal(chatgpt.href, null, 'nothing to open for a tool that sent no prompt');
   assert.deepEqual(table(view).columns.map((c) => c.label), ['Application', 'Found as', 'Devices of 4,180', 'First seen', 'Last seen', 'Prompts']);
   assert.equal(table(view).summary, '4 applications were found on devices in this window; 1 holds local models, 1 reached an inference endpoint and 2 sent no prompt.');
 });
 
-test('a catalogue application found under two fingerprints is one row, with what each found', () => {
-  const running = { ...DISCOVERY_ROWS[1], tool: 'exe:fedcba9876543210', discovery_type: 'app_running', devices: 15, first_seen: '2026-07-20T00:00:00Z' };
+test('an application found in two ways is one row, with what each found', () => {
+  const running = { ...DISCOVERY_ROWS[1], discovery_type: 'app_running', devices: 15, first_seen: '2026-07-20T00:00:00Z' };
   const view = discoveredView({ found: foundOf([...DISCOVERY_ROWS, running]), prompts: promptsOf() });
   const claude = cells(view).filter((c) => c[0] === 'Claude Code');
   assert.deepEqual(claude, [['Claude Code', 'CLI, Seen running', 15, '2026-07-20', '2026-09-30', 812]]);

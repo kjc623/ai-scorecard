@@ -326,6 +326,31 @@ func TestRollupHourBuckets(t *testing.T) {
 	}
 }
 
+// TestRollupToolsUsedByTool checks that a person's tools_used counts a tool once however many
+// fingerprints it was seen under: ChatGPT (web) under an extension host hash, its own fingerprint and
+// a host under its inference domain, beside a host no app claims.
+func TestRollupToolsUsedByTool(t *testing.T) {
+	tx := pgtest.Tx(t, pgtest.Open(t))
+	tenant, device := pgtest.Tenant(t, tx)
+	ev := events{tenant: tenant, device: device}
+	tools := []string{
+		"tf2:a64fvqypthxcqzcwgpxxeeo4kvhk5onujlq22qafww3ql422pxyq", "app:chatgpt_web",
+		"host:new.chatgpt.com", "host:chat.example.org",
+	}
+	for i, tool := range tools {
+		occurred := fmt.Sprintf("2026-01-15T1%d:00:00Z", i)
+		ev.record(t, tx, occurred, ev.prompt(20+i, "userA", tool, occurred,
+			[]label{{Class: "customer_pii", Score: 0.4}}, "logged", "high", 10))
+	}
+
+	pgtest.AsJobs(t, tx)
+	runBucket(t, tx, tenant, BucketDay, "2026-01-15T00:00:00Z", "2026-01-16T00:00:00Z")
+	expect(t, tx, "tools used",
+		`SELECT submissions||'|'||tools_used FROM mart.agg_user_period
+		  WHERE tenant_id = $1 AND user_ref = 'userA' AND bucket_start = $2::timestamptz`,
+		"4|2", tenant, "2026-01-15T00:00:00Z")
+}
+
 // TestFindingsAgainstPostgreSQL checks that a label naming a published rule raises exactly one
 // finding, a label naming an unpublished rule raises none, and re-evaluating the window inserts
 // nothing new.

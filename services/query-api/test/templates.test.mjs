@@ -71,9 +71,9 @@ for (const name of TEMPLATE_NAMES) {
 test('q1 ranks by submissions with a deterministic tie-break on tool, and never by sanction', () => {
   const p = plan({ query_version: '1', template: 'q1_tools_ranked', params: PARAMS.q1_tools_ranked }, { now: NOW });
   const read = p.statements.find((s) => s.id === 'read');
-  assert.match(read.text, /ORDER BY t\.bucket_start DESC NULLS LAST, SUM\(t\.submissions\) DESC NULLS LAST, t\.tool_fingerprint ASC NULLS LAST/);
+  assert.match(read.text, /ORDER BY t\.bucket_start DESC NULLS LAST, SUM\(t\.submissions\) DESC NULLS LAST, t\.tool_id ASC NULLS LAST/);
   assert.match(read.text, /t\.sanctioned_state AS "sanctioned_state"/, 'every row says whether its tool is sanctioned');
-  assert.match(read.text, /GROUP BY t\.bucket_start, t\.tool_fingerprint, t\.sanctioned_state/);
+  assert.match(read.text, /GROUP BY t\.bucket_start, t\.tool_id, t\.sanctioned_state/);
   assert.ok(p.meta.warnings.some((w) => w.includes('detection-only')), 'the Q1 gap must be stated');
 });
 
@@ -329,7 +329,7 @@ test('q2 names its people whatever the sanction once a tool is named, and asks t
   const named = plan({ query_version: '1', template: 'q2_unsanctioned_users', params: { window: WINDOW, tool: 'tls_outside_catalogue' } }, { now: NOW });
   const read = named.statements.find((s) => s.id === 'read');
   assert.ok(!/sanctioned_state = \$/.test(read.text), 'no state filter: a fingerprint outside the catalogue has no state and would match no list');
-  assert.match(read.text, /tool_fingerprint = \$/);
+  assert.match(read.text, /a\.tool_fingerprint = ANY \(\(SELECT ops\.tool_fingerprints\(ARRAY\[\$\d+::text\]\)\)::text\[\]\)/);
   const list = plan({ query_version: '1', template: 'q2_unsanctioned_users', params: { window: WINDOW } }, { now: NOW });
   const listRead = list.statements.find((s) => s.id === 'read');
   assert.match(listRead.text, /sanctioned_state = \$/);

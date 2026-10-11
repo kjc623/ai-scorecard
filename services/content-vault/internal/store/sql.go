@@ -152,7 +152,8 @@ VALUES ($1::uuid, $2::text, $3::text, $4::text, $5::text, nullif($6::text, ''),
 
 // The three search statements share one shape: they join the index to the submission so a search
 // can be narrowed by person, tool, device, mode and receive time, they skip expired index rows, and
-// they page newest first on a total order so a keyset cursor resumes exactly. Parameters: $1
+// they page newest first on a total order so a keyset cursor resumes exactly. A tool matches every
+// fingerprint that counts as it (ops.tool_id), as the console's lists count tools. Parameters: $1
 // tenant, $2 search text, $3 unit kind (empty for both), $4 limit, $5 now, $6-$11 filters (an empty
 // text or a NULL instant adds no predicate), $12-$15 the cursor (all NULL on the first page), and
 // for the fuzzy form $16 the minimum similarity.
@@ -166,7 +167,7 @@ SELECT st.submission_id::text, st.unit_kind, st.unit_index, %s, s.received_at
    AND ($3::text = '' OR st.unit_kind = $3::text)
    AND st.expires_at > $5::timestamptz
    AND ($6::text = '' OR s.user_ref = $6::text)
-   AND ($7::text = '' OR s.tool_fingerprint = $7::text)
+   AND ($7::text = '' OR ops.tool_id(s.tool_fingerprint) = (SELECT ops.tool_id($7::text)))
    AND ($8::text = '' OR s.device_id::text = $8::text)
    AND ($9::text = '' OR s.collection_mode = $9::text)
    AND ($10::timestamptz IS NULL OR s.received_at >= $10::timestamptz)

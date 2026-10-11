@@ -17,6 +17,7 @@ import {
   erasureEvidenceStatement,
   flushCheckStatement,
   peopleStatement,
+  subjectToolsStatement,
   teamCoverageStatement,
   submissionDetailStatement,
 } from './blocks.js';
@@ -133,8 +134,8 @@ export const TEMPLATES = Object.freeze({
           query_version: '1',
           source: 'mart.v_tool_usage',
           bucket: bucketOf(params, 'day'),
-          // The sanction rides with the tool: one state per fingerprint, so grouping by it
-          // splits no row, and every row says whether its tool is sanctioned.
+          // The sanction rides with the tool: one state per tool, so grouping by it splits no
+          // row, and every row says whether its tool is sanctioned.
           dimensions: ['tool', 'sanctioned_state'],
           measures: ['submissions', 'users', 'bytes_total', 'blocked', 'warned', 'logged',
             'sensitive', 'sensitive_blocked', 'sensitive_warned', 'sensitive_logged', 'attachments', 'content_prompts'],
@@ -197,7 +198,7 @@ export const TEMPLATES = Object.freeze({
           'Subject-bearing: this read is audited as it is served. It is not paged: one response is bounded by limit.',
           'An unscoped window beyond 7 days is refused by the cost guard, naming the narrowing that would make it servable.',
           'Three states, not two: `unsanctioned`, `unknown` and `sanctioned` are separate answers, and `unknown` gets its own count and list. The default here is `unsanctioned`, the template\'s own question; a read that names one tool lists its people whatever its state.',
-          'The unsanctioned tool set is resolved at read time from the decision on the tool each fingerprint belongs to (mart.agg_tool_user_period ⋈ ref.tool_catalogue ⋈ ops.tool_sanction); its display name comes from ref.tool_catalogue. Both precomputed, nothing scans raw events.',
+          'The unsanctioned tool set is resolved at read time from the decision on the tool each row counts as (mart.agg_tool_user_period ⋈ ref.tool_catalogue and mart.v_tool_host ⋈ ops.tool_sanction); its display name comes from ref.tool_catalogue. Both precomputed, nothing scans raw events.',
           'Ordered by tool and then by person, never by volume: this is a list, not a leaderboard.',
         ],
       };
@@ -345,8 +346,9 @@ export const TEMPLATES = Object.freeze({
       return {
         document: query,
         // The late-flush check: both clocks live on ingest.submission, so the annotation is
-        // one bounded read over the subject's own rows.
-        extras: [(q) => flushCheckStatement(subject, q.window)],
+        // one bounded read over the subject's own rows. Beside it, the tools the person used in
+        // the window, each counted once.
+        extras: [(q) => flushCheckStatement(subject, q.window), (q) => subjectToolsStatement(subject, q)],
         notes: [
           'Always audited: it filters on a subject and returns one, so there is no anonymous form of it.',
           'Below 14 observed buckets the spike answer is not_yet_covered, not "no change".',

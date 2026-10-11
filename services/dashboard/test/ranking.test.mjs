@@ -89,25 +89,24 @@ test('an empty ranking says why, and an unrecognised tool shows its fingerprint 
   assert.equal(ranking.items[1].mono, true, 'a bare fingerprint is shown as one');
 });
 
-test('Applications counts each tool detected once, however many fingerprints it was seen under, split by its present sanction', () => {
+test('Applications counts each tool detected once, however many days it was seen on, split by its present sanction', () => {
   const state = readState(envelope('ok', {
     data: [
-      // One tool under two fingerprints over two days.
-      { bucket: '2026-09-29T00:00:00Z', tool: 'tls_11574658dafb8805', tool_key: 'chatgpt_web', tool_name: 'ChatGPT (web)', sanctioned_state: 'sanctioned', submissions: 12 },
-      { bucket: '2026-09-30T00:00:00Z', tool: 'tls_11574658dafb8805', tool_key: 'chatgpt_web', tool_name: 'ChatGPT (web)', sanctioned_state: 'sanctioned', submissions: 3 },
-      { bucket: '2026-09-30T00:00:00Z', tool: 'tf2:de4s6yclxfhnumvdm3ubzgd5jveiwkzapelxdcj2qdzd72qrridq', tool_key: 'chatgpt_web', tool_name: 'ChatGPT (web)', sanctioned_state: 'sanctioned', submissions: 1 },
-      { bucket: '2026-09-30T00:00:00Z', tool: 'tls_b6681b043244c43f', tool_key: 'claude_code', tool_name: 'Claude Code', sanctioned_state: 'unsanctioned', submissions: 812 },
+      // One tool, however many fingerprints it was seen under, is one row per day.
+      { bucket: '2026-09-29T00:00:00Z', tool: 'app:chatgpt_web', tool_name: 'ChatGPT (web)', sanctioned_state: 'sanctioned', submissions: 12 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'app:chatgpt_web', tool_name: 'ChatGPT (web)', sanctioned_state: 'sanctioned', submissions: 4 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'app:claude_code', tool_name: 'Claude Code', sanctioned_state: 'unsanctioned', submissions: 812 },
       // Found on a device with nothing sent to it: detected all the same.
-      { bucket: '2026-09-30T00:00:00Z', tool: 'app:cursor', tool_key: 'cursor', tool_name: 'Cursor', sanctioned_state: null, submissions: 0 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'app:cursor', tool_name: 'Cursor', sanctioned_state: null, submissions: 0 },
       // A fingerprint the catalogue does not name and a site no app claims: two tools, neither decided.
-      { bucket: '2026-09-30T00:00:00Z', tool: 'tls_aaaaaaaaaaaaaaaa', tool_key: null, tool_name: 'Unrecognised tool', sanctioned_state: null, submissions: 4 },
-      { bucket: '2026-09-30T00:00:00Z', tool: 'host:chat.example.ai', tool_key: null, tool_name: 'chat.example.ai', sanctioned_state: null, submissions: 2 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'tls_aaaaaaaaaaaaaaaa', tool_name: 'Unrecognised tool', sanctioned_state: null, submissions: 4 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'host:chat.example.ai', tool_name: 'chat.example.ai', sanctioned_state: null, submissions: 2 },
     ],
     freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' },
   }));
   const share = sanctionShare(state);
   assert.equal(share.title, 'Applications');
-  assert.equal(share.total, 5, 'five tools: not 834 submissions, and not six fingerprints');
+  assert.equal(share.total, 5, 'five tools: not 834 submissions, and not six rows');
   assert.deepEqual(share.parts.map((p) => [p.key, p.label, p.count]), [['sanctioned', 'Sanctioned', 1], ['unsanctioned', 'Unsanctioned', 1], ['unknown', 'No decision yet', 3]]);
   const html = renderShare(share);
   assert.match(html, /<p class="share-total"><span class="tile-value">5<\/span><span class="share-total-label">tools detected<\/span><\/p>/);
@@ -182,6 +181,27 @@ test('a role that may not see people gets the tool\'s totals and is told why the
   assert.equal(view.tiles[0].value.text, '812');
   assert.ok(!view.tables.some((t) => t.title === 'People using it'));
   assert.ok(view.notes.some((n) => /totals only/.test(n)));
+});
+
+test('a link naming one of a tool\'s fingerprints opens the tool under the id every list names it by', async () => {
+  const sent = [];
+  const transport = fixtureTransport();
+  const dashboard = createDashboard({
+    api: createQueryApi({ transport: { send: (body) => {
+      sent.push(body);
+      if (body.template !== 'q1_tools_ranked') return transport.send(body);
+      return envelope('ok', {
+        data: [{ bucket: '2026-09-30T00:00:00Z', tool: 'app:chatgpt_web', tool_name: 'ChatGPT (web)', sanctioned_state: 'sanctioned', submissions: 16, users: 3 }],
+        freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' },
+      });
+    } } }),
+    now: NOW,
+  });
+  const { view } = await dashboard.load('tools', { filters: { tool: 'tf2:de4s6yclxfhnumvdm3ubzgd5jveiwkzapelxdcj2qdzd72qrridq' } });
+  assert.equal(view.title, 'ChatGPT (web)');
+  assert.equal(view.tiles[0].value.text, '16');
+  assert.ok(sent.some((b) => b.template === 'q2_unsanctioned_users'), 'the tool has usage, so its people are read');
+  assert.deepEqual(view.actions.map((a) => a.href), ['explore.html#events?tool=app%3Achatgpt_web', '#tools']);
 });
 
 test('a tool with no cell in the window shows absent figures and reads nobody', async () => {
@@ -487,7 +507,7 @@ test('where Insights is not offered, the Sensitive prompts tile still counts and
 
 test('a share of one part is the figure and a whole bar, with the other parts kept as zeros, and a split draws and links only the parts that count something', () => {
   const all = readState(envelope('ok', {
-    data: [{ bucket: '2026-09-30T00:00:00Z', tool: 'tls_f412811be7ac6539', tool_key: 'chatgpt_web', tool_name: 'ChatGPT', sanctioned_state: 'sanctioned', submissions: 40, users: 3 }],
+    data: [{ bucket: '2026-09-30T00:00:00Z', tool: 'app:chatgpt_web', tool_name: 'ChatGPT (web)', sanctioned_state: 'sanctioned', submissions: 40, users: 3 }],
     freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' },
   }));
   const html = renderShare(sanctionShare(all));

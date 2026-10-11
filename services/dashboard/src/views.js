@@ -399,17 +399,16 @@ export function uncataloguedTools(state, { link = toolHref } = {}) {
 const SANCTION_PARTS = Object.freeze(['sanctioned', 'unsanctioned', 'unknown']);
 
 /**
- * The tools detected in the window, split by their present-tense sanction. A tool is the catalogue
- * app its fingerprints belong to, so it counts once however many fingerprints it was seen under; a
- * fingerprint outside the catalogue is a tool of its own, with no decision. When no tool has a
- * decision, the block says so and opens where the decision is made.
+ * The tools detected in the window, split by their present-tense sanction. A row's `tool` is the
+ * catalogue app its fingerprints belong to, so a tool counts once however many fingerprints it was
+ * seen under; a fingerprint outside the catalogue is a tool of its own, with no decision. When no
+ * tool has a decision, the block says so and opens where the decision is made.
  */
 export function sanctionShare(state, { title = 'Applications', emptyText = 'No tool was detected in this window.', settingsHref = '#settings' } = {}) {
   const tools = new Map();
   for (const row of state.data) {
     if (row.tool === null || row.tool === undefined) continue;
-    const key = row.tool_key ? `tool:${row.tool_key}` : `fingerprint:${row.tool}`;
-    tools.set(key, SANCTION_PARTS.includes(row.sanctioned_state) ? row.sanctioned_state : 'unknown');
+    tools.set(String(row.tool), SANCTION_PARTS.includes(row.sanctioned_state) ? row.sanctioned_state : 'unknown');
   }
   const counts = new Map(SANCTION_PARTS.map((key) => [key, 0]));
   for (const sanction of tools.values()) counts.set(sanction, counts.get(sanction) + 1);
@@ -1105,34 +1104,18 @@ const LOCAL = Object.freeze(['local_model', 'inference_connection']);
 /** The models or hosts a row names before the rest are counted. */
 const ITEMS_SHOWN = 3;
 
-/** The key a tool is matched on across reads: its catalogue app, else its fingerprint. */
-const toolKeyOf = (row) => (row.tool_key ? `app:${row.tool_key}` : String(row.tool));
-
 /**
- * The prompts each tool sent in the window, by catalogue app, with the fingerprint that sent most of
- * them, which its Tools row is. Nothing when the read did not answer.
+ * The prompts each tool sent in the window, by the tool its rows count as, which is also its Tools
+ * row. Nothing when the read did not answer.
  */
 function promptsByTool(prompts) {
   if (!prompts || prompts.isRefusal) return null;
   const tools = new Map();
   for (const row of prompts.data) {
     const value = measureOf(row, 'submissions');
-    if (value.kind !== 'number') continue;
-    const key = toolKeyOf(row);
-    const tool = tools.get(key) ?? { prompts: 0, fingerprints: new Map() };
-    tool.prompts += value.value;
-    tool.fingerprints.set(String(row.tool), (tool.fingerprints.get(String(row.tool)) ?? 0) + value.value);
-    tools.set(key, tool);
+    if (value.kind === 'number') tools.set(String(row.tool), (tools.get(String(row.tool)) ?? 0) + value.value);
   }
-  return Object.freeze({
-    truncated: Boolean(prompts.meta?.truncated),
-    get: (key) => {
-      const tool = tools.get(key);
-      if (!tool) return null;
-      const [top] = [...tool.fingerprints.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-      return { prompts: tool.prompts, fingerprint: top[0] };
-    },
-  });
+  return Object.freeze({ truncated: Boolean(prompts.meta?.truncated), get: (tool) => tools.get(tool) ?? null });
 }
 
 /**
@@ -1142,7 +1125,7 @@ function promptsByTool(prompts) {
 function foundTools(found) {
   const tools = new Map();
   for (const row of found.data) {
-    const key = toolKeyOf(row);
+    const key = String(row.tool);
     const tool = tools.get(key) ?? { row, types: new Set(), items: new Set(), devices: null, firstSeen: null, lastSeen: null };
     if (FOUND_AS[row.discovery_type]) tool.types.add(row.discovery_type);
     if (row.item) tool.items.add(String(row.item));
@@ -1173,9 +1156,9 @@ function foundTable(tools, { reporting, link, prompted, truncated, emptyText }) 
     .sort((a, b) => Number(local(b)) - Number(local(a)) || (b.devices ?? -1) - (a.devices ?? -1) || toolName(a.row).localeCompare(toolName(b.row)))
     .map((tool) => {
       const name = toolName(tool.row);
-      const match = prompted ? prompted.get(tool.key) : null;
+      const sent = prompted ? prompted.get(tool.key) : null;
       // A tool the read of prompts left out is unknown when that read was cut short, and silent otherwise.
-      const prompts = !prompted ? null : match ? match.prompts : prompted.truncated ? null : 0;
+      const prompts = !prompted ? null : sent !== null ? sent : prompted.truncated ? null : 0;
       const extra = isSite({ key: tool.row.tool }) ? NOT_CATALOGUED : name === UNRECOGNISED_TOOL ? String(tool.row.tool) : null;
       return Object.freeze({
         tool_cell: Object.freeze({
@@ -1190,7 +1173,7 @@ function foundTable(tools, { reporting, link, prompted, truncated, emptyText }) 
         first_seen_day: tool.firstSeen ? formatInstant(tool.firstSeen).slice(0, 10) : null,
         last_seen_day: tool.lastSeen ? formatInstant(tool.lastSeen).slice(0, 10) : null,
         prompts,
-        href: match && match.prompts > 0 && link ? link(match.fingerprint) : null,
+        href: sent > 0 && link ? link(tool.key) : null,
       });
     });
   return Object.freeze({
@@ -1340,7 +1323,11 @@ export function toolsView(state, { link = toolHref, preset = null } = {}) {
  * sees the totals and is told why the roster is missing.
  */
 export function toolView({ usage, people = null, findings = null, names = {} }, { tool, preset = null, exploreHref = 'explore.html' }) {
-  const group = foldCells(usage, 'tool').find((g) => g.key === String(tool)) ?? null;
+  // The read is filtered to this tool, so its rows are the tool's own, under the id every list
+  // names it by, which a link naming one of its fingerprints does not spell.
+  const groups = foldCells(usage, 'tool');
+  const group = groups.find((g) => g.key === String(tool)) ?? (groups.length === 1 ? groups[0] : null);
+  tool = group ? group.key : String(tool);
   const name = group ? toolName(group.first) : String(tool);
   // A tool in use with no decision recorded is unknown, which is a state of its own; a tool with
   // no cell in the window has no state to show.
@@ -1645,6 +1632,8 @@ export function classesView(state) {
 export function personView(state, { subject, person = null, exploreHref = 'explore.html' }) {
   const series = seriesFrom(state, { measure: 'submissions', title: 'Prompts per day' });
   const flush = state.meta?.extras?.flush_check?.[0] ?? null;
+  // Each tool once across the window: the per-day counts cannot be added up into it.
+  const tools = state.meta?.extras?.subject_tools?.[0]?.tools ?? null;
   const notes = [];
   if (flush) {
     notes.push(`${formatCount(flush.rows_in_window)} rows for this person in the window, ${formatCount(flush.late_flush_rows)} received more than an hour after they occurred: a spool flush spikes received time, not behaviour.`);
@@ -1660,7 +1649,9 @@ export function personView(state, { subject, person = null, exploreHref = 'explo
     ]),
     tiles: Object.freeze([
       measureTile('Prompts', state, 'submissions'),
-      measureTile('Tools used', state, 'tools_used'),
+      tools === null
+        ? tile('Tools used', { kind: 'absent', text: '—' }, absentNote(state))
+        : tile('Tools used', { kind: 'number', text: formatCount(Number(tools)) }),
       measureTile('Block events', state, 'block_events'),
       measureTile('Bytes', state, 'bytes_total', formatBytes),
     ]),
