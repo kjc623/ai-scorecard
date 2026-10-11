@@ -39,10 +39,12 @@ import {
 } from './envelope.js';
 import {
   coverageStatement,
+  demandStatement,
   freshnessStatement,
   inventoryScanStatement,
   newerEventsStatement,
   resolveMissingRecord,
+  teamCoverageStatement,
 } from './blocks.js';
 import { decodeCursor, encodeCursor, paginate } from './cursor.js';
 import { inTransaction } from './db.js';
@@ -73,11 +75,14 @@ const SIDE_READ_IDS = Object.freeze([
   'erasure_evidence',
   'device_status',
   'inventory_scan',
+  'demand',
 ]);
 
 /** The side reads a source can name in the registry, by id. */
 const SOURCE_SIDE_READS = Object.freeze({
   inventory_scan: inventoryScanStatement,
+  demand: demandStatement,
+  team_coverage: teamCoverageStatement,
 });
 
 /**
@@ -142,7 +147,10 @@ export function plan(request, ctx = {}) {
   if (source.time && query.window) {
     sideReads.push(newerEventsStatement(source, resolvedCursor.snapshotUpper));
   }
-  for (const id of source.sideReads ?? []) sideReads.push(SOURCE_SIDE_READS[id]());
+  for (const entry of source.sideReads ?? []) {
+    const { id, whenDimensions = [] } = typeof entry === 'string' ? { id: entry } : entry;
+    if (whenDimensions.every((d) => query.dimensions.includes(d))) sideReads.push(SOURCE_SIDE_READS[id](query));
+  }
   for (const extra of expansion?.extras ?? []) {
     const statement = extra(query);
     if (statement) sideReads.push(statement);

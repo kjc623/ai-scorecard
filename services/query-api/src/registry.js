@@ -178,7 +178,9 @@ function measure(name, column, opts = {}) {
  * @property {ReadonlyArray<string>} indexes  Indexes the shape requires
  * @property {ReadonlyArray<{id:string,sql:string,when:ReadonlyArray<string>}>} [joins]
  * @property {ReadonlyArray<string>} [extraSelect] Frozen extra select-list entries
- * @property {ReadonlyArray<string>} [sideReads] Side reads that travel with every read of the source
+ * @property {ReadonlyArray<string|{id:string,whenDimensions:ReadonlyArray<string>}>} [sideReads] Side reads
+ *                                  that travel with a read of the source; one with `whenDimensions` only
+ *                                  when every named dimension is grouped
  * @property {ReadonlyArray<string>} [warnings]
  */
 
@@ -526,6 +528,13 @@ export const SOURCES = Object.freeze({
         whenDimensions: Object.freeze(['team']),
       }),
       toolName('tp'),
+    ]),
+    // Teams crossed with tools is the question behind a licence. Its people are counted once over
+    // the window, per team and across everyone, for every tool not sanctioned, which per-bucket
+    // `users` cannot add up to; how many teams there are travels beside them.
+    sideReads: Object.freeze([
+      Object.freeze({ id: 'demand', whenDimensions: Object.freeze(['team', 'tool']) }),
+      Object.freeze({ id: 'team_coverage', whenDimensions: Object.freeze(['team', 'tool']) }),
     ]),
     warnings: Object.freeze([
       'A team counts the usage of its current members: membership is read when the rollup runs, not when a prompt was sent.',

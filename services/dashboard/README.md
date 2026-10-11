@@ -12,11 +12,12 @@ prompts it matched; Adoption, how many people use AI out of the directory, split
 their tools, the applications that sent their first prompt in the window, and each day's or week's
 prompts by sanction; and Discovered, every AI application, CLI, IDE extension, local model and
 inference endpoint the devices' inventory scan found, with the prompts each sent, and the devices
-whose scan is not reporting), and the Search page, where an analyst lists events, findings, devices
-and audit entries, opens a device to see each of its collectors with its state and cause, searches
-prompt text, and reads an event's stored prompt. An admin adds, edits and deletes teams on Teams,
-from any mix of the people they tick and the groups, departments and units the identity provider
-synced and other teams.
+whose scan is not reporting; Demand, the tools not sanctioned by team, each team's people using
+each out of its size, and the people each tool would need a seat for), and the Search page, where
+an analyst lists events, findings, devices and audit entries, opens a device to see each of its
+collectors with its state and cause, searches prompt text, and reads an event's stored prompt. An
+admin adds, edits and deletes teams on Teams, from any mix of the people they tick and the groups,
+departments and units the identity provider synced and other teams.
 
 It has two halves and no dependencies:
 

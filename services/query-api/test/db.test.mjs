@@ -614,3 +614,60 @@ test('Q1 counts the people behind the usage once each, by the sanction of their 
     },
   );
 });
+
+test('teams crossed with tools carry the people per team for each tool not sanctioned, a tool once across its fingerprints', { skip: SKIP }, async () => {
+  const [ada, bob, cara, dan, eve] = ['a', 'b', 'c', 'd', 'e'].map((c) => `u_${c.repeat(32)}`);
+  await scratch(
+    async (client) => {
+      await client.query(
+        `INSERT INTO ops.tool_sanction (tenant_id, tool_key, sanctioned_state, decided_by, decided_at) VALUES
+           (ops.current_tenant(), 'claude_code', 'unsanctioned', 'db-test', now()),
+           (ops.current_tenant(), 'cursor', 'sanctioned', 'db-test', now())`,
+      );
+      const teams = {};
+      for (const name of ['Platform', 'Data', 'Quiet']) {
+        teams[name] = (await client.query("INSERT INTO ops.team (tenant_id, name, created_by) VALUES (ops.current_tenant(), $1, 'db-test') RETURNING team_id", [name])).rows[0].team_id;
+      }
+      for (const [team, user] of [['Platform', ada], ['Platform', bob], ['Data', bob], ['Data', cara], ['Quiet', dan]]) {
+        await client.query("INSERT INTO ops.team_member (tenant_id, team_id, user_ref, added_by) VALUES (ops.current_tenant(), $1, $2, 'db-test')", [teams[team], user]);
+      }
+      // ada uses Claude Code under both its fingerprints; bob uses it and the sanctioned Cursor;
+      // cara a tool outside the catalogue; eve, in no team, Claude Code; dan only before the window.
+      for (const [day, fingerprint, user, submissions] of [
+        ['2026-09-02', 'tls_b6681b043244c43f', ada, 2], ['2026-09-03', 'app:claude_code', ada, 1],
+        ['2026-09-03', 'tls_b6681b043244c43f', bob, 5], ['2026-09-03', 'app:cursor', bob, 9],
+        ['2026-09-05', 'tls_never_seen_anywhere', cara, 1], ['2026-09-04', 'app:claude_code', eve, 1],
+        ['2026-08-20', 'tls_b6681b043244c43f', dan, 4],
+      ]) {
+        await client.query(
+          "INSERT INTO mart.agg_tool_user_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, user_ref, submissions, bytes_total) VALUES (ops.current_tenant(), $1, 'day', $2, $3, $4, 10)",
+          [day, fingerprint, user, submissions],
+        );
+      }
+    },
+    async (client, tenant) => {
+      const ctx = { now: NOW, tenant, actorId: 'db-test', cursorKey: KEY };
+      const read = await executePlan(
+        plan({ query_version: '1', source: 'mart.agg_team_period', bucket: 'month', dimensions: ['team', 'tool'], measures: ['submissions'], window: WINDOW, limit: 100 }, ctx),
+        { ...ctx, client: nested(client) },
+      );
+      const rows = read.meta.extras.demand.map((r) => [r.team_name, r.tool, r.tool_name, r.sanctioned_state,
+        r.team_size === null ? null : Number(r.team_size), Number(r.people), r.people_in_teams === null ? null : Number(r.people_in_teams)]);
+      const order = (a, b) => String(a[0]).localeCompare(String(b[0])) || a[1].localeCompare(b[1]);
+      assert.deepEqual(rows.sort(order), [
+        ['Data', 'app:claude_code', 'Claude Code', 'unsanctioned', 2, 1, null],
+        ['Data', 'tls_never_seen_anywhere', 'Unrecognised tool', 'unknown', 2, 1, null],
+        ['Platform', 'app:claude_code', 'Claude Code', 'unsanctioned', 2, 2, null],
+        [null, 'app:claude_code', 'Claude Code', 'unsanctioned', null, 3, 2],
+        [null, 'tls_never_seen_anywhere', 'Unrecognised tool', 'unknown', null, 1, 1],
+      ].sort(order), 'a person counts once per tool across its fingerprints; a sanctioned tool and use before the window are left out');
+      assert.equal(Number(read.meta.extras.team_coverage[0].teams), 3);
+
+      const teamsOnly = await executePlan(
+        plan({ query_version: '1', source: 'mart.agg_team_period', bucket: 'month', dimensions: ['team'], measures: ['submissions'], window: WINDOW, limit: 100 }, ctx),
+        { ...ctx, client: nested(client) },
+      );
+      assert.equal(teamsOnly.meta.extras?.demand, undefined, 'a read of teams alone does not count the demand');
+    },
+  );
+});

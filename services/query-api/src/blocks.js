@@ -9,6 +9,8 @@
 //   * ops.aggregate_watermark -> freshness;
 //   * ops.device + ops.coverage_snapshot -> coverage, including the enrolled denominator;
 //   * ops.device + ops.collector_state -> where the inventory scan stands, beside what it found;
+//   * mart.agg_tool_user_period + ops.v_team_member -> the people per team using each tool not
+//     sanctioned, beside the per-team usage;
 //   * a bounded EXISTS -> `newer_events_exist`;
 //   * mart.agg_tool_period -> the non-additive total for the class screen;
 //   * mart.agg_* -> the `unmapped` residual when the directory sync is partial;
@@ -221,6 +223,53 @@ export function teamCoverageStatement(query) {
       '    WHERE EXISTS (SELECT 1 FROM ops.v_team_member m',
       '                   WHERE m.tenant_id = ops.current_tenant() AND m.user_ref = a.user_ref)) AS users_in_teams,',
       '  (SELECT count(*)::bigint FROM ops.team t WHERE t.tenant_id = ops.current_tenant()) AS teams',
+    ].join('\n'),
+    params: Object.freeze([query.window.from, query.window.to, bucketSize]),
+  });
+}
+
+/**
+ * The demand for each tool not sanctioned (unsanctioned, or no decision yet): the people who sent
+ * it a prompt in the window, each counted once however many buckets and fingerprints they used, and
+ * how many of them are in a team; then, per team, how many of its current members used it, and the
+ * team's size. A tool is the one its rows count as (registry toolRows); a fingerprint no app claims
+ * is a tool of its own with no decision. A row with no team is the tool across everyone.
+ *
+ * @param {{window:{from:string,to:string},bucket:string|null}} query
+ */
+export function demandStatement(query) {
+  const bucketSize = query.bucket && NATIVE_BUCKETS.includes(query.bucket) ? query.bucket : 'day';
+  return Object.freeze({
+    id: 'demand',
+    text: [
+      'WITH used AS (',
+      "  SELECT coalesce('app:' || coalesce(c.app_key, h.app_key), u.tool_fingerprint) AS tool,",
+      "         u.user_ref, coalesce(s.sanctioned_state, 'unknown') AS sanctioned_state",
+      '    FROM mart.agg_tool_user_period u',
+      '    LEFT JOIN ref.tool_catalogue c ON c.tool_fingerprint = u.tool_fingerprint',
+      '    LEFT JOIN mart.v_tool_host h ON h.tenant_id = u.tenant_id AND h.tool_fingerprint = u.tool_fingerprint',
+      '    LEFT JOIN ops.tool_sanction s ON s.tenant_id = u.tenant_id AND s.tool_key = coalesce(c.app_key, h.app_key)',
+      '   WHERE u.tenant_id = ops.current_tenant()',
+      '     AND u.bucket_start >= $1::timestamptz AND u.bucket_start < $2::timestamptz',
+      '     AND u.bucket_size = $3::text',
+      "     AND coalesce(s.sanctioned_state, 'unknown') <> 'sanctioned'),",
+      'members AS (',
+      '  SELECT m.team_id, m.user_ref FROM ops.v_team_member m WHERE m.tenant_id = ops.current_tenant()),',
+      'sizes AS (SELECT team_id, count(*)::bigint AS team_size FROM members GROUP BY team_id),',
+      'reach AS (',
+      '  SELECT u.tool, u.sanctioned_state, NULL::uuid AS team_id, count(DISTINCT u.user_ref)::bigint AS people,',
+      '         count(DISTINCT u.user_ref) FILTER (WHERE u.user_ref IN (SELECT user_ref FROM members))::bigint AS people_in_teams',
+      '    FROM used u GROUP BY u.tool, u.sanctioned_state',
+      '  UNION ALL',
+      '  SELECT u.tool, u.sanctioned_state, m.team_id, count(DISTINCT u.user_ref)::bigint, NULL::bigint',
+      '    FROM used u JOIN members m ON m.user_ref = u.user_ref',
+      '   GROUP BY u.tool, u.sanctioned_state, m.team_id)',
+      'SELECT r.tool, ops.tool_display_name(r.tool) AS tool_name, r.sanctioned_state,',
+      '       r.team_id, t.name AS team_name, z.team_size, r.people, r.people_in_teams',
+      '  FROM reach r',
+      '  LEFT JOIN ops.team t ON t.tenant_id = ops.current_tenant() AND t.team_id = r.team_id',
+      '  LEFT JOIN sizes z ON z.team_id = r.team_id',
+      ' ORDER BY r.team_id NULLS FIRST, r.tool COLLATE "C"',
     ].join('\n'),
     params: Object.freeze([query.window.from, query.window.to, bucketSize]),
   });

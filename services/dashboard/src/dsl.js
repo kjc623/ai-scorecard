@@ -214,6 +214,25 @@ export function buildToolPromptsDocument({ window }) {
 }
 
 /**
+ * Teams crossed with tools in the window, for Insights: the read that carries the demand for each
+ * tool not sanctioned beside it, counted once over the window per team and across everyone. Its
+ * own rows are each team's prompts per fingerprint, in the coarsest bucket the window allows.
+ *
+ * @param {{window: {from: string, to: string, bucket?: string}}} input
+ */
+export function buildDemandDocument({ window }) {
+  return Object.freeze({
+    query_version: QUERY_VERSION,
+    source: 'mart.agg_team_period',
+    bucket: window.bucket === 'hour' ? 'hour' : 'month',
+    dimensions: Object.freeze(['team', 'tool']),
+    measures: Object.freeze(['submissions']),
+    window: checkWindow(window),
+    limit: 1999,
+  });
+}
+
+/**
  * The tools first seen in the window, newest first, for Insights. A tenant's first window can see
  * every tool it has for the first time; the page says so when the list runs past this limit.
  *
