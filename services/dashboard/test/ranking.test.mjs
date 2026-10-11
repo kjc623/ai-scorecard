@@ -89,17 +89,33 @@ test('an empty ranking says why, and an unrecognised tool shows its fingerprint 
   assert.equal(ranking.items[1].mono, true, 'a bare fingerprint is shown as one');
 });
 
-test('the sanction share splits the window\'s submissions by the tool\'s present sanction, with unknown as its own part', () => {
-  const state = readState(envelope('ok', { data: TOOL_ROWS, freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' } }));
+test('Applications counts each tool detected once, however many fingerprints it was seen under, split by its present sanction', () => {
+  const state = readState(envelope('ok', {
+    data: [
+      // One tool under two fingerprints over two days.
+      { bucket: '2026-09-29T00:00:00Z', tool: 'tls_11574658dafb8805', tool_key: 'chatgpt_web', tool_name: 'ChatGPT (web)', sanctioned_state: 'sanctioned', submissions: 12 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'tls_11574658dafb8805', tool_key: 'chatgpt_web', tool_name: 'ChatGPT (web)', sanctioned_state: 'sanctioned', submissions: 3 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'tf2:de4s6yclxfhnumvdm3ubzgd5jveiwkzapelxdcj2qdzd72qrridq', tool_key: 'chatgpt_web', tool_name: 'ChatGPT (web)', sanctioned_state: 'sanctioned', submissions: 1 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'tls_b6681b043244c43f', tool_key: 'claude_code', tool_name: 'Claude Code', sanctioned_state: 'unsanctioned', submissions: 812 },
+      // Found on a device with nothing sent to it: detected all the same.
+      { bucket: '2026-09-30T00:00:00Z', tool: 'app:cursor', tool_key: 'cursor', tool_name: 'Cursor', sanctioned_state: null, submissions: 0 },
+      // Two fingerprints the catalogue does not name: two tools, neither decided.
+      { bucket: '2026-09-30T00:00:00Z', tool: 'tls_aaaaaaaaaaaaaaaa', tool_key: null, tool_name: 'Unrecognised tool', sanctioned_state: null, submissions: 4 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'tls_bbbbbbbbbbbbbbbb', tool_key: null, tool_name: 'Unrecognised tool', sanctioned_state: null, submissions: 2 },
+    ],
+    freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' },
+  }));
   const share = sanctionShare(state);
-  assert.equal(share.total, 4836);
-  assert.deepEqual(share.parts.map((p) => [p.key, p.count]), [['sanctioned', 4021], ['unsanctioned', 812], ['unknown', 3]]);
+  assert.equal(share.title, 'Applications');
+  assert.equal(share.total, 5, 'five tools: not 834 submissions, and not six fingerprints');
+  assert.deepEqual(share.parts.map((p) => [p.key, p.label, p.count]), [['sanctioned', 'Sanctioned', 1], ['unsanctioned', 'Unsanctioned', 1], ['unknown', 'No decision yet', 3]]);
   const html = renderShare(share);
-  assert.match(html, /role="img" aria-label="Sanctioned tools 83%, Unsanctioned tools 17%, No decision yet &lt;1%"/);
-  assert.match(html, /dist-seg v-vocab-unsanctioned/);
-  assert.match(html, /<span class="dist-n">3<\/span><span class="dist-pct">&lt;1%<\/span>/, 'a small part is said, never rounded to nothing');
+  assert.match(html, /<p class="share-total"><span class="tile-value">5<\/span><span class="share-total-label">tools detected<\/span><\/p>/);
+  assert.match(html, /role="img" aria-label="Sanctioned 1 \(20%\), Unsanctioned 1 \(20%\), No decision yet 3 \(60%\)"/);
+  assert.match(html, /<span class="dist-seg v-vocab-sanctioned" style="flex-grow:1"/);
+  assert.match(html, /No decision yet<span class="dist-n">3<\/span><span class="dist-pct">60%<\/span>/);
   const none = readState(envelope('empty', { data: [], freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' } }));
-  assert.match(renderShare(sanctionShare(none)), /No submissions in this window\./);
+  assert.match(renderShare(sanctionShare(none)), /No tool was detected in this window\./);
 });
 
 test('a sparkline draws every point to one scale and lists the values for a reader who cannot see it', () => {
@@ -459,14 +475,15 @@ test('the Overview tiles open the screens they summarise', async () => {
   assert.deepEqual(view.tables, []);
 });
 
-test('a share of one part is a sentence, and a split draws and links only the parts that count something', () => {
+test('a share of one part is the figure and a whole bar, with the other parts kept as zeros, and a split draws and links only the parts that count something', () => {
   const all = readState(envelope('ok', {
-    data: [{ bucket: '2026-09-30T00:00:00Z', tool: 'tls_f412811be7ac6539', tool_name: 'ChatGPT', sanctioned_state: 'sanctioned', submissions: 40, users: 3 }],
+    data: [{ bucket: '2026-09-30T00:00:00Z', tool: 'tls_f412811be7ac6539', tool_key: 'chatgpt_web', tool_name: 'ChatGPT', sanctioned_state: 'sanctioned', submissions: 40, users: 3 }],
     freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' },
   }));
   const html = renderShare(sanctionShare(all));
-  assert.match(html, /<p class="share-one">All <span class="v-number">40<\/span> submissions went to sanctioned tools\.<\/p>/);
-  assert.ok(!/dist-bar/.test(html), 'one part is the whole, so there is no bar to read');
+  assert.match(html, /<span class="tile-value">1<\/span><span class="share-total-label">tool detected<\/span>/);
+  assert.match(html, /<div class="dist-bar share-bar" role="img" aria-label="Sanctioned 1 \(100%\)"><span class="dist-seg v-vocab-sanctioned" style="flex-grow:1"[^>]*><\/span><\/div>/, 'one part is the whole bar');
+  assert.match(html, /Unsanctioned<span class="dist-n">0<\/span>/, 'a part with no tool stays in the legend as a zero');
   const undecided = readState(envelope('ok', {
     data: [{ bucket: '2026-09-30T00:00:00Z', tool: 'tls_zzzz', tool_name: 'Unrecognised tool', sanctioned_state: 'unknown', submissions: 4 }],
     freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' },

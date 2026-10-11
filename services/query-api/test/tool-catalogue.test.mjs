@@ -65,6 +65,12 @@ test('Q1 returns the name without changing the fingerprint it groups on', () => 
   assert.match(text, /ops\.tool_display_name\(t\.tool_fingerprint\) AS "tool_name"/);
 });
 
+test('Q1 returns the catalogue tool beside each fingerprint, so a tool is counted once however many fingerprints it has', () => {
+  const text = readText({ query_version: '1', template: 'q1_tools_ranked', params: { window: WINDOW, limit: 100 } });
+  assert.match(text, /\(SELECT c\.app_key FROM ref\.tool_catalogue c WHERE c\.tool_fingerprint = t\.tool_fingerprint\) AS "tool_key"/);
+  assert.match(text, /GROUP BY t\.bucket_start, t\.tool_fingerprint, t\.sanctioned_state\n/, 'the key is a function of the fingerprint, so the grouping is unchanged');
+});
+
 test('the event list returns the name beside the fingerprint', () => {
   const text = readText({ query_version: '1', template: 'q8_activity', params: { window: WINDOW, subject: 'u_1', limit: 50 } });
   assert.match(text, /s\.tool_fingerprint AS "tool"/);

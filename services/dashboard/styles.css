@@ -332,11 +332,12 @@ tr.row-empty td { color: var(--ink-soft); font-style: italic; }
 .dist-seg.v-vocab-severity_medium, .dist-dot.v-vocab-severity_medium, .dist-seg.v-vocab-severity_low, .dist-dot.v-vocab-severity_low { background: var(--ink-faint); }
 /* People in a team against people in none: a part of the whole, not a state. */
 
-/* Part-to-whole: one bar, a 2px surface gap between its parts, and a legend saying each part's share. */
+/* Part-to-whole: the whole as a figure, one bar with a 2px surface gap between its parts, and a
+   legend saying each part's count and share. */
 .share { padding: 4px 22px 20px; }
+.share-total { margin: 0 0 12px; display: flex; align-items: baseline; gap: 10px; }
+.share-total-label { font-size: 13px; color: var(--ink-soft); }
 .share-bar { height: 10px; }
-/* One part is the whole: a sentence, not a bar of one colour. */
-.share-one { margin: 0; padding: 4px 22px 20px; font-size: 14px; color: var(--ink); }
 .dist-pct { font: 11px/1 var(--mono); color: var(--ink-soft); }
 .block-empty { margin: 0; padding: 0 22px 20px; color: var(--ink-soft); font-style: italic; }
 

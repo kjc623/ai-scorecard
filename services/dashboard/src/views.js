@@ -344,34 +344,34 @@ export function uncataloguedTools(state, { link = toolHref } = {}) {
   });
 }
 
-const SANCTION_PARTS = Object.freeze([
-  ['sanctioned', 'Sanctioned tools', 'sanctioned tools'],
-  ['unsanctioned', 'Unsanctioned tools', 'unsanctioned tools'],
-  ['unknown', 'No decision yet', 'tools with no decision yet'],
-]);
+/** The sanction split, decided parts first. */
+const SANCTION_PARTS = Object.freeze(['sanctioned', 'unsanctioned', 'unknown']);
 
 /**
- * Where the window's submissions went, by the present-tense sanction of the tool they went to.
- * When no tool has a decision, the block says so and opens where the decision is made.
+ * The tools detected in the window, split by their present-tense sanction. A tool is the catalogue
+ * app its fingerprints belong to, so it counts once however many fingerprints it was seen under; a
+ * fingerprint outside the catalogue is a tool of its own, with no decision. When no tool has a
+ * decision, the block says so and opens where the decision is made.
  */
-export function sanctionShare(state, { title = 'Where submissions went', emptyText = 'No submissions in this window.', settingsHref = '#settings' } = {}) {
-  const counts = new Map(SANCTION_PARTS.map(([key]) => [key, 0]));
-  let total = 0;
+export function sanctionShare(state, { title = 'Applications', emptyText = 'No tool was detected in this window.', settingsHref = '#settings' } = {}) {
+  const tools = new Map();
   for (const row of state.data) {
-    const value = measureOf(row, 'submissions');
-    if (value.kind !== 'number') continue;
-    const key = counts.has(row.sanctioned_state) ? row.sanctioned_state : 'unknown';
-    counts.set(key, counts.get(key) + value.value);
-    total += value.value;
+    if (row.tool === null || row.tool === undefined) continue;
+    const key = row.tool_key ? `tool:${row.tool_key}` : `fingerprint:${row.tool}`;
+    tools.set(key, SANCTION_PARTS.includes(row.sanctioned_state) ? row.sanctioned_state : 'unknown');
   }
+  const counts = new Map(SANCTION_PARTS.map((key) => [key, 0]));
+  for (const sanction of tools.values()) counts.set(sanction, counts.get(sanction) + 1);
+  const total = tools.size;
   const undecided = total > 0 && counts.get('unknown') === total;
   return Object.freeze({
     kind: 'share',
     title,
     total,
+    totalLabel: total === 1 ? 'tool detected' : 'tools detected',
     emptyText,
     ...(undecided ? { href: settingsHref, moreLabel: 'Decide which tools are sanctioned' } : {}),
-    parts: Object.freeze(SANCTION_PARTS.map(([key, label, phrase]) => Object.freeze({ key, label, phrase, count: counts.get(key), share: total > 0 ? counts.get(key) / total : 0 }))),
+    parts: Object.freeze(SANCTION_PARTS.map((key) => Object.freeze({ key, label: SANCTION_TEXT[key], count: counts.get(key), share: total > 0 ? counts.get(key) / total : 0 }))),
     note: undecided ? 'No tool has a sanction decision yet.' : 'A tool with no decision is neither sanctioned nor unsanctioned.',
   });
 }
@@ -476,7 +476,7 @@ export function postureView({ devices, tools = null, coverage }, { preset = null
       reportingTile(cov),
     ]),
     blocks: Object.freeze([
-      sanctionShare(usage, { emptyText: emptyLine(tools, 'No submissions in this window.') }),
+      sanctionShare(usage, { emptyText: emptyLine(tools, 'No tool was detected in this window.') }),
       rankTools(usage, { href: at('#tools'), limit: 6, link: (fingerprint) => toolHref(fingerprint, preset), emptyText: emptyLine(tools, 'No tool was in use in this window.') }),
     ]),
     series: Object.freeze([]),
@@ -506,7 +506,7 @@ export function toolsView(state, { link = toolHref, preset = null } = {}) {
   return screen('tools', 'Tools', null, 'mart.v_tool_usage', {
     subtitle: 'Every AI tool seen in this window, by submissions. Open a tool to see who uses it and what was sent.',
     lead: Object.freeze([
-      sanctionShare(state, { title: 'Applications', emptyText: emptyLine(state, 'No submissions in this window.') }),
+      sanctionShare(state, { emptyText: emptyLine(state, 'No tool was detected in this window.') }),
     ]),
     tiles: Object.freeze([
       measureTile('Submissions', state, 'submissions', formatCount, { trend: trendOf(state) }),
