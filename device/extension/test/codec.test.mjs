@@ -115,12 +115,22 @@ test('an over-cap prefix that cannot be decoded is labelled binary, not silently
   assert.equal(body.decode.text, null);
 });
 
-test('normaliseBody keeps a form body as key/value pairs and still produces bytes', () => {
+test('normaliseBody keeps a form body as key/value pairs and hands over its prompt field', () => {
   const body = normaliseBody({ formData: { prompt: ['hello'], model: ['gpt'] } });
   assert.equal(body.source, 'form');
   assert.deepEqual(body.form, { prompt: ['hello'], model: ['gpt'] });
-  assert.ok(body.bytes.byteLength > 0);
+  assert.equal(new TextDecoder().decode(body.bytes), 'hello', 'the content is what the person typed');
+  assert.equal(body.size, 'prompt=hello&model=gpt'.length, 'the size is of the whole form');
   assert.equal(body.decode.encoding, 'utf8');
+});
+
+test('normaliseBody hands over a form without a prompt field whole', () => {
+  for (const formData of [{ title: ['notes'], body: ['draft'] }, { prompt: ['  '], body: ['draft'] }]) {
+    const body = normaliseBody({ formData });
+    assert.equal(body.source, 'form');
+    assert.equal(new TextDecoder().decode(body.bytes), Object.entries(formData).map(([k, v]) => `${k}=${v[0]}`).join('&'));
+    assert.equal(body.size, body.bytes.byteLength);
+  }
 });
 
 test('normaliseBody on an absent body is size 0 and not an error', () => {

@@ -8,6 +8,10 @@
  * The bytes handed to the digest are the bytes the browser sent. Nothing is decoded with
  * replacement characters, so this route's digest equals the one the proxy route computes for the
  * same wire bytes, which is what cross-route dedup needs.
+ *
+ * A form body that carries a `prompt` field is handed over as that field alone. ChatGPT sends a
+ * message as such a form, and its other fields are the client's conversation state and short-lived
+ * anti-abuse tokens, which are neither what the person typed nor anything to store.
  */
 
 import { concatBytes, decodeBody, toBytes } from './codec.js';
@@ -19,7 +23,8 @@ export const DEFAULT_BODY_CAP_BYTES = 1 << 20; // 1 MiB
  * @typedef {object} NormalisedBody
  * @property {'none'|'form'|'raw'|'over_cap'} source
  * @property {number} size  byte length of the payload as sent
- * @property {Uint8Array} bytes  the exact bytes; empty for `over_cap` beyond `prefix`
+ * @property {Uint8Array} bytes  the bytes handed over: the exact bytes of a raw body, a form's
+ *   `prompt` field or the whole form; empty for `over_cap` beyond `prefix`
  * @property {{encoding: 'utf8'|'binary', text: string|null}} decode
  * @property {Record<string, string[]>|null} form
  * @property {string|null} truncated_reason
@@ -69,6 +74,12 @@ export function formToBytes(form) {
   return concatBytes(parts.map((p, i) => (i === 0 ? p : concatBytes([new Uint8Array([38]), p]))));
 }
 
+/** The value of a form's `prompt` field, or null when it has none or it is empty. */
+function formPrompt(form) {
+  const values = ((form && form.prompt) || []).filter((v) => typeof v === 'string' && v.trim() !== '');
+  return values.length ? values.join('\n') : null;
+}
+
 /**
  * Normalise a body under a cap.
  *
@@ -102,9 +113,11 @@ export function normaliseBody(requestBody, opts = {}) {
         truncated_reason: 'form_over_cap',
       };
     }
-    const bytes = formToBytes(form);
+    const whole = formToBytes(form);
+    const prompt = formPrompt(form);
+    const bytes = prompt === null ? whole : new TextEncoder().encode(prompt);
     const decode = decodeBody(bytes);
-    return { source: 'form', size: bytes.byteLength, bytes, decode, form, truncated_reason: null };
+    return { source: 'form', size: whole.byteLength, bytes, decode, form, truncated_reason: null };
   }
 
   const rawLen = rawByteLength(requestBody);
