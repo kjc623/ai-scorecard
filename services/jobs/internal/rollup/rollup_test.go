@@ -3,6 +3,8 @@ package rollup
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -170,6 +172,7 @@ func TestFindingsSQLIsIdempotentAndPresentTense(t *testing.T) {
 // recorder is an Execer that records every statement and reports a fixed row count.
 type recorder struct {
 	rows  int64
+	moved *time.Time
 	calls []call
 }
 
@@ -183,14 +186,72 @@ func (r *recorder) ExecContext(_ context.Context, query string, args ...any) (sq
 	return driverResult(r.rows), nil
 }
 
+// QueryRowContext records the statement and answers it with one row holding r.moved (NULL when
+// nil), through a driver that serves nothing else, because a *sql.Row comes only from a *sql.DB.
+func (r *recorder) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	r.calls = append(r.calls, call{query: query, args: args})
+	var v driver.Value
+	if r.moved != nil {
+		v = *r.moved
+	}
+	return oneRowDB(v).QueryRowContext(ctx, "row")
+}
+
+// oneRowDB is a *sql.DB whose every query returns one row with one column holding v.
+func oneRowDB(v driver.Value) *sql.DB {
+	return sql.OpenDB(oneRowConnector{v: v})
+}
+
+type oneRowDriver struct{}
+
+func (oneRowDriver) Open(string) (driver.Conn, error) { return oneRowConn{}, nil }
+
+type oneRowConnector struct{ v driver.Value }
+
+func (c oneRowConnector) Connect(context.Context) (driver.Conn, error) {
+	return oneRowConn{v: c.v}, nil
+}
+func (oneRowConnector) Driver() driver.Driver { return oneRowDriver{} }
+
+type oneRowConn struct{ v driver.Value }
+
+func (c oneRowConn) Prepare(string) (driver.Stmt, error) { return oneRowStmt(c), nil }
+func (oneRowConn) Close() error                          { return nil }
+func (oneRowConn) Begin() (driver.Tx, error)             { return nil, io.EOF }
+
+type oneRowStmt struct{ v driver.Value }
+
+func (oneRowStmt) Close() error                               { return nil }
+func (oneRowStmt) NumInput() int                              { return -1 }
+func (oneRowStmt) Exec([]driver.Value) (driver.Result, error) { return nil, io.EOF }
+func (s oneRowStmt) Query([]driver.Value) (driver.Rows, error) {
+	return &oneRows{v: s.v}, nil
+}
+
+type oneRows struct {
+	v    driver.Value
+	done bool
+}
+
+func (*oneRows) Columns() []string { return []string{"v"} }
+func (*oneRows) Close() error      { return nil }
+func (r *oneRows) Next(dest []driver.Value) error {
+	if r.done {
+		return io.EOF
+	}
+	r.done = true
+	dest[0] = r.v
+	return nil
+}
+
 type driverResult int64
 
 func (n driverResult) LastInsertId() (int64, error) { return 0, nil }
 func (n driverResult) RowsAffected() (int64, error) { return int64(n), nil }
 
 // TestTenantWritesEachAggregateThenItsWatermark checks the statement sequence of one tenant's
-// pass: every aggregate followed by its watermark carrying that aggregate's row count, then
-// findings, then coverage, each with the tenant and its window.
+// pass: the person refs moved first, then every aggregate followed by its watermark carrying that
+// aggregate's row count, then findings, then coverage, each with the tenant and its window.
 func TestTenantWritesEachAggregateThenItsWatermark(t *testing.T) {
 	const tenant = "5d1c2f0e-8a3b-4c6d-9e7f-0a1b2c3d4e5f"
 	now := at(t, "2026-10-04T21:07:42Z")
@@ -201,7 +262,10 @@ func TestTenantWritesEachAggregateThenItsWatermark(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	i := 0
+	if rec.calls[0].query != PersonRefSQL || rec.calls[0].args[0] != tenant {
+		t.Fatalf("the pass does not start by moving person refs for the tenant: %v", rec.calls[0])
+	}
+	i := 1
 	for _, bucketSize := range BucketSizes {
 		lookback := HourLookback
 		if bucketSize == BucketDay {
@@ -241,5 +305,42 @@ func TestTenantWritesEachAggregateThenItsWatermark(t *testing.T) {
 	}
 	if written[FindingName] != 3 || written[CoverageSnapshotName] != 3 {
 		t.Errorf("findings/coverage counts missing from %v", written)
+	}
+}
+
+// TestTenantRecomputesTheBucketsOfMovedRows checks that a pass which moved submissions to a
+// person's canonical ref recomputes every bucket they fall in, older than the trailing window too,
+// and leaves the windows alone when the moved rows are inside them.
+func TestTenantRecomputesTheBucketsOfMovedRows(t *testing.T) {
+	const tenant = "5d1c2f0e-8a3b-4c6d-9e7f-0a1b2c3d4e5f"
+	now := at(t, "2026-10-04T21:07:42Z")
+	for _, tc := range []struct {
+		moved             string
+		wantHour, wantDay string
+	}{
+		{"2026-09-20T13:45:00Z", "2026-09-20T13:00:00Z", "2026-09-20T00:00:00Z"},
+		{"2026-10-04T20:10:00Z", "2026-10-02T22:00:00Z", "2026-09-28T00:00:00Z"},
+	} {
+		moved := at(t, tc.moved)
+		rec := &recorder{rows: 1, moved: &moved}
+		if _, err := Tenant(context.Background(), rec, tenant, now); err != nil {
+			t.Fatal(err)
+		}
+		hourAgg, _ := Aggregates(BucketHour)
+		dayAgg, _ := Aggregates(BucketDay)
+		for _, c := range rec.calls {
+			want := ""
+			switch c.query {
+			case hourAgg[0].SQL:
+				want = tc.wantHour
+			case dayAgg[0].SQL:
+				want = tc.wantDay
+			default:
+				continue
+			}
+			if got := c.args[1].(time.Time).Format(time.RFC3339); got != want {
+				t.Errorf("moved at %s: window starts %s, want %s", tc.moved, got, want)
+			}
+		}
 	}
 }

@@ -20,6 +20,7 @@ const (
 // Execer is satisfied by *sql.Tx.
 type Execer interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
 // Tenant recomputes one tenant's aggregates, watermarks, findings and coverage. tx must already
@@ -28,6 +29,12 @@ type Execer interface {
 // for the bucket aggregates and by table name otherwise.
 func Tenant(ctx context.Context, tx Execer, tenant string, now time.Time) (map[string]int64, error) {
 	written := map[string]int64{}
+	// Rows a device recorded under a ref the directory has since named as a person's move to that
+	// person first, and every bucket they fall in is recomputed, however old.
+	var moved sql.NullTime
+	if err := tx.QueryRowContext(ctx, PersonRefSQL, tenant).Scan(&moved); err != nil {
+		return nil, fmt.Errorf("rollup: person refs: %w", err)
+	}
 	for _, bucketSize := range BucketSizes {
 		lookback := HourLookback
 		if bucketSize == BucketDay {
@@ -36,6 +43,9 @@ func Tenant(ctx context.Context, tx Execer, tenant string, now time.Time) (map[s
 		window, err := WindowFor(bucketSize, now, lookback)
 		if err != nil {
 			return nil, err
+		}
+		if moved.Valid {
+			window = window.Covering(moved.Time)
 		}
 		lastComplete, err := LastCompleteBucket(bucketSize, now)
 		if err != nil {
