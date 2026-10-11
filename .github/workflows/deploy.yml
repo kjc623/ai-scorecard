@@ -1,9 +1,14 @@
 name: deploy
 
-# Deploys pre-production on every push to main: builds the agent release and the images for the
-# commit, pushes the images to Fly.io's registry, migrates the database (Supabase), then deploys
-# every Fly.io app with the commit's image. fly/RUNBOOK.md sets up the accounts, apps and secrets
-# this expects; the GitHub environment `preprod` holds its variables and secrets.
+# Deploys pre-production on every push to main. tools/deploy-plan.mjs compares the commit with the
+# one the last successful run shipped and picks what changed: the agent release when device/
+# changed, and each Fly.io app whose code, shared modules or fly/ directory changed. The run builds
+# those images with the commit as their tag, pushes them to Fly.io's registry, migrates the database
+# (Supabase) when the migrator changed, then deploys those apps; every other app keeps running what
+# it runs. A change to this workflow, fly/scripts or the plan, a run with no earlier success, and a
+# manual run deploy everything, so a changed variable or secret in `preprod` takes a manual run.
+# fly/RUNBOOK.md sets up the accounts, apps and secrets this expects; the GitHub environment
+# `preprod` holds its variables and secrets.
 
 on:
   push:
@@ -19,7 +24,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      agent: ${{ steps.plan.outputs.agent }}
+      apps: ${{ steps.plan.outputs.apps }}
+      migrate: ${{ steps.plan.outputs.migrate }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == workflow_dispatch ]]; then
+            node tools/deploy-plan.mjs --all
+          else
+            base="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow deploy.yml --branch main --status success --limit 1 --json headSha --jq '.[0].headSha // ""')"
+            node tools/deploy-plan.mjs --base "$base"
+          fi
+
   agent-release:
+    needs: plan
+    if: needs.plan.outputs.agent == 'true'
     runs-on: windows-latest
     environment: preprod
     steps:
@@ -86,7 +122,8 @@ jobs:
           if-no-files-found: error
 
   images:
-    needs: agent-release
+    needs: [plan, agent-release]
+    if: ${{ !cancelled() && needs.plan.result == 'success' && (needs.agent-release.result == 'success' || needs.agent-release.result == 'skipped') }}
     runs-on: ubuntu-latest
     environment: preprod
     env:
@@ -94,15 +131,41 @@ jobs:
       FLY_APP_PREFIX: ${{ vars.FLY_APP_PREFIX }}
       SAC_IMAGE_TAG: ${{ github.sha }}
       FLY_ORG: ${{ vars.FLY_ORG }}
+      APPS: ${{ needs.plan.outputs.apps }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
+        if: needs.plan.outputs.agent == 'true'
         with:
           name: agent-release
           path: ${{ runner.temp }}/agent-release
       - uses: superfly/flyctl-actions/setup-flyctl@1.6
         with:
           version: 0.4.115
+      # With no new release, the release is the one in the running control-api image: a rebuilt
+      # control-api keeps serving it, and the run's agent-release artifact is the release pre-prod
+      # serves, as tools/testbed/deploy.mjs expects.
+      - name: keep the release pre-prod serves
+        if: needs.plan.outputs.agent != 'true'
+        run: |
+          set -euo pipefail
+          flyctl auth docker
+          image="$(flyctl machines list --app "$FLY_APP_PREFIX-control-api" --json | jq -r '[.[].config.image | select(. != null)] | unique | if length == 1 then .[0] else error("control-api runs \(length) images") end')"
+          echo "control-api runs $image"
+          docker pull --quiet "$image"
+          container="$(docker create "$image")"
+          docker cp "$container:/opt/sac/agent-release/." "${{ runner.temp }}/agent-release"
+          docker rm "$container" >/dev/null
+          if [[ ! -f "${{ runner.temp }}/agent-release/release.json" ]]; then
+            echo "::error::$image carries no agent release; run this workflow manually to build one"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        if: needs.plan.outputs.agent != 'true'
+        with:
+          name: agent-release
+          path: ${{ runner.temp }}/agent-release
+          if-no-files-found: error
       - name: check the apps exist
         run: |
           set -euo pipefail
@@ -117,8 +180,10 @@ jobs:
         run: |
           set -euo pipefail
           flyctl auth docker
-          # Each image goes to its app's repository, registry.fly.io/<app>:<commit>.
+          # Each image goes to its app's repository, registry.fly.io/<app>:<commit>; only the
+          # planned apps are built.
           build() {
+            [[ " $APPS " == *" $1 "* ]] || return 0
             local tag="registry.fly.io/$FLY_APP_PREFIX-$1:$SAC_IMAGE_TAG"
             docker build --tag "$tag" --file "$2" "${@:3}" .
             docker push "$tag"
@@ -131,14 +196,17 @@ jobs:
           build dashboard     services/dashboard/Dockerfile
           build migrate       services/database/Dockerfile
           # The jobs app's image adds the scheduler to the jobs image, built here first.
-          docker build --tag "sac-jobs:$SAC_IMAGE_TAG" --file services/jobs/Dockerfile .
+          if [[ " $APPS " == *" jobs "* ]]; then
+            docker build --tag "sac-jobs:$SAC_IMAGE_TAG" --file services/jobs/Dockerfile .
+          fi
           build jobs          fly/jobs/Dockerfile --build-arg "JOBS_IMAGE=sac-jobs:$SAC_IMAGE_TAG"
 
   # The schema is migrated before any app runs the new image, so new code never meets an old
   # schema. migrate runs as the migrate app's release command: its output is in this log, and its
   # failure fails the run.
   migrate:
-    needs: images
+    needs: [plan, images]
+    if: ${{ !cancelled() && needs.images.result == 'success' && needs.plan.outputs.migrate == 'true' }}
     runs-on: ubuntu-latest
     environment: preprod
     env:
@@ -158,10 +226,12 @@ jobs:
             -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=sac_admin.$PG_REF"
 
   deploy:
-    needs: migrate
+    needs: [plan, images, migrate]
+    if: ${{ !cancelled() && needs.images.result == 'success' && (needs.migrate.result == 'success' || needs.migrate.result == 'skipped') }}
     runs-on: ubuntu-latest
     environment: preprod
     env:
+      APPS: ${{ needs.plan.outputs.apps }}
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       FLY_APP_PREFIX: ${{ vars.FLY_APP_PREFIX }}
       SAC_IMAGE_TAG: ${{ github.sha }}
@@ -179,10 +249,11 @@ jobs:
       - name: deploy the apps
         run: |
           set -euo pipefail
-          fly/scripts/deploy-app.sh ingest-api -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=ingest-api.$PG_REF"
-          fly/scripts/deploy-app.sh content-vault -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=content-vault.$PG_REF" -e "SAC_RETRIEVAL_URL_BASE=https://$ANALYST_FQDN"
-          fly/scripts/deploy-app.sh control-api -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=control-api.$PG_REF" -e "SAC_PUBLIC_URL=https://$ANALYST_FQDN" -e "SAC_PUBLIC_DEVICE_ENDPOINT=https://$DEVICE_FQDN" -e "SAC_ENTRA_CLIENT_ID=$ENTRA_CLIENT_ID"
-          fly/scripts/deploy-app.sh query-api -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=query-api.$PG_REF"
-          fly/scripts/deploy-app.sh dashboard -e "SAC_PUBLIC_URL=https://$ANALYST_FQDN"
-          fly/scripts/deploy-app.sh jobs -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=jobs.$PG_REF"
-          fly/scripts/deploy-app.sh edge
+          skip() { [[ " $APPS " != *" $1 "* ]]; }
+          skip ingest-api || fly/scripts/deploy-app.sh ingest-api -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=ingest-api.$PG_REF"
+          skip content-vault || fly/scripts/deploy-app.sh content-vault -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=content-vault.$PG_REF" -e "SAC_RETRIEVAL_URL_BASE=https://$ANALYST_FQDN"
+          skip control-api || fly/scripts/deploy-app.sh control-api -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=control-api.$PG_REF" -e "SAC_PUBLIC_URL=https://$ANALYST_FQDN" -e "SAC_PUBLIC_DEVICE_ENDPOINT=https://$DEVICE_FQDN" -e "SAC_ENTRA_CLIENT_ID=$ENTRA_CLIENT_ID"
+          skip query-api || fly/scripts/deploy-app.sh query-api -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=query-api.$PG_REF"
+          skip dashboard || fly/scripts/deploy-app.sh dashboard -e "SAC_PUBLIC_URL=https://$ANALYST_FQDN"
+          skip jobs || fly/scripts/deploy-app.sh jobs -e "SAC_PG_HOST=$PG_HOST" -e "SAC_PG_USER=jobs.$PG_REF"
+          skip edge || fly/scripts/deploy-app.sh edge
