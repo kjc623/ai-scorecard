@@ -51,6 +51,12 @@ CREATE TABLE IF NOT EXISTS ops.team_member (
   FOREIGN KEY (tenant_id, team_id) REFERENCES ops.team(tenant_id, team_id) ON DELETE CASCADE
 );
 
+-- A database built from a schema.sql whose teams no longer carry a source already has its view.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+              WHERE table_schema = 'ops' AND table_name = 'team' AND column_name = 'source') THEN
+    EXECUTE $view$
 CREATE OR REPLACE VIEW ops.v_team_member
 WITH (security_invoker = true) AS
 SELECT t.tenant_id, t.team_id, m.user_ref
@@ -70,7 +76,10 @@ SELECT t.tenant_id, t.team_id, ud.user_ref
  WHERE (t.source = 'department' AND lower(ud.department) = lower(t.match_value))
     OR (t.source = 'org_unit'
         AND (lower(ud.org_unit) = lower(t.match_value)
-             OR right(lower(ud.org_unit), length(t.match_value) + 1) = ',' || lower(t.match_value)));
+             OR right(lower(ud.org_unit), length(t.match_value) + 1) = ',' || lower(t.match_value)))
+$view$;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS mart.agg_team_period (
   tenant_id        uuid NOT NULL,

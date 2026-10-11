@@ -113,13 +113,23 @@ func TestRollupTeams(t *testing.T) {
 	  ($1, $2, 'Engineering', NULL, 'active'),
 	  ($1, $3, 'engineering', 'OU=Labs,OU=Research,DC=contoso,DC=com', 'active'),
 	  ($1, $4, 'Sales', NULL, 'active')`, tenant, ada, grace, bob)
-	console := pgtest.Scalar(t, tx, `INSERT INTO ops.team (tenant_id, name, source, created_by)
-	  VALUES ($1, 'Pilot', 'console', 'test') RETURNING team_id::text`, tenant)
+	newTeam := func(name string) string {
+		return pgtest.Scalar(t, tx, `INSERT INTO ops.team (tenant_id, name, created_by) VALUES ($1, $2, 'test') RETURNING team_id::text`, tenant, name)
+	}
+	include := func(team, kind, value, other string) {
+		pgtest.Exec(t, tx, `INSERT INTO ops.team_include (tenant_id, team_id, kind, match_value, included_team_id, added_by)
+		  VALUES ($1, $2::uuid, $3, NULLIF($4, ''), NULLIF($5, '')::uuid, 'test')`, tenant, team, kind, value, other)
+	}
+	console := newTeam("Pilot")
 	pgtest.Exec(t, tx, `INSERT INTO ops.team_member (tenant_id, team_id, user_ref, added_by) VALUES ($1, $2, $3, 'test')`, tenant, console, ada)
-	dept := pgtest.Scalar(t, tx, `INSERT INTO ops.team (tenant_id, name, source, match_value, created_by)
-	  VALUES ($1, 'Engineering', 'department', 'ENGINEERING', 'test') RETURNING team_id::text`, tenant)
-	ou := pgtest.Scalar(t, tx, `INSERT INTO ops.team (tenant_id, name, source, match_value, created_by)
-	  VALUES ($1, 'Research', 'org_unit', 'OU=Research,DC=contoso,DC=com', 'test') RETURNING team_id::text`, tenant)
+	dept := newTeam("Engineering")
+	include(dept, "department", "ENGINEERING", "")
+	ou := newTeam("Research")
+	include(ou, "org_unit", "OU=Research,DC=contoso,DC=com", "")
+	// A team of a chosen person and another team: Ada, and Grace through Research.
+	mixed := newTeam("Pilot and Research")
+	pgtest.Exec(t, tx, `INSERT INTO ops.team_member (tenant_id, team_id, user_ref, added_by) VALUES ($1, $2, $3, 'test')`, tenant, mixed, ada)
+	include(mixed, "team", "", ou)
 
 	for i, user := range []string{ada, ada, grace, bob} {
 		at := fmt.Sprintf("2026-01-15T1%d:00:00Z", i)
@@ -133,6 +143,7 @@ func TestRollupTeams(t *testing.T) {
 	expect(t, tx, "console team", team, "2|1", tenant, console)
 	expect(t, tx, "department team", team, "3|2", tenant, dept)
 	expect(t, tx, "org unit team", team, "1|1", tenant, ou)
+	expect(t, tx, "mixed team", team, "3|2", tenant, mixed)
 
 	// A person leaving a team takes their usage with them on the next pass.
 	pgtest.AsOwner(t, tx)

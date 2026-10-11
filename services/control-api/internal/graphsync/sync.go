@@ -11,7 +11,7 @@
 //
 // A person Graph no longer lists is retired, as a SCIM DELETE retires them, but only when the
 // listing completed and only for a person whose externalId is an object id. Groups are pulled only
-// when a team follows them: the console imports a group by its object id, and each pass replaces
+// when a team includes them: the console imports a group by its object id, and each pass replaces
 // that group's members with its transitive user members.
 package graphsync
 
@@ -325,7 +325,7 @@ func OrgUnit(dn string) string {
 	return ""
 }
 
-// syncGroups replaces the members of every group a team follows that came from Graph.
+// syncGroups replaces the members of every group a team includes that came from Graph.
 func (s *Syncer) syncGroups(ctx context.Context, p scim.Principal, entraTenantID string, byObjectID map[string]string, idx userIndex) (int, error) {
 	if s.groups == nil {
 		return 0, nil
@@ -399,14 +399,14 @@ func sameMembers(cur any, want map[string]bool) bool {
 	return true
 }
 
-// ImportedGroup is a provisioned group a team follows and that came from Graph: its SCIM id and
+// ImportedGroup is a provisioned group a team includes and that came from Graph: its SCIM id and
 // its Graph object id.
 type ImportedGroup struct {
 	ID         string
 	ExternalID string
 }
 
-// WithGroups sets where the pull learns which groups teams follow.
+// WithGroups sets where the pull learns which groups teams include.
 func (s *Syncer) WithGroups(fn func(ctx context.Context, tenantID string) ([]ImportedGroup, error)) *Syncer {
 	s.groups = fn
 	return s

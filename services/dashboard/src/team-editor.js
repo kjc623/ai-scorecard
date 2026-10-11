@@ -1,15 +1,15 @@
 // team-editor.js — Teams → "+ Add a Team" and a team's "Edit team": the pop-up's state and every
 // action in it.
 //
-// A team is either the people an admin ticks, or follows one group, department or organisational
-// unit, whose members the directory decides. The three ways to add one differ in what they list:
-// Manual lists everyone Sundial knows; IdP Group and SCIM list what the identity provider has
-// synced (people, groups, departments, units), with a type filter and a search. Sundial keeps one
-// directory whichever way it was filled, so the two list the same objects; IdP Group's search
-// also asks Microsoft Entra ID for groups not synced yet, which are imported when the team is made.
+// A team is any mix of the people an admin ticks and the groups, departments, organisational units
+// and other teams it includes, whose members the directory decides. The three ways to add one
+// differ in what they list: Manual lists everyone Sundial knows and the other teams; IdP Group and
+// SCIM list what the identity provider has synced (people, groups, departments, units) and the
+// other teams. Sundial keeps one directory whichever way it was filled, so the two list the same
+// objects; IdP Group's search also asks Microsoft Entra ID for groups not synced yet, which are
+// imported when the team is saved. Editing a team lists everything, with what it holds ticked.
 //
-// The selection follows what a team can be: once a group, department or unit is ticked nothing
-// else can be, and once a person is ticked none of those can be.
+// A team cannot include a team that already includes it, so those are listed but cannot be ticked.
 //
 // Every write goes through the admin API, which control-api answers for an admin only and audits;
 // listing people goes through the query API's people list, which is audited as a subject-level
@@ -21,20 +21,23 @@ import { buildPeopleDocument } from './dsl.js';
 export const TEAM_KINDS = Object.freeze({
   idp: Object.freeze({ id: 'idp', label: 'IdP Group', filter: 'group' }),
   scim: Object.freeze({ id: 'scim', label: 'SCIM', filter: 'all' }),
-  manual: Object.freeze({ id: 'manual', label: 'Manual', filter: 'user' }),
+  manual: Object.freeze({ id: 'manual', label: 'Manual', filter: 'all' }),
 });
 
-/** The kinds of synced object the filter offers: what the directory holds and a team can use. */
+/** The kinds of object the filter offers: what the directory holds, and the other teams. */
 export const OBJECT_TYPES = Object.freeze({
   all: 'All',
   user: 'Users',
   group: 'Groups',
   department: 'Departments',
   org_unit: 'Units',
+  team: 'Teams',
 });
 
-/** Objects a team follows; a team follows exactly one of them. */
-const FOLLOWED = Object.freeze(['group', 'department', 'org_unit']);
+/** The types a pop-up lists, in the order "All" shows them. Manual lists people and teams only. */
+export function offeredTypes(state) {
+  return state.kind === 'manual' ? ['team', 'user'] : ['group', 'department', 'org_unit', 'team', 'user'];
+}
 
 const PAGE = 200;
 /** control-api takes at most this many people in one create or change. */
@@ -43,6 +46,7 @@ const BATCH = 500;
 const LIST = Object.freeze({ pending: false, problem: null, rows: Object.freeze([]) });
 const PEOPLE = Object.freeze({ ...LIST, next: null });
 const GROUPS = Object.freeze({ ...LIST, entra: Object.freeze([]) });
+const TEAMS = Object.freeze({ ...LIST, includes: Object.freeze({}) });
 
 const CLOSED = Object.freeze({
   open: false,
@@ -59,6 +63,7 @@ const CLOSED = Object.freeze({
   groups: GROUPS,
   departments: LIST,
   units: LIST,
+  teams: TEAMS,
   members: Object.freeze({ pending: false, problem: null, rows: null }),
   picked: Object.freeze({}),
   pending: null,
@@ -66,7 +71,7 @@ const CLOSED = Object.freeze({
   confirm: false,
 });
 
-/** A team name suggested from what it follows: a unit by the first part of its distinguished name. */
+/** A team name suggested from what it includes: a unit by the first part of its distinguished name. */
 export function unitName(value) {
   const first = String(value ?? '').split(/(?<!\\),/)[0] ?? '';
   return first.replace(/^\s*(OU|CN|DC)=/i, '').replace(/\\,/g, ',').trim() || String(value ?? '');
@@ -85,57 +90,97 @@ function entraGroup(g) {
   return Object.freeze({ key: `entra:${g.object_id}`, type: 'group', id: null, object_id: g.object_id, name: String(g.name ?? ''), members: null, entra: true });
 }
 
+/** A department or unit, keyed case-insensitively as the server compares them. */
 function valueItem(type, v) {
-  return Object.freeze({ key: `${type}:${v.value}`, type, value: String(v.value), name: type === 'org_unit' ? unitName(v.value) : String(v.value), people: v.people ?? null });
+  return Object.freeze({ key: `${type}:${String(v.value).toLowerCase()}`, type, value: String(v.value), name: type === 'org_unit' ? unitName(v.value) : String(v.value), people: v.people ?? null });
+}
+
+function teamItem(t) {
+  return Object.freeze({ key: `team:${t.team_id}`, type: 'team', id: t.team_id, name: String(t.name ?? ''), members: t.members ?? null });
+}
+
+/** One thing a team includes, as the item the list ticks for it. */
+function includedItem(include) {
+  switch (include.kind) {
+    case 'group': return heldGroup({ id: include.group_id, object_id: include.group_object_id, name: include.name ?? include.group_object_id ?? '' });
+    case 'team': return teamItem({ team_id: include.team_id, name: include.name });
+    case 'department':
+    case 'org_unit': return valueItem(include.kind, { value: include.value });
+    default: return null;
+  }
+}
+
+/** What the admin API takes for one ticked item that is not a person. */
+function includeOf(item) {
+  switch (item.type) {
+    case 'group': return item.id ? { kind: 'group', group_id: item.id } : { kind: 'group', group_object_id: item.object_id };
+    case 'team': return { kind: 'team', team_id: item.id };
+    default: return { kind: item.type, value: item.value };
+  }
+}
+
+/** Whether team `from` reaches team `to` through the teams it includes, at any depth. */
+function reaches(includes, from, to) {
+  const seen = new Set();
+  const next = [from];
+  while (next.length) {
+    const id = next.pop();
+    if (id === to) return true;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    next.push(...(includes[id] ?? []));
+  }
+  return false;
 }
 
 const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
 
-/** The objects of one type that match the search. In edit, the team's people come before everyone else. */
+/**
+ * The objects of one type that match the search. What is ticked comes first, so a team's own
+ * people, and anything it includes that the directory no longer lists, are always shown.
+ */
 function itemsOf(state, type) {
   const term = state.term.toLowerCase();
   const match = (item) => term === '' || item.name.toLowerCase().includes(term) || String(item.value ?? '').toLowerCase().includes(term);
-  switch (type) {
-    case 'group': return [...state.groups.rows.filter(match), ...state.groups.entra];
-    case 'department': return state.departments.rows.filter(match);
-    case 'org_unit': return state.units.rows.filter(match);
-    case 'user': {
-      const members = state.members.rows ?? [];
-      const known = new Set(members.map((m) => m.key));
-      // The people read decides who matches a name, so a member is listed when it returned them.
-      const found = new Set(state.people.rows.map((p) => p.key));
-      return [...members.filter((m) => term === '' || found.has(m.key)), ...state.people.rows.filter((p) => !known.has(p.key))];
-    }
-    default: return [];
+  if (type === 'user') {
+    const members = state.members.rows ?? [];
+    const known = new Set(members.map((m) => m.key));
+    // The people read decides who matches a name, so a member is listed when it returned them.
+    const found = new Set(state.people.rows.map((p) => p.key));
+    return [...members.filter((m) => term === '' || found.has(m.key)), ...state.people.rows.filter((p) => !known.has(p.key))];
   }
+  const rows = {
+    group: [...state.groups.rows.filter(match), ...state.groups.entra],
+    department: state.departments.rows.filter(match),
+    org_unit: state.units.rows.filter(match),
+    team: state.teams.rows.filter((t) => t.id !== state.team?.team_id && match(t)),
+  }[type] ?? [];
+  const listed = new Set(rows.map((item) => item.key));
+  const unlisted = Object.values(state.picked).filter((p) => p.type === type && !listed.has(p.key) && match(p));
+  return [...unlisted, ...rows];
 }
 
-/** What the list shows for a state: the synced groups, departments and units, then the people. */
+/** What the list shows for a state: the synced groups, departments and units, the teams, then the people. */
 export function visibleItems(state) {
-  const types = state.kind === 'manual' ? ['user'] : state.filter === 'all' ? ['group', 'department', 'org_unit', 'user'] : [state.filter];
+  const types = state.filter === 'all' ? offeredTypes(state) : [state.filter];
   return types.flatMap((type) => itemsOf(state, type));
 }
 
 /** How many of each type match the search, for the filter; null while that type is being read. */
 export function countsOf(state) {
-  const pending = { user: state.people.pending, group: state.groups.pending, department: state.departments.pending, org_unit: state.units.pending };
+  const pending = { user: state.people.pending, group: state.groups.pending, department: state.departments.pending, org_unit: state.units.pending, team: state.teams.pending };
   return Object.freeze(Object.fromEntries(Object.keys(pending).map((type) => [type, pending[type] ? null : itemsOf(state, type).length])));
 }
 
 /** Why an item cannot be ticked now, or null when it can. */
 export function blockedReason(state, item) {
-  if (state.picked[item.key]) return null;
-  const picked = Object.values(state.picked);
-  if (picked.length === 0) return null;
-  const following = picked.find((p) => FOLLOWED.includes(p.type));
-  if (following) return `The team follows ${following.name}. Untick it to choose something else.`;
-  if (FOLLOWED.includes(item.type)) return 'A team follows one group, department or unit on its own. Untick the people to choose it.';
-  return null;
+  if (state.picked[item.key] || item.type !== 'team' || !state.team) return null;
+  return reaches(state.teams.includes, item.id, state.team.team_id) ? `${item.name} already includes this team.` : null;
 }
 
-/** May IdP Group's search ask Entra? Only with the directory read on: a group found there is imported by it. */
+/** May the search ask Entra? In IdP Group and in an edit, with the directory read on: a group found there is imported by it. */
 export function entraSearchable(state) {
-  return state.kind === 'idp' && Boolean(state.directory?.graph_available && state.directory?.entra_connected && state.directory?.sync);
+  return (state.kind === 'idp' || state.mode === 'edit') && Boolean(state.directory?.graph_available && state.directory?.entra_connected && state.directory?.sync);
 }
 
 /**
@@ -165,7 +210,9 @@ export function createTeamEditor({ admin, query, onChange = () => {}, onSaved = 
     set({ people: Object.freeze({ ...state.people, pending: true, problem: null }) });
     let people;
     try {
-      const envelope = await query.run(buildPeopleDocument({ search: state.term, synced: state.kind !== 'manual', cursor, limit: PAGE }));
+      // IdP Group and SCIM list the people the directory synced; Manual and an edit list everyone.
+      const synced = state.kind === 'idp' || state.kind === 'scim';
+      const envelope = await query.run(buildPeopleDocument({ search: state.term, synced, cursor, limit: PAGE }));
       people = envelope?.error || !Array.isArray(envelope?.data)
         ? Object.freeze({ ...PEOPLE, rows: state.people.rows, problem: Object.freeze({ code: envelope?.error?.code ?? envelope?.result_state ?? 'refused', message: envelope?.error?.message ?? 'The people list was refused.' }) })
         : Object.freeze({
@@ -199,6 +246,18 @@ export function createTeamEditor({ admin, query, onChange = () => {}, onSaved = 
     return Object.freeze({ ...LIST, rows: Object.freeze(answer.values.map((v) => valueItem(kind, v)).sort(byName)) });
   });
 
+  const teamsFrom = (teams) => Object.freeze({
+    ...TEAMS,
+    rows: Object.freeze(teams.map(teamItem).sort(byName)),
+    includes: Object.freeze(Object.fromEntries(teams.map((t) => [t.team_id, (t.includes ?? []).filter((i) => i.kind === 'team').map((i) => i.team_id)]))),
+  });
+
+  const readTeams = () => readList('teams', async () => {
+    const answer = await admin.teams();
+    if (answer.state !== 'available') return Object.freeze({ ...TEAMS, problem: problemOf(answer, 'The teams could not be read.') });
+    return teamsFrom(answer.teams);
+  });
+
   async function readDirectory() {
     const seq = session;
     const answer = await admin.directory();
@@ -211,19 +270,19 @@ export function createTeamEditor({ admin, query, onChange = () => {}, onSaved = 
     session += 1;
     set({ ...CLOSED, open: true, mode: 'create', kind, filter: TEAM_KINDS[kind].filter });
     if (kind === 'manual') {
-      await readPeople();
+      await Promise.all([readTeams(), readPeople()]);
       return state;
     }
-    await Promise.all([readDirectory(), readGroups(), readValues('departments', 'department'), readValues('units', 'org_unit'), readPeople()]);
+    await Promise.all([readDirectory(), readGroups(), readValues('departments', 'department'), readValues('units', 'org_unit'), readTeams(), readPeople()]);
     return state;
   }
 
-  /** Open the pop-up on one team: its name, and for a team of chosen people, who is in it. */
+  /** Open the pop-up on one team: its name, and everything it could hold, with what it holds ticked. */
   async function edit(teamId) {
     if (!teamId) return state;
     session += 1;
     const seq = session;
-    set({ ...CLOSED, open: true, mode: 'edit', read: Object.freeze({ pending: true, problem: null }) });
+    set({ ...CLOSED, open: true, mode: 'edit', filter: 'all', read: Object.freeze({ pending: true, problem: null }) });
     const answer = await admin.teams();
     if (seq !== session) return state;
     const team = answer.state === 'available' ? answer.teams.find((t) => t.team_id === teamId) ?? null : null;
@@ -231,17 +290,23 @@ export function createTeamEditor({ admin, query, onChange = () => {}, onSaved = 
       set({ read: Object.freeze({ pending: false, problem: answer.state === 'available' ? Object.freeze({ code: 'not_found', message: 'This team no longer exists.' }) : problemOf(answer, 'The team could not be read.') }) });
       return state;
     }
-    const manual = team.source === 'console';
-    set({ team, name: team.name, kind: manual ? 'manual' : null, filter: 'user', read: CLOSED.read, members: Object.freeze({ ...CLOSED.members, pending: manual }) });
-    if (!manual) return state;
-    const [members] = await Promise.all([admin.teamMembers(teamId), readPeople()]);
+    const included = (team.includes ?? []).map(includedItem).filter(Boolean);
+    set({
+      team,
+      name: team.name,
+      read: CLOSED.read,
+      teams: teamsFrom(answer.teams),
+      members: Object.freeze({ ...CLOSED.members, pending: true }),
+      picked: Object.freeze(Object.fromEntries(included.map((item) => [item.key, item]))),
+    });
+    const [members] = await Promise.all([admin.teamMembers(teamId), readDirectory(), readGroups(), readValues('departments', 'department'), readValues('units', 'org_unit'), readPeople()]);
     if (seq !== session) return state;
     if (members.state !== 'available') {
       set({ members: Object.freeze({ pending: false, problem: problemOf(members, 'The team\'s people could not be read.'), rows: null }) });
       return state;
     }
     const rows = Object.freeze(members.members.map((m) => personItem({ subject: m.user_ref, name: m.name, department: m.department })).sort(byName));
-    set({ members: Object.freeze({ pending: false, problem: null, rows }), picked: Object.freeze(Object.fromEntries(rows.map((r) => [r.key, r]))) });
+    set({ members: Object.freeze({ pending: false, problem: null, rows }), picked: Object.freeze({ ...state.picked, ...Object.fromEntries(rows.map((r) => [r.key, r])) }) });
     return state;
   }
 
@@ -252,13 +317,13 @@ export function createTeamEditor({ admin, query, onChange = () => {}, onSaved = 
   }
 
   function setFilter(type) {
-    if (OBJECT_TYPES[type] && state.open && state.kind !== 'manual') set({ filter: type });
+    if (state.open && (type === 'all' || offeredTypes(state).includes(type))) set({ filter: type });
     return state;
   }
 
   /** Search what the list shows: people by the start of their name, everything else by any part of it. */
   async function search() {
-    if (!state.open || !state.kind) return state;
+    if (!state.open || (!state.kind && state.mode !== 'edit')) return state;
     const seq = session;
     set({ term: state.query.trim(), groups: Object.freeze({ ...state.groups, entra: Object.freeze([]) }) });
     const reads = [readPeople()];
@@ -286,7 +351,7 @@ export function createTeamEditor({ admin, query, onChange = () => {}, onSaved = 
   }
 
   function itemOf(key) {
-    const lists = [state.people.rows, state.members.rows ?? [], state.groups.rows, state.groups.entra, state.departments.rows, state.units.rows];
+    const lists = [state.people.rows, state.members.rows ?? [], state.groups.rows, state.groups.entra, state.departments.rows, state.units.rows, state.teams.rows];
     for (const list of lists) {
       const found = list.find((item) => item.key === key);
       if (found) return found;
@@ -303,8 +368,9 @@ export function createTeamEditor({ admin, query, onChange = () => {}, onSaved = 
     }
     const item = itemOf(key);
     if (!item || blockedReason(state, item)) return state;
-    // Following a group, department or unit names the team after it, unless it has a name already.
-    const name = FOLLOWED.includes(item.type) && state.name.trim() === '' ? item.name : state.name;
+    // A new team whose first tick is a group, department, unit or team is named after it.
+    const first = Object.keys(state.picked).length === 0 && state.mode === 'create';
+    const name = first && item.type !== 'user' && state.name.trim() === '' ? item.name : state.name;
     set({ picked: Object.freeze({ ...state.picked, [key]: item }), name, problem: null });
     return state;
   }
@@ -320,19 +386,9 @@ export function createTeamEditor({ admin, query, onChange = () => {}, onSaved = 
     const name = state.name.trim();
     const picked = Object.values(state.picked);
     if (name === '') return fail('Name your team.');
-    if (picked.length === 0) return fail(state.kind === 'manual' ? 'Tick the people in the team.' : 'Tick the people in the team, or the group, department or unit it follows.');
-    const followed = picked.find((p) => FOLLOWED.includes(p.type));
-    let body;
-    let rest = [];
-    if (!followed) {
-      const [first = [], ...later] = chunks(picked.map((p) => p.ref));
-      body = { name, source: 'console', members: first };
-      rest = later;
-    } else if (followed.type === 'group') {
-      body = followed.id ? { name, source: 'group', group_id: followed.id } : { name, source: 'group', group_object_id: followed.object_id };
-    } else {
-      body = { name, source: followed.type, match_value: followed.value };
-    }
+    if (picked.length === 0) return fail(state.kind === 'manual' ? 'Tick the people or teams in the team.' : 'Tick the people, groups, departments, units or teams in the team.');
+    const [first = [], ...rest] = chunks(picked.filter((p) => p.type === 'user').map((p) => p.ref));
+    const body = { name, members: first, includes: picked.filter((p) => p.type !== 'user').map(includeOf) };
     set({ pending: 'save', problem: null });
     const answer = await admin.createTeam(body);
     if (answer.state !== 'done') return fail(answer.error?.message ?? 'The team was not created.', answer.error?.code ?? 'refused');
@@ -353,25 +409,31 @@ export function createTeamEditor({ admin, query, onChange = () => {}, onSaved = 
     const team = state.team;
     const name = state.name.trim();
     if (name === '') return fail('Name your team.');
-    if (team.source === 'console' && !state.members.rows) return fail('The team\'s people could not be read, so they cannot be changed. Close the team and open it again.', 'members_unread');
+    if (!state.members.rows) return fail('The team\'s people could not be read, so the team cannot be changed. Close the team and open it again.', 'members_unread');
     set({ pending: 'save', problem: null });
     if (name !== team.name) {
       const renamed = await admin.renameTeam(team.team_id, name);
       if (renamed.state !== 'done') return fail(renamed.error?.message ?? 'The team was not renamed.', renamed.error?.code ?? 'refused');
     }
-    if (team.source === 'console') {
-      const before = new Set(state.members.rows.map((m) => m.ref));
-      const after = new Set(Object.values(state.picked).map((p) => p.ref));
-      const add = [...after].filter((ref) => !before.has(ref));
-      const remove = [...before].filter((ref) => !after.has(ref));
-      const adds = chunks(add);
-      const removes = chunks(remove);
-      for (let i = 0; i < Math.max(adds.length, removes.length); i += 1) {
-        const answer = await admin.changeTeamMembers(team.team_id, { add: adds[i] ?? [], remove: removes[i] ?? [] });
-        if (answer.state !== 'done') {
-          onSaved({ team, deleted: false });
-          return fail(answer.error?.message ?? 'The team\'s people were not changed.', answer.error?.code ?? 'refused');
-        }
+    const picked = Object.values(state.picked);
+    const includes = picked.filter((p) => p.type !== 'user');
+    const before = new Set((team.includes ?? []).map(includedItem).filter(Boolean).map((item) => item.key));
+    if (includes.length !== before.size || includes.some((item) => !before.has(item.key))) {
+      const answer = await admin.setTeamIncludes(team.team_id, includes.map(includeOf));
+      if (answer.state !== 'done') {
+        onSaved({ team, deleted: false });
+        return fail(answer.error?.message ?? 'The groups, departments, units and teams were not changed.', answer.error?.code ?? 'refused');
+      }
+    }
+    const had = new Set(state.members.rows.map((m) => m.ref));
+    const has = new Set(picked.filter((p) => p.type === 'user').map((p) => p.ref));
+    const adds = chunks([...has].filter((ref) => !had.has(ref)));
+    const removes = chunks([...had].filter((ref) => !has.has(ref)));
+    for (let i = 0; i < Math.max(adds.length, removes.length); i += 1) {
+      const answer = await admin.changeTeamMembers(team.team_id, { add: adds[i] ?? [], remove: removes[i] ?? [] });
+      if (answer.state !== 'done') {
+        onSaved({ team, deleted: false });
+        return fail(answer.error?.message ?? 'The team\'s people were not changed.', answer.error?.code ?? 'refused');
       }
     }
     onSaved({ team: { ...team, name }, deleted: false });
@@ -425,4 +487,11 @@ export function createTeamEditor({ admin, query, onChange = () => {}, onSaved = 
     get state() { return state; },
     open, edit, close, setFilter, search, more, toggle, save, setDraft, act,
   });
+}
+
+/** The keys a team held when its edit opened: its people and what it includes. Null until its people are read. */
+export function heldKeys(state) {
+  if (state.mode !== 'edit' || !state.team || !state.members.rows) return null;
+  const included = (state.team.includes ?? []).map(includedItem).filter(Boolean);
+  return new Set([...state.members.rows, ...included].map((item) => item.key));
 }

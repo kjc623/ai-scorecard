@@ -18,9 +18,17 @@ const TEAM = '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001';
 const SALES = '00000000-0000-4000-8000-000000000900';
 const SALES_OID = '11111111-2222-4333-8444-555555555555';
 const EMEA_OID = '26118915-6090-4610-87a4-49d0767e9fde';
+const OPS = '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0002';
+const ALL = '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0003';
+
+/** Teams as the admin API lists them: Ops, and Everyone, which includes Ops. */
+const TEAMS = [
+  { team_id: OPS, name: 'Ops', includes: [], people: 2, members: 2 },
+  { team_id: ALL, name: 'Everyone', includes: [{ kind: 'team', team_id: OPS, name: 'Ops' }, { kind: 'department', value: 'Sales', name: 'Sales' }], people: 0, members: 4 },
+];
 
 /** An admin API that answers from memory and records what was asked of it. */
-function fakeAdmin({ sync = { enabled_at: '2026-10-01T10:00:00Z', last_status: 'ok' }, teams = [], members = [], fail = {} } = {}) {
+function fakeAdmin({ sync = { enabled_at: '2026-10-01T10:00:00Z', last_status: 'ok' }, teams = TEAMS, members = [], fail = {} } = {}) {
   const calls = [];
   const refused = (code, message, status = 409) => ({ state: 'refused', status, error: { code, message } });
   return {
@@ -51,7 +59,7 @@ function fakeAdmin({ sync = { enabled_at: '2026-10-01T10:00:00Z', last_status: '
     async createTeam(body) {
       calls.push(['create', body]);
       if (fail.create) return refused(fail.create, 'A team already has this name.');
-      return { state: 'done', team: { team_id: TEAM, name: body.name, source: body.source } };
+      return { state: 'done', team: { team_id: TEAM, name: body.name } };
     },
     async renameTeam(id, name) {
       calls.push(['rename', id, name]);
@@ -60,6 +68,10 @@ function fakeAdmin({ sync = { enabled_at: '2026-10-01T10:00:00Z', last_status: '
     async teamMembers(id) {
       calls.push(['members', id]);
       return { state: 'available', members, limit: 500 };
+    },
+    async setTeamIncludes(id, includes) {
+      calls.push(['includes', id, includes]);
+      return { state: 'done' };
     },
     async changeTeamMembers(id, change) {
       calls.push(['change', id, change]);
@@ -111,43 +123,46 @@ test('"+ Add a Team" offers IdP Group, SCIM and Manual, in that order', () => {
   assert.match(renderTeamEdit(TEAM), new RegExp(`data-team="edit" data-id="${TEAM}"`));
 });
 
-test('Manual lists everyone Sundial knows with a checkbox each, and creates the team with the people ticked', async () => {
+test('Manual lists everyone Sundial knows and the other teams, and creates the team with what is ticked', async () => {
   const { page, admin, query, saved } = editor();
   await page.open('manual');
   assert.deepEqual(query.sent[0].filters, [], 'everyone, not only the people a directory synced');
-  assert.deepEqual(names(page.state), ['Ada Lovelace', 'Bob Jones', 'Cat Ng']);
+  assert.deepEqual(names(page.state), ['Everyone', 'Ops', 'Ada Lovelace', 'Bob Jones', 'Cat Ng']);
   const html = renderTeamDialog(page.state);
   assert.match(html, /<label class="dp-label" for="team-name">Name your Team<\/label>/);
-  assert.equal((html.match(/type="checkbox"/g) ?? []).length, 3);
-  assert.ok(!/data-team="filter"/.test(html), 'Manual lists people only, so it has no type filter');
+  assert.equal((html.match(/type="checkbox"/g) ?? []).length, 5);
+  assert.deepEqual([...html.matchAll(/data-team="filter" data-value="([a-z_]+)"/g)].map((m) => m[1]), ['all', 'user', 'team'], 'Manual filters people and teams only');
+  assert.match(html, /<span class="pick-type">Team<\/span><span class="pick-detail">2 members<\/span>/);
 
   await page.save();
   assert.match(page.state.problem.message, /Name your team/);
   page.setDraft('name', '  Pilot ');
   await page.save();
-  assert.match(page.state.problem.message, /Tick the people/);
+  assert.match(page.state.problem.message, /Tick the people or teams/);
   page.toggle(`user:${ADA}`);
   page.toggle(`user:${CAT}`);
-  assert.match(renderTeamDialog(page.state), /2 people ticked\./);
+  page.toggle(`team:${OPS}`);
+  assert.equal(page.state.name, '  Pilot ', 'a name typed is kept');
+  assert.match(renderTeamDialog(page.state), /2 people and 1 team ticked\. Groups, departments, units and teams bring their members as they change\./);
   await page.save();
-  assert.deepEqual(admin.calls.find((c) => c[0] === 'create')[1], { name: 'Pilot', source: 'console', members: [ADA, CAT] });
+  assert.deepEqual(admin.calls.find((c) => c[0] === 'create')[1], { name: 'Pilot', members: [ADA, CAT], includes: [{ kind: 'team', team_id: OPS }] });
   assert.equal(page.state.open, false, 'the pop-up closes once the team exists');
   assert.equal(saved.length, 1);
   assert.equal(renderTeamDialog(page.state), '');
 });
 
-test('IdP Group lists what the directory synced, opens on groups, filters by type and searches every synced object', async () => {
+test('IdP Group lists what the directory synced and the teams, opens on groups, filters by type and searches everything', async () => {
   const { page, admin, query } = editor();
   await page.open('idp');
   assert.deepEqual(query.sent[0].filters, [{ field: 'directory_status', op: 'in', value: ['active', 'unknown'] }], 'people the directory holds, not the ones it marked gone');
   assert.equal(page.state.filter, 'group');
   assert.deepEqual(names(page.state), ['Sales']);
   let html = renderTeamDialog(page.state);
-  assert.deepEqual([...html.matchAll(/data-team="filter" data-value="([a-z_]+)"/g)].map((m) => m[1]), ['all', 'user', 'group', 'department', 'org_unit']);
+  assert.deepEqual([...html.matchAll(/data-team="filter" data-value="([a-z_]+)"/g)].map((m) => m[1]), ['all', 'user', 'group', 'department', 'org_unit', 'team']);
   assert.match(html, /Searching also looks in Microsoft Entra ID/);
 
   page.setFilter('all');
-  assert.deepEqual(names(page.state), ['Sales', 'Engineering', 'Sales', 'Research', 'Ada Lovelace', 'Bob Jones'], 'groups, departments, units, then people; a person seen only on a device is not synced');
+  assert.deepEqual(names(page.state), ['Sales', 'Engineering', 'Sales', 'Research', 'Everyone', 'Ops', 'Ada Lovelace', 'Bob Jones'], 'groups, departments, units, teams, then people; a person seen only on a device is not synced');
   html = renderTeamDialog(page.state);
   assert.match(html, /<span class="pick-type">Department<\/span>/);
   assert.match(html, /4 members/);
@@ -160,47 +175,46 @@ test('IdP Group lists what the directory synced, opens on groups, filters by typ
   assert.match(renderTeamDialog(page.state), /In Microsoft Entra ID, not synced yet/);
 });
 
-test('a team follows one group, department or unit, or holds the people ticked, never both', async () => {
-  const { page } = editor();
+test('a team mixes people, groups, departments, units and teams', async () => {
+  const { page, admin } = editor();
   await page.open('scim');
-  page.toggle(`user:${ADA}`);
   page.toggle(`group:${SALES}`);
-  assert.deepEqual(Object.keys(page.state.picked), [`user:${ADA}`], 'a group cannot join people');
-  let html = renderTeamDialog(page.state);
-  assert.match(html, /data-team-pick="group:[^"]+" disabled/);
-  assert.match(html, /1 person ticked\. The team holds exactly them\./);
-
+  assert.equal(page.state.name, 'Sales', 'a new team is named after the first group it includes');
   page.toggle(`user:${ADA}`);
-  page.toggle(`department:Engineering`);
+  page.toggle('department:engineering');
+  page.toggle('org_unit:ou=research,dc=contoso,dc=com');
+  page.toggle(`team:${ALL}`);
   page.toggle(`user:${BOB}`);
-  page.toggle(`department:Sales`);
-  assert.deepEqual(Object.keys(page.state.picked), ['department:Engineering'], 'nothing else joins what the team follows');
-  assert.equal(page.state.name, 'Engineering', 'the team is named after what it follows');
-  html = renderTeamDialog(page.state);
-  assert.match(html, /The team follows everyone in the department Engineering\./);
-  assert.match(html, /title="The team follows Engineering\. Untick it to choose something else\."/);
+  assert.equal(Object.keys(page.state.picked).length, 6, 'nothing ticked keeps anything else from being ticked');
+  const html = renderTeamDialog(page.state);
+  assert.ok(!/disabled/.test(html.match(/<ul class="pick-list"[\s\S]*?<\/ul>/)[0]), 'every row can be ticked');
+  assert.match(html, /2 people, 1 group, 1 department, 1 unit and 1 team ticked\./);
   await page.save();
-  assert.deepEqual(page.state.open, false);
+  assert.deepEqual(admin.calls.find((c) => c[0] === 'create')[1], {
+    name: 'Sales',
+    members: [ADA, BOB],
+    includes: [
+      { kind: 'group', group_id: SALES },
+      { kind: 'department', value: 'Engineering' },
+      { kind: 'org_unit', value: 'OU=Research,DC=contoso,DC=com' },
+      { kind: 'team', team_id: ALL },
+    ],
+  });
+  assert.equal(page.state.open, false);
 });
 
-test('each followed object is created as the team the admin API knows', async () => {
-  const cases = [
-    { kind: 'idp', search: 'sales', key: `entra:${EMEA_OID}`, body: { name: 'Sales EMEA', source: 'group', group_object_id: EMEA_OID } },
-    { kind: 'scim', key: `group:${SALES}`, body: { name: 'Sales', source: 'group', group_id: SALES } },
-    { kind: 'scim', key: 'org_unit:OU=Research,DC=contoso,DC=com', body: { name: 'Research', source: 'org_unit', match_value: 'OU=Research,DC=contoso,DC=com' } },
-  ];
-  for (const c of cases) {
-    const { page, admin } = editor();
-    await page.open(c.kind);
-    if (c.search) {
-      page.setDraft('query', c.search);
-      await page.search();
-    }
-    page.toggle(c.key);
-    if (c.key.startsWith('entra:')) assert.match(renderTeamDialog(page.state), /imported from Microsoft Entra ID when the team is made/);
-    await page.save();
-    assert.deepEqual(admin.calls.find((call) => call[0] === 'create')[1], c.body, c.key);
-  }
+test('a group from Entra is imported by the create, and a unit is named after its first part', async () => {
+  const { page, admin } = editor();
+  await page.open('idp');
+  page.setDraft('query', 'sales');
+  await page.search();
+  page.toggle(`entra:${EMEA_OID}`);
+  page.toggle(`group:${SALES}`);
+  assert.match(renderTeamDialog(page.state), /A group from Microsoft Entra ID is imported when the team is made\./);
+  await page.save();
+  assert.deepEqual(admin.calls.find((call) => call[0] === 'create')[1], {
+    name: 'Sales EMEA', members: [], includes: [{ kind: 'group', group_object_id: EMEA_OID }, { kind: 'group', group_id: SALES }],
+  });
   assert.equal(unitName('OU=R\\, and D,OU=Labs,DC=contoso,DC=com'), 'R, and D');
 });
 
@@ -211,7 +225,7 @@ test('with the directory read off, IdP Group searches only what is synced and sa
   await page.search();
   assert.deepEqual(admin.calls.filter((c) => c[0] === 'groups').map((c) => c[1]), [''], 'Entra is not asked');
   const html = renderTeamDialog(page.state);
-  assert.match(html, /A group is synced only once a team follows it/);
+  assert.match(html, /A group is synced only once a team includes it/);
   assert.ok(html.includes('href="#directory"'));
 });
 
@@ -226,44 +240,66 @@ test('a refused create keeps the pop-up open and says why', async () => {
   assert.match(renderTeamDialog(page.state), /No team was created\.<\/strong> A team already has this name\. <code>team_name_taken<\/code>/);
 });
 
-test('editing a manual team shows its people ticked first, and saves a rename and the people added and removed', async () => {
+test('editing a team ticks its people and what it includes, and saves a rename, the includes and the people added and removed', async () => {
+  const team = { team_id: TEAM, name: 'Pilot', includes: [{ kind: 'department', value: 'SALES', name: 'SALES' }, { kind: 'group', group_id: SALES, group_object_id: SALES_OID, name: 'Sales' }], people: 2, members: 5 };
   const admin = fakeAdmin({
-    teams: [{ team_id: TEAM, name: 'Pilot', source: 'console', members: 2 }],
+    teams: [...TEAMS, team],
     members: [{ user_ref: BOB, name: 'Bob Jones' }, { user_ref: ADA, name: 'Ada Lovelace' }],
   });
   const { page, saved } = editor({ admin });
   await page.edit(TEAM);
   assert.equal(page.state.name, 'Pilot');
-  assert.deepEqual(names(page.state), ['Ada Lovelace', 'Bob Jones', 'Cat Ng'], 'the team\'s people, then everyone else');
-  assert.deepEqual(Object.keys(page.state.picked).sort(), [`user:${ADA}`, `user:${BOB}`]);
+  assert.equal(page.state.filter, 'all');
+  assert.deepEqual(names(page.state), ['Sales', 'Engineering', 'Sales', 'Research', 'Everyone', 'Ops', 'Ada Lovelace', 'Bob Jones', 'Cat Ng'],
+    'everything, the team itself left out; a department is matched whatever its case');
+  assert.deepEqual(Object.keys(page.state.picked).sort(), ['department:sales', `group:${SALES}`, `user:${ADA}`, `user:${BOB}`]);
+  let html = renderTeamDialog(page.state);
+  assert.match(html, /5 people are in it now\./);
+  assert.match(html, /The team holds 2 people, 1 group and 1 department\./);
+
   page.toggle(`user:${BOB}`);
   page.toggle(`user:${CAT}`);
-  assert.match(renderTeamDialog(page.state), /2 people in the team \(1 to add, 1 to remove\)\./);
+  page.toggle(`group:${SALES}`);
+  page.toggle(`team:${OPS}`);
+  html = renderTeamDialog(page.state);
+  assert.match(html, /The team holds 2 people, 1 department and 1 team \(2 to add, 2 to remove\)\./);
   page.setDraft('name', 'Pilot crew');
   await page.save();
-  assert.deepEqual(admin.calls.filter((c) => c[0] === 'rename' || c[0] === 'change'), [
+  assert.deepEqual(admin.calls.filter((c) => ['rename', 'includes', 'change'].includes(c[0])), [
     ['rename', TEAM, 'Pilot crew'],
+    ['includes', TEAM, [{ kind: 'department', value: 'SALES' }, { kind: 'team', team_id: OPS }]],
     ['change', TEAM, { add: [CAT], remove: [BOB] }],
   ]);
   assert.equal(page.state.open, false);
   assert.equal(saved[0].team.name, 'Pilot crew');
 });
 
-test('a team that follows the directory is renamed or deleted, never given people', async () => {
-  const admin = fakeAdmin({ teams: [{ team_id: TEAM, name: 'Sales', source: 'group', group_name: 'Sales', members: 4 }] });
-  const { page, saved } = editor({ admin });
-  await page.edit(TEAM);
+test('an edit leaves alone what did not change, and a team that includes this one cannot be ticked', async () => {
+  const admin = fakeAdmin({ members: [] });
+  const { page } = editor({ admin });
+  await page.edit(OPS);
+  assert.deepEqual(names(page.state).filter((n) => n === 'Ops'), [], 'a team is not listed in itself');
   const html = renderTeamDialog(page.state);
-  assert.match(html, /Follows the group Sales: its members, as your directory changes them\. 4 people are in it now\./);
-  assert.ok(!/type="checkbox"/.test(html), 'its members are the directory\'s');
-  assert.ok(!admin.calls.some((c) => c[0] === 'members'));
+  assert.match(html, /title="Everyone already includes this team\."[^>]*><input type="checkbox" class="pick-box" data-team-pick="team:[^"]+" disabled>/);
+  page.toggle(`team:${ALL}`);
+  assert.deepEqual(page.state.picked, {});
+  page.toggle('department:engineering');
+  page.toggle('department:engineering');
+  await page.save();
+  assert.deepEqual(admin.calls.filter((c) => ['rename', 'includes', 'change'].includes(c[0])), [], 'nothing changed, so nothing is sent');
+});
+
+test('a team is deleted from its edit', async () => {
+  const admin = fakeAdmin();
+  const { page, saved } = editor({ admin });
+  await page.edit(ALL);
   await page.act({ team: 'delete' });
-  assert.match(renderTeamDialog(page.state), /Delete “Sales”\? Its usage history goes with it\./);
+  assert.match(renderTeamDialog(page.state), /Delete “Everyone”\? Its usage history goes with it\./);
   await page.act({ team: 'confirm-delete' });
-  assert.deepEqual(admin.calls.at(-1), ['delete', TEAM]);
+  assert.deepEqual(admin.calls.at(-1), ['delete', ALL]);
   assert.equal(saved.length, 1);
   assert.equal(saved[0].deleted, true);
-  assert.equal(saved[0].team.team_id, TEAM);
+  assert.equal(saved[0].team.team_id, ALL);
   assert.equal(page.state.open, false);
 });
 
@@ -290,7 +326,7 @@ test('every people read the pop-up makes is one query-api accepts', async () => 
 });
 
 test('on Teams an admin gets "+ Add a Team", on a team "Edit team", and the pop-up opens outside the screen', async () => {
-  const admin = fakeAdmin({ teams: [{ team_id: TEAM, name: 'Engineering', source: 'console', members: 1 }] });
+  const admin = fakeAdmin({ teams: [{ team_id: TEAM, name: 'Engineering', includes: [], people: 1, members: 1 }] });
   const api = createQueryApi({ transport: { send: (body) => (body.source === 'mart.v_person' ? fakeQuery().run(body) : fixtureTransport('realistic').send(body)) } });
   const doc = fakeDocument('#teams');
   const listeners = [];

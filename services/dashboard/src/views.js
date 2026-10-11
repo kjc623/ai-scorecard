@@ -724,11 +724,19 @@ function teamMembersNotes(members) {
   return notes;
 }
 
-/** How a team is made: its members, and what it follows. */
+const INCLUDE_LABELS = Object.freeze({ group: 'Group', department: 'Department', org_unit: 'Unit', team: 'Team' });
+
+/** How a team is made: its members, the people chosen for it, and the first things it includes. */
 function teamFacts(team) {
   if (!team) return null;
-  const source = { console: 'Manual', group: `Group ${team.group_name ?? team.group_object_id ?? ''}`.trim(), department: `Department ${team.match_value ?? ''}`.trim(), org_unit: `Unit ${team.match_value ?? ''}`.trim() }[team.source] ?? null;
-  return [team.members === null || team.members === undefined ? null : plural(team.members, 'member', 'members'), source].filter(Boolean).join(' · ') || null;
+  const includes = team.includes ?? [];
+  const shown = includes.slice(0, 2).map((i) => `${INCLUDE_LABELS[i.kind]} ${i.name}`.trim());
+  if (includes.length > shown.length) shown.push(`${formatCount(includes.length - shown.length)} more`);
+  return [
+    team.members === null || team.members === undefined ? null : plural(team.members, 'member', 'members'),
+    team.people ? plural(team.people, 'person chosen', 'people chosen') : null,
+    ...shown,
+  ].filter(Boolean).join(' · ') || null;
 }
 
 /**

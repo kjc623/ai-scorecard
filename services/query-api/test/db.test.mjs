@@ -277,7 +277,7 @@ test('teams and their people read under their current names, and people list by 
         [ada, bob],
       );
       team = (await client.query(
-        "INSERT INTO ops.team (tenant_id, name, source, created_by) VALUES (ops.current_tenant(), 'Pilot', 'console', 'db-test') RETURNING team_id::text",
+        "INSERT INTO ops.team (tenant_id, name, created_by) VALUES (ops.current_tenant(), 'Pilot', 'db-test') RETURNING team_id::text",
       )).rows[0].team_id;
       await client.query("INSERT INTO ops.team_member (tenant_id, team_id, user_ref, added_by) VALUES (ops.current_tenant(), $1, $2, 'db-test')", [team, ada]);
       for (const user of [ada, bob]) {

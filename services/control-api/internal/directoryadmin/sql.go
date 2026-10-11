@@ -42,23 +42,58 @@ ON CONFLICT (tenant_id) DO NOTHING`
 
 	sqlDisableSync = `DELETE FROM ops.directory_sync WHERE tenant_id = $1::uuid`
 
-	// sqlTeams lists the tenant's teams with their current member count and, for a group team, the
-	// group's name.
+	// sqlTeams lists the tenant's teams with how many people were chosen for each and how many are in
+	// it now.
 	sqlTeams = `
-SELECT t.team_id::text, t.name, t.source, coalesce(t.group_id::text, ''), coalesce(g.display_name, ''),
-       coalesce(g.external_id, ''), coalesce(t.match_value, ''), t.created_by, t.created_at,
-       (SELECT count(*) FROM ops.v_team_member m WHERE m.tenant_id = t.tenant_id AND m.team_id = t.team_id)
+SELECT t.team_id::text, t.name, t.created_by, t.created_at,
+       (SELECT count(*) FROM ops.team_member m WHERE m.tenant_id = t.tenant_id AND m.team_id = t.team_id),
+       coalesce(n.members, 0)
   FROM ops.team t
-  LEFT JOIN ops.scim_group g ON g.tenant_id = t.tenant_id AND g.scim_id = t.group_id
+  LEFT JOIN (SELECT team_id, count(*) AS members FROM ops.v_team_member
+              WHERE tenant_id = $1::uuid GROUP BY team_id) n ON n.team_id = t.team_id
  WHERE t.tenant_id = $1::uuid
  ORDER BY lower(t.name), t.team_id`
 
-	sqlTeamSource = `SELECT source FROM ops.team WHERE tenant_id = $1::uuid AND team_id = $2::uuid`
+	// sqlIncludes lists what each team includes, with each group's and team's name.
+	sqlIncludes = `
+SELECT i.team_id::text, i.kind, coalesce(i.group_id::text, i.included_team_id::text, ''),
+       coalesce(i.match_value, ''), coalesce(g.display_name, it.name, i.match_value, ''),
+       coalesce(g.external_id, '')
+  FROM ops.team_include i
+  LEFT JOIN ops.scim_group g ON g.tenant_id = i.tenant_id AND g.scim_id = i.group_id
+  LEFT JOIN ops.team it ON it.tenant_id = i.tenant_id AND it.team_id = i.included_team_id
+ WHERE i.tenant_id = $1::uuid
+ ORDER BY i.team_id, i.kind, lower(coalesce(g.display_name, it.name, i.match_value, '')), i.include_id`
+
+	sqlTeamExists = `SELECT EXISTS (SELECT 1 FROM ops.team WHERE tenant_id = $1::uuid AND team_id = $2::uuid)`
 
 	sqlInsertTeam = `
-INSERT INTO ops.team (tenant_id, team_id, name, source, group_id, match_value, created_by, created_at)
-VALUES ($1::uuid, $2::uuid, $3::text, $4::text, NULLIF($5::text, '')::uuid, NULLIF($6::text, ''),
-        $7::text, $8::timestamptz)`
+INSERT INTO ops.team (tenant_id, team_id, name, created_by, created_at)
+VALUES ($1::uuid, $2::uuid, $3::text, $4::text, $5::timestamptz)`
+
+	sqlClearIncludes = `DELETE FROM ops.team_include WHERE tenant_id = $1::uuid AND team_id = $2::uuid`
+
+	sqlInsertInclude = `
+INSERT INTO ops.team_include (tenant_id, team_id, kind, group_id, match_value, included_team_id, added_by, added_at)
+VALUES ($1::uuid, $2::uuid, $3::text,
+        CASE WHEN $3::text = 'group' THEN $4::uuid END,
+        NULLIF($5::text, ''),
+        CASE WHEN $3::text = 'team' THEN $4::uuid END,
+        $6::text, $7::timestamptz)
+ON CONFLICT DO NOTHING`
+
+	// sqlIncludesTeam says whether team $3, or a team it includes at any depth, is team $2: including
+	// $3 in $2 would then make a cycle.
+	sqlIncludesTeam = `
+WITH RECURSIVE below (team_id) AS (
+  SELECT $3::uuid
+  UNION
+  SELECT i.included_team_id
+    FROM below b
+    JOIN ops.team_include i ON i.tenant_id = $1::uuid AND i.team_id = b.team_id
+   WHERE i.kind = 'team'
+)
+SELECT EXISTS (SELECT 1 FROM below WHERE team_id = $2::uuid)`
 
 	sqlRenameTeam = `UPDATE ops.team SET name = $3::text WHERE tenant_id = $1::uuid AND team_id = $2::uuid`
 
@@ -71,8 +106,9 @@ ON CONFLICT DO NOTHING`
 
 	sqlRemoveMember = `DELETE FROM ops.team_member WHERE tenant_id = $1::uuid AND team_id = $2::uuid AND user_ref = $3::text`
 
-	// sqlTeamMembers names each member the way the people list does: the directory's display name,
-	// else the account name their device last reported, else nothing (the ref stands in).
+	// sqlTeamMembers names each person chosen for a team the way the people list does: the
+	// directory's display name, else the account name their device last reported, else nothing (the
+	// ref stands in).
 	sqlTeamMembers = `
 SELECT m.user_ref,
        coalesce(ud.display_name,
@@ -81,7 +117,7 @@ SELECT m.user_ref,
                     AND d.last_subject_name IS NOT NULL
                   ORDER BY d.last_seen_at DESC NULLS LAST LIMIT 1), ''),
        coalesce(ud.department, '')
-  FROM ops.v_team_member m
+  FROM ops.team_member m
   LEFT JOIN ops.user_dim ud ON ud.tenant_id = m.tenant_id AND ud.user_ref = m.user_ref
  WHERE m.tenant_id = $1::uuid AND m.team_id = $2::uuid
  ORDER BY 2, 1
@@ -120,7 +156,8 @@ VALUES ($1::uuid, 'user', $2::text, $3::text, $4::text, NULLIF($5::text, ''), $6
 // Statements is every statement the store issues, for the live test.
 var Statements = []string{
 	sqlSetTenant, sqlTenantExists, sqlSyncState, sqlEntraConnected, sqlEntraTenant, sqlPeopleCounts,
-	sqlEnableSync, sqlDisableSync, sqlTeams, sqlTeamSource, sqlInsertTeam, sqlRenameTeam, sqlDeleteTeam,
+	sqlEnableSync, sqlDisableSync, sqlTeams, sqlIncludes, sqlTeamExists, sqlInsertTeam, sqlClearIncludes,
+	sqlInsertInclude, sqlIncludesTeam, sqlRenameTeam, sqlDeleteTeam,
 	sqlAddMember, sqlRemoveMember, sqlTeamMembers, sqlDepartments, sqlOrgUnits, sqlGroups,
 	sqlGroupByExternalID, sqlGroupExists, sqlAudit,
 }
@@ -205,13 +242,32 @@ func (s *SQLStore) Teams(ctx context.Context, tenant string) ([]Team, error) {
 			return err
 		}
 		defer rows.Close()
+		at := map[string]int{}
 		for rows.Next() {
-			var t Team
-			if err := rows.Scan(&t.ID, &t.Name, &t.Source, &t.GroupID, &t.GroupName, &t.GroupExternalID,
-				&t.MatchValue, &t.CreatedBy, &t.CreatedAt, &t.Members); err != nil {
+			t := Team{Includes: []Include{}}
+			if err := rows.Scan(&t.ID, &t.Name, &t.CreatedBy, &t.CreatedAt, &t.People, &t.Members); err != nil {
 				return err
 			}
+			at[t.ID] = len(out)
 			out = append(out, t)
+		}
+		if err := rows.Err(); err != nil {
+			return err
+		}
+		rows, err = tx.QueryContext(ctx, sqlIncludes, tenant)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var team string
+			var in Include
+			if err := rows.Scan(&team, &in.Kind, &in.ID, &in.Value, &in.Name, &in.ExternalID); err != nil {
+				return err
+			}
+			if i, ok := at[team]; ok {
+				out[i].Includes = append(out[i].Includes, in)
+			}
 		}
 		return rows.Err()
 	})
@@ -221,16 +277,10 @@ func (s *SQLStore) Teams(ctx context.Context, tenant string) ([]Team, error) {
 // CreateTeam implements Store.
 func (s *SQLStore) CreateTeam(ctx context.Context, tenant string, t Team, members []string, a Audit) error {
 	return s.inTenant(ctx, tenant, func(tx *sql.Tx) error {
-		if t.Source == SourceGroup {
-			var ok bool
-			if err := tx.QueryRowContext(ctx, sqlGroupExists, tenant, t.GroupID).Scan(&ok); err != nil {
-				return err
-			}
-			if !ok {
-				return ErrNotFound
-			}
+		if _, err := exec(ctx, tx, sqlInsertTeam, tenant, t.ID, t.Name, t.CreatedBy, t.CreatedAt); err != nil {
+			return err
 		}
-		if _, err := exec(ctx, tx, sqlInsertTeam, tenant, t.ID, t.Name, t.Source, t.GroupID, t.MatchValue, t.CreatedBy, t.CreatedAt); err != nil {
+		if err := insertIncludes(ctx, tx, tenant, t.ID, t.Includes, a); err != nil {
 			return err
 		}
 		for _, ref := range members {
@@ -240,6 +290,72 @@ func (s *SQLStore) CreateTeam(ctx context.Context, tenant string, t Team, member
 		}
 		return audit(ctx, tx, tenant, a)
 	})
+}
+
+// SetIncludes implements Store.
+func (s *SQLStore) SetIncludes(ctx context.Context, tenant, id string, includes []Include, a Audit) error {
+	return s.inTenant(ctx, tenant, func(tx *sql.Tx) error {
+		if err := teamExists(ctx, tx, tenant, id); err != nil {
+			return err
+		}
+		if _, err := exec(ctx, tx, sqlClearIncludes, tenant, id); err != nil {
+			return err
+		}
+		if err := insertIncludes(ctx, tx, tenant, id, includes, a); err != nil {
+			return err
+		}
+		return audit(ctx, tx, tenant, a)
+	})
+}
+
+// insertIncludes adds what a team includes, checking that each group and team exists and that no
+// included team already includes this one.
+func insertIncludes(ctx context.Context, tx *sql.Tx, tenant, team string, includes []Include, a Audit) error {
+	for _, in := range includes {
+		switch in.Kind {
+		case IncludeGroup:
+			var ok bool
+			if err := tx.QueryRowContext(ctx, sqlGroupExists, tenant, in.ID).Scan(&ok); err != nil {
+				return err
+			}
+			if !ok {
+				return ErrNotFound
+			}
+		case IncludeTeam:
+			if err := teamExists(ctx, tx, tenant, in.ID); err != nil {
+				return err
+			}
+			var cycle bool
+			if err := tx.QueryRowContext(ctx, sqlIncludesTeam, tenant, team, in.ID).Scan(&cycle); err != nil {
+				return err
+			}
+			if cycle {
+				return ErrCycle
+			}
+		}
+		if _, err := exec(ctx, tx, sqlInsertInclude, tenant, team, in.Kind, nullUUID(in.ID), in.Value, a.Actor, a.At); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func teamExists(ctx context.Context, tx *sql.Tx, tenant, id string) error {
+	var ok bool
+	if err := tx.QueryRowContext(ctx, sqlTeamExists, tenant, id).Scan(&ok); err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func nullUUID(id string) any {
+	if id == "" {
+		return nil
+	}
+	return id
 }
 
 // RenameTeam implements Store.
@@ -273,16 +389,8 @@ func (s *SQLStore) DeleteTeam(ctx context.Context, tenant, id string, a Audit) e
 // ChangeMembers implements Store.
 func (s *SQLStore) ChangeMembers(ctx context.Context, tenant, id string, add, remove []string, a Audit) error {
 	return s.inTenant(ctx, tenant, func(tx *sql.Tx) error {
-		var source string
-		err := tx.QueryRowContext(ctx, sqlTeamSource, tenant, id).Scan(&source)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
-		if err != nil {
+		if err := teamExists(ctx, tx, tenant, id); err != nil {
 			return err
-		}
-		if source != SourceConsole {
-			return ErrNotConsole
 		}
 		for _, ref := range add {
 			if _, err := exec(ctx, tx, sqlAddMember, tenant, id, ref, a.Actor, a.At); err != nil {
@@ -302,12 +410,7 @@ func (s *SQLStore) ChangeMembers(ctx context.Context, tenant, id string, add, re
 func (s *SQLStore) TeamMembers(ctx context.Context, tenant, id string, limit int) ([]Member, error) {
 	out := []Member{}
 	err := s.inTenant(ctx, tenant, func(tx *sql.Tx) error {
-		var source string
-		err := tx.QueryRowContext(ctx, sqlTeamSource, tenant, id).Scan(&source)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNotFound
-		}
-		if err != nil {
+		if err := teamExists(ctx, tx, tenant, id); err != nil {
 			return err
 		}
 		rows, err := tx.QueryContext(ctx, sqlTeamMembers, tenant, id, limit)
@@ -330,7 +433,7 @@ func (s *SQLStore) TeamMembers(ctx context.Context, tenant, id string, limit int
 // DirectoryValues implements Store.
 func (s *SQLStore) DirectoryValues(ctx context.Context, tenant, kind string, limit int) ([]Value, error) {
 	q := sqlDepartments
-	if kind == SourceOrgUnit {
+	if kind == IncludeOrgUnit {
 		q = sqlOrgUnits
 	}
 	out := []Value{}

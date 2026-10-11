@@ -5,7 +5,8 @@ people list and each person's page), Devices, Audit trail, Settings (Settings, D
 Providers), and the Search page, where an analyst lists events, findings,
 devices and audit entries, opens a device to see each of its collectors with its state and cause,
 searches prompt text, and reads an event's stored prompt. An admin adds, edits and deletes teams on
-Teams, from a group, department or unit the identity provider synced, or from people they tick.
+Teams, from any mix of the people they tick and the groups, departments and units the identity
+provider synced and other teams.
 
 It has two halves and no dependencies:
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -49,16 +50,37 @@ func TestCreatingAGroupTeamAsksForARead(t *testing.T) {
 	}
 
 	// A group already held, as one an earlier attempt imported is, still needs its members read.
-	if code := create(`{"name":"Sales","source":"group","group_id":"7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0009"}`); code != http.StatusCreated {
-		t.Fatalf("create group team = %d", code)
+	if code := create(`{"name":"Sales","members":["u_0123456789abcdef0123456789abcdef"],"includes":[
+		{"kind":"group","group_id":"7D0C1A52-58F4-4A51-9B1E-1F6D2F0A0009"},
+		{"kind":"team","team_id":"7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001"},
+		{"kind":"department","value":" Sales "},{"kind":"department","value":"sales"}]}`); code != http.StatusCreated {
+		t.Fatalf("create mixed team = %d", code)
 	}
 	if len(sync.tenants) != 1 || sync.tenants[0] != testTenant {
 		t.Fatalf("reads asked for = %v", sync.tenants)
 	}
-	if code := create(`{"name":"Engineering","source":"department","match_value":"Engineering"}`); code != http.StatusCreated {
+	want := []Include{
+		{Kind: IncludeGroup, ID: "7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0009"},
+		{Kind: IncludeTeam, ID: "7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001"},
+		{Kind: IncludeDepartment, Value: "Sales"},
+	}
+	if got := st.created[0].Includes; !slices.Equal(got, want) {
+		t.Fatalf("includes = %+v", got)
+	}
+	if code := create(`{"name":"Engineering","includes":[{"kind":"department","value":"Engineering"}]}`); code != http.StatusCreated {
 		t.Fatalf("create department team = %d", code)
 	}
 	if len(sync.tenants) != 1 {
 		t.Fatalf("a department team asked for a read: %v", sync.tenants)
+	}
+	for _, body := range []string{
+		`{"name":"Bad","includes":[{"kind":"user","value":"x"}]}`,
+		`{"name":"Bad","includes":[{"kind":"department","value":" "}]}`,
+		`{"name":"Bad","includes":[{"kind":"group"}]}`,
+		`{"name":"Bad","source":"console"}`,
+	} {
+		if code := create(body); code != http.StatusBadRequest {
+			t.Fatalf("%s = %d", body, code)
+		}
 	}
 }

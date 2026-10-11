@@ -53,7 +53,7 @@ const (
 
 	// Teams and the directory pull.
 	CodeTeamNameTaken      = "team_name_taken"
-	CodeTeamNotConsole     = "team_members_follow_directory"
+	CodeTeamCycle          = "team_include_cycle"
 	CodeDirectorySyncOff   = "directory_sync_off"
 	CodeGraphConsent       = "graph_consent_missing"
 	CodeDirectoryUnreached = "directory_unreachable"

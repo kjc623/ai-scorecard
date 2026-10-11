@@ -40,9 +40,10 @@ whichever way they arrived:
   distinguished name (their organisational unit); guests are skipped. Someone gone from a complete
   listing is retired, never deleted. Only the groups a team follows are read.
 
-Teams (`/admin/v1/teams`, `internal/directoryadmin`) are made in the console with chosen members,
-or follow a group, a department or an organisational unit; `ops.v_team_member` resolves each to its
-current members, and `jobs aggregate` rolls usage up per team.
+Teams (`/admin/v1/teams`, `internal/directoryadmin`) are made in the console from any mix of people
+an admin picks and groups, departments, organisational units and other teams they include;
+`ops.v_team_member` resolves each to its current members, and `jobs aggregate` rolls usage up per
+team. A team cannot include a team that already includes it.
 
 ## Configuration
 

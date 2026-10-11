@@ -150,11 +150,11 @@ func TestDirectoryPullAndTeamsAgainstPostgres(t *testing.T) {
 		t.Fatalf("user_dim = %s / %s", orgUnit, dept)
 	}
 
-	// Teams from each source.
-	newTeam := func(name, source, group, match string, members []string) string {
+	// Teams of every kind, and teams that mix them.
+	newTeam := func(name string, includes []Include, members []string) string {
 		t.Helper()
 		id := pgtest.UUID(t)
-		err := st.CreateTeam(ctx, tenant, Team{ID: id, Name: name, Source: source, GroupID: group, MatchValue: match, CreatedBy: "admin@live.test", CreatedAt: at},
+		err := st.CreateTeam(ctx, tenant, Team{ID: id, Name: name, Includes: includes, CreatedBy: "admin@live.test", CreatedAt: at},
 			members, Audit{Actor: "admin@live.test", Action: "team.create", ObjectType: "team", ObjectID: id, At: at})
 		if err != nil {
 			t.Fatalf("create %s: %v", name, err)
@@ -168,12 +168,16 @@ func TestDirectoryPullAndTeamsAgainstPostgres(t *testing.T) {
 	if err := db.QueryRowContext(ctx, `SELECT user_ref FROM ops.user_dim WHERE tenant_id = $1::uuid AND display_name = 'Grace Hopper'`, tenant).Scan(&graceRef); err != nil {
 		t.Fatal(err)
 	}
-	labs := newTeam("Labs", SourceOrgUnit, "", "ou=labs,dc=contoso,dc=com", nil)
-	sales := newTeam("Sales", SourceDepartment, "", "SALES", nil)
-	console := newTeam("Pilot", SourceConsole, "", "", []string{adaRef})
-	if err := st.CreateTeam(ctx, tenant, Team{ID: pgtest.UUID(t), Name: "pilot", Source: SourceConsole, CreatedBy: "x", CreatedAt: at}, nil,
+	labs := newTeam("Labs", []Include{{Kind: IncludeOrgUnit, Value: "ou=labs,dc=contoso,dc=com"}}, nil)
+	sales := newTeam("Sales", []Include{{Kind: IncludeDepartment, Value: "SALES"}}, nil)
+	console := newTeam("Pilot", nil, []string{adaRef})
+	if err := st.CreateTeam(ctx, tenant, Team{ID: pgtest.UUID(t), Name: "pilot", CreatedBy: "x", CreatedAt: at}, nil,
 		Audit{Actor: "x", Action: "team.create", ObjectType: "team", At: at}); !errors.Is(err, ErrNameTaken) {
 		t.Fatalf("a duplicate name = %v", err)
+	}
+	if err := st.CreateTeam(ctx, tenant, Team{ID: pgtest.UUID(t), Name: "Nowhere", Includes: []Include{{Kind: IncludeTeam, ID: pgtest.UUID(t)}}, CreatedBy: "x", CreatedAt: at}, nil,
+		Audit{Actor: "x", Action: "team.create", ObjectType: "team", At: at}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("including an unknown team = %v", err)
 	}
 
 	// An imported Entra group, filled by the next pass.
@@ -181,33 +185,77 @@ func TestDirectoryPullAndTeamsAgainstPostgres(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	group := newTeam("Sales group", SourceGroup, created["id"].(string), "", nil)
+	groupID := created["id"].(string)
+	group := newTeam("Sales group", []Include{{Kind: IncludeGroup, ID: groupID}}, nil)
+	// A team of a person, a group and another team at once.
+	mixed := newTeam("Everyone", []Include{{Kind: IncludeGroup, ID: groupID}, {Kind: IncludeTeam, ID: labs}}, []string{graceRef})
 	runner.RunTenant(ctx, target)
 
 	teams, err := st.Teams(ctx, tenant)
 	if err != nil {
 		t.Fatal(err)
 	}
-	counts := map[string]int64{}
+	byID := map[string]Team{}
 	for _, tm := range teams {
-		counts[tm.ID] = tm.Members
+		byID[tm.ID] = tm
 	}
-	if counts[labs] != 1 || counts[sales] != 1 || counts[console] != 1 || counts[group] != 1 || len(teams) != 4 {
+	if byID[labs].Members != 1 || byID[sales].Members != 1 || byID[console].Members != 1 || byID[group].Members != 1 || len(teams) != 5 {
 		t.Fatalf("teams = %+v", teams)
 	}
-	members, err := st.TeamMembers(ctx, tenant, group, 10)
-	if err != nil || len(members) != 1 || members[0].UserRef != graceRef || members[0].Name != "Grace Hopper" {
-		t.Fatalf("group members = %+v, %v", members, err)
+	// Grace is chosen and in the group, Ada is in Labs: each is counted once.
+	if m := byID[mixed]; m.Members != 2 || m.People != 1 || len(m.Includes) != 2 {
+		t.Fatalf("mixed team = %+v", m)
 	}
-	for _, tm := range teams {
-		if tm.ID == group && tm.GroupName != "Sales (Entra)" {
-			t.Fatalf("the pass did not take the group's name from Entra: %+v", tm)
+	for _, in := range byID[mixed].Includes {
+		if (in.Kind == IncludeGroup && (in.ID != groupID || in.Name != "Sales (Entra)" || in.ExternalID != oidGroup)) ||
+			(in.Kind == IncludeTeam && (in.ID != labs || in.Name != "Labs")) {
+			t.Fatalf("mixed team includes %+v", in)
 		}
 	}
+	if in := byID[sales].Includes; len(in) != 1 || in[0].Kind != IncludeDepartment || in[0].Value != "SALES" {
+		t.Fatalf("department team includes %+v", in)
+	}
+	members, err := st.TeamMembers(ctx, tenant, mixed, 10)
+	if err != nil || len(members) != 1 || members[0].UserRef != graceRef || members[0].Name != "Grace Hopper" {
+		t.Fatalf("people chosen for the mixed team = %+v, %v", members, err)
+	}
+	if m, err := st.TeamMembers(ctx, tenant, group, 10); err != nil || len(m) != 0 {
+		t.Fatalf("people chosen for the group team = %+v, %v", m, err)
+	}
+	var everyone int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM ops.v_team_member WHERE tenant_id = $1::uuid AND team_id = $2::uuid`, tenant, mixed).Scan(&everyone); err != nil || everyone != 2 {
+		t.Fatalf("everyone in the mixed team = %d, %v", everyone, err)
+	}
 
-	// Members are chosen only for a console team.
-	if err := st.ChangeMembers(ctx, tenant, sales, []string{adaRef}, nil, Audit{Actor: "x", Action: "team.members.change", ObjectType: "team", At: at}); !errors.Is(err, ErrNotConsole) {
-		t.Fatalf("ChangeMembers on a department team = %v", err)
+	// Including teams in each other is refused at any depth; a team reached twice counts once.
+	if err := st.SetIncludes(ctx, tenant, labs, []Include{{Kind: IncludeTeam, ID: mixed}}, Audit{Actor: "x", Action: "team.includes.set", ObjectType: "team", At: at}); !errors.Is(err, ErrCycle) {
+		t.Fatalf("a cycle = %v", err)
+	}
+	top := newTeam("Company", []Include{{Kind: IncludeTeam, ID: mixed}, {Kind: IncludeTeam, ID: labs}, {Kind: IncludeDepartment, Value: "sales"}}, nil)
+	if err := st.SetIncludes(ctx, tenant, labs, []Include{{Kind: IncludeTeam, ID: top}}, Audit{Actor: "x", Action: "team.includes.set", ObjectType: "team", At: at}); !errors.Is(err, ErrCycle) {
+		t.Fatalf("a cycle two deep = %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM ops.v_team_member WHERE tenant_id = $1::uuid AND team_id = $2::uuid`, tenant, top).Scan(&everyone); err != nil || everyone != 2 {
+		t.Fatalf("everyone in the nested team = %d, %v", everyone, err)
+	}
+
+	// A team's includes are replaced, and its people are changed, whatever else it includes.
+	if err := st.SetIncludes(ctx, tenant, sales, []Include{{Kind: IncludeGroup, ID: groupID}, {Kind: IncludeOrgUnit, Value: "OU=Research,OU=Labs,DC=contoso,DC=com"}}, Audit{Actor: "x", Action: "team.includes.set", ObjectType: "team", At: at}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ChangeMembers(ctx, tenant, sales, []string{adaRef}, nil, Audit{Actor: "x", Action: "team.members.change", ObjectType: "team", At: at}); err != nil {
+		t.Fatalf("ChangeMembers on a team that includes a group = %v", err)
+	}
+	if teams, _ = st.Teams(ctx, tenant); len(teams) == 0 {
+		t.Fatal("no teams")
+	}
+	for _, tm := range teams {
+		if tm.ID == sales && (len(tm.Includes) != 2 || tm.Members != 2 || tm.People != 1) {
+			t.Fatalf("sales after the change = %+v", tm)
+		}
+	}
+	if err := st.SetIncludes(ctx, tenant, pgtest.UUID(t), nil, Audit{Actor: "x", Action: "team.includes.set", ObjectType: "team", At: at}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetIncludes on an unknown team = %v", err)
 	}
 	if err := st.ChangeMembers(ctx, tenant, console, []string{graceRef}, []string{adaRef}, Audit{Actor: "x", Action: "team.members.change", ObjectType: "team", At: at}); err != nil {
 		t.Fatal(err)
@@ -216,7 +264,7 @@ func TestDirectoryPullAndTeamsAgainstPostgres(t *testing.T) {
 		t.Fatalf("console members = %+v", m)
 	}
 
-	values, err := st.DirectoryValues(ctx, tenant, SourceOrgUnit, 10)
+	values, err := st.DirectoryValues(ctx, tenant, IncludeOrgUnit, 10)
 	if err != nil || len(values) != 1 || values[0].People != 1 {
 		t.Fatalf("org units = %+v, %v", values, err)
 	}
@@ -230,6 +278,16 @@ func TestDirectoryPullAndTeamsAgainstPostgres(t *testing.T) {
 
 	if err := st.DeleteTeam(ctx, tenant, console, Audit{Actor: "x", Action: "team.delete", ObjectType: "team", At: at}); err != nil {
 		t.Fatal(err)
+	}
+	// A deleted team drops out of the teams that include it.
+	if err := st.DeleteTeam(ctx, tenant, labs, Audit{Actor: "x", Action: "team.delete", ObjectType: "team", At: at}); err != nil {
+		t.Fatal(err)
+	}
+	teams, _ = st.Teams(ctx, tenant)
+	for _, tm := range teams {
+		if tm.ID == mixed && (len(tm.Includes) != 1 || tm.Members != 1) {
+			t.Fatalf("the mixed team after Labs went = %+v", tm)
+		}
 	}
 	if err := st.DeleteTeam(ctx, tenant, console, Audit{Actor: "x", Action: "team.delete", ObjectType: "team", At: at}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second delete = %v", err)

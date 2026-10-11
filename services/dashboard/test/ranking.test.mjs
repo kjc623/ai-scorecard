@@ -183,8 +183,8 @@ test('the Teams screen ranks the teams, lists the admin\'s quiet teams with a ze
   const admin = {
     async teams() {
       return { state: 'available', teams: [
-        { team_id: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', name: 'Engineering', source: 'group', group_name: 'eng-all', members: 640 },
-        { team_id: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0009', name: 'Marketing', source: 'console', members: 12 },
+        { team_id: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', name: 'Engineering', includes: [{ kind: 'group', name: 'eng-all' }], people: 0, members: 640 },
+        { team_id: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0009', name: 'Marketing', includes: [], people: 12, members: 12 },
       ] };
     },
   };
@@ -241,7 +241,7 @@ test('a team known only to the roster is still named, and a team with no row sho
 
 test('teams the totals do not know are not invented when the read could not say', () => {
   const blind = readState(envelope('not_yet_covered', { data: [], freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.agg_team_period' } }));
-  const view = teamsView(blind, { teams: [{ team_id: 't1', name: 'Quiet', source: 'console', members: 3 }] });
+  const view = teamsView(blind, { teams: [{ team_id: 't1', name: 'Quiet', includes: [], people: 3, members: 3 }] });
   assert.deepEqual(view.blocks[0].items, [], 'no zero is claimed for a window the system cannot answer for');
   assert.match(view.blocks[0].emptyText, /^Not yet covered\./);
 });
@@ -369,16 +369,16 @@ test('a window with no cell draws no chart; the empty ranking says why', () => {
 });
 
 test('a quiet team is listed when the read answered, on partial coverage too; a tool with no decision is unknown', async () => {
-  const teams = [{ team_id: 't1', name: 'Engineering', source: 'console', members: 1 }];
+  const teams = [{ team_id: 't1', name: 'Engineering', includes: [{ kind: 'department', name: 'Engineering' }, { kind: 'team', name: 'Platform' }, { kind: 'group', name: 'eng-all' }], people: 1, members: 1 }];
   const degraded = readState(envelope('coverage_degraded', { data: [], freshness: FRESH, coverage: PARTIAL, meta: { source: 'mart.agg_team_period', extras: { team_coverage: [{ users_all: 1, users_in_teams: 0, teams: 1 }] } } }));
   const view = teamsView(degraded, { teams });
   assert.deepEqual(view.blocks[0].items.map((i) => [i.label, i.value.value]), [['Engineering', 0]], 'the team exists, so it is listed, and the coverage line says every figure is a floor');
-  assert.match(view.blocks[0].items[0].sublabel, /^1 member · Manual · No usage recorded in this window$/);
+  assert.match(view.blocks[0].items[0].sublabel, /^1 member · 1 person chosen · Department Engineering · Team Platform · 1 more · No usage recorded in this window$/);
   assert.ok(view.notes.some((n) => n === '1 person used AI in this window; 0 are in at least one team and 1 is in none.'));
   assert.equal(view.banners.filter((b) => b.about === 'coverage').length, 1, 'partial coverage is said once, not as two banners');
   const own = teamView(degraded, { team: 't1', teams, preset: 'd90' });
   assert.equal(own.title, 'Engineering', 'named from the admin list when it has no cell in the window');
-  assert.match(own.subtitle, /^1 member · Manual\./);
+  assert.match(own.subtitle, /^1 member · 1 person chosen · Department Engineering · Team Platform · 1 more\./);
   assert.deepEqual(own.series, []);
   assert.equal(own.actions[0].href, '#teams?preset=d90');
 });

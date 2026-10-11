@@ -336,7 +336,7 @@ export function createAdminApi({ transport }) {
       const answer = await call({ method: 'POST', path: `${ADMIN_DIRECTORY_ENDPOINT}/sync/run` });
       return ok(answer.status) ? { state: 'done', queued: answer.body?.queued === true } : refused(answer);
     },
-    /** The groups a team can follow: the provisioned ones, and with a search, the directory's. */
+    /** The groups a team can include: the provisioned ones, and with a search, the directory's. */
     async directoryGroups(search = '') {
       const q = String(search).trim();
       const answer = await call({ method: 'GET', path: `${ADMIN_DIRECTORY_ENDPOINT}/groups${q ? `?q=${encodeURIComponent(q)}` : ''}` });
@@ -368,6 +368,10 @@ export function createAdminApi({ transport }) {
       const answer = await call({ method: 'GET', path: `${ADMIN_TEAMS_ENDPOINT}/${encodeURIComponent(String(teamId))}/members` });
       if (!ok(answer.status) || !Array.isArray(answer.body?.members)) return refused(answer);
       return { state: 'available', members: answer.body.members, limit: answer.body.limit ?? null };
+    },
+    /** Replaces the groups, departments, units and teams a team includes. */
+    setTeamIncludes(teamId, includes) {
+      return done({ method: 'PUT', path: `${ADMIN_TEAMS_ENDPOINT}/${encodeURIComponent(String(teamId))}/includes`, body: { includes } });
     },
     changeTeamMembers(teamId, { add = [], remove = [] }) {
       return done({ method: 'POST', path: `${ADMIN_TEAMS_ENDPOINT}/${encodeURIComponent(String(teamId))}/members`, body: { add, remove } });
@@ -457,16 +461,22 @@ export function normaliseDirectory(status) {
   });
 }
 
-/** The team list, with a count the server did not send left as null. */
+const INCLUDE_KINDS = Object.freeze(['group', 'department', 'org_unit', 'team']);
+
+/** The team list, with a count the server did not send left as null and an include of an unknown kind dropped. */
 export function normaliseTeams(teams) {
   return Object.freeze(teams.filter((t) => t && typeof t === 'object' && typeof t.team_id === 'string').map((t) => Object.freeze({
     team_id: t.team_id,
     name: String(t.name ?? ''),
-    source: nullableText(t.source),
-    group_id: nullableText(t.group_id),
-    group_name: nullableText(t.group_name),
-    group_object_id: nullableText(t.group_object_id),
-    match_value: nullableText(t.match_value),
+    includes: Object.freeze((Array.isArray(t.includes) ? t.includes : []).filter((i) => i && INCLUDE_KINDS.includes(i.kind)).map((i) => Object.freeze({
+      kind: i.kind,
+      group_id: nullableText(i.group_id),
+      group_object_id: nullableText(i.group_object_id),
+      team_id: nullableText(i.team_id),
+      value: nullableText(i.value),
+      name: String(i.name ?? i.value ?? ''),
+    }))),
+    people: nullableNumber(t.people),
     members: nullableNumber(t.members),
     created_by: nullableText(t.created_by),
     created_at: nullableText(t.created_at),
