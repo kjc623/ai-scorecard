@@ -35,10 +35,9 @@
     }
   },
   "expect": {
-    "events": 2,
+    "events": 1,
     "observed": true,
     "attributed": true,
-    "prompt": false,
-    "why": "the request matches on its own and its observation carries the typed text, but when the response completes the extension sends a second observation of the same submission whose content is the first one's base64 encoded again, so the prompt is also stored as base64 text"
+    "prompt": true
   }
 }
