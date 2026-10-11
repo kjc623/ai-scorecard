@@ -169,12 +169,22 @@ export function createFakeChrome() {
     return await entry.handler(detail);
   }
 
+  /**
+   * Hand one request to every registered listener, as Chrome does. Returns the blocking response
+   * Chrome would honour: a cancel from any listener cancels the request.
+   */
+  async function dispatch(detail) {
+    const results = await Promise.all(listeners.onBeforeRequest.map((l) => l.handler(detail)));
+    return results.find((r) => r && r.cancel);
+  }
+
   return {
     chrome,
     state,
     listeners,
     registrations,
     drive,
+    dispatch,
     /** Which lanes are registered, and with what extraInfoSpec — the M0 assertion surface. */
     registration(lane) {
       const entry = listeners.onBeforeRequest.find((l) => l.lane === lane);

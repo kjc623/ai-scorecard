@@ -10,6 +10,12 @@
  * policy change and the filter rebuild, and the pipeline's mode gate, which knows the tool, is the
  * last check.
  *
+ * Chrome calls every listener for every request, so each request is observed by one lane only:
+ * while the body lane is installed it handles every request, passing the ones whose body it may not
+ * or cannot read (an M0 destination, a GET, a WebSocket handshake, a streamed upload) to the
+ * metadata path, and the metadata lane stands down. A body the predicate rejects is not observed
+ * again without its content.
+ *
  * Blocking: only a force-installed extension is granted `webRequestBlocking`, and a blocking
  * registration without the grant is accepted silently and never invoked. So the lanes register
  * with 'blocking' only when the grant is held; without it observation is unchanged and the health
@@ -40,15 +46,19 @@ export function installLanes({
 
   async function bodyHandler(detail) {
     // The filter is rebuilt on policy change; a request already in flight is checked again here.
-    if (!policy.isBodyBearing(detail.url)) {
-      return toBlockingResponse(await onMetadataLane({ detail, tab_context: tabContextOf(detail) }));
-    }
+    if (!policy.isBodyBearing(detail.url)) return observeMetadata(detail);
     const body = normaliseBody(detail.requestBody);
+    if (body.source === 'none') return observeMetadata(detail);
     const result = await onBodyLane({ detail, body, body_capable: true, tab_context: tabContextOf(detail) });
     return toBlockingResponse(result);
   }
 
   async function metadataHandler(detail) {
+    if (bodyInstalled) return undefined;
+    return observeMetadata(detail);
+  }
+
+  async function observeMetadata(detail) {
     return toBlockingResponse(await onMetadataLane({ detail, tab_context: tabContextOf(detail) }));
   }
 
