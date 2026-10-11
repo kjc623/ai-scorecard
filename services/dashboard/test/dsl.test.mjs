@@ -7,7 +7,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildListDocument, buildRuleMatchesDocument, buildTemplate, windowFor, DashboardQueryError } from '../src/dsl.js';
+import { buildDiscoveryDocument, buildListDocument, buildRuleMatchesDocument, buildTemplate, windowFor, DashboardQueryError } from '../src/dsl.js';
 import { SOURCES, TEMPLATES, TEMPLATE_NAMES, WINDOWS } from '../src/vocab.js';
 
 const WINDOW = { from: '2026-09-24T00:00:00Z', to: '2026-10-01T00:00:00Z' };
@@ -74,8 +74,23 @@ test('the matches per rule read the coarsest bucket the window allows, one row p
   refuses(() => buildRuleMatchesDocument({ window: { from: WINDOW.to, to: WINDOW.from } }), 'bad_window');
 });
 
+test('what discovery found reads per tool, kind and item, in the coarsest bucket the window allows', () => {
+  const now = new Date('2026-10-01T12:00:00Z');
+  assert.deepEqual(buildDiscoveryDocument({ window: windowFor('d30', now) }), {
+    query_version: '1',
+    source: 'mart.agg_discovery_period',
+    bucket: 'month',
+    dimensions: ['tool', 'discovery_type', 'item'],
+    measures: ['devices'],
+    window: { from: '2026-09-01T12:00:00.000Z', to: '2026-10-01T12:00:00.000Z' },
+    limit: 1999,
+  });
+  assert.equal(buildDiscoveryDocument({ window: windowFor('h24', now) }).bucket, 'hour');
+  refuses(() => buildDiscoveryDocument({ window: { from: WINDOW.to, to: WINDOW.from } }), 'bad_window');
+});
+
 test('the vocabularies here are complete enough to describe every source and template', () => {
-  assert.equal(Object.keys(SOURCES).length, 19);
+  assert.equal(Object.keys(SOURCES).length, 20);
   assert.equal(TEMPLATE_NAMES.length, 10);
   for (const [name, spec] of Object.entries(SOURCES)) {
     assert.ok(spec.kind === 'aggregate' || spec.kind === 'list', `${name} has a kind`);

@@ -86,6 +86,7 @@ because their presence is an attempt rather than a typo:
 | `mart.agg_team_period` | aggregate | Q3 teams | PK + `(tenant, team_id, bucket_start DESC)` |
 | `mart.agg_class_period` | aggregate | Q4 classes | PK |
 | `mart.agg_rule_period` | aggregate | the prompts each enforcement rule decided, for Insights | PK |
+| `mart.agg_discovery_period` | aggregate | what device discovery found: the devices that reported each tool by kind of finding and item, with each tool's name, `category`, sanction, `first_seen` under any of its fingerprints and `last_seen`; where the inventory scan stands on the fleet in `meta.extras.inventory_scan`, for Insights | PK + `(tenant, tool_fingerprint, bucket_size, bucket_start)` |
 | `mart.agg_user_period` | aggregate | Q6 one subject | PK + `(tenant, user_ref, bucket_start DESC, bucket_size)` |
 | `mart.v_team_member_period` | aggregate | the people behind each team's total | `mart.agg_user_period` PK |
 | `mart.agg_device_period` | aggregate | Q7 history | PK |
@@ -113,6 +114,7 @@ offered is `unknown_dimension` / `unknown_measure`, and the error lists what is 
 | `mart.agg_team_period` | `bucket`, `team`, `tool` | `submissions`, `users` |
 | `mart.agg_class_period` | `bucket`, `class`, `tool`, `severity`, `classifier_version` | `submissions`, `users`, `max_score`, `degraded_events`, `flagged`, `flagged_blocked`, `flagged_warned`, `flagged_logged` |
 | `mart.agg_rule_period` | `bucket`, `rule` | `matches`, `blocked`, `warned`, `logged` |
+| `mart.agg_discovery_period` | `bucket`, `tool`, `discovery_type`, `item` (a local model's name, an inference connection's host, else empty) | `devices` (distinct within a bucket, so a lower bound across buckets) |
 | `mart.agg_user_period` | `bucket`, `subject` | `submissions`, `bytes_total`, `tools_used`, `block_events` |
 | `mart.v_team_member_period` | `bucket`, `team`, `subject` | `submissions` |
 | `mart.agg_device_period` | `bucket`, `device`, `collector` | `healthy_days`, `degraded_days`, `absent_days`, `tampered_days`, `spool_dropped` |
@@ -275,7 +277,7 @@ Three properties are enforced in code, not by convention:
 aggregate with a `limit`), `rollup`, `has_cursor`, `query_class`,
 `statement_timeout_ms`, `required_indexes`, `warnings`, `joins_used`, `dsl_hash`,
 `snapshot_upper_bound`, `coarsened`, `guard{estimated_cells,bounded_cells,limited,estimated_bytes}`,
-`notes`, and `extras` when the template produced a side read. New keys may appear in `meta`,
+`notes`, and `extras` when the template or the source produced a side read. New keys may appear in `meta`,
 `freshness` and `coverage` within `query_version: "1"`; `data`, `page`, `result_state` and the
 error codes are the stable surface.
 

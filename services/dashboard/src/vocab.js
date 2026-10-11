@@ -158,6 +158,13 @@ export const SOURCES = Object.freeze({
     measures: Object.freeze(['matches', 'blocked', 'warned', 'logged']),
     note: 'counted under the rule id the device applied: a removed rule keeps its count, and a prompt no rule matched has none',
   }),
+  'mart.agg_discovery_period': Object.freeze({
+    kind: 'aggregate',
+    label: 'What device discovery found',
+    dimensions: Object.freeze(['bucket', 'tool', 'discovery_type', 'item']),
+    measures: Object.freeze(['devices']),
+    note: 'devices is distinct within a bucket, so a window reads a lower bound; where the inventory scan stands travels beside it',
+  }),
   'ops.enforcement_rule': Object.freeze({
     kind: 'list',
     label: 'Enforcement rules',

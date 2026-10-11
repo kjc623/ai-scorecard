@@ -64,6 +64,7 @@ func Aggregates(bucketSize string) ([]Aggregate, error) {
 		{Name: "mart.agg_org_period", SQL: fmt.Sprintf(orgPeriodSQL, trunc)},
 		{Name: "mart.agg_team_period", SQL: fmt.Sprintf(teamPeriodSQL, trunc)},
 		{Name: "mart.agg_user_period", SQL: fmt.Sprintf(userPeriodSQL, trunc)},
+		{Name: "mart.agg_discovery_period", SQL: fmt.Sprintf(discoveryPeriodSQL, trunc)},
 	}, nil
 }
 
@@ -308,6 +309,44 @@ SELECT $1, src.bucket_start, %[1]s, src.rule_id, src.matches, src.blocked, src.w
 ON CONFLICT (tenant_id, bucket_start, bucket_size, rule_id) DO UPDATE
   SET matches = EXCLUDED.matches, blocked = EXCLUDED.blocked,
       warned = EXCLUDED.warned, logged = EXCLUDED.logged`
+
+// discoveryPeriodSQL is what device discovery found: the devices that reported each tool, by the
+// kind of finding and its item. A local model is counted per model it names, and an inference
+// connection per host it reached; the other kinds have no item.
+var discoveryPeriodSQL = `
+WITH found AS (
+  SELECT date_trunc(%[1]s, o.received_at) AS bucket_start, o.tool_fingerprint, o.discovery_type,
+         CASE o.discovery_type
+           WHEN 'local_model' THEN coalesce(m.name, '')
+           WHEN 'inference_connection' THEN coalesce(o.destination_host, '')
+           ELSE ''
+         END AS item,
+         o.device_id, o.received_at
+    FROM ingest.observation o
+    CROSS JOIN LATERAL unnest(CASE WHEN o.discovery_type = 'local_model' AND cardinality(o.model_names) > 0
+                                   THEN o.model_names ELSE ARRAY[NULL::text] END) AS m(name)
+   WHERE o.tenant_id = $1 AND o.received_at >= $2 AND o.received_at < $3 AND o.kind = 'discovery'
+),
+src AS (
+  SELECT bucket_start, tool_fingerprint, discovery_type, item,
+         count(DISTINCT device_id) AS devices, max(received_at) AS last_seen
+    FROM found
+   GROUP BY 1, 2, 3, 4
+),
+gone AS (
+  DELETE FROM mart.agg_discovery_period m
+   WHERE m.tenant_id = $1 AND m.bucket_size = %[1]s
+     AND m.bucket_start >= $2 AND m.bucket_start < $3
+     AND NOT EXISTS (SELECT 1 FROM src
+                      WHERE src.bucket_start = m.bucket_start AND src.tool_fingerprint = m.tool_fingerprint
+                        AND src.discovery_type = m.discovery_type AND src.item = m.item)
+)
+INSERT INTO mart.agg_discovery_period (tenant_id, bucket_start, bucket_size, tool_fingerprint,
+  discovery_type, item, devices, last_seen)
+SELECT $1, src.bucket_start, %[1]s, src.tool_fingerprint, src.discovery_type, src.item, src.devices, src.last_seen
+  FROM src
+ON CONFLICT (tenant_id, bucket_start, bucket_size, tool_fingerprint, discovery_type, item) DO UPDATE
+  SET devices = EXCLUDED.devices, last_seen = EXCLUDED.last_seen`
 
 // orgPeriodSQL is usage by department. It is empty for a tenant with no directory sync, because
 // department and population live in ops.user_dim and a person with no row there cannot be

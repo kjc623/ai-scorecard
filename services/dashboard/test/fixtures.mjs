@@ -217,6 +217,25 @@ const SHIFT_ROWS = Object.freeze([
   Object.freeze({ bucket: '2026-09-30T00:00:00Z', sanctioned_state: null, submissions: 100 }),
 ]);
 
+// What device discovery found, one row per tool, kind of finding and item in the month bucket. Ollama
+// holds two models and is installed; an uncatalogued process reached an inference host; ChatGPT's
+// desktop app is installed but sends nothing in the window.
+const discovered = (tool, type, item, devices, extra) => Object.freeze({
+  bucket: '2026-09-01T00:00:00Z', tool, discovery_type: type, item, devices, last_seen: '2026-09-30T08:00:00Z', ...extra,
+});
+const OLLAMA = Object.freeze({ tool_name: 'Ollama', category: 'local_runtime', sanctioned_state: null, first_seen: '2026-09-12T00:00:00Z' });
+const DISCOVERY_ROWS = Object.freeze([
+  discovered('app:chatgpt_desktop', 'app_installed', '', 7, { tool_name: 'ChatGPT (desktop)', category: 'chat_assistant', sanctioned_state: 'sanctioned', first_seen: '2026-08-02T00:00:00Z' }),
+  discovered('app:claude_code', 'cli_installed', '', 12, { tool_name: 'Claude Code', category: 'coding_agent', sanctioned_state: 'unsanctioned', first_seen: '2026-08-02T00:00:00Z', last_seen: '2026-09-30T09:00:00Z' }),
+  discovered('app:ollama', 'app_installed', '', 5, OLLAMA),
+  discovered('app:ollama', 'local_model', 'llama3', 4, OLLAMA),
+  discovered('app:ollama', 'local_model', 'mistral', 1, { ...OLLAMA, last_seen: '2026-09-28T08:00:00Z' }),
+  discovered('exe:0123456789abcdef', 'inference_connection', 'api.example.test', 1, { tool_name: 'Unrecognised tool', category: null, sanctioned_state: null, first_seen: '2026-09-29T00:00:00Z' }),
+]);
+
+/** Where the inventory scan stands on the enrolled fleet, beside what it found. */
+const INVENTORY_SCAN = Object.freeze({ devices_enrolled: 4620, scanned: 4400, not_scanned: 200, switched_off: 20 });
+
 const PERSON_ROWS = Object.freeze([
   Object.freeze({ bucket: '2026-09-24T00:00:00Z', subject: 'u_4f21', submissions: 41, bytes_total: 900_000, tools_used: 3, block_events: 1 }),
   Object.freeze({ bucket: '2026-09-25T00:00:00Z', subject: 'u_4f21', submissions: 44, bytes_total: 940_000, tools_used: 3, block_events: 0 }),
@@ -337,6 +356,17 @@ const REALISTIC = Object.freeze({
     freshness: freshness(),
     coverage: coverage({ state: 'partial' }),
     meta: { source: 'mart.v_tool_first_seen' },
+  }),
+  'mart.agg_discovery_period': ok({
+    data: DISCOVERY_ROWS,
+    freshness: freshness({ aggregate: 'mart.agg_discovery_period' }),
+    coverage: coverage({ state: 'partial' }),
+    meta: {
+      source: 'mart.agg_discovery_period',
+      applied_bucket: 'month',
+      measure_semantics: { devices: 'distinct_lower_bound' },
+      extras: { inventory_scan: [INVENTORY_SCAN] },
+    },
   }),
   'mart.v_tool_usage': ok({
     data: SHIFT_ROWS,
@@ -554,4 +584,4 @@ export function fixtureTransport(scenario = 'realistic') {
   });
 }
 
-export { TOOL_ROWS, DEVICE_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, TEAM_ROWS, TEAM_MEMBER_ROWS, PEOPLE_ROWS, CLASS_ROWS, PERSON_ROWS, RULE_ROWS, RULE_MATCH_ROWS, PEOPLE_ROW, FIRST_SEEN_ROWS, SHIFT_ROWS, WINDOW };
+export { TOOL_ROWS, DEVICE_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, TEAM_ROWS, TEAM_MEMBER_ROWS, PEOPLE_ROWS, CLASS_ROWS, PERSON_ROWS, RULE_ROWS, RULE_MATCH_ROWS, PEOPLE_ROW, FIRST_SEEN_ROWS, SHIFT_ROWS, DISCOVERY_ROWS, INVENTORY_SCAN, WINDOW };

@@ -176,6 +176,44 @@ export function buildRuleMatchesDocument({ window }) {
 }
 
 /**
+ * What device discovery found in the window, per tool, kind of finding and item, for Insights. The
+ * rows are folded per tool on the page, so the read takes the coarsest bucket the window allows: a
+ * month over day rows, the hour for a window shorter than a day. A response the limit cut short
+ * says so.
+ *
+ * @param {{window: {from: string, to: string, bucket?: string}}} input
+ */
+export function buildDiscoveryDocument({ window }) {
+  return Object.freeze({
+    query_version: QUERY_VERSION,
+    source: 'mart.agg_discovery_period',
+    bucket: window.bucket === 'hour' ? 'hour' : 'month',
+    dimensions: Object.freeze(['tool', 'discovery_type', 'item']),
+    measures: Object.freeze(['devices']),
+    window: checkWindow(window),
+    limit: 1999,
+  });
+}
+
+/**
+ * The prompts each tool sent in the window, for Insights: one total per tool, in the coarsest bucket
+ * the window allows, as for what discovery found.
+ *
+ * @param {{window: {from: string, to: string, bucket?: string}}} input
+ */
+export function buildToolPromptsDocument({ window }) {
+  return Object.freeze({
+    query_version: QUERY_VERSION,
+    source: 'mart.v_tool_usage',
+    bucket: window.bucket === 'hour' ? 'hour' : 'month',
+    dimensions: Object.freeze(['tool']),
+    measures: Object.freeze(['submissions']),
+    window: checkWindow(window),
+    limit: 1999,
+  });
+}
+
+/**
  * The tools first seen in the window, newest first, for Insights. A tenant's first window can see
  * every tool it has for the first time; the page says so when the list runs past this limit.
  *

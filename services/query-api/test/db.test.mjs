@@ -315,6 +315,7 @@ test('one tool is one row in every listing, however many fingerprints it was see
           await client.query("INSERT INTO mart.agg_org_period (tenant_id, bucket_start, bucket_size, department, population, tool_fingerprint, submissions, users) VALUES (ops.current_tenant(), $1, 'day', 'Engineering', 'directory', $2, 1, 1)", args);
           await client.query("INSERT INTO mart.agg_team_period (tenant_id, bucket_start, bucket_size, team_id, tool_fingerprint, submissions, users) VALUES (ops.current_tenant(), $1, 'day', $3, $2, 1, 1)", [...args, team]);
           await client.query("INSERT INTO mart.agg_class_period (tenant_id, bucket_start, bucket_size, class_code, tool_fingerprint, severity, classifier_version, submissions, users) VALUES (ops.current_tenant(), $1, 'day', $3, $2, 'high', 'v1', 1, 1)", [...args, classCode]);
+          await client.query("INSERT INTO mart.agg_discovery_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, discovery_type, item, devices, last_seen) VALUES (ops.current_tenant(), $1, 'day', $2, 'app_installed', '', 1, $1::timestamptz + interval '1 hour')", args);
           await client.query(
             `INSERT INTO ingest.submission
                (tenant_id, submission_id, dedup_weak_key, kind, device_id, user_ref, tool_fingerprint,
@@ -352,7 +353,9 @@ test('one tool is one row in every listing, however many fingerprints it was see
           const label = `${id} by ${dimensions.join(', ')}`;
           once(label, result.data, (row) => [row.bucket, ...dimensions.map((d) => row[d])]);
           const total = result.data.filter((row) => row.tool === 'app:chatgpt_web').reduce((sum, row) => sum + Number(row[measure]), 0);
-          assert.equal(total, measure === 'bytes_total' ? 60 : 6, `${label}: ChatGPT (web) sums its fingerprints`);
+          // A sum adds the tool's fingerprints; a distinct count takes the busiest of them each day.
+          const expected = source.measures[measure].agg === 'max' ? days.length : measure === 'bytes_total' ? 60 : 6;
+          assert.equal(total, expected, `${label}: ChatGPT (web) folds its fingerprints`);
           const filtered = await run({ query_version: '1', source: id, bucket: 'day', dimensions, measures: [measure], filters: [{ field: 'tool', op: 'eq', value: chatgpt[2] }], window: WINDOW, limit: 100 });
           assert.deepEqual([...new Set(filtered.data.map((row) => row.tool))], ['app:chatgpt_web'], `${label}: a fingerprint names its whole tool`);
           assert.equal(filtered.data.length, days.length, `${label}: one row a day`);
@@ -470,6 +473,60 @@ test('the rules list names the custom labels and tools each rule names, and the 
         [['falcon.block', 5, 4, 0, 1], ['removed.rule', 1, 0, 1, 0]],
         'day rows only, summed per rule; a removed rule keeps its count',
       );
+    },
+  );
+});
+
+test('what discovery found reads per tool under all its fingerprints, kind and item, named and placed by the catalogue, beside where the inventory scan stands', { skip: SKIP }, async () => {
+  const devices = ['d2', 'd3', 'd4', 'd5'].map((n) => `00000000-0000-4000-8000-0000000000${n}`);
+  await scratch(
+    async (client) => {
+      await client.query(
+        `INSERT INTO ops.device (tenant_id, device_id, os, revoked_at, revoked_by, revoked_reason) VALUES
+           (ops.current_tenant(), $1, 'windows', NULL, NULL, NULL),
+           (ops.current_tenant(), $2, 'windows', NULL, NULL, NULL),
+           (ops.current_tenant(), $3, 'windows', NULL, NULL, NULL),
+           (ops.current_tenant(), $4, 'windows', now(), 'db-test', 'retired')`,
+        devices,
+      );
+      await client.query(
+        `INSERT INTO ops.collector_state (tenant_id, device_id, collector, state, error_code, last_report_at) VALUES
+           (ops.current_tenant(), $1, 'inventory_scanner', 'healthy', NULL, now()),
+           (ops.current_tenant(), $2, 'inventory_scanner', 'absent', 'disabled_by_policy', now()),
+           (ops.current_tenant(), $3, 'inventory_scanner', 'healthy', NULL, now() - interval '3 days')`,
+        devices.slice(0, 3),
+      );
+      await client.query("INSERT INTO ops.tool_sanction (tenant_id, tool_key, sanctioned_state, decided_by, decided_at) VALUES (ops.current_tenant(), 'ollama', 'unsanctioned', 'db-test', now())");
+      await client.query(
+        `INSERT INTO mart.agg_discovery_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, discovery_type, item, devices, last_seen) VALUES
+           (ops.current_tenant(), '2026-08-10', 'day', 'proc_ollama', 'local_model', 'llama3', 1, '2026-08-10T09:00:00Z'),
+           (ops.current_tenant(), '2026-08-20', 'day', 'app:ollama', 'local_model', 'llama3', 1, '2026-08-20T09:00:00Z'),
+           (ops.current_tenant(), '2026-09-02', 'day', 'app:ollama', 'local_model', 'llama3', 3, '2026-09-02T09:00:00Z'),
+           (ops.current_tenant(), '2026-09-03', 'day', 'app:ollama', 'local_model', 'llama3', 2, '2026-09-03T10:00:00Z'),
+           (ops.current_tenant(), '2026-09-03', 'hour', 'app:ollama', 'local_model', 'llama3', 9, '2026-09-03T10:00:00Z'),
+           (ops.current_tenant(), '2026-09-04', 'day', 'proc_ollama', 'local_model', 'llama3', 4, '2026-09-04T12:00:00Z'),
+           (ops.current_tenant(), '2026-09-03', 'day', 'exe:0123456789abcdef', 'inference_connection', 'api.example.test', 1, '2026-09-03T11:00:00Z')`,
+      );
+    },
+    async (client, tenant) => {
+      const ctx = { now: NOW, tenant, actorId: 'db-test', cursorKey: KEY };
+      const found = await executePlan(
+        plan({ query_version: '1', source: 'mart.agg_discovery_period', bucket: 'month', dimensions: ['tool', 'discovery_type', 'item'], measures: ['devices'], window: WINDOW, limit: 100 }, ctx),
+        { ...ctx, client: nested(client) },
+      );
+      assert.deepEqual(
+        found.data.map((r) => [r.tool, r.discovery_type, r.item, r.devices, r.tool_name, r.category, r.sanctioned_state, r.first_seen, r.last_seen]),
+        [
+          ['app:ollama', 'local_model', 'llama3', 4, 'Ollama', 'local_runtime', 'unsanctioned', '2026-08-10T00:00:00.000Z', '2026-09-04T12:00:00.000Z'],
+          ['exe:0123456789abcdef', 'inference_connection', 'api.example.test', 1, 'Unrecognised tool', null, null, '2026-09-03T00:00:00.000Z', '2026-09-03T11:00:00.000Z'],
+        ].map((row) => row.map((v) => (typeof v === 'string' && /^\d{4}-\d\d-\d\dT/.test(v) ? new Date(v) : v))),
+        'day rows only, the busiest day per item under either fingerprint; first seen from before the window, under either',
+      );
+      assert.equal(found.data.some((r) => 'tool_key' in r), false);
+      assert.equal(found.meta.measure_semantics.devices, 'distinct_lower_bound');
+      const scan = found.meta.extras.inventory_scan[0];
+      assert.deepEqual([scan.devices_enrolled, scan.scanned, scan.not_scanned, scan.switched_off].map(Number), [3, 1, 1, 1],
+        'a stale scan is not scanned, a scanner the policy switched off is apart, and a revoked device is not counted');
     },
   );
 });

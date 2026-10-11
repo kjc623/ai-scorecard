@@ -11,13 +11,13 @@ import { createQueryApi, httpTransport, loadSession, createAdminApi, httpAdminTr
 import { readState } from './states.js';
 import { QUESTIONS, context } from './questions.js';
 import {
-  postureView, insightsView, adoptionView, toolsView, toolView, unsanctionedView, teamsView, teamView, classesView,
+  postureView, insightsView, adoptionView, discoveredView, toolsView, toolView, unsanctionedView, teamsView, teamView, classesView,
   personView, peopleView, devicesView, eventView, auditView, refusalView,
   needsInputView,
 } from './views.js';
 import {
-  buildFirstSeenDocument, buildListDocument, buildPeopleDocument, buildRuleMatchesDocument, buildSanctionShiftDocument,
-  buildTeamMembersDocument,
+  buildDiscoveryDocument, buildFirstSeenDocument, buildListDocument, buildPeopleDocument, buildRuleMatchesDocument,
+  buildSanctionShiftDocument, buildTeamMembersDocument, buildToolPromptsDocument,
 } from './dsl.js';
 import { renderScreen, renderNav } from './render.js';
 import { shellNavItems, groupOf, readCollapsed, wireShell } from './shell.js';
@@ -163,7 +163,8 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
           }
           if (screen.id === 'teams') return { view: await teamsScreen(params, ctx), shell: shell() };
           if (screen.id === 'insights') {
-            return { view: params.filters.view === 'adoption' ? await adoptionScreen(ctx) : await insightsScreen(ctx), shell: shell() };
+            const tab = INSIGHTS_SCREENS[params.filters.view] ?? insightsScreen;
+            return { view: await tab(ctx), shell: shell() };
           }
           const state = await ask(screen.questionId, ctx);
           return { view: viewFor(screen.id, state, params), shell: shell() };
@@ -267,6 +268,22 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
     return adoptionView({ usage, previous, firstSeen, shift }, { preset: ctx.preset });
   }
 
+  /**
+   * Insights, Discovered: what device discovery found in the window, with where the inventory scan
+   * stands beside it, and the prompts each tool sent in the window, which tell the tools in use from
+   * the ones only present. Only what was found is needed; without the prompts their column says so.
+   * The prompts are read first, so the freshness the page reports is discovery's own.
+   */
+  async function discoveredScreen(ctx) {
+    const prompts = await part(async () => readState(await api.run(buildToolPromptsDocument({ window: ctx.window }))));
+    const found = readState(await api.run(buildDiscoveryDocument({ window: ctx.window })));
+    remember(found);
+    return discoveredView({ found, prompts }, { preset: ctx.preset });
+  }
+
+  /** The tabs of Insights other than Exposure, by the `view` that names them. */
+  const INSIGHTS_SCREENS = Object.freeze({ adoption: adoptionScreen, discovered: discoveredScreen });
+
   /** The Teams screen: every team, or one team when the address names it. */
   async function teamsScreen(params, ctx) {
     const team = params.filters.team ? String(params.filters.team) : null;
@@ -338,7 +355,7 @@ function presetsFor(screen, preset, filters) {
 }
 
 /** The tabs of Insights, each a question a customer asks; Exposure is the default. */
-const INSIGHTS_TABS = Object.freeze({ exposure: 'Exposure', adoption: 'Adoption' });
+const INSIGHTS_TABS = Object.freeze({ exposure: 'Exposure', adoption: 'Adoption', discovered: 'Discovered' });
 
 /** The switch a screen carries beside its window: what Usage shows, and which tab of Insights. */
 function switchFor(screen, preset, filters) {
