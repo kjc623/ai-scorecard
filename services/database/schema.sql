@@ -1634,6 +1634,10 @@ CREATE TABLE mart.agg_tool_period (
   PRIMARY KEY (tenant_id, bucket_start, bucket_size, tool_fingerprint)
 );
 
+-- The hosts a tenant has recorded, read by mart.v_tool_host without the rest of its rows.
+CREATE INDEX agg_tool_period_hosts ON mart.agg_tool_period (tenant_id, tool_fingerprint)
+  WHERE bucket_size = 'day' AND tool_fingerprint LIKE 'host:%';
+
 CREATE TABLE mart.agg_tool_user_period (
   tenant_id        uuid NOT NULL,
   bucket_start     timestamptz NOT NULL,
@@ -1797,9 +1801,58 @@ SELECT d.tenant_id,
       FROM ops.collector_state cs
      WHERE cs.tenant_id = d.tenant_id AND cs.device_id = d.device_id) c ON true;
 
+-- The app a tool fingerprint belongs to, NULL for a tool outside the catalogue. A catalogued
+-- fingerprint names its app. `host:<host>` is a destination no app claimed when it was recorded; it
+-- belongs to the app the browser extension names that host after now: of the apps known by their
+-- inference domains alone, the one listing the host itself, else the longest domain covering it,
+-- the first app_key on a tie. So a host recorded before an app's domain covered it is that app.
+CREATE FUNCTION ops.tool_app(p_tool_fingerprint text)
+RETURNS text
+LANGUAGE sql STABLE AS $$
+  SELECT coalesce(
+    (SELECT c.app_key
+       FROM ref.tool_catalogue c
+      WHERE c.tool_fingerprint = p_tool_fingerprint),
+    (SELECT d.app_key
+       FROM (SELECT s.app_key, regexp_replace(lower(btrim(s.value)), '^\*', '') AS pattern
+               FROM ref.app_signal s
+              WHERE s.kind = 'inference_domain'
+                AND NOT EXISTS (SELECT 1 FROM ref.app_signal o
+                                 WHERE o.app_key = s.app_key AND o.kind <> 'inference_domain')) d
+      WHERE starts_with(p_tool_fingerprint, 'host:') AND length(p_tool_fingerprint) > 5
+        AND (d.pattern = substr(p_tool_fingerprint, 6)
+             OR (starts_with(d.pattern, '.')
+                 AND (substr(p_tool_fingerprint, 6) = substr(d.pattern, 2)
+                      OR right(substr(p_tool_fingerprint, 6), length(d.pattern)) = d.pattern)))
+      ORDER BY CASE WHEN starts_with(d.pattern, '.') THEN length(d.pattern) ELSE 2147483647 END DESC,
+               d.app_key COLLATE "C"
+      LIMIT 1))
+$$;
+
+-- The tool a fingerprint counts as: its app's own fingerprint, `app:<app_key>`, when an app claims
+-- it, else the fingerprint itself. Every list of tools groups by it, so a tool seen under several
+-- fingerprints is one row.
+CREATE FUNCTION ops.tool_id(p_tool_fingerprint text)
+RETURNS text
+LANGUAGE sql STABLE AS $$
+  SELECT coalesce('app:' || ops.tool_app(p_tool_fingerprint), p_tool_fingerprint)
+$$;
+
+-- Each host a tenant recorded, with the app that claims it now, if any. A read joins it beside
+-- ref.tool_catalogue to count rows as ops.tool_id does, resolving a host once rather than once per
+-- row. Every aggregate row's tool has a day row here: a pass writes them together.
+CREATE VIEW mart.v_tool_host
+WITH (security_invoker = true) AS
+SELECT a.tenant_id,
+       a.tool_fingerprint,
+       ops.tool_app(a.tool_fingerprint) AS app_key
+  FROM mart.agg_tool_period a
+ WHERE a.bucket_size = 'day' AND a.tool_fingerprint LIKE 'host:%'
+ GROUP BY a.tenant_id, a.tool_fingerprint;
+
 -- Usage with present-tense sanction state: the decision on the tool the fingerprint belongs to.
 -- LEFT JOINs, so a fingerprint outside the catalogue, or a tool with no decision, still appears with
--- a NULL state, which the read layer renders as `unknown`.
+-- a NULL state, which the read layer renders as `unknown`. tool_id is the tool the row counts as.
 CREATE VIEW mart.v_tool_usage
 WITH (security_invoker = true) AS
 SELECT a.tenant_id,
@@ -1819,40 +1872,65 @@ SELECT a.tenant_id,
        a.sensitive_warned,
        a.sensitive_logged,
        a.attachments,
-       a.content_prompts
+       a.content_prompts,
+       coalesce('app:' || coalesce(c.app_key, h.app_key), a.tool_fingerprint) AS tool_id
   FROM mart.agg_tool_period a
   LEFT JOIN ref.tool_catalogue c
     ON c.tool_fingerprint = a.tool_fingerprint
+  LEFT JOIN mart.v_tool_host h
+    ON h.tenant_id = a.tenant_id
+   AND h.tool_fingerprint = a.tool_fingerprint
   LEFT JOIN ops.tool_sanction s
     ON s.tenant_id = a.tenant_id
-   AND s.tool_key = c.app_key;
+   AND s.tool_key = coalesce(c.app_key, h.app_key);
 
--- The day each tool first sent a prompt. A catalogue app counts once, from the first of its
--- fingerprints to appear, and carries every fingerprint it has been seen under; a fingerprint
--- outside the catalogue is a tool of its own.
+-- The day each tool first sent a prompt, a tool being what every list counts (ops.tool_id): its
+-- tool_fingerprint is its app's own, or the one fingerprint of a tool no app claims. It counts
+-- from the first of its fingerprints to appear and carries every one it has been seen under.
 CREATE VIEW mart.v_tool_first_seen
 WITH (security_invoker = true) AS
 SELECT a.tenant_id,
-       c.app_key                                                              AS tool_key,
-       (array_agg(a.tool_fingerprint ORDER BY a.bucket_start, a.tool_fingerprint))[1] AS tool_fingerprint,
-       array_agg(DISTINCT a.tool_fingerprint)                                 AS fingerprints,
-       min(a.bucket_start)                                                    AS first_seen
+       coalesce(c.app_key, h.app_key)                                          AS tool_key,
+       coalesce('app:' || coalesce(c.app_key, h.app_key), a.tool_fingerprint) AS tool_fingerprint,
+       array_agg(DISTINCT a.tool_fingerprint)                                  AS fingerprints,
+       min(a.bucket_start)                                                     AS first_seen
   FROM mart.agg_tool_period a
   LEFT JOIN ref.tool_catalogue c
     ON c.tool_fingerprint = a.tool_fingerprint
+  LEFT JOIN mart.v_tool_host h
+    ON h.tenant_id = a.tenant_id
+   AND h.tool_fingerprint = a.tool_fingerprint
  WHERE a.bucket_size = 'day' AND a.submissions > 0
- GROUP BY a.tenant_id, c.app_key, CASE WHEN c.app_key IS NULL THEN a.tool_fingerprint END;
+ GROUP BY 1, 2, 3;
 
--- A fingerprint's display name: the shared catalogue's; for `host:<host>`, a destination no app
--- claims, the host; else "Unrecognised tool". Any other raw fingerprint is never shown as a name,
--- because it would read like a known tool with a bad label; it travels separately on every row.
+-- Every fingerprint of the given tools, so a filter on a tool matches each of them through the
+-- fingerprint's own index. A value stands for the tool it counts as (ops.tool_id); a tool's
+-- fingerprints are that id, its app's catalogue rows and the hosts this tenant recorded under it.
+CREATE FUNCTION ops.tool_fingerprints(p_tools text[])
+RETURNS text[]
+LANGUAGE sql STABLE AS $$
+  WITH tool AS (
+    SELECT DISTINCT ops.tool_id(v) AS tool_id FROM unnest(p_tools) AS v WHERE v IS NOT NULL
+  )
+  SELECT coalesce(array_agg(DISTINCT f.tool_fingerprint), '{}')
+    FROM (SELECT t.tool_id AS tool_fingerprint FROM tool t
+          UNION ALL
+          SELECT c.tool_fingerprint FROM ref.tool_catalogue c JOIN tool t ON t.tool_id = 'app:' || c.app_key
+          UNION ALL
+          SELECT h.tool_fingerprint FROM mart.v_tool_host h JOIN tool t ON t.tool_id = 'app:' || h.app_key) f
+$$;
+
+-- A fingerprint's display name: its tool's, from the shared catalogue; for `host:<host>`, a
+-- destination no app claims, the host; else "Unrecognised tool". Any other raw fingerprint is never
+-- shown as a name, because it would read like a known tool with a bad label; it travels separately
+-- on every row.
 CREATE FUNCTION ops.tool_display_name(p_tool_fingerprint text)
 RETURNS text
 LANGUAGE sql STABLE AS $$
   SELECT coalesce(
     (SELECT c.display_name
        FROM ref.tool_catalogue c
-      WHERE c.tool_fingerprint = p_tool_fingerprint),
+      WHERE c.tool_fingerprint = ops.tool_id(p_tool_fingerprint)),
     nullif(substring(p_tool_fingerprint FROM '^host:(.*)$'), ''),
     'Unrecognised tool')
 $$;
@@ -2688,6 +2766,9 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ingest.search_text TO sac_vault;
 -- 'content' class default.
 GRANT SELECT ON ops.tenant, ops.retention_policy, ops.erasure_receipt TO sac_vault;
 GRANT SELECT ON ref.data_class, ref.retention_class TO sac_vault;
+-- A search narrowed to a tool matches every fingerprint that counts as the tool (ops.tool_id).
+GRANT SELECT ON ref.tool_catalogue, ref.app_signal TO sac_vault;
+GRANT EXECUTE ON FUNCTION ops.tool_app(text), ops.tool_id(text) TO sac_vault;
 -- A filtered content search joins the index to the person, tool, device, mode and receive time of
 -- a submission; storing content reads its prompt kind and labels. Column-level, so it cannot become
 -- a read of excerpts, policy decisions or dedup keys.
@@ -2708,7 +2789,7 @@ GRANT SELECT ON mart.finding, mart.agg_tool_period, mart.agg_tool_user_period,
       mart.agg_class_period, mart.agg_org_period, mart.agg_user_period, mart.agg_device_period,
       mart.agg_team_period, mart.agg_rule_period, mart.v_device_liveness, mart.v_tool_usage,
       mart.v_finding, mart.v_tenant_suspension_impact, mart.v_person, mart.v_team_member_period,
-      mart.v_tool_first_seen TO sac_query;
+      mart.v_tool_first_seen, mart.v_tool_host TO sac_query;
 -- The enforcement rules, for the matches per rule on Insights: what each rule matches and does, and
 -- the names of the custom labels it names. Never who last edited a rule.
 GRANT SELECT (tenant_id, position, rule_id, action, match) ON ops.enforcement_rule TO sac_query;
@@ -2726,7 +2807,8 @@ GRANT SELECT ON ref.data_class, ref.rule, ref.route_fidelity, ref.collector TO s
 GRANT SELECT ON ref.tool_catalogue, ref.app, ref.app_signal TO sac_query;
 GRANT INSERT, SELECT ON ops.audit TO sac_query;
 GRANT SELECT, INSERT, UPDATE ON ops.finding_review TO sac_query;
-GRANT EXECUTE ON FUNCTION ops.current_tenant(), ops.tool_display_name(text) TO sac_query;
+GRANT EXECUTE ON FUNCTION ops.current_tenant(), ops.tool_display_name(text), ops.tool_app(text),
+      ops.tool_id(text), ops.tool_fingerprints(text[]) TO sac_query;
 -- Exports are this service's artifacts: it writes a generated CSV or archive and serves it once.
 GRANT SELECT, INSERT ON ops.export TO sac_query;
 GRANT UPDATE (used_at) ON ops.export TO sac_query;
@@ -2763,6 +2845,9 @@ GRANT SELECT ON ref.data_class, ref.rule, ref.route_fidelity,
       ref.collector, ref.retention_class TO sac_ops;
 GRANT INSERT ON ops.audit TO sac_ops;
 GRANT EXECUTE ON FUNCTION ops.current_tenant() TO sac_ops;
+-- The person rollup counts a tool once however many fingerprints it was seen under (ops.tool_id).
+GRANT SELECT ON ref.tool_catalogue, ref.app_signal TO sac_ops;
+GRANT EXECUTE ON FUNCTION ops.tool_app(text), ops.tool_id(text) TO sac_ops;
 -- The erase job sweeps expired exports (by id and expiry, never the payload) and processes the
 -- subject erasure requests query-api records.
 GRANT SELECT (tenant_id, export_id, expires_at), DELETE ON ops.export TO sac_ops;
