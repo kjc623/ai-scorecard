@@ -192,7 +192,7 @@ export function trendOf(state, measure = 'submissions') {
  * The most people one cell counted. It is a floor for the distinct people in the window; the sum
  * of the cells is not, because a person using two tools, or active on two days, is in two cells.
  */
-export function peopleTile(state, label = 'People (lower bound)', options = {}) {
+export function peopleTile(state, label, options = {}) {
   let most = null;
   for (const row of state.data) {
     const value = measureOf(row, 'users');
@@ -369,51 +369,6 @@ export function sanctionShare(state, { title = 'Where submissions went', emptyTe
   });
 }
 
-const CLASS_TEXT = Object.freeze({
-  payment_card: 'Payment card numbers',
-  government_id: 'Government IDs',
-  credential: 'Credentials',
-  customer_pii: 'Customer PII',
-  source_code: 'Source code',
-  legal_commercial: 'Legal and commercial',
-  health: 'Health data',
-});
-
-/**
- * The sensitive-data classes seen, by the submissions carrying each. Class rows fan out, so no
- * share of a whole is said: a submission carrying two classes is in both.
- */
-export function rankClasses(state, { title = 'Sensitive data by class', href = null, moreLabel = 'Data classes', limit = null, preset = null, emptyText = 'No sensitive data was classified in this window.' } = {}) {
-  const groups = foldCells(state, 'class', { sum: ['submissions'], max: ['users', 'max_score'] }).sort(byMeasure('submissions'));
-  const items = (limit ? groups.slice(0, limit) : groups).map((group) => Object.freeze({
-    key: group.key,
-    href: withPreset(`#tools?view=classes&class=${encodeURIComponent(group.key)}`, preset),
-    label: CLASS_TEXT[group.key] ?? group.key.replace(/_/g, ' '),
-    title: group.key,
-    // Severity has its own colours; `high` is a bad severity, though it is a good confidence.
-    chip: group.first.severity ? Object.freeze({ key: `severity_${group.first.severity}`, text: String(group.first.severity) }) : null,
-    value: foldedMeasure(group, 'submissions'),
-    share: null,
-    meta: Object.freeze([
-      peopleFact(foldedMeasure(group, 'users')),
-      Object.freeze({ label: 'max score', value: (() => { const v = foldedMeasure(group, 'max_score'); return v.kind === 'number' ? { kind: 'number', value: v.value, text: formatScore(v.value) } : v; })() }),
-    ]),
-    trend: group.trend,
-  }));
-  return Object.freeze({
-    kind: 'ranking',
-    title,
-    href,
-    moreLabel,
-    emptyText,
-    itemLabel: 'Class',
-    valueLabel: 'Submissions carrying it',
-    metaLabels: Object.freeze(['People', 'Max score']),
-    trendLabel: 'Trend',
-    items: Object.freeze(items),
-  });
-}
-
 /** Banner + notes shared by every screen, so no screen can forget them. */
 function shared(state, extraNotes = []) {
   const notes = [];
@@ -457,11 +412,6 @@ function emptyLine(state, none) {
   return said && said.kind !== 'empty' ? `${said.title}. ${said.text}` : none;
 }
 
-/** A table with a link to the screen that shows the whole of it. */
-function linked(table, href) {
-  return Object.freeze({ ...table, href });
-}
-
 /** The fleet's reporting figure beside its enrolled denominator, split into the devices that report and the ones that do not, each opening its list. */
 function reportingTile(cov) {
   const known = (v) => v !== null && v !== undefined;
@@ -484,28 +434,24 @@ function reportingTile(cov) {
 
 /**
  * The landing page: what a customer wants at a glance, each figure opening the screen that holds
- * the rest of it. Usage, data classes and findings each come from their own question; one that did
- * not come back leaves its panel empty. The devices reporting tile keeps the enrolled denominator
- * beside every figure here.
+ * the rest of it. Usage comes from its own question; when it does not come back its panels are
+ * empty. The devices reporting tile keeps the enrolled denominator beside every figure here.
  *
  * @param {object} input
  * @param {object} input.devices    view state for the device list (it carries coverage)
  * @param {object} [input.tools]    view state for tool usage
- * @param {object} [input.classes]  view state for the data-class mix
- * @param {object} [input.findings] view state for findings
  * @param {object} [input.coverage] a coverage block, when the device read did not carry one
  */
-export function postureView({ devices, tools = null, classes = null, findings = null, coverage }, { preset = null, exploreHref = 'explore.html' } = {}) {
+export function postureView({ devices, tools = null, coverage }, { preset = null } = {}) {
   const cov = devices?.coverage ?? coverage ?? null;
   const usage = tools ?? NOTHING;
-  const open = (findings?.data ?? []).filter((row) => row.review_state === 'open').length;
   const at = (hash) => withPreset(hash, preset);
 
   // The same warning arrives with each read; it is said once. Coverage is not a banner here: the
   // devices reporting tile carries it, and a panel that cannot answer says so in place.
   const banners = [];
   const said = new Set();
-  for (const state of [devices, tools, classes, findings]) {
+  for (const state of [devices, tools]) {
     for (const banner of state?.banners ?? []) {
       if (banner.about === 'coverage') continue;
       const key = `${banner.level}|${banner.title}|${banner.text}`;
@@ -519,31 +465,15 @@ export function postureView({ devices, tools = null, classes = null, findings = 
     subtitle: null,
     tiles: Object.freeze([
       measureTile('Submissions', usage, 'submissions', formatCount, { trend: trendOf(usage), href: at('#tools'), moreLabel: 'Tools' }),
-      peopleTile(usage, undefined, { href: '#person', moreLabel: 'Users' }),
-      tile('Open findings', findings ? { kind: 'number', text: formatCount(open) } : { kind: 'absent', text: '—' }, findings ? 'In the latest page' : null,
-        { href: `${exploreHref}#findings?review_state=open`, moreLabel: 'Review them' }),
+      peopleTile(usage, 'Users', { href: '#person', moreLabel: 'Users' }),
       reportingTile(cov),
     ]),
     blocks: Object.freeze([
       sanctionShare(usage, { emptyText: emptyLine(tools, 'No submissions in this window.') }),
       rankTools(usage, { href: at('#tools'), limit: 6, link: (fingerprint) => toolHref(fingerprint, preset), emptyText: emptyLine(tools, 'No tool was in use in this window.') }),
-      rankClasses(classes ?? NOTHING, { href: at('#tools?view=classes'), limit: 6, preset, emptyText: emptyLine(classes, 'No sensitive data was classified in this window.') }),
     ]),
     series: Object.freeze([]),
-    tables: Object.freeze([
-      linked(tableFrom(findings ?? NOTHING, {
-        title: 'Findings',
-        columns: [
-          column('detected_at', 'Detected', 'instant'),
-          column('severity', 'Severity', 'vocab'),
-          column('rule_title', 'Rule'),
-          column('subject', 'User', 'person'),
-          column('tool', 'Tool'),
-          column('review_state', 'Review', 'vocab'),
-        ],
-        emptyText: emptyLine(findings, 'No finding was raised in this window.'),
-      }), `${exploreHref}#findings`),
-    ]),
+    tables: Object.freeze([]),
     banners: Object.freeze(banners),
     notes: shared(devices ?? NOTHING).notes,
   });
@@ -568,14 +498,15 @@ export function toolsView(state, { link = toolHref, preset = null } = {}) {
   const linkTo = link ? (fingerprint) => link(fingerprint, preset) : null;
   return screen('tools', 'Tools', null, 'mart.v_tool_usage', {
     subtitle: 'Every AI tool seen in this window, by submissions. Open a tool to see who uses it and what was sent.',
+    lead: Object.freeze([
+      sanctionShare(state, { title: 'Applications', emptyText: emptyLine(state, 'No submissions in this window.') }),
+    ]),
     tiles: Object.freeze([
       measureTile('Submissions', state, 'submissions', formatCount, { trend: trendOf(state) }),
-      peopleTile(state),
       measureTile('Blocked', state, 'blocked'),
       measureTile('Data sent', state, 'bytes_total', formatBytes),
     ]),
     blocks: Object.freeze([
-      sanctionShare(state, { emptyText: emptyLine(state, 'No submissions in this window.') }),
       rankTools(state, { title: 'Tools by submissions', link: linkTo, emptyText: emptyLine(state, 'No tool was in use in this window.') }),
     ]),
     tables: Object.freeze([unrecognisedTools(state, { link: linkTo })].filter(Boolean)),
@@ -694,11 +625,11 @@ export function unsanctionedView(state) {
  * The people behind the team totals, by team and then by name: a roster with numbers, not a
  * ranking. Null when there was nothing to read; a refusal says why the people are missing.
  */
-function teamMembersTable(members, { byTeam = true } = {}) {
+function teamMembersTable(members, { byTeam = true, title = 'Submissions by person' } = {}) {
   const byName = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), undefined, { sensitivity: 'base' });
   const rows = [...members.data].sort((a, b) => byName(a.team_name, b.team_name) || byName(a.name, b.name) || byName(a.subject, b.subject));
   return Object.freeze({
-    title: 'Submissions by person',
+    title,
     columns: Object.freeze([
       ...(byTeam ? [column('team_name', 'Team')] : []),
       column('name', 'User', 'person'),
@@ -715,7 +646,7 @@ function teamMembersNotes(members) {
   if (!members) return [];
   if (members.isRefusal) {
     return [members.resultState === 'unauthorised_role'
-      ? 'Your role shows team totals only; an analyst or admin also sees each person\'s submissions.'
+      ? 'Your role does not show each person\'s submissions; an analyst or admin sees them.'
       : `Each person's submissions could not be read: ${members.error?.message ?? members.resultState}.`];
   }
   const notes = ['Each person is listed under every team they are in, ordered by team and name. Reading this list is audited.'];
@@ -791,17 +722,15 @@ function rankTeams(state, { teams = null, link = teamHref, emptyText }) {
 }
 
 /**
- * The teams: who uses AI, how it splits across the teams, and the people behind each team's
- * total. Every team is one line that opens its own screen; the people are a roster under their
- * team, by name, never by volume.
+ * The teams: how usage splits across them. Every team is one line that opens its own screen,
+ * where the people behind its total are listed.
  *
  * @param {object} state view state for the team totals (Q3)
  * @param {object} [options]
  * @param {boolean} [options.mayManage]   the reader is an admin, who adds teams on this page
- * @param {object|null} [options.members] view state for the people behind the teams
  * @param {Array|null}  [options.teams]   the admin's team list, so a quiet team is still listed
  */
-export function teamsView(state, { mayManage = false, members = null, teams = null, link = teamHref, preset = null } = {}) {
+export function teamsView(state, { mayManage = false, teams = null, link = teamHref, preset = null } = {}) {
   const cov = state.meta?.extras?.team_coverage?.[0] ?? null;
   const num = (v) => (v === null || v === undefined ? null : Number(v));
   const all = num(cov?.users_all);
@@ -819,27 +748,15 @@ export function teamsView(state, { mayManage = false, members = null, teams = nu
       ? 'No team exists yet. Add one with + Add a Team: from a group in your identity provider, from people and groups synced over SCIM, or by ticking people.'
       : 'No team exists yet. An admin adds teams on this page.');
   }
-  const absent = () => ({ kind: 'absent', text: '—' });
   return screen('teams', 'Teams', null, 'mart.agg_team_period', {
     subtitle: 'Usage per team. A team counts the usage of the people in it now; a person in two teams counts in both.',
-    tiles: Object.freeze([
-      measureTile('Submissions', state, 'submissions', formatCount, { trend: trendOf(state) }),
-      tile('People using AI', all === null ? absent() : { kind: 'number', text: formatCount(all) },
-        all === null ? 'No team coverage read came back with this page.' : null,
-        {
-          split: all === null ? null : Object.freeze([
-            Object.freeze({ key: 'in_team', label: 'In a team', count: inTeams }),
-            Object.freeze({ key: 'no_team', label: 'In no team', count: outside }),
-          ]),
-        }),
-      tile('Teams', teamCount === null ? absent() : { kind: 'number', text: formatCount(teamCount) }, null),
-    ]),
+    tiles: Object.freeze([]),
     blocks: Object.freeze([
       rankTeams(state, { teams, link: (team) => link(team, preset), emptyText: teamCount === 0 ? 'There are no teams yet.' : emptyLine(state, 'No team has usage in this window.') }),
     ]),
-    tables: Object.freeze(members && !members.isRefusal ? [teamMembersTable(members)] : []),
+    tables: Object.freeze([]),
     series: Object.freeze(state.data.length > 0 ? [seriesFrom(state, { measure: 'submissions', title: seriesTitle(state) })] : []),
-    ...shared(state, [...notes, ...teamMembersNotes(members)]),
+    ...shared(state, notes),
   });
 }
 
@@ -954,9 +871,10 @@ export function personView(state, { subject, person = null, exploreHref = 'explo
 
 /**
  * The people the directory and the devices know, by name, to open one person's page. It has no
- * usage column to sort by: it is a directory, not a ranking.
+ * usage column to sort by: it is a directory, not a ranking. Above it, when read, each team's
+ * people with their submissions in the window, by team and then by name.
  */
-export function peopleView(state, { search = '' } = {}) {
+export function peopleView(state, { search = '', members = null } = {}) {
   const next = state.page?.next_cursor ?? null;
   const query = (extra) => new URLSearchParams({ ...(search ? { q: search } : {}), ...extra }).toString();
   const named = state.data.filter((row) => row.directory_name || row.subject_name).length;
@@ -975,15 +893,21 @@ export function peopleView(state, { search = '' } = {}) {
     subtitle: 'Everyone the directory or a device has named. Open a person to see their usage and prompts.',
     search: Object.freeze({ value: search }),
     tiles: Object.freeze([]),
-    tables: Object.freeze([Object.freeze({
-      ...table,
-      breakdowns: false,
-      ...(next ? { href: `#person?${query({ cursor: next })}`, moreLabel: 'Next page' } : {}),
-    })]),
+    tables: Object.freeze([
+      ...(members && !members.isRefusal ? [teamMembersTable(members, { title: 'Users' })] : []),
+      Object.freeze({
+        ...table,
+        breakdowns: false,
+        ...(next ? { href: `#person?${query({ cursor: next })}`, moreLabel: 'Next page' } : {}),
+      }),
+    ]),
     series: Object.freeze([]),
-    ...shared(state, state.data.length > 0 && named === 0
-      ? ['No name is known for anyone on this page: the tenant keeps people hashed, or no directory has been read yet. Each is listed by reference.']
-      : []),
+    ...shared(state, [
+      ...(state.data.length > 0 && named === 0
+        ? ['No name is known for anyone on this page: the tenant keeps people hashed, or no directory has been read yet. Each is listed by reference.']
+        : []),
+      ...teamMembersNotes(members),
+    ]),
     // A list of people is current state, not a measurement: fleet coverage and aggregate age say
     // nothing about it, so their banners are kept for a page that came back without rows.
     ...(state.data.length > 0 ? { banners: Object.freeze([]) } : {}),

@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readState } from '../src/states.js';
 import { renderRanking, renderScreen, renderShare, renderSparkline, renderTable } from '../src/render.js';
-import { devicesView, foldCells, rankTools, sanctionShare, teamView, teamsView, toolsView } from '../src/views.js';
+import { devicesView, foldCells, postureView, rankTools, sanctionShare, teamView, teamsView, toolsView } from '../src/views.js';
 import { createDashboard } from '../src/app.js';
 import { createQueryApi } from '../src/transport.js';
 import { DEVICE_ROWS, TEAM_MEMBER_ROWS, TEAM_ROWS, TOOL_ROWS, fixtureTransport } from './fixtures.mjs';
@@ -114,14 +114,15 @@ test('a sparkline draws every point to one scale and lists the values for a read
   assert.equal(renderSparkline([{ bucket: 'x', value: 1 }]), '', 'one point is no shape');
 });
 
-test('the Tools screen is tiles, the share and the ranking, with the chart below and no per-bucket table', async () => {
+test('the Tools screen is the share above the tiles, then the ranking, with the chart below and no per-bucket table', async () => {
   const { view } = await dashboardFor().load('tools', {});
-  assert.deepEqual(view.tiles.map((t) => t.label), ['Submissions', 'People (lower bound)', 'Blocked', 'Data sent']);
-  assert.equal(view.tiles[1].value.text, '1,877', 'people is the largest cell, not the sum over tools');
-  assert.deepEqual(view.blocks.map((b) => b.kind), ['share', 'ranking']);
+  assert.deepEqual(view.lead.map((b) => [b.kind, b.title]), [['share', 'Applications']]);
+  assert.deepEqual(view.tiles.map((t) => t.label), ['Submissions', 'Blocked', 'Data sent']);
+  assert.deepEqual(view.blocks.map((b) => b.kind), ['ranking']);
   assert.deepEqual(view.tables, []);
   assert.equal(view.series[0].title, 'Submissions per day');
   const html = renderScreen(view, SHELL);
+  assert.ok(html.indexOf('<h3>Applications</h3>') < html.indexOf('class="tiles"'), 'the share sits above the tiles');
   assert.match(html, /Coverage is partial/);
   assert.ok(!/<table/.test(html), 'no table of buckets');
 });
@@ -179,7 +180,7 @@ test('a tool with no cell in the window shows absent figures and reads nobody', 
   assert.ok(!sent.some((b) => b.template === 'q2_unsanctioned_users'), 'no sanction to scope the people read to, so it is not made');
 });
 
-test('the Teams screen ranks the teams, lists the admin\'s quiet teams with a zero, and keeps the roster under its team', async () => {
+test('the Teams screen ranks the teams and lists the admin\'s quiet teams with a zero', async () => {
   const admin = {
     async teams() {
       return { state: 'available', teams: [
@@ -189,17 +190,22 @@ test('the Teams screen ranks the teams, lists the admin\'s quiet teams with a ze
     },
   };
   const { view } = await dashboardFor('realistic', { admin }).load('teams', { mayManage: true });
-  assert.deepEqual(view.tiles.map((t) => t.label), ['Submissions', 'People using AI', 'Teams']);
-  assert.deepEqual(view.tiles[1].split.map((p) => [p.label, p.count]), [['In a team', 2680], ['In no team', 1530]]);
-  assert.equal(view.tiles[2].href, undefined, 'teams are added on this page, not reached from a tile');
+  assert.deepEqual(view.tiles, []);
+  assert.deepEqual(view.tables, [], 'each team\'s people are on Users and on the team\'s own screen');
+  assert.ok(view.notes.some((n) => /used AI in this window; 2,680 are in at least one team and 1,530 are in none/.test(n)));
   const ranking = view.blocks[0];
   assert.deepEqual(ranking.items.map((i) => [i.label, i.value.value]), [['Engineering', 2210], ['Finance', 812], ['Legal', 7], ['Marketing', 0]], 'by submissions, then the team with no usage');
   assert.equal(ranking.items[0].href, '#teams?team=7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001');
   assert.equal(ranking.items[0].sublabel, '640 members · Group eng-all');
   assert.match(ranking.items[3].sublabel, /No usage recorded in this window/);
-  const roster = view.tables.find((t) => t.title === 'Submissions by person');
-  assert.equal(roster.groupBy, 'team_name');
+});
+
+test('the Users page heads the directory with each team\'s people, the team heading its run', async () => {
+  const { view } = await dashboardFor().load('person', { filters: {} });
+  assert.deepEqual(view.tables.map((t) => t.title), ['Users', 'People']);
+  assert.equal(view.tables[0].groupBy, 'team_name');
   const html = renderScreen(view, SHELL);
+  assert.ok(html.indexOf('search-form') < html.indexOf('<h3>Users</h3>'), 'the roster sits under the search bar');
   assert.match(html, /<tr class="row-group"><th scope="rowgroup" colspan="2">Engineering<\/th><\/tr>/, 'the team heads its people rather than repeating on every line');
   assert.equal((html.match(/row-group/g) ?? []).length, 2, 'one heading per team');
 });
@@ -207,7 +213,6 @@ test('the Teams screen ranks the teams, lists the admin\'s quiet teams with a ze
 test('without the admin list the Teams screen still ranks the teams that have usage', async () => {
   const { view } = await dashboardFor().load('teams', {});
   assert.deepEqual(view.blocks[0].items.map((i) => i.label), ['Engineering', 'Finance', 'Legal']);
-  assert.equal(view.tiles[2].value.text, '3', 'the team count comes from the coverage read');
 });
 
 test('a team\'s own screen reads that team only, and lists its people by name', async () => {
@@ -355,7 +360,7 @@ test('two or more unrecognised tools are one line in the ranking, and are listed
   const listed = view.tables.find((t) => t.title === 'Unrecognised tools');
   assert.deepEqual(listed.rows.map((r) => [r.row.fingerprint_cell.primary, r.row.submissions, r.row.href]), [['tls_aaaa', 5, '#tools?tool=tls_aaaa&preset=d30'], ['tls_bbbb', 3, '#tools?tool=tls_bbbb&preset=d30'], ['tls_cccc', 1, '#tools?tool=tls_cccc&preset=d30']]);
   assert.equal(listed.rowHref, 'href');
-  assert.equal(view.blocks[1].items[1].href, '#tools?tool=tls_f412811be7ac6539&preset=d30', 'a drill-down keeps the window it was read in');
+  assert.equal(view.blocks[0].items[1].href, '#tools?tool=tls_f412811be7ac6539&preset=d30', 'a drill-down keeps the window it was read in');
   const one = readState(envelope('ok', { data: [state.data[0], state.data[3]], freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' } }));
   assert.equal(toolsView(one).tables.length, 0, 'one unrecognised tool is its own line, so there is nothing to list beneath');
   assert.equal(rankTools(one).items[0].sublabel, 'tls_aaaa');
@@ -365,7 +370,7 @@ test('a window with no cell draws no chart; the empty ranking says why', () => {
   const none = readState(envelope('empty', { data: [], freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' } }));
   assert.deepEqual(toolsView(none).series, []);
   assert.deepEqual(teamsView(none).series, []);
-  assert.match(toolsView(none).blocks[1].emptyText, /No tool was in use/);
+  assert.match(toolsView(none).blocks[0].emptyText, /No tool was in use/);
 });
 
 test('a quiet team is listed when the read answered, on partial coverage too; a tool with no decision is unknown', async () => {
@@ -415,17 +420,14 @@ test('a tool\'s screen marks a tool with no recorded decision as unknown, names 
   assert.equal(sent.filter((b) => b.template === 'q2_unsanctioned_users' && !b.params.tool).pop()?.params.sanctioned_state, 'unsanctioned', 'the list without a tool is still the unsanctioned question');
 });
 
-test('the Overview tiles open the screens they summarise, and the findings table names the user', async () => {
+test('the Overview tiles open the screens they summarise', async () => {
   const { view } = await dashboardFor().load('posture', { preset: 'd30' });
   assert.deepEqual(view.tiles.map((t) => [t.label, t.href ?? null]), [
-    ['Submissions', '#tools?preset=d30'], ['People (lower bound)', '#person'], ['Open findings', 'explore.html#findings?review_state=open'], ['Devices reporting', '#devices'],
+    ['Submissions', '#tools?preset=d30'], ['Users', '#person'], ['Devices reporting', '#devices'],
   ]);
   assert.equal(view.blocks[1].href, '#tools?preset=d30');
   assert.ok(view.blocks[1].items.every((i) => i.href === null || i.href.endsWith('&preset=d30')));
-  assert.equal(view.blocks[2].href, '#tools?view=classes&preset=d30');
-  const findings = view.tables.find((t) => t.title === 'Findings');
-  assert.equal(findings.href, 'explore.html#findings');
-  assert.deepEqual(findings.columns.map((c) => c.label), ['Detected', 'Severity', 'Rule', 'User', 'Tool', 'Review']);
+  assert.deepEqual(view.tables, []);
 });
 
 test('a share of one part is a sentence, and a split draws and links only the parts that count something', () => {
@@ -444,13 +446,9 @@ test('a share of one part is a sentence, and a split draws and links only the pa
   assert.equal(share.href, '#settings');
   assert.equal(share.moreLabel, 'Decide which tools are sanctioned');
   assert.match(share.note, /No tool has a sanction decision yet/);
-  const teams = readState(envelope('ok', {
-    data: [{ bucket: '2026-09-30T00:00:00Z', team: 't1', team_name: 'Engineering', submissions: 9, users: 5 }],
-    freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.agg_team_period', extras: { team_coverage: [{ users_all: 5, users_in_teams: 5, teams: 1 }] } },
-  }));
-  const page = renderScreen(teamsView(teams), SHELL);
-  assert.match(page, /<div class="dist-bar tile-split" aria-hidden="true"><span class="dist-seg v-vocab-in_team" style="flex-grow:5"><\/span><\/div>/, 'the empty part draws no segment');
-  assert.match(page, /<span class="dist-dot v-vocab-no_team" aria-hidden="true"><\/span>In no team<span class="dist-n">0<\/span><\/li>/, 'and stays in the legend as a zero, not a link');
+  const page = renderScreen(postureView({ devices: null, coverage: { devices_reporting: 5, devices_enrolled: 5 } }), SHELL);
+  assert.match(page, /<div class="dist-bar tile-split" aria-hidden="true"><span class="dist-seg v-vocab-reporting" style="flex-grow:5"><\/span><\/div>/, 'the empty part draws no segment');
+  assert.match(page, /<span class="dist-dot v-vocab-never_reported" aria-hidden="true"><\/span>Not reporting<span class="dist-n">0<\/span><\/li>/, 'and stays in the legend as a zero, not a link');
 });
 
 test('the Devices filters are offered only where they can change the list', () => {
