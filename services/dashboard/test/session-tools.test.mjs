@@ -37,7 +37,7 @@ const TENANT = '00000000-0000-4000-8000-0000000000aa';
 // ---------------------------------------------------------------------------------------------
 
 test('each role maps to the pages it may open', () => {
-  assert.deepEqual(pagesFor('viewer').sort(), ['devices', 'insights', 'posture', 'teams', 'tools']);
+  assert.deepEqual(pagesFor('viewer').sort(), ['devices', 'posture', 'teams', 'tools']);
   for (const role of ['analyst', 'content_reader']) {
     assert.ok(pagesFor(role).includes('person'), `${role} may open Users`);
     assert.ok(pagesFor(role).includes('explore'), `${role} may open Search`);
@@ -48,6 +48,15 @@ test('each role maps to the pages it may open', () => {
   for (const id of ['person', 'explore', 'devices']) assert.ok(pagesFor('admin').includes(id), `admin opens ${id}`);
   assert.equal(pagesFor('viewer').includes('audit'), false);
   assert.equal(pagesFor('viewer').includes('explore'), false, 'a viewer is not offered Search');
+});
+
+test('pre-production also offers the pages still being built; production, the default, does not', () => {
+  for (const role of ['viewer', 'analyst', 'content_reader', 'admin']) {
+    assert.ok(pagesForRoles([role], { environment: 'preprod' }).includes('insights'), `${role} opens Insights in pre-production`);
+    assert.equal(pagesForRoles([role], { environment: 'prod' }).includes('insights'), false, `${role} is not offered Insights in production`);
+    assert.deepEqual(pagesForRoles([role], { environment: 'preprod' }).filter((p) => p !== 'insights'), pagesForRoles([role]));
+  }
+  assert.deepEqual(pagesForRoles([], { environment: 'preprod' }), []);
 });
 
 test('several roles open the union of their pages, because roles are not a ladder', () => {

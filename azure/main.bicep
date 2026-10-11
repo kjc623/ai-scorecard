@@ -340,6 +340,7 @@ module dashboardApp 'modules/container-app.bicep' = if (deploy) {
       { name: 'SAC_CONTROL_URL', value: url.control }
       { name: 'SAC_QUERY_API_URL', value: url.query }
       { name: 'SAC_CONTENT_VAULT_URL', value: url.vault }
+      { name: 'SAC_ENVIRONMENT', value: environment }
     ]
     secretEnv: [
       { name: 'SAC_INTERNAL_TOKEN', secret: 'sac-internal-token' }

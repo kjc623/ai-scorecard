@@ -1,17 +1,18 @@
 // insights.test.mjs — Insights' Exposure tab and the Overview tiles that open it and Search: the
 // sensitive prompts out of every prompt, what happened to them, where they went and which labels,
-// each compared with the period before; and the attachments, with the prompts they were counted on.
+// each compared with the period before; the attachments, with the prompts they were counted on; and
+// Archive, the navigation group that holds Insights where the server offers it.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readState } from '../src/states.js';
 import { renderFunnel, renderNav, renderScreen, renderSeries } from '../src/render.js';
 import { insightsView, postureView } from '../src/views.js';
-import { createDashboard } from '../src/app.js';
+import { boot, createDashboard } from '../src/app.js';
 import { createQueryApi } from '../src/transport.js';
-import { shellNavItems } from '../src/shell.js';
+import { groupOf, shellNavItems } from '../src/shell.js';
 import { RULE_MATCH_ROWS, RULE_ROWS, TOOL_ROWS, fixtureTransport } from './fixtures.mjs';
-import { COMPLETE, FRESH, PARTIAL, envelope } from './helpers.mjs';
+import { COMPLETE, FRESH, PARTIAL, envelope, fakeDocument } from './helpers.mjs';
 
 const NOW = () => new Date('2026-10-01T12:00:00Z');
 const DAY = '2026-09-30T00:00:00Z';
@@ -282,8 +283,31 @@ test('a window with nothing recorded shows the funnel\'s empty line, not a row o
   assert.match(renderFunnel(view.lead[0]), /<p class="block-empty">No prompts in this window\.<\/p>/);
 });
 
-test('Insights sits under Overview in the navigation, with Search after it', () => {
+test('Insights sits under Archive, last in the navigation, and Search follows Overview', () => {
   const items = shellNavItems();
-  assert.deepEqual(items.slice(0, 4).map((i) => i.id), ['posture', 'insights', 'explore', 'tools']);
-  assert.match(renderNav(items, 'insights'), /<a href="#insights" class="active" aria-current="page"><svg class="nav-icon"[^>]*>.*<\/svg><span>Insights<\/span><\/a>/);
+  assert.deepEqual(items.slice(0, 3).map((i) => i.id), ['posture', 'explore', 'tools']);
+  assert.deepEqual(items.at(-1), { id: 'insights', label: 'Insights', question: null, group: 'Archive', icon: 'archive', groupIcon: 'archive', href: '#insights' });
+  const nav = renderNav(items, 'insights', { collapsed: ['Archive'] });
+  assert.match(nav, /<details class="nav-group" data-group="Archive" open><summary><svg class="nav-icon"[^>]*>.*?<\/svg><span>Archive<\/span>/, 'the group holding the current page is open');
+  assert.match(nav, /<div class="nav-items"><a href="#insights" class="active" aria-current="page"><span>Insights<\/span><\/a><\/div><\/details>$/);
+  assert.equal(groupOf('insights'), 'Archive');
+});
+
+test('where the server does not offer Insights, Archive leaves the navigation and the page is not opened', async () => {
+  const doc = fakeDocument();
+  const sent = [];
+  await boot({ document: doc, api: createQueryApi({ transport: { send: (body) => { sent.push(body); return fixtureTransport().send(body); } } }), session: { actor: 'v@lab.test', roles: ['viewer'], pages: ['posture', 'tools', 'teams', 'devices'] } });
+  assert.doesNotMatch(doc.html('nav'), /Archive|Insights/);
+  assert.doesNotMatch(doc.html('app'), /#insights/, 'the Sensitive prompts tile opens nothing');
+  const before = sent.length;
+  await doc.navigate('#insights');
+  assert.match(doc.html('app'), /This page is not offered to you here/);
+  assert.equal(sent.length, before, 'nothing was read for it');
+});
+
+test('in pre-production Archive holds Insights, and the Sensitive prompts tile opens it', async () => {
+  const doc = fakeDocument();
+  await boot({ document: doc, api: createQueryApi({ transport: fixtureTransport() }), session: { actor: 'v@lab.test', roles: ['viewer'], pages: ['posture', 'insights', 'tools', 'teams', 'devices'] } });
+  assert.match(doc.html('nav'), /data-group="Archive"[^>]*><summary>.*?<span>Archive<\/span>.*?<a href="#insights"><span>Insights<\/span><\/a>/);
+  assert.match(doc.html('app'), /<a class="tile card tile-link" href="#insights"><div class="card-core"><span class="tile-label">Sensitive prompts</);
 });

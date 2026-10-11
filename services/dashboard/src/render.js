@@ -504,12 +504,12 @@ export function renderScreen(view, shell = {}) {
 /** Thin-line icons for the navigation: one stroke weight, no fills. */
 const NAV_ICONS = Object.freeze({
   overview: '<circle cx="12" cy="12" r="8.5"/><path d="M12 12 16.5 8"/><path d="M12 3.5v2M20.5 12h-2M5.5 12h-2"/>',
-  insights: '<path d="m3.5 16.5 5.5-5.5 4 4 7.5-7.5"/><path d="M15.5 7.5h5v5"/>',
   search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>',
   usage: '<path d="M4 19.5V10M9.5 19.5v-15M15 19.5v-7M20.5 19.5V7"/>',
   collection: '<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M9 20h6M12 16v4"/>',
   governance: '<path d="M12 3.5 5 6.5v5c0 4.3 2.9 7.4 7 9 4.1-1.6 7-4.7 7-9v-5z"/><path d="m9.2 12 2 2 3.6-4"/>',
   settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+  archive: '<rect x="3.5" y="4.5" width="17" height="4" rx="1"/><path d="M5 8.5v10a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-10"/><path d="M10 12.5h4"/>',
 });
 
 function navIcon(name) {

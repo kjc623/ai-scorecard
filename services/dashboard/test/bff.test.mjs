@@ -527,6 +527,7 @@ test('GET /session names the pages each role may open; Search is not served to a
   assert.equal(JSON.stringify(viewerSession).includes('at-viewer'), false, 'the page is never given a token');
   const adminSession = (await send(port, '/session', { headers: { cookie: `sac_session=${admin}` } })).json();
   assert.ok(adminSession.pages.includes('deployment'));
+  assert.equal(adminSession.pages.includes('insights'), false, 'production does not offer the pages still being built');
   const refused = await send(port, '/explore.html', { headers: { cookie: `sac_session=${viewer}` } });
   assert.equal(refused.status, 403);
   assert.match(refused.text, /Your role cannot open this page/);
@@ -578,6 +579,9 @@ test('the server refuses to start without every upstream, the internal token and
     assert.throws(() => configFromEnv({ ...full, [name]: '' }), new RegExp(name), `${name} is required`);
   }
   assert.throws(() => configFromEnv({ ...full, SAC_QUERY_API_URL: 'query-api' }), /SAC_QUERY_API_URL/);
+  assert.equal(cfg.environment, 'prod', 'unset is production');
+  assert.equal(configFromEnv({ ...full, SAC_ENVIRONMENT: 'preprod' }).environment, 'preprod');
+  assert.throws(() => configFromEnv({ ...full, SAC_ENVIRONMENT: 'staging' }), /SAC_ENVIRONMENT must be preprod or prod/);
   assert.throws(() => createDashboardServer({ controlUrl: 'http://control', log: quiet }), /SAC_INTERNAL_TOKEN/);
 });
 
@@ -586,6 +590,14 @@ test('SAC_HTTP_ADDR takes host:port, :port or nothing', () => {
   assert.deepEqual(parseAddr(':9000'), { host: '0.0.0.0', port: 9000 });
   assert.deepEqual(parseAddr('127.0.0.1:8787'), { host: '127.0.0.1', port: 8787 });
   assert.throws(() => parseAddr(':http'), /SAC_HTTP_ADDR/);
+});
+
+test('GET /session in pre-production also names the pages still being built', async (t) => {
+  const { port, signIn } = await lab(t, { environment: 'preprod' });
+  const viewer = (await signIn('viewer')).session;
+  const session = (await send(port, '/session', { headers: { cookie: `sac_session=${viewer}` } })).json();
+  assert.ok(session.pages.includes('insights'));
+  assert.equal('environment' in session, false, 'the pages say what is offered; the page is not told why');
 });
 
 test('the probes answer without a session', async (t) => {

@@ -176,6 +176,7 @@ services:
       SAC_CONTROL_URL: http://control-api:8080
       SAC_QUERY_API_URL: http://query-api:8080
       SAC_CONTENT_VAULT_URL: http://content-vault:8080
+      SAC_ENVIRONMENT: preprod
     env_file:
       - .authlab-identity/internal-token.env
     ports:
