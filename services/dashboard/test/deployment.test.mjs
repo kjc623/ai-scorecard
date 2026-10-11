@@ -361,7 +361,7 @@ test('a viewer is shown no Search, no Users, no Audit trail and no Settings; rea
   assert.match(doc.html('who'), /viewer@lab\.test/);
   assert.match(doc.html('who'), /action="\/signout"/);
   await doc.navigate('#deployment');
-  assert.match(doc.html('app'), /Your role cannot use this page/);
+  assert.match(doc.html('app'), /This page is not offered to you here/);
   assert.equal(requests.length, 0, 'the admin API was not asked');
 });
 

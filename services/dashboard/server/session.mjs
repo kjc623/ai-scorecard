@@ -44,6 +44,9 @@ const PAGE_CAPABILITY = Object.freeze({
 
 const ALWAYS_VISIBLE = Object.freeze(['posture', 'insights', 'tools', 'teams']);
 
+/** Pages still being built: pre-production offers them under Archive, and production does not offer them. */
+const PREPRODUCTION_ONLY = Object.freeze(['insights']);
+
 /** The capabilities of one role. An unknown role carries none. */
 export function capabilitiesFor(role) {
   return ROLE_CAPABILITIES[role] ?? Object.freeze([]);
@@ -59,13 +62,17 @@ export function canAny(roles, capability) {
   return (roles ?? []).some((role) => can(role, capability));
 }
 
-/** The page ids a set of roles may open: the union, because the roles are not a ladder. */
-export function pagesForRoles(roles) {
+/**
+ * The page ids a set of roles may open in an environment: the union, because the roles are not a
+ * ladder. Production leaves out the pages still being built.
+ */
+export function pagesForRoles(roles, { environment = 'prod' } = {}) {
   if (!Array.isArray(roles) || roles.length === 0) return [];
   const pages = Object.entries(PAGE_CAPABILITY)
     .filter(([, capability]) => canAny(roles, capability))
     .map(([page]) => page);
-  return [...new Set([...ALWAYS_VISIBLE, ...pages])];
+  const all = [...new Set([...ALWAYS_VISIBLE, ...pages])];
+  return environment === 'preprod' ? all : all.filter((page) => !PREPRODUCTION_ONLY.includes(page));
 }
 
 /** The role the navigation is labelled by: the one with the most capabilities. query-api checks the full set. */

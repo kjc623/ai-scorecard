@@ -112,6 +112,9 @@ export const REQUIRED_ENV = Object.freeze({
 
 const DEFAULT_PORT = 8080;
 
+/** Where a server runs. Pre-production also offers the pages still being built; unset is production. */
+export const ENVIRONMENTS = Object.freeze(['preprod', 'prod']);
+
 /** `host:port`, `:port` or `host`; empty is 0.0.0.0:8080, because a container must bind every interface. */
 export function parseAddr(value) {
   const text = String(value ?? '').trim();
@@ -142,7 +145,9 @@ function absoluteUrl(name, value) {
 export function checkConfig(config) {
   const missing = Object.entries(REQUIRED_ENV).filter(([key]) => String(config[key] ?? '').trim() === '').map(([, name]) => name);
   if (missing.length > 0) throw new ConfigError(`missing ${missing.join(', ')}`);
-  const out = { ...config, internalToken: String(config.internalToken).trim() };
+  const environment = String(config.environment ?? '').trim() || 'prod';
+  if (!ENVIRONMENTS.includes(environment)) throw new ConfigError(`SAC_ENVIRONMENT must be ${ENVIRONMENTS.join(' or ')}; got ${JSON.stringify(config.environment)}`);
+  const out = { ...config, environment, internalToken: String(config.internalToken).trim() };
   for (const key of ['controlUrl', 'publicUrl', 'queryApiUrl', 'vaultUrl']) out[key] = absoluteUrl(REQUIRED_ENV[key], String(config[key]).trim());
   return out;
 }
@@ -159,6 +164,7 @@ export function configFromEnv(env = process.env) {
     publicUrl: env.SAC_PUBLIC_URL,
     queryApiUrl: env.SAC_QUERY_API_URL,
     vaultUrl: env.SAC_CONTENT_VAULT_URL,
+    environment: env.SAC_ENVIRONMENT,
   });
 }
 
@@ -608,7 +614,7 @@ export function createDashboardServer(config) {
 
     // Who the page is, so the navigation can hide what the roles cannot use. Not a credential.
     if (path === '/session') {
-      return json(res, 200, { actor: session.actor, tenant: session.tenant, idp: session.idp, role: session.role, roles: session.roles, pages: pagesForRoles(session.roles) });
+      return json(res, 200, { actor: session.actor, tenant: session.tenant, idp: session.idp, role: session.role, roles: session.roles, pages: pagesForRoles(session.roles, { environment: cfg.environment }) });
     }
 
     const api = path.startsWith('/v1/');

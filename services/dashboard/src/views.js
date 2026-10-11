@@ -532,11 +532,14 @@ function attachmentsTile(usage, { preset }) {
     link);
 }
 
-/** The prompts that matched an enforcement rule on one of their labels, out of every prompt, split by what happened to them. */
+/**
+ * The prompts that matched an enforcement rule on one of their labels, out of every prompt, split by
+ * what happened to them. It opens Insights where the page is offered, and nothing elsewhere.
+ */
 function sensitiveTile(usage, { href }) {
   const sensitive = sumMeasure(usage, 'sensitive');
   const prompts = sumMeasure(usage, 'submissions');
-  const options = { href, moreLabel: 'Insights' };
+  const options = href ? { href, moreLabel: 'Insights' } : {};
   if (sensitive.kind !== 'number') return tile('Sensitive prompts', { kind: 'absent', text: '—' }, absentNote(usage), options);
   return tile('Sensitive prompts', { kind: 'number', text: formatCount(sensitive.value) },
     prompts.kind === 'number' ? `of ${formatCount(prompts.value)} prompts matched a rule on their labels` : null,
@@ -558,8 +561,10 @@ function sensitiveTile(usage, { href }) {
  * @param {object} input.devices    view state for the device list (it carries coverage)
  * @param {object} [input.tools]    view state for tool usage
  * @param {object} [input.coverage] a coverage block, when the device read did not carry one
+ * @param {object} [options]
+ * @param {boolean} [options.insights] whether Insights is offered, for the tile that opens it
  */
-export function postureView({ devices, tools = null, coverage }, { preset = null } = {}) {
+export function postureView({ devices, tools = null, coverage }, { preset = null, insights = true } = {}) {
   const cov = devices?.coverage ?? coverage ?? null;
   const usage = tools ?? NOTHING;
   const at = (hash) => withPreset(hash, preset);
@@ -583,7 +588,7 @@ export function postureView({ devices, tools = null, coverage }, { preset = null
     tiles: Object.freeze([
       measureTile('Prompts', usage, 'submissions', formatCount, { trend: trendOf(usage), href: at('#tools'), moreLabel: 'Tools' }),
       attachmentsTile(usage, { preset }),
-      sensitiveTile(usage, { href: at('#insights') }),
+      sensitiveTile(usage, { href: insights ? at('#insights') : null }),
       usersTile(usage, { href: '#person', moreLabel: 'Users' }),
       reportingTile(cov),
     ]),

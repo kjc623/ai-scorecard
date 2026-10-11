@@ -933,7 +933,7 @@ test('a viewer is shown no Settings; reaching it directly is refused in the page
   await boot({ document: doc, api: queryApi(), admin, session: session(['viewer'], ['posture', 'tools', 'teams', 'devices']) });
   assert.doesNotMatch(doc.html('nav'), />Settings</);
   await doc.navigate('#settings');
-  assert.match(doc.html('app'), /Your role cannot use this page/);
+  assert.match(doc.html('app'), /This page is not offered to you here/);
   assert.equal(requests.length, 0, 'the admin API was not asked');
 });
 
