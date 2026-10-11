@@ -99,9 +99,9 @@ test('Applications counts each tool detected once, however many fingerprints it 
       { bucket: '2026-09-30T00:00:00Z', tool: 'tls_b6681b043244c43f', tool_key: 'claude_code', tool_name: 'Claude Code', sanctioned_state: 'unsanctioned', submissions: 812 },
       // Found on a device with nothing sent to it: detected all the same.
       { bucket: '2026-09-30T00:00:00Z', tool: 'app:cursor', tool_key: 'cursor', tool_name: 'Cursor', sanctioned_state: null, submissions: 0 },
-      // Two fingerprints the catalogue does not name: two tools, neither decided.
+      // A fingerprint the catalogue does not name and a site no app claims: two tools, neither decided.
       { bucket: '2026-09-30T00:00:00Z', tool: 'tls_aaaaaaaaaaaaaaaa', tool_key: null, tool_name: 'Unrecognised tool', sanctioned_state: null, submissions: 4 },
-      { bucket: '2026-09-30T00:00:00Z', tool: 'tls_bbbbbbbbbbbbbbbb', tool_key: null, tool_name: 'Unrecognised tool', sanctioned_state: null, submissions: 2 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'host:chat.example.ai', tool_key: null, tool_name: 'chat.example.ai', sanctioned_state: null, submissions: 2 },
     ],
     freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' },
   }));
