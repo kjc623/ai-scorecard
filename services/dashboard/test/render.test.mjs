@@ -156,7 +156,7 @@ test('the devices screen says the fleet, what needs attention, and each device i
   assert.deepEqual(view.tiles[0].split.map((p) => [p.label, p.count]), [['Reporting', 4180], ['Not reporting', 440]]);
   assert.equal(view.tiles[1].href, '#devices?status=attention');
   assert.deepEqual(view.tables.map((x) => x.title), ['Devices']);
-  assert.deepEqual(view.tables[0].columns.map((c) => c.label), ['Device', 'User', 'Status', '']);
+  assert.deepEqual(view.tables[0].columns.map((c) => c.label), ['Device', 'Status', 'User', '']);
   assert.equal(view.tables[0].rows.length, 4, 'one row per device');
   assert.deepEqual(view.filters.map((f) => f.label), ['Status', 'OS', 'Management']);
   const html = renderScreen(view, SHELL);
@@ -170,7 +170,7 @@ test('the devices screen says the fleet, what needs attention, and each device i
   assert.match(html, /alice@contoso\.example/);
   assert.match(html, /Alice Smith/, 'the directory display name is shown beside the account name');
   assert.match(html, /1\.4\.2/);
-  assert.match(html, /m3/);
+  assert.match(html, /M3 · prompt/, 'the collection mode is said in words, not as a code');
   assert.match(html, /2 healthy/, 'a device sums its collectors by state');
   assert.match(html, /1 degraded · 1 healthy/, 'the worst state leads');
   assert.ok(!/Spool|watermark/i.test(html), 'pipeline internals are not on this screen');

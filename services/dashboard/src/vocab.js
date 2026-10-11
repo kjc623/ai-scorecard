@@ -14,6 +14,9 @@ export const QUERY_VERSION = '1';
 /** The name ops.tool_display_name gives a fingerprint the tool catalogue does not list. */
 export const UNRECOGNISED_TOOL = 'Unrecognised tool';
 
+/** The collection modes as the console names them, wherever a mode is shown. */
+export const COLLECTION_MODE_LABELS = Object.freeze({ m0: 'M0 · metadata', m1: 'M1 · digest & labels', m2: 'M2 · excerpt', m3: 'M3 · prompt' });
+
 /**
  * The endpoints this client may call. test/guarantees.test.mjs asserts there are no others.
  *

@@ -161,9 +161,12 @@ export function bannersFor(envelope) {
     banners.push({ level: 'info', title: 'No data', text: 'We looked, coverage was adequate, and there is nothing in this window.' });
   }
   if (state === 'stale_aggregate') banners.push({ level: 'warning', title: 'Stale aggregate', text: freshnessText(envelope.freshness).text });
-  if (state === 'coverage_degraded') {
+  // Partial coverage is said once: the partial banner above already says every figure is a floor,
+  // so the degraded state adds a banner only when coverage itself was not stated as partial.
+  if (state === 'coverage_degraded' && envelope.coverage?.state !== 'partial') {
     banners.push({
       level: 'warning',
+      about: 'coverage',
       title: 'Coverage degraded: this is a floor',
       text: `${coverageText(envelope.coverage).text}. Parts of the fleet are not reporting, so the value shown understates reality.`,
     });
@@ -289,7 +292,7 @@ export function emptyStateFor(state) {
     return { kind: 'not_yet_covered', title: 'Not yet covered', text: 'The system cannot answer for this window. This is not the same as zero.' };
   }
   if (state.resultState === 'coverage_degraded') {
-    return { kind: 'coverage_degraded', title: 'Nothing found, on partial coverage', text: 'No rows came back, and parts of the fleet were not reporting: the absence is not a total.' };
+    return { kind: 'coverage_degraded', title: 'Nothing recorded, on partial coverage', text: 'Parts of the fleet were not reporting, so this is not a zero.' };
   }
   return null;
 }

@@ -141,7 +141,7 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
           const tools = await part(() => ask('q1_tools_ranked', ctx));
           const classes = await part(() => ask('q4_class_mix', ctx));
           const findings = await part(() => ask('q5_findings', ctx));
-          return { view: postureView({ devices, tools, classes, findings }), shell: shell() };
+          return { view: postureView({ devices, tools, classes, findings }, { preset: ctx.preset }), shell: shell() };
         }
         case 'answer': {
           if (screen.questionId === 'q6_subject_series' || screen.questionId === 'q9_event_detail') {
@@ -150,7 +150,7 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
           if (screen.id === 'tools') {
             if (params.filters.tool) return { view: await toolScreen(String(params.filters.tool), ctx), shell: shell() };
             const mode = USAGE_MODES[usageMode(params.filters)];
-            return { view: mode.view(await ask(mode.questionId, ctx)), shell: shell() };
+            return { view: mode.view(await ask(mode.questionId, ctx), { preset: ctx.preset }), shell: shell() };
           }
           if (screen.id === 'teams') return { view: await teamsScreen(params, ctx), shell: shell() };
           const state = await ask(screen.questionId, ctx);
@@ -196,33 +196,53 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
   async function toolScreen(tool, ctx) {
     const usage = await ask('q1_tools_ranked', context({ preset: ctx.preset, filters: { tool }, now: now() }));
     // The people read is scoped to the tool's present sanction, the one it answers for; a tool
-    // with no cell in the window has nobody to list.
-    const sanction = usage.data.find((row) => row.sanctioned_state)?.sanctioned_state ?? null;
+    // with no decision recorded is in the unknown state. A tool with no cell in the window has
+    // nobody to list.
+    const cells = usage.data.filter((row) => String(row.tool) === tool);
+    const sanction = cells.length > 0 ? cells.find((row) => row.sanctioned_state)?.sanctioned_state ?? 'unknown' : null;
     const people = sanction
       ? await refusable(() => ask('q2_unsanctioned_users', context({ preset: ctx.preset, filters: { tool, sanctioned_state: sanction }, now: now() })))
       : null;
     const findings = await refusable(() => ask('q5_findings', context({ preset: ctx.preset, filters: { tool }, now: now() })));
-    return toolView({ usage, people, findings }, { tool });
+    return toolView({ usage, people, findings, names: await namesFor(people) }, { tool, preset: ctx.preset });
+  }
+
+  /**
+   * The names behind the references a roster carries, from the people list: the directory's name
+   * when a sync supplied one, else the one the device reported. A reference with no name is
+   * absent from the map and is listed by reference; a lookup that fails leaves the roster as it is.
+   */
+  async function namesFor(roster) {
+    const subjects = [...new Set((roster && !roster.isRefusal ? roster.data : []).map((row) => row.subject).filter((s) => typeof s === 'string' && s !== ''))];
+    if (subjects.length === 0) return {};
+    const people = await part(async () => readState(await api.run(buildPeopleDocument({ subjects, limit: subjects.length }))));
+    const names = {};
+    for (const row of people?.data ?? []) {
+      const name = row.directory_name ?? row.name ?? row.subject_name ?? null;
+      if (name && name !== row.subject) names[row.subject] = String(name);
+    }
+    return names;
   }
 
   /** The Teams screen: every team, or one team when the address names it. */
   async function teamsScreen(params, ctx) {
     const manageHref = params.mayManage ? '#directory' : null;
     const team = params.filters.team ? String(params.filters.team) : null;
-    if (team) {
-      const state = await ask('q3_team_growth', context({ preset: ctx.preset, filters: { team }, now: now() }));
-      return teamView(state, { team, members: await teamMembers(state, ctx, [team]), manageHref });
-    }
-    const state = await ask('q3_team_growth', ctx);
-    const members = await teamMembers(state, ctx);
-    // An admin's team list names the teams with no usage, so they are listed rather than absent.
+    // An admin's team list names the teams with no usage, so a quiet team is listed rather than
+    // absent, and one team's screen is named even when it has no cell in the window.
     const teams = params.mayManage && admin
       ? await part(async () => {
         const answer = await admin.directory();
         return answer.state === 'available' ? answer.data.teams : null;
       })
       : null;
-    return teamsView(state, { manageHref, members, teams });
+    if (team) {
+      const state = await ask('q3_team_growth', context({ preset: ctx.preset, filters: { team }, now: now() }));
+      return teamView(state, { team, members: await teamMembers(state, ctx, [team]), teams, manageHref, preset: ctx.preset });
+    }
+    const state = await ask('q3_team_growth', ctx);
+    const members = await teamMembers(state, ctx);
+    return teamsView(state, { manageHref, members, teams, preset: ctx.preset });
   }
 
   /**
@@ -349,6 +369,8 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   const navItems = filterNavItems(NAV_ITEMS, allowed);
   const navIds = new Set(NAV_ITEMS.map((item) => item.id));
   const collapsed = readCollapsed(document);
+  // The tab is titled by the product name the page itself shows, so the two cannot disagree.
+  const brand = document.querySelector?.('.brand h1')?.textContent?.trim() || 'Sundial';
 
   let paintedNav = null;
   let paintedScreen = null;
@@ -435,7 +457,7 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     root.setAttribute?.('aria-busy', 'false');
     const { preset: _preset, ...others } = filters;
     root.innerHTML = renderScreen(view, { ...shell, eyebrow: groupOf(screen.id), switch: switchFor(screen, preset, others), presets: presetsFor(screen, preset, others) });
-    document.title = `${view?.title ?? screen.label} · Sundial`;
+    document.title = `${view?.title ?? screen.label} · ${brand}`;
     if (typing) root.querySelector?.('input[name="subject"]')?.focus();
   }
 

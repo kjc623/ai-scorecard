@@ -113,12 +113,14 @@ function renderCell(row, column, max = 0) {
     }
     return `<span class="v-text" title="${escapeHtml(uuid)}">${escapeHtml(String(raw))}</span>`;
   }
-  // A person's name opens their page; a person with no known name is listed by reference.
+  // A person's name opens their page; a person with no known name is listed by reference. A
+  // column keyed on the reference takes the row's names: the directory's, else the account's.
   if (kind === 'person') {
     const ref = row.subject ? String(row.subject) : '';
-    const label = raw === null || raw === undefined || raw === '' ? ref : String(raw);
+    const named = key === 'subject' ? (row.directory_name ?? row.subject_name ?? null) : raw;
+    const label = named === null || named === undefined || named === '' ? ref : String(named);
     if (!ref) return renderValue({ kind: 'absent' });
-    return `<a class="cell-link" href="#person?subject=${encodeURIComponent(ref)}" title="${escapeHtml(ref)}">${escapeHtml(label)}</a>`;
+    return `<a class="cell-link" href="#person?subject=${encodeURIComponent(ref)}" title="User reference ${escapeHtml(ref)}">${escapeHtml(label)}</a>`;
   }
   if (kind === 'link') {
     return raw ? `<a class="cell-link" href="${escapeHtml(String(raw))}">${escapeHtml(column.linkLabel ?? 'Open')}</a>` : '';
@@ -269,6 +271,10 @@ function blockFrame(kind, block, inner, { count = 0, classes = '' } = {}) {
 export function renderShare(block) {
   const parts = (block.parts ?? []).filter((p) => Number(p.count) > 0);
   if (parts.length === 0) return blockFrame('share', block, `<p class="block-empty">${escapeHtml(block.emptyText ?? 'Nothing to show.')}</p>`);
+  // One part is the whole: a sentence says so, and a bar of one colour is not drawn.
+  if (parts.length === 1 && parts[0].phrase) {
+    return blockFrame('share', block, `<p class="share-one">All <span class="v-number">${escapeHtml(formatCount(parts[0].count))}</span> submissions went to ${escapeHtml(parts[0].phrase)}.</p>`);
+  }
   const bar = parts.map((p) => `<span class="dist-seg ${vocabClass(p.key)}" style="flex-grow:${Math.max(0, Number(p.count) || 0)}" title="${escapeHtml(p.label)}: ${escapeHtml(formatCount(p.count))} (${escapeHtml(formatPercent(p.share))})"></span>`).join('');
   const legend = parts.map((p) => `<li><span class="dist-dot ${vocabClass(p.key)}" aria-hidden="true"></span>${escapeHtml(p.label)}<span class="dist-n">${escapeHtml(formatCount(p.count))}</span><span class="dist-pct">${escapeHtml(formatPercent(p.share))}</span></li>`).join('');
   const said = parts.map((p) => `${p.label} ${formatPercent(p.share)}`).join(', ');
@@ -348,10 +354,12 @@ function renderSplit(split) {
   if (!Array.isArray(split) || split.length === 0) return '';
   const legend = (part) => {
     const text = `${escapeHtml(part.label)}<span class="dist-n">${escapeHtml(formatCount(part.count))}</span>`;
-    return part.href ? `<a class="dist-link" href="${escapeHtml(part.href)}">${text}</a>` : text;
+    return part.href && (Number(part.count) || 0) > 0 ? `<a class="dist-link" href="${escapeHtml(part.href)}">${text}</a>` : text;
   };
+  // A part that counts nothing draws nothing and opens nothing; it stays in the legend as a zero.
+  const drawn = split.filter((part) => (Number(part.count) || 0) > 0);
   return '<div class="dist-bar tile-split" aria-hidden="true">'
-    + split.map((part) => `<span class="dist-seg ${vocabClass(part.key)}" style="flex-grow:${Math.max(0, Number(part.count) || 0)}"></span>`).join('')
+    + drawn.map((part) => `<span class="dist-seg ${vocabClass(part.key)}" style="flex-grow:${Number(part.count)}"></span>`).join('')
     + '</div><ul class="dist-legend">'
     + split.map((part) => `<li><span class="dist-dot ${vocabClass(part.key)}" aria-hidden="true"></span>${legend(part)}</li>`).join('')
     + '</ul>';
@@ -362,11 +370,15 @@ function renderSplit(split) {
  * is a line of its own, because a link inside a link is not a thing a browser can follow.
  */
 export function renderTile(t) {
-  const nested = (t.split ?? []).some((part) => part.href);
+  const nested = (t.split ?? []).some((part) => part.href && (Number(part.count) || 0) > 0);
   const wraps = Boolean(t.href) && !nested;
   const tag = wraps ? 'a' : 'div';
   const trend = t.trend ? `<span class="tile-spark">${renderSparkline(t.trend, { width: 160, height: 36 })}</span>` : '';
-  const more = t.href && !wraps ? `<a class="tile-more" href="${escapeHtml(t.href)}">${escapeHtml(t.moreLabel ?? 'View all')}</a>` : '';
+  // A tile that is itself the link says where it goes on its last line; one whose split holds the
+  // links gets a link of its own.
+  const more = !t.href ? ''
+    : wraps ? (t.moreLabel ? `<span class="tile-more">${escapeHtml(t.moreLabel)}</span>` : '')
+      : `<a class="tile-more" href="${escapeHtml(t.href)}">${escapeHtml(t.moreLabel ?? 'View all')}</a>`;
   return `<${tag} class="tile card${wraps ? ' tile-link' : ''}"${wraps ? ` href="${escapeHtml(t.href)}"` : ''}><div class="card-core"><span class="tile-label">${escapeHtml(t.label)}</span>`
     + `<span class="tile-figure"><span class="tile-value">${renderValue(t.value)}</span>${trend}</span>`
     + renderSplit(t.split)

@@ -135,11 +135,13 @@ test('a tool\'s own screen folds its usage, lists who uses it in the API\'s orde
   assert.equal(view.title, 'Claude Code');
   assert.equal(view.subtitle, 'Fingerprint tls_b6681b043244c43f');
   assert.deepEqual(view.badges, [{ key: 'unsanctioned', text: 'Unsanctioned' }]);
-  assert.deepEqual(sent.map((b) => [b.template, b.params.tool, b.params.sanctioned_state]), [
+  assert.deepEqual(sent.filter((b) => b.template).map((b) => [b.template, b.params.tool, b.params.sanctioned_state]), [
     ['q1_tools_ranked', 'tls_b6681b043244c43f', undefined],
     ['q2_unsanctioned_users', 'tls_b6681b043244c43f', 'unsanctioned'],
     ['q5_findings', 'tls_b6681b043244c43f', undefined],
   ], 'every read is scoped to the tool, and the people read to its sanction');
+  const lookup = sent.find((b) => b.source === 'mart.v_person');
+  assert.deepEqual(lookup?.filters, [{ field: 'subject', op: 'in', value: ['u_9a02', 'u_4f21'] }], 'the roster\'s references are looked up by name, in one read');
   assert.deepEqual(view.actions.map((a) => a.href), ['explore.html#events?tool=tls_b6681b043244c43f', '#tools']);
   const people = view.tables.find((t) => t.title === 'People using it');
   assert.deepEqual(people.rows.map((r) => r.row.subject), ['u_9a02', 'u_4f21'], 'this tool\'s people, in the API order, not a volume ranking');
@@ -194,7 +196,7 @@ test('the Teams screen ranks the teams, lists the admin\'s quiet teams with a ze
   assert.deepEqual(ranking.items.map((i) => [i.label, i.value.value]), [['Engineering', 2210], ['Finance', 812], ['Legal', 7], ['Marketing', 0]], 'by submissions, then the team with no usage');
   assert.equal(ranking.items[0].href, '#teams?team=7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001');
   assert.equal(ranking.items[0].sublabel, '640 members · Group eng-all');
-  assert.match(ranking.items[3].sublabel, /No usage in this window/);
+  assert.match(ranking.items[3].sublabel, /No usage recorded in this window/);
   const roster = view.tables.find((t) => t.title === 'Submissions by person');
   assert.equal(roster.groupBy, 'team_name');
   const html = renderScreen(view, SHELL);
@@ -221,7 +223,7 @@ test('a team\'s own screen reads that team only, and lists its people by name', 
   assert.equal(view.tiles[0].value.text, '2,210', 'this team\'s figure, not every team\'s');
   assert.equal(view.tiles[2].value.text, '3', 'this team\'s people');
   const roster = view.tables[0];
-  assert.deepEqual(roster.columns.map((c) => c.label), ['Person', 'Submissions']);
+  assert.deepEqual(roster.columns.map((c) => c.label), ['User', 'Submissions']);
   assert.deepEqual(roster.rows.map((r) => r.row.name), ['Ada Lovelace', 'Grace Hopper', 'u_1b77'], 'by name');
   assert.equal(roster.groupBy, undefined);
 });
@@ -248,10 +250,10 @@ test('a device row is three cells: the device and what it runs, the person on it
   const state = readState(envelope('ok', { data: DEVICE_ROWS, freshness: FRESH, coverage: PARTIAL, meta: { source: 'mart.v_device_liveness' } }));
   const view = devicesView(state, { now: NOW() });
   const [fin, mac, silent, ops] = view.tables[0].rows.map((r) => r.row);
-  assert.deepEqual(fin.device_cell, { primary: 'FIN-LAPTOP-07', mono: false, title: '9f1c0b6e-0000-4000-8000-000000000001', secondary: 'Windows 11 · Managed · Agent 1.4.2 · Mode m3' });
+  assert.deepEqual(fin.device_cell, { primary: 'FIN-LAPTOP-07', mono: false, title: '9f1c0b6e-0000-4000-8000-000000000001', secondary: 'Windows 11 · Managed · Agent 1.4.2 · M3 · prompt' });
   assert.deepEqual(fin.user_cell, { primary: 'Alice Smith', secondary: 'alice@contoso.example', title: 'u_4f21' });
-  assert.deepEqual(fin.status_cell, { chip: { key: 'reporting', text: 'Reporting' }, secondary: 'Last seen 3 min ago · 2 healthy' });
-  assert.deepEqual(mac.status_cell, { chip: { key: 'degraded', text: 'Degraded' }, secondary: 'Last seen 2 days ago · 1 degraded · 1 healthy' }.chip ? { chip: { key: mac.status, text: mac.status_text }, secondary: 'Last seen 2 days ago · 1 degraded · 1 healthy' } : null);
+  assert.deepEqual(fin.status_cell, { chip: { key: 'reporting', text: 'Reporting' }, secondary: 'Last seen 3 min ago · Collectors 2 healthy' });
+  assert.deepEqual(mac.status_cell, { chip: { key: 'degraded', text: 'Degraded' }, secondary: 'Last seen 2 days ago · Collectors 1 degraded · 1 healthy' }.chip ? { chip: { key: mac.status, text: mac.status_text }, secondary: 'Last seen 2 days ago · Collectors 1 degraded · 1 healthy' } : null);
   assert.equal(silent.device_cell.primary, '9f1c0b6e…', 'a device with no hostname is named by the start of its id');
   assert.equal(silent.device_cell.mono, true);
   assert.equal(silent.user_cell.primary, null, 'nobody has used it');
@@ -260,7 +262,7 @@ test('a device row is three cells: the device and what it runs, the person on it
   assert.equal(view.tables[0].rowHref, 'activity');
   const html = renderScreen(view, SHELL);
   assert.match(html, /<tr class="row-link" tabindex="0" data-href="explore\.html#events\?device=9f1c0b6e-0000-4000-8000-000000000001">/, 'the row opens the device\'s activity');
-  assert.match(html, /<span class="cell-stack" title="9f1c0b6e-0000-4000-8000-000000000001"><span class="cell-primary">FIN-LAPTOP-07<\/span><span class="cell-secondary">Windows 11 · Managed · Agent 1\.4\.2 · Mode m3<\/span><\/span>/);
+  assert.match(html, /<span class="cell-stack" title="9f1c0b6e-0000-4000-8000-000000000001"><span class="cell-primary">FIN-LAPTOP-07<\/span><span class="cell-secondary">Windows 11 · Managed · Agent 1\.4\.2 · M3 · prompt<\/span><\/span>/);
   assert.match(html, /<span class="cell-stack"><span class="v-vocab v-vocab-never_reported" title="never_reported">Never checked in<\/span><\/span>/, 'a state chip can be the first line');
   assert.match(html, /<span class="cell-stack"><span class="v-absent">—<\/span><\/span>/, 'no user is an absence, not a blank');
 });
@@ -332,4 +334,128 @@ test('a grouped table drops the grouping column from its cells and heads each ru
   assert.match(html, /<tr class="row-group"><th scope="rowgroup" colspan="2"><span class="v-absent">—<\/span><\/th><\/tr>/, 'a missing group is an absence');
   assert.equal((html.match(/row-group/g) ?? []).length, 2);
   assert.equal((html.match(/row-link/g) ?? []).length, 2, 'a row without the column is not a link');
+});
+
+test('two or more unrecognised tools are one line in the ranking, and are listed by fingerprint beneath it', () => {
+  const state = readState(envelope('ok', {
+    data: [
+      { bucket: '2026-09-30T00:00:00Z', tool: 'tls_aaaa', tool_name: 'Unrecognised tool', sanctioned_state: 'unknown', submissions: 5, users: 2, bytes_total: 100 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'tls_bbbb', tool_name: 'Unrecognised tool', sanctioned_state: 'unknown', submissions: 3, users: 1, bytes_total: 50 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'tls_cccc', tool_name: 'Unrecognised tool', sanctioned_state: 'unknown', submissions: 1, users: 1 },
+      { bucket: '2026-09-30T00:00:00Z', tool: 'tls_f412811be7ac6539', tool_name: 'ChatGPT', sanctioned_state: 'sanctioned', submissions: 4, users: 3 },
+    ],
+    freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' },
+  }));
+  const ranking = rankTools(state);
+  assert.deepEqual(ranking.items.map((i) => [i.label, i.value.value, i.href]), [['Unrecognised tools', 9, null], ['ChatGPT', 4, '#tools?tool=tls_f412811be7ac6539']], 'the three fold into one line with no screen of its own');
+  assert.equal(ranking.items[0].sublabel, '3 fingerprints the catalogue does not name');
+  assert.deepEqual(ranking.items[0].chip, { key: 'unknown', text: 'No decision yet' });
+  assert.deepEqual(ranking.items[0].meta[0], { label: 'people', value: { kind: 'number', value: 2 } }, 'people is the largest cell, a floor, not 2+1+1');
+  const view = toolsView(state, { preset: 'd30' });
+  const listed = view.tables.find((t) => t.title === 'Unrecognised tools');
+  assert.deepEqual(listed.rows.map((r) => [r.row.fingerprint_cell.primary, r.row.submissions, r.row.href]), [['tls_aaaa', 5, '#tools?tool=tls_aaaa&preset=d30'], ['tls_bbbb', 3, '#tools?tool=tls_bbbb&preset=d30'], ['tls_cccc', 1, '#tools?tool=tls_cccc&preset=d30']]);
+  assert.equal(listed.rowHref, 'href');
+  assert.equal(view.blocks[1].items[1].href, '#tools?tool=tls_f412811be7ac6539&preset=d30', 'a drill-down keeps the window it was read in');
+  const one = readState(envelope('ok', { data: [state.data[0], state.data[3]], freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' } }));
+  assert.equal(toolsView(one).tables.length, 0, 'one unrecognised tool is its own line, so there is nothing to list beneath');
+  assert.equal(rankTools(one).items[0].sublabel, 'tls_aaaa');
+});
+
+test('a window with no cell draws no chart; the empty ranking says why', () => {
+  const none = readState(envelope('empty', { data: [], freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' } }));
+  assert.deepEqual(toolsView(none).series, []);
+  assert.deepEqual(teamsView(none).series, []);
+  assert.match(toolsView(none).blocks[1].emptyText, /No tool was in use/);
+});
+
+test('a quiet team is listed when the read answered, on partial coverage too; a tool with no decision is unknown', async () => {
+  const teams = [{ team_id: 't1', name: 'Engineering', source: 'console', members: 1 }];
+  const degraded = readState(envelope('coverage_degraded', { data: [], freshness: FRESH, coverage: PARTIAL, meta: { source: 'mart.agg_team_period', extras: { team_coverage: [{ users_all: 1, users_in_teams: 0, teams: 1 }] } } }));
+  const view = teamsView(degraded, { teams });
+  assert.deepEqual(view.blocks[0].items.map((i) => [i.label, i.value.value]), [['Engineering', 0]], 'the team exists, so it is listed, and the coverage line says every figure is a floor');
+  assert.match(view.blocks[0].items[0].sublabel, /^1 member · Chosen in the console · No usage recorded in this window$/);
+  assert.ok(view.notes.some((n) => n === '1 person used AI in this window; 0 are in at least one team and 1 is in none.'));
+  assert.equal(view.banners.filter((b) => b.about === 'coverage').length, 1, 'partial coverage is said once, not as two banners');
+  const own = teamView(degraded, { team: 't1', teams, preset: 'd90' });
+  assert.equal(own.title, 'Engineering', 'named from the admin list when it has no cell in the window');
+  assert.match(own.subtitle, /^1 member · Chosen in the console\./);
+  assert.deepEqual(own.series, []);
+  assert.equal(own.actions[0].href, '#teams?preset=d90');
+});
+
+test('a tool\'s screen marks a tool with no recorded decision as unknown, names its people, and keeps its window', async () => {
+  const sent = [];
+  const transport = fixtureTransport();
+  const api = createQueryApi({ transport: { send: (body) => {
+    sent.push(body);
+    if (body.source === 'mart.v_person') {
+      return { api_version: '1', query_version: '1', result_state: 'ok', data: [{ subject: 'u_9a02', name: 'Bob Jones', directory_name: 'Bob Jones', subject_name: 'bob@contoso.example' }, { subject: 'u_4f21', name: 'u_4f21' }], freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_person' } };
+    }
+    return transport.send(body);
+  } } });
+  const dashboard = createDashboard({ api, now: NOW });
+  const { view } = await dashboard.load('tools', { preset: 'd30', filters: { tool: 'tls_b6681b043244c43f' } });
+  const roster = view.tables.find((t) => t.title === 'People using it');
+  assert.deepEqual(roster.columns.map((c) => c.label), ['User', 'Submissions', 'Data sent']);
+  assert.deepEqual(roster.rows.map((r) => [r.row.subject, r.row.name]), [['u_9a02', 'Bob Jones'], ['u_4f21', null]], 'a name the directory knows; a reference it does not stays a reference');
+  const html = renderScreen(view, SHELL);
+  assert.match(html, /<a class="cell-link" href="#person\?subject=u_9a02" title="User reference u_9a02">Bob Jones<\/a>/);
+  assert.match(html, /<a class="cell-link" href="#person\?subject=u_4f21" title="User reference u_4f21">u_4f21<\/a>/);
+  assert.equal(view.actions[1].href, '#tools?preset=d30');
+  // No decision recorded: the people read is still made, scoped to the unknown state, and the badge says so.
+  const undecided = readState(envelope('ok', { data: [{ bucket: '2026-09-30T00:00:00Z', tool: 'tls_zzzz', tool_name: 'Unrecognised tool', submissions: 2, users: 1 }], freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' } }));
+  const quiet = createDashboard({ api: createQueryApi({ transport: { send: (body) => { sent.push(body); return body.template === 'q1_tools_ranked' ? { ...undecided, result_state: 'ok', api_version: '1', query_version: '1', data: undecided.data, freshness: FRESH, coverage: COMPLETE, meta: undecided.meta } : transport.send(body); } } }), now: NOW });
+  const unknown = (await quiet.load('tools', { filters: { tool: 'tls_zzzz' } })).view;
+  assert.deepEqual(unknown.badges, [{ key: 'unknown', text: 'No decision yet' }]);
+  assert.equal(sent.find((b) => b.template === 'q2_unsanctioned_users' && b.params.tool === 'tls_zzzz')?.params.sanctioned_state, 'unknown');
+});
+
+test('the Overview tiles open the screens they summarise, and the findings table names the user', async () => {
+  const { view } = await dashboardFor().load('posture', { preset: 'd30' });
+  assert.deepEqual(view.tiles.map((t) => [t.label, t.href ?? null]), [
+    ['Submissions', '#tools?preset=d30'], ['People (lower bound)', '#person'], ['Open findings', 'explore.html#findings?review_state=open'], ['Devices reporting', '#devices'],
+  ]);
+  assert.equal(view.blocks[1].href, '#tools?preset=d30');
+  assert.ok(view.blocks[1].items.every((i) => i.href === null || i.href.endsWith('&preset=d30')));
+  assert.equal(view.blocks[2].href, '#tools?view=classes&preset=d30');
+  const findings = view.tables.find((t) => t.title === 'Findings');
+  assert.equal(findings.href, 'explore.html#findings');
+  assert.deepEqual(findings.columns.map((c) => c.label), ['Detected', 'Severity', 'Rule', 'User', 'Tool', 'Review']);
+});
+
+test('a share of one part is a sentence, and a split draws and links only the parts that count something', () => {
+  const all = readState(envelope('ok', {
+    data: [{ bucket: '2026-09-30T00:00:00Z', tool: 'tls_f412811be7ac6539', tool_name: 'ChatGPT', sanctioned_state: 'sanctioned', submissions: 40, users: 3 }],
+    freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' },
+  }));
+  const html = renderShare(sanctionShare(all));
+  assert.match(html, /<p class="share-one">All <span class="v-number">40<\/span> submissions went to sanctioned tools\.<\/p>/);
+  assert.ok(!/dist-bar/.test(html), 'one part is the whole, so there is no bar to read');
+  const undecided = readState(envelope('ok', {
+    data: [{ bucket: '2026-09-30T00:00:00Z', tool: 'tls_zzzz', tool_name: 'Unrecognised tool', sanctioned_state: 'unknown', submissions: 4 }],
+    freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' },
+  }));
+  const share = sanctionShare(undecided);
+  assert.equal(share.href, '#settings');
+  assert.equal(share.moreLabel, 'Decide which tools are sanctioned');
+  assert.match(share.note, /No tool has a sanction decision yet/);
+  const teams = readState(envelope('ok', {
+    data: [{ bucket: '2026-09-30T00:00:00Z', team: 't1', team_name: 'Engineering', submissions: 9, users: 5 }],
+    freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.agg_team_period', extras: { team_coverage: [{ users_all: 5, users_in_teams: 5, teams: 1 }] } },
+  }));
+  const page = renderScreen(teamsView(teams), SHELL);
+  assert.match(page, /<div class="dist-bar tile-split" aria-hidden="true"><span class="dist-seg v-vocab-in_team" style="flex-grow:5"><\/span><\/div>/, 'the empty part draws no segment');
+  assert.match(page, /<span class="dist-dot v-vocab-no_team" aria-hidden="true"><\/span>In no team<span class="dist-n">0<\/span><\/li>/, 'and stays in the legend as a zero, not a link');
+});
+
+test('the Devices filters are offered only where they can change the list', () => {
+  const uniform = readState(envelope('ok', {
+    data: [{ ...DEVICE_ROWS[0] }, { ...DEVICE_ROWS[0], device: '9f1c0b6e-0000-4000-8000-00000000000a', hostname: 'FIN-LAPTOP-08' }],
+    freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_device_liveness' },
+  }));
+  assert.deepEqual(devicesView(uniform, { now: NOW() }).filters, [], 'two reporting Windows managed devices: nothing to filter by');
+  assert.deepEqual(devicesView(uniform, { now: NOW(), filters: { device_os: 'macos' } }).filters.map((f) => f.label), ['OS'], 'a filter already chosen stays, so it can be cleared');
+  const mixed = readState(envelope('ok', { data: DEVICE_ROWS, freshness: FRESH, coverage: PARTIAL, meta: { source: 'mart.v_device_liveness' } }));
+  assert.deepEqual(devicesView(mixed, { now: NOW() }).filters.map((f) => f.label), ['Status', 'OS', 'Management']);
+  assert.deepEqual(devicesView(mixed, { now: NOW() }).tables[0].columns.map((c) => c.label), ['Device', 'Status', 'User', '']);
 });

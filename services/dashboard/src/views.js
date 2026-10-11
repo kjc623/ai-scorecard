@@ -9,8 +9,8 @@
 // kept apart in another.
 
 import { emptyStateFor, measureOf, vocabOf } from './states.js';
-import { formatBytes, formatCount, formatInstant, formatLabels, formatScore } from './format.js';
-import { SOURCES, TEMPLATES, UNRECOGNISED_TOOL } from './vocab.js';
+import { formatBytes, formatCount, formatInstant, formatLabels, formatScore, plural } from './format.js';
+import { SOURCES, TEMPLATES, UNRECOGNISED_TOOL, COLLECTION_MODE_LABELS } from './vocab.js';
 
 /** A total over a set of cells. A set in which no cell carries the measure has no total. */
 export function sumMeasure(state, measure) {
@@ -43,11 +43,16 @@ function tile(label, value, note, { href = null, trend = null, split = null, mor
   });
 }
 
-/** A tile from a summed measure, saying so when no returned cell carries it. */
+/** Why a figure is a dash: the window holds nothing, or the read carried no cell with the figure. */
+const NOTHING_RECORDED = 'Nothing recorded in this window.';
+const NO_FIGURE = 'No figure came back for this window.';
+const absentNote = (state) => (state && !state.isRefusal && state.data.length === 0 ? NOTHING_RECORDED : NO_FIGURE);
+
+/** A tile from a summed measure, saying why when no returned cell carries it. */
 export function measureTile(label, state, measure, formatter = formatCount, options = {}) {
   const total = sumMeasure(state, measure);
   if (total.kind === 'number') return tile(label, { kind: 'number', text: formatter(total.value) }, null, options);
-  return tile(label, { kind: 'absent', text: '—' }, 'This measure is not carried by any returned cell.', options);
+  return tile(label, { kind: 'absent', text: '—' }, absentNote(state), options);
 }
 
 function column(key, label, kind = 'text') {
@@ -187,54 +192,96 @@ export function trendOf(state, measure = 'submissions') {
  * The most people one cell counted. It is a floor for the distinct people in the window; the sum
  * of the cells is not, because a person using two tools, or active on two days, is in two cells.
  */
-export function peopleTile(state, label = 'People (lower bound)') {
+export function peopleTile(state, label = 'People (lower bound)', options = {}) {
   let most = null;
   for (const row of state.data) {
     const value = measureOf(row, 'users');
     if (value.kind === 'number' && (most === null || value.value > most)) most = value.value;
   }
-  if (most === null) return tile(label, { kind: 'absent', text: '—' }, 'This measure is not carried by any returned cell.');
-  return tile(label, { kind: 'number', text: formatCount(most) }, 'At least this many: the largest distinct count in one cell of this window.');
+  if (most === null) return tile(label, { kind: 'absent', text: '—' }, absentNote(state), options);
+  return tile(label, { kind: 'number', text: formatCount(most) }, 'At least this many: the most counted in any one period of the window.', options);
 }
 
 /** A tile from one group's folded measure. */
 function foldedTile(label, group, measure, formatter = formatCount, options = {}) {
   const value = group ? foldedMeasure(group, measure) : { kind: 'absent' };
   if (value.kind === 'number') return tile(label, { kind: 'number', text: formatter(value.value) }, null, options);
-  return tile(label, { kind: 'absent', text: '—' }, 'This measure is not carried by any returned cell.', options);
+  return tile(label, { kind: 'absent', text: '—' }, group ? NO_FIGURE : NOTHING_RECORDED, options);
 }
+
+/** The fact beside a ranked item that counts people: its noun agrees with the count. */
+const peopleFact = (value) => Object.freeze({ label: value.kind === 'number' && value.value === 1 ? 'person' : 'people', value });
 
 const SANCTION_TEXT = Object.freeze({ sanctioned: 'Sanctioned', unsanctioned: 'Unsanctioned', unknown: 'No decision yet' });
 const sanctionChip = (state) => (state ? Object.freeze({ key: String(state), text: SANCTION_TEXT[state] ?? String(state) }) : null);
 
 /** The name the catalogue gives a tool's fingerprint; the fingerprint when it gives none. */
 const toolName = (row) => (row.tool_name ? String(row.tool_name) : String(row.tool));
-export const toolHref = (fingerprint) => `#tools?tool=${encodeURIComponent(fingerprint)}`;
-export const teamHref = (team) => `#teams?team=${encodeURIComponent(team)}`;
+
+/** An address with the window carried along, so a drill-down keeps the window it was read in. */
+export function withPreset(hash, preset) {
+  if (!preset || preset === 'd7') return hash;
+  return `${hash}${hash.includes('?') ? '&' : '?'}preset=${encodeURIComponent(preset)}`;
+}
+export const toolHref = (fingerprint, preset = null) => withPreset(`#tools?tool=${encodeURIComponent(fingerprint)}`, preset);
+export const teamHref = (team, preset = null) => withPreset(`#teams?team=${encodeURIComponent(team)}`, preset);
+
+/** The key the folded unrecognised tools rank under; no fingerprint has this shape. */
+const UNRECOGNISED_KEY = 'unrecognised';
+
+/** Several groups of one dimension folded into one, as if they were one value of it. */
+function mergeGroups(groups, key, first) {
+  const measures = {};
+  const trend = new Map();
+  for (const group of groups) {
+    for (const [measure, value] of Object.entries(group.measures)) {
+      measures[measure] = DISTINCT.includes(measure) ? Math.max(measures[measure] ?? 0, value) : (measures[measure] ?? 0) + value;
+    }
+    for (const point of group.trend) trend.set(point.bucket, (trend.get(point.bucket) ?? 0) + point.value);
+  }
+  return Object.freeze({
+    key,
+    first,
+    rows: Object.freeze(groups.flatMap((group) => group.rows)),
+    measures: Object.freeze(measures),
+    count: groups.length,
+    trend: Object.freeze([...trend.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0]))).map(([bucket, value]) => Object.freeze({ bucket, value }))),
+  });
+}
+
+const isUnrecognised = (group) => toolName(group.first) === UNRECOGNISED_TOOL;
 
 /**
  * The tools in use, by submissions over the window, each a link to its own screen. Rank is a
- * volume and never a sanction signal: the sanction is its own chip, in its own colour.
+ * volume and never a sanction signal: the sanction is its own chip, in its own colour. Two or
+ * more fingerprints the catalogue does not name are one line: each is a tool only by its hash, and
+ * a run of identical "Unrecognised tool" lines says nothing a reader can act on; the fingerprints
+ * are listed on their own under the Tools ranking.
  */
 export function rankTools(state, { title = 'Tools in use', href = null, moreLabel = 'All tools', limit = null, link = toolHref, emptyText = 'No tool was in use in this window.' } = {}) {
-  const groups = foldCells(state, 'tool').sort(byMeasure('submissions'));
-  const total = totalOf(groups, 'submissions');
-  const items = (limit ? groups.slice(0, limit) : groups).map((group) => {
-    const name = toolName(group.first);
+  const groups = foldCells(state, 'tool');
+  const unnamed = groups.filter(isUnrecognised);
+  const listed = (unnamed.length >= 2
+    ? [...groups.filter((group) => !isUnrecognised(group)), mergeGroups(unnamed, UNRECOGNISED_KEY, { tool_name: 'Unrecognised tools', sanctioned_state: 'unknown' })]
+    : groups).sort(byMeasure('submissions'));
+  const total = totalOf(listed, 'submissions');
+  const items = (limit ? listed.slice(0, limit) : listed).map((group) => {
+    const folded = group.key === UNRECOGNISED_KEY;
+    const name = folded ? 'Unrecognised tools' : toolName(group.first);
     const submissions = foldedMeasure(group, 'submissions');
     return Object.freeze({
       key: group.key,
-      href: link ? link(group.key) : null,
+      href: folded || !link ? null : link(group.key),
       label: name,
       mono: name === group.key,
-      title: `Tool fingerprint ${group.key}`,
-      sublabel: name === UNRECOGNISED_TOOL ? group.key : null,
-      subMono: true,
-      chip: sanctionChip(group.first.sanctioned_state),
+      title: folded ? 'Tools the shared catalogue does not name, together' : `Tool fingerprint ${group.key}`,
+      sublabel: folded ? `${plural(group.count, 'fingerprint', 'fingerprints')} the catalogue does not name` : name === UNRECOGNISED_TOOL ? group.key : null,
+      subMono: !folded,
+      chip: sanctionChip(group.first.sanctioned_state ?? 'unknown'),
       value: submissions,
       share: shareOf(submissions, total),
       meta: Object.freeze([
-        Object.freeze({ label: 'people', value: foldedMeasure(group, 'users') }),
+        peopleFact(foldedMeasure(group, 'users')),
         Object.freeze({ label: 'blocked', value: foldedMeasure(group, 'blocked') }),
         Object.freeze({ label: 'sent', value: bytesValue(foldedMeasure(group, 'bytes_total')) }),
       ]),
@@ -255,10 +302,50 @@ export function rankTools(state, { title = 'Tools in use', href = null, moreLabe
   });
 }
 
-const SANCTION_PARTS = Object.freeze([['sanctioned', 'Sanctioned tools'], ['unsanctioned', 'Unsanctioned tools'], ['unknown', 'No decision yet']]);
+/**
+ * The fingerprints the catalogue does not name, one line each with its figures, so a tool the
+ * ranking folds is still reachable. Nothing when there are fewer than two, since the ranking
+ * then lists the one by itself.
+ */
+export function unrecognisedTools(state, { link = toolHref } = {}) {
+  const groups = foldCells(state, 'tool').filter(isUnrecognised).sort(byMeasure('submissions'));
+  if (groups.length < 2) return null;
+  const rows = groups.map((group) => Object.freeze({
+    fingerprint_cell: Object.freeze({ primary: group.key, mono: true, title: `Tool fingerprint ${group.key}` }),
+    submissions: foldedMeasure(group, 'submissions').value ?? null,
+    users: foldedMeasure(group, 'users').value ?? null,
+    bytes_total: foldedMeasure(group, 'bytes_total').value ?? null,
+    last_active: group.trend.length > 0 ? group.trend[group.trend.length - 1].bucket : null,
+    href: link(group.key),
+  }));
+  return Object.freeze({
+    ...tableFrom({ data: rows }, {
+      title: 'Unrecognised tools',
+      columns: [
+        column('fingerprint_cell', 'Fingerprint', 'stack'),
+        column('submissions', 'Submissions', 'measure'),
+        column('users', 'People', 'measure'),
+        column('bytes_total', 'Data sent', 'measure-bytes'),
+        column('last_active', 'Last active', 'instant'),
+      ],
+      emptyText: 'Every tool in this window is named.',
+    }),
+    rowHref: 'href',
+    breakdowns: false,
+  });
+}
 
-/** Where the window's submissions went, by the present-tense sanction of the tool they went to. */
-export function sanctionShare(state, { title = 'Where submissions went', emptyText = 'No submissions in this window.' } = {}) {
+const SANCTION_PARTS = Object.freeze([
+  ['sanctioned', 'Sanctioned tools', 'sanctioned tools'],
+  ['unsanctioned', 'Unsanctioned tools', 'unsanctioned tools'],
+  ['unknown', 'No decision yet', 'tools with no decision yet'],
+]);
+
+/**
+ * Where the window's submissions went, by the present-tense sanction of the tool they went to.
+ * When no tool has a decision, the block says so and opens where the decision is made.
+ */
+export function sanctionShare(state, { title = 'Where submissions went', emptyText = 'No submissions in this window.', settingsHref = '#settings' } = {}) {
   const counts = new Map(SANCTION_PARTS.map(([key]) => [key, 0]));
   let total = 0;
   for (const row of state.data) {
@@ -268,13 +355,15 @@ export function sanctionShare(state, { title = 'Where submissions went', emptyTe
     counts.set(key, counts.get(key) + value.value);
     total += value.value;
   }
+  const undecided = total > 0 && counts.get('unknown') === total;
   return Object.freeze({
     kind: 'share',
     title,
     total,
     emptyText,
-    parts: Object.freeze(SANCTION_PARTS.map(([key, label]) => Object.freeze({ key, label, count: counts.get(key), share: total > 0 ? counts.get(key) / total : 0 }))),
-    note: 'A tool with no decision is neither sanctioned nor unsanctioned.',
+    ...(undecided ? { href: settingsHref, moreLabel: 'Decide which tools are sanctioned' } : {}),
+    parts: Object.freeze(SANCTION_PARTS.map(([key, label, phrase]) => Object.freeze({ key, label, phrase, count: counts.get(key), share: total > 0 ? counts.get(key) / total : 0 }))),
+    note: undecided ? 'No tool has a sanction decision yet.' : 'A tool with no decision is neither sanctioned nor unsanctioned.',
   });
 }
 
@@ -292,18 +381,19 @@ const CLASS_TEXT = Object.freeze({
  * The sensitive-data classes seen, by the submissions carrying each. Class rows fan out, so no
  * share of a whole is said: a submission carrying two classes is in both.
  */
-export function rankClasses(state, { title = 'Sensitive data by class', href = null, moreLabel = 'Data classes', limit = null, emptyText = 'No sensitive data was classified in this window.' } = {}) {
+export function rankClasses(state, { title = 'Sensitive data by class', href = null, moreLabel = 'Data classes', limit = null, preset = null, emptyText = 'No sensitive data was classified in this window.' } = {}) {
   const groups = foldCells(state, 'class', { sum: ['submissions'], max: ['users', 'max_score'] }).sort(byMeasure('submissions'));
   const items = (limit ? groups.slice(0, limit) : groups).map((group) => Object.freeze({
     key: group.key,
-    href: null,
+    href: withPreset(`#tools?view=classes&class=${encodeURIComponent(group.key)}`, preset),
     label: CLASS_TEXT[group.key] ?? group.key.replace(/_/g, ' '),
     title: group.key,
-    chip: group.first.severity ? Object.freeze({ key: String(group.first.severity), text: String(group.first.severity) }) : null,
+    // Severity has its own colours; `high` is a bad severity, though it is a good confidence.
+    chip: group.first.severity ? Object.freeze({ key: `severity_${group.first.severity}`, text: String(group.first.severity) }) : null,
     value: foldedMeasure(group, 'submissions'),
     share: null,
     meta: Object.freeze([
-      Object.freeze({ label: 'people', value: foldedMeasure(group, 'users') }),
+      peopleFact(foldedMeasure(group, 'users')),
       Object.freeze({ label: 'max score', value: (() => { const v = foldedMeasure(group, 'max_score'); return v.kind === 'number' ? { kind: 'number', value: v.value, text: formatScore(v.value) } : v; })() }),
     ]),
     trend: group.trend,
@@ -403,10 +493,11 @@ function reportingTile(cov) {
  * @param {object} [input.findings] view state for findings
  * @param {object} [input.coverage] a coverage block, when the device read did not carry one
  */
-export function postureView({ devices, tools = null, classes = null, findings = null, coverage }) {
+export function postureView({ devices, tools = null, classes = null, findings = null, coverage }, { preset = null, exploreHref = 'explore.html' } = {}) {
   const cov = devices?.coverage ?? coverage ?? null;
   const usage = tools ?? NOTHING;
   const open = (findings?.data ?? []).filter((row) => row.review_state === 'open').length;
+  const at = (hash) => withPreset(hash, preset);
 
   // The same warning arrives with each read; it is said once. Coverage is not a banner here: the
   // devices reporting tile carries it, and a panel that cannot answer says so in place.
@@ -425,30 +516,31 @@ export function postureView({ devices, tools = null, classes = null, findings = 
   return screen('posture', 'Overview', null, null, {
     subtitle: null,
     tiles: Object.freeze([
-      measureTile('Submissions', usage, 'submissions', formatCount, { trend: trendOf(usage) }),
-      peopleTile(usage),
-      tile('Open findings', findings ? { kind: 'number', text: formatCount(open) } : { kind: 'absent', text: '—' }, findings ? 'In the latest page' : null),
+      measureTile('Submissions', usage, 'submissions', formatCount, { trend: trendOf(usage), href: at('#tools'), moreLabel: 'Tools' }),
+      peopleTile(usage, undefined, { href: '#person', moreLabel: 'Users' }),
+      tile('Open findings', findings ? { kind: 'number', text: formatCount(open) } : { kind: 'absent', text: '—' }, findings ? 'In the latest page' : null,
+        { href: `${exploreHref}#findings?review_state=open`, moreLabel: 'Review them' }),
       reportingTile(cov),
     ]),
     blocks: Object.freeze([
       sanctionShare(usage, { emptyText: emptyLine(tools, 'No submissions in this window.') }),
-      rankTools(usage, { href: '#tools', limit: 6, emptyText: emptyLine(tools, 'No tool was in use in this window.') }),
-      rankClasses(classes ?? NOTHING, { href: '#tools?view=classes', limit: 6, emptyText: emptyLine(classes, 'No sensitive data was classified in this window.') }),
+      rankTools(usage, { href: at('#tools'), limit: 6, link: (fingerprint) => toolHref(fingerprint, preset), emptyText: emptyLine(tools, 'No tool was in use in this window.') }),
+      rankClasses(classes ?? NOTHING, { href: at('#tools?view=classes'), limit: 6, preset, emptyText: emptyLine(classes, 'No sensitive data was classified in this window.') }),
     ]),
     series: Object.freeze([]),
     tables: Object.freeze([
-      tableFrom(findings ?? NOTHING, {
+      linked(tableFrom(findings ?? NOTHING, {
         title: 'Findings',
         columns: [
           column('detected_at', 'Detected', 'instant'),
           column('severity', 'Severity', 'vocab'),
           column('rule_title', 'Rule'),
-          column('subject', 'Person'),
+          column('subject', 'User', 'person'),
           column('tool', 'Tool'),
           column('review_state', 'Review', 'vocab'),
         ],
         emptyText: emptyLine(findings, 'No finding was raised in this window.'),
-      }),
+      }), `${exploreHref}#findings`),
     ]),
     banners: Object.freeze(banners),
     notes: shared(devices ?? NOTHING).notes,
@@ -470,7 +562,8 @@ function seriesTitle(state, what = 'Submissions') {
  * people, its blocks and its trend, and opens its own screen. The per-bucket cells are folded
  * into the window; the chart below is the window over time.
  */
-export function toolsView(state, { link = toolHref } = {}) {
+export function toolsView(state, { link = toolHref, preset = null } = {}) {
+  const linkTo = link ? (fingerprint) => link(fingerprint, preset) : null;
   return screen('tools', 'Tools', null, 'mart.v_tool_usage', {
     subtitle: 'Every AI tool seen in this window, by submissions. Open a tool to see who uses it and what was sent.',
     tiles: Object.freeze([
@@ -481,10 +574,11 @@ export function toolsView(state, { link = toolHref } = {}) {
     ]),
     blocks: Object.freeze([
       sanctionShare(state, { emptyText: emptyLine(state, 'No submissions in this window.') }),
-      rankTools(state, { title: 'Tools by submissions', link, emptyText: emptyLine(state, 'No tool was in use in this window.') }),
+      rankTools(state, { title: 'Tools by submissions', link: linkTo, emptyText: emptyLine(state, 'No tool was in use in this window.') }),
     ]),
-    tables: Object.freeze([]),
-    series: Object.freeze([seriesFrom(state, { measure: 'submissions', title: seriesTitle(state) })]),
+    tables: Object.freeze([unrecognisedTools(state, { link: linkTo })].filter(Boolean)),
+    // A window with no cell has no shape to draw: the ranking's empty line says why.
+    series: Object.freeze(state.data.length > 0 ? [seriesFrom(state, { measure: 'submissions', title: seriesTitle(state) })] : []),
     ...shared(state, [
       'Rank is by submissions with a deterministic tie-break, and is never a sanction signal.',
       'Unknown is its own answer: a tool with no decision renders as unknown, never as unsanctioned.',
@@ -498,13 +592,16 @@ export function toolsView(state, { link = toolHref } = {}) {
  * people are a roster in the API's order, with their submissions; a role that may not see people
  * sees the totals and is told why the roster is missing.
  */
-export function toolView({ usage, people = null, findings = null }, { tool, exploreHref = 'explore.html' }) {
+export function toolView({ usage, people = null, findings = null, names = {} }, { tool, preset = null, exploreHref = 'explore.html' }) {
   const group = foldCells(usage, 'tool').find((g) => g.key === String(tool)) ?? null;
   const name = group ? toolName(group.first) : String(tool);
-  const sanction = group?.first.sanctioned_state ?? null;
+  // A tool in use with no decision recorded is unknown, which is a state of its own; a tool with
+  // no cell in the window has no state to show.
+  const sanction = group?.first.sanctioned_state ?? (group ? 'unknown' : null);
   const roster = people && !people.isRefusal
     ? foldCells(people, 'subject', { sum: ['submissions', 'bytes_total'], max: [] }).map((g) => ({
       subject: g.key,
+      name: names[g.key] ?? null,
       submissions: foldedMeasure(g, 'submissions').value ?? null,
       bytes_total: foldedMeasure(g, 'bytes_total').value ?? null,
     }))
@@ -516,6 +613,8 @@ export function toolView({ usage, people = null, findings = null }, { tool, expl
       : `Who is using it could not be read: ${people.error?.message ?? people.resultState}.`);
   } else if (roster) {
     notes.push('People are listed in the order the read returned them, never by volume. Reading this list is audited.');
+  } else if (group) {
+    notes.push('Who is using it was not read for this window.');
   }
   if (findings?.isRefusal) notes.push(`Findings could not be read: ${findings.error?.message ?? findings.resultState}.`);
   return screen('tool', name, null, 'mart.v_tool_usage', {
@@ -523,7 +622,7 @@ export function toolView({ usage, people = null, findings = null }, { tool, expl
     badges: Object.freeze(sanction ? [sanctionChip(sanction)] : []),
     actions: Object.freeze([
       Object.freeze({ label: 'Prompts and events', href: `${exploreHref}#events?tool=${encodeURIComponent(String(tool))}` }),
-      Object.freeze({ label: 'All tools', href: '#tools' }),
+      Object.freeze({ label: 'All tools', href: withPreset('#tools', preset) }),
     ]),
     tiles: Object.freeze([
       foldedTile('Submissions', group, 'submissions', formatCount, { trend: group && group.trend.length > 1 ? group.trend : null }),
@@ -535,7 +634,7 @@ export function toolView({ usage, people = null, findings = null }, { tool, expl
       ...(roster ? [tableFrom({ data: roster }, {
         title: 'People using it',
         columns: [
-          column('subject', 'Person', 'person'),
+          column('name', 'User', 'person'),
           column('submissions', 'Submissions', 'measure'),
           column('bytes_total', 'Data sent', 'measure-bytes'),
         ],
@@ -547,13 +646,13 @@ export function toolView({ usage, people = null, findings = null }, { tool, expl
           column('detected_at', 'Detected', 'instant'),
           column('severity', 'Severity', 'vocab'),
           column('rule_title', 'Rule'),
-          column('subject', 'Person'),
+          column('subject', 'User', 'person'),
           column('review_state', 'Review', 'vocab'),
         ],
         emptyText: emptyLine(findings && !findings.isRefusal ? findings : null, 'No finding was raised for this tool in this window.'),
       }),
     ]),
-    series: Object.freeze([seriesFrom(usage, { measure: 'submissions', title: seriesTitle(usage) })]),
+    series: Object.freeze(group ? [seriesFrom(usage, { measure: 'submissions', title: seriesTitle(usage) })] : []),
     ...shared(usage, [
       ...notes,
       'Unknown is its own answer: a tool with no decision renders as unknown, never as unsanctioned.',
@@ -575,7 +674,7 @@ export function unsanctionedView(state) {
         title: 'People by tool (ordered by tool, then person — not by volume)',
         columns: [
           column('tool', 'Tool'),
-          column('subject', 'Person'),
+          column('subject', 'User', 'person'),
           column('submissions', 'Submissions', 'measure'),
           column('bytes_total', 'Bytes', 'measure-bytes'),
         ],
@@ -600,7 +699,7 @@ function teamMembersTable(members, { byTeam = true } = {}) {
     title: 'Submissions by person',
     columns: Object.freeze([
       ...(byTeam ? [column('team_name', 'Team')] : []),
-      column('name', 'Person', 'person'),
+      column('name', 'User', 'person'),
       column('submissions', 'Submissions', 'measure'),
     ]),
     // The team heads its run of people rather than repeating on every line.
@@ -627,13 +726,14 @@ function teamMembersNotes(members) {
 function teamFacts(team) {
   if (!team) return null;
   const source = { console: 'Chosen in the console', group: `Group ${team.group_name ?? team.group_object_id ?? ''}`.trim(), department: `Department ${team.match_value ?? ''}`.trim(), org_unit: `Unit ${team.match_value ?? ''}`.trim() }[team.source] ?? null;
-  return [team.members === null || team.members === undefined ? null : `${formatCount(team.members)} members`, source].filter(Boolean).join(' · ') || null;
+  return [team.members === null || team.members === undefined ? null : plural(team.members, 'member', 'members'), source].filter(Boolean).join(' · ') || null;
 }
 
 /**
  * The teams, as one ranked list by submissions, each opening its own screen. A team the admin
  * list knows that has no usage is listed at the end with a zero, so a quiet team is seen rather
- * than dropped; a read that could not say lists nothing.
+ * than dropped; under partial coverage that zero is a floor like every other figure on the page,
+ * and the coverage line says so. A read that could not say lists nothing.
  */
 function rankTeams(state, { teams = null, link = teamHref, emptyText }) {
   const groups = foldCells(state, 'team', { sum: ['submissions'], max: ['users'] }).sort(byMeasure('submissions'));
@@ -649,18 +749,18 @@ function rankTeams(state, { teams = null, link = teamHref, emptyText }) {
       sublabel: teamFacts(team),
       value: submissions,
       share: shareOf(submissions, total),
-      meta: Object.freeze([Object.freeze({ label: 'people', value: foldedMeasure(group, 'users') })]),
+      meta: Object.freeze([peopleFact(foldedMeasure(group, 'users'))]),
       trend: group.trend,
     });
   });
-  const answered = state.data.length > 0 || state.resultState === 'empty';
+  const answered = !state.isRefusal && state.resultState !== 'not_yet_covered';
   for (const team of answered ? teams ?? [] : []) {
-    if (known.has(team.team_id) && groups.some((group) => group.key === team.team_id)) continue;
+    if (groups.some((group) => group.key === team.team_id)) continue;
     items.push(Object.freeze({
       key: team.team_id,
       href: link(team.team_id),
       label: team.name,
-      sublabel: [teamFacts(team), 'No usage in this window'].filter(Boolean).join(' · '),
+      sublabel: [teamFacts(team), 'No usage recorded in this window'].filter(Boolean).join(' · '),
       value: { kind: 'number', value: 0 },
       share: total > 0 ? 0 : null,
       meta: Object.freeze([]),
@@ -691,7 +791,7 @@ function rankTeams(state, { teams = null, link = teamHref, emptyText }) {
  * @param {object|null} [options.members]    view state for the people behind the teams
  * @param {Array|null}  [options.teams]      the admin's team list, so a quiet team is still listed
  */
-export function teamsView(state, { manageHref = null, members = null, teams = null, link = teamHref } = {}) {
+export function teamsView(state, { manageHref = null, members = null, teams = null, link = teamHref, preset = null } = {}) {
   const cov = state.meta?.extras?.team_coverage?.[0] ?? null;
   const num = (v) => (v === null || v === undefined ? null : Number(v));
   const all = num(cov?.users_all);
@@ -701,8 +801,8 @@ export function teamsView(state, { manageHref = null, members = null, teams = nu
   // everyone.
   const outside = all === null || inTeams === null ? null : Math.max(0, all - inTeams);
   const notes = [];
-  if (cov) {
-    notes.push(`${formatCount(all)} people used AI in this window; ${formatCount(inTeams)} of them are in at least one team and ${formatCount(outside)} are in none.`);
+  if (cov && all !== null && inTeams !== null) {
+    notes.push(`${plural(all, 'person', 'people')} used AI in this window; ${inTeams === 1 ? '1 is' : `${formatCount(inTeams)} are`} in at least one team and ${outside === 1 ? '1 is' : `${formatCount(outside)} are`} in none.`);
   }
   if (teamCount === 0) {
     notes.push(manageHref
@@ -725,10 +825,10 @@ export function teamsView(state, { manageHref = null, members = null, teams = nu
       tile('Teams', teamCount === null ? absent() : { kind: 'number', text: formatCount(teamCount) }, manageHref ? 'Manage teams' : null, manageHref ? { href: manageHref } : undefined),
     ]),
     blocks: Object.freeze([
-      rankTeams(state, { teams, link, emptyText: teamCount === 0 ? 'There are no teams yet.' : emptyLine(state, 'No team has usage in this window.') }),
+      rankTeams(state, { teams, link: (team) => link(team, preset), emptyText: teamCount === 0 ? 'There are no teams yet.' : emptyLine(state, 'No team has usage in this window.') }),
     ]),
     tables: Object.freeze(members && !members.isRefusal ? [teamMembersTable(members)] : []),
-    series: Object.freeze([seriesFrom(state, { measure: 'submissions', title: seriesTitle(state) })]),
+    series: Object.freeze(state.data.length > 0 ? [seriesFrom(state, { measure: 'submissions', title: seriesTitle(state) })] : []),
     ...shared(state, [...notes, ...teamMembersNotes(members)]),
   });
 }
@@ -737,14 +837,16 @@ export function teamsView(state, { manageHref = null, members = null, teams = nu
  * One team: its figures over the window and the people behind them, by name. The team is named
  * by the totals read, or by the roster when the totals carry no row for it.
  */
-export function teamView(state, { team, members = null, manageHref = null }) {
+export function teamView(state, { team, members = null, teams = null, manageHref = null, preset = null }) {
   const group = foldCells(state, 'team', { sum: ['submissions'], max: ['users'] }).find((g) => g.key === String(team)) ?? null;
-  const name = String(group?.first.team_name ?? members?.data?.find((row) => row.team_name)?.team_name ?? 'Team');
+  const known = (teams ?? []).find((t) => t.team_id === String(team)) ?? null;
+  const name = String(group?.first.team_name ?? known?.name ?? members?.data?.find((row) => row.team_name)?.team_name ?? 'Team');
   const listed = members && !members.isRefusal ? members.data.length : null;
+  const facts = teamFacts(known);
   return screen('team', name, null, 'mart.agg_team_period', {
-    subtitle: 'One team\'s usage. A team counts the usage of the people in it now.',
+    subtitle: facts ? `${facts}. A team counts the usage of the people in it now.` : 'One team\'s usage. A team counts the usage of the people in it now.',
     actions: Object.freeze([
-      Object.freeze({ label: 'All teams', href: '#teams' }),
+      Object.freeze({ label: 'All teams', href: withPreset('#teams', preset) }),
       ...(manageHref ? [Object.freeze({ label: 'Manage teams', href: manageHref })] : []),
     ]),
     tiles: Object.freeze([
@@ -754,7 +856,7 @@ export function teamView(state, { team, members = null, manageHref = null }) {
         listed === null ? 'The roster could not be read.' : 'Members who sent a prompt in this window.'),
     ]),
     tables: Object.freeze(members && !members.isRefusal ? [teamMembersTable(members, { byTeam: false })] : []),
-    series: Object.freeze([seriesFrom(state, { measure: 'submissions', title: seriesTitle(state) })]),
+    series: Object.freeze(group ? [seriesFrom(state, { measure: 'submissions', title: seriesTitle(state) })] : []),
     ...shared(state, teamMembersNotes(members)),
   });
 }
@@ -929,7 +1031,7 @@ function deviceFacts(row) {
     os || null,
     DEVICE_LABELS[row.managed_state] ?? (row.managed_state ? String(row.managed_state) : null),
     row.agent_version ? `Agent ${row.agent_version}` : null,
-    row.collection_mode ? `Mode ${row.collection_mode}` : null,
+    row.collection_mode ? COLLECTION_MODE_LABELS[row.collection_mode] ?? `Mode ${row.collection_mode}` : null,
   ].filter(Boolean).join(' · ') || null;
 }
 
@@ -979,7 +1081,7 @@ export function devicesView(state, { filters = {}, now = new Date(), exploreHref
       }),
       status_cell: Object.freeze({
         chip: Object.freeze({ key: status.key, text: status.text }),
-        secondary: [lastSeen ? `Last seen ${lastSeen}` : null, collectors].filter(Boolean).join(' · ') || null,
+        secondary: [lastSeen ? `Last seen ${lastSeen}` : null, collectors ? `Collectors ${collectors}` : null].filter(Boolean).join(' · ') || null,
       }),
     };
   });
@@ -1053,10 +1155,14 @@ export function devicesView(state, { filters = {}, now = new Date(), exploreHref
         split: reasons.length > 0 ? Object.freeze(reasons) : null,
       }),
     ]),
+    // A filter is offered when it can change the list: a status filter while some device needs
+    // attention, an OS or management filter while the fleet is mixed. One already chosen stays,
+    // so it can be cleared.
     filters: Object.freeze([
-      filter('Status', 'status', [['attention', 'Needs attention'], ['reporting', 'Reporting'], ...(specific ? [[specific, STATUS_LABELS[specific]]] : [])]),
-      filter('OS', 'device_os', present('device_os')),
-      filter('Management', 'managed_state', present('managed_state')),
+      ...(attention > 0 || chosen.status ? [filter('Status', 'status', [['attention', 'Needs attention'], ['reporting', 'Reporting'], ...(specific ? [[specific, STATUS_LABELS[specific]]] : [])])] : []),
+      ...[['OS', 'device_os'], ['Management', 'managed_state']].map(([label, key]) => [label, key, present(key)])
+        .filter(([, key, values]) => values.length > 1 || chosen[key])
+        .map(([label, key, values]) => filter(label, key, values)),
     ]),
     tables: Object.freeze([
       Object.freeze({
@@ -1064,8 +1170,8 @@ export function devicesView(state, { filters = {}, now = new Date(), exploreHref
           title: 'Devices',
           columns: [
             column('device_cell', 'Device', 'stack'),
-            column('user_cell', 'User', 'stack'),
             column('status_cell', 'Status', 'stack'),
+            column('user_cell', 'User', 'stack'),
             Object.freeze({ key: 'activity', label: '', kind: 'link', linkLabel: 'View activity' }),
           ],
           emptyText: 'No device matches these filters.',

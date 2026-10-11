@@ -3,6 +3,11 @@
 // Nothing here decides whether a value exists. An absent measure is not a number and never reaches
 // these functions as one; see states.js for that decision.
 
+/** A count with its noun: "1 person", "3 people". */
+export function plural(value, one, many) {
+  return `${formatCount(value)} ${Number(value) === 1 ? one : many}`;
+}
+
 /** Group thousands. Deterministic, locale-independent, so a test can assert it. */
 export function formatCount(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—';

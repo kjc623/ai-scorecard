@@ -226,7 +226,7 @@ code {
 .tile:first-child { grid-column: span 2; }
 .tile:first-child .tile-value { font-size: 52px; }
 a.tile { display: block; text-decoration: none; color: inherit; }
-.tile-link .tile-note { color: var(--accent); }
+.tile-link:hover .tile-more { text-decoration: underline; }
 .tile-split { margin-top: 10px; }
 .tile .dist-legend { margin-top: 8px; }
 .filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; }
@@ -263,6 +263,12 @@ a.tile { display: block; text-decoration: none; color: inherit; }
 .v-vocab-degraded, .v-vocab-stale, .v-vocab-disputed, .v-vocab-low, .v-vocab-warned, .v-vocab-uploaded, .v-vocab-partial { background: var(--warn-bg); color: var(--warn); }
 .v-vocab-sanctioned, .v-vocab-healthy, .v-vocab-reporting, .v-vocab-confirmed, .v-vocab-high { background: var(--ok-bg); color: var(--ok); }
 .v-vocab-unknown, .v-vocab-not_captured, .v-vocab-local_only, .v-vocab-open { background: var(--hatch); color: var(--ink-soft); }
+/* A finding's severity is keyed apart from the other vocabularies: "high" is a serious state here, where elsewhere it is a strong signal. */
+.v-vocab-severity_critical { background: var(--bad-bg); color: var(--bad); }
+.v-vocab-severity_high { background: var(--warn-bg); color: var(--warn); }
+.v-vocab-severity_medium, .v-vocab-severity_low { background: var(--sunken); color: var(--ink-soft); }
+/* An identifier the catalogue does not name: a fingerprint, a device id, a user reference. */
+.v-mono { font-family: var(--mono); font-size: 12px; }
 
 /* ── tables ───────────────────────────────────────────────────────────────────────────────── */
 .block-head { display: flex; align-items: center; gap: 10px; padding: 18px 22px 12px; }
@@ -328,6 +334,8 @@ tr.row-empty td { color: var(--ink-soft); font-style: italic; }
 /* Part-to-whole: one bar, a 2px surface gap between its parts, and a legend saying each part's share. */
 .share { padding: 4px 22px 20px; }
 .share-bar { height: 10px; }
+/* One part is the whole: a sentence, not a bar of one colour. */
+.share-one { margin: 0; padding: 4px 22px 20px; font-size: 14px; color: var(--ink); }
 .dist-pct { font: 11px/1 var(--mono); color: var(--ink-soft); }
 .block-empty { margin: 0; padding: 0 22px 20px; color: var(--ink-soft); font-style: italic; }
 
