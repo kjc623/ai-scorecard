@@ -56,6 +56,7 @@ type pipeline struct {
 	degraded bool
 
 	labels    []protocol.Label
+	custom    []protocol.Label
 	fromRules bool
 	excerpt   *protocol.Excerpt
 }
@@ -111,8 +112,8 @@ func (p *pipeline) run(ctx context.Context) {
 	if !ok {
 		return
 	}
-	p.labels = merge(confirmed, preds)
-	p.fromRules = len(confirmed) > 0
+	p.labels = merge(confirmed, p.custom, preds)
+	p.fromRules = len(confirmed) > 0 || len(p.custom) > 0
 	if p.req.Mode == protocol.ModeM2 && len(confirmed) > 0 {
 		p.excerpt = excerpt(confirmed[0], text, p.opts.MaxExcerptChars)
 	}
@@ -189,14 +190,19 @@ func (p *pipeline) normalise(mediaType string, content []byte) (string, bool) {
 	return res.Text, true
 }
 
+// rules runs the release's rules and the request's custom labels, which are the tenant's own rules,
+// within the rules stage's budget.
 func (p *pipeline) rules(text string) ([]rules.Candidate, bool) {
 	start := p.opts.Now()
-	out := p.opts.Release.Rules.Evaluate(text, p.stageDeadline(p.opts.Budget.Rules), p.opts.Now)
+	deadline := p.stageDeadline(p.opts.Budget.Rules)
+	out := p.opts.Release.Rules.Evaluate(text, deadline, p.opts.Now)
+	custom, done := customLabels(text, p.req.CustomLabels, func() bool { return !p.opts.Now().Before(deadline) })
 	took := p.opts.Now().Sub(start)
-	if out.Truncated {
+	if out.Truncated || !done {
 		p.exhaust(StageRules, p.opts.Budget.Rules, took)
 		return nil, false
 	}
+	p.custom = custom
 	p.record(StageRules, took)
 	return out.Candidates, true
 }
@@ -245,7 +251,7 @@ func (p *pipeline) model(text string, resolved map[string]bool) ([]model.Predict
 }
 
 // merge produces one label per class, keeping the highest score, ordered by score then class.
-func merge(confirmed []rules.Candidate, preds []model.Prediction) []protocol.Label {
+func merge(confirmed []rules.Candidate, custom []protocol.Label, preds []model.Prediction) []protocol.Label {
 	best := map[string]protocol.Label{}
 	keep := func(l protocol.Label) {
 		if prev, ok := best[l.Class]; !ok || l.Score > prev.Score {
@@ -254,6 +260,9 @@ func merge(confirmed []rules.Candidate, preds []model.Prediction) []protocol.Lab
 	}
 	for _, c := range confirmed {
 		keep(protocol.Label{Class: c.Class, Score: c.Score, RuleID: c.RuleID})
+	}
+	for _, l := range custom {
+		keep(l)
 	}
 	for _, pr := range preds {
 		keep(protocol.Label{Class: pr.Class, Score: pr.Score})

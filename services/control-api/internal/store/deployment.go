@@ -371,6 +371,9 @@ func (s *SQLStore) PolicyInputs(ctx context.Context, tenantID string) (PolicyInp
 		if in.Rules, err2 = enforcementRules(ctx, tx, tenantID); err2 != nil {
 			return err2
 		}
+		if in.CustomLabels, err2 = customLabels(ctx, tx, tenantID); err2 != nil {
+			return err2
+		}
 		if in.SanctionedTools, err2 = sanctionedTools(ctx, tx, tenantID); err2 != nil {
 			return err2
 		}

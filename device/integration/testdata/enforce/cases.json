@@ -1180,6 +1180,49 @@
         "message": "msg browser_unsanctioned",
         "link": "https://intranet.example/browser_unsanctioned"
       }
+    },
+    {
+      "name": "a rule names a custom label",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "block_falcon",
+            "action": "block",
+            "match": {
+              "labels": [
+                "custom_project_falcon"
+              ]
+            },
+            "message": "Project Falcon stays out of AI tools."
+          }
+        ],
+        "custom_labels": [
+          {
+            "label": "custom_project_falcon",
+            "words": [
+              "falcon"
+            ],
+            "customer_names": [],
+            "file_extensions": [],
+            "file_names": []
+          }
+        ],
+        "sanctioned_tools": []
+      },
+      "input": {
+        "route": "tool.hook",
+        "tool_fingerprint": "app:claude_code",
+        "labels": [
+          "credential",
+          "custom_project_falcon"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "block_falcon",
+        "action": "block",
+        "message": "Project Falcon stays out of AI tools."
+      }
     }
   ]
 }

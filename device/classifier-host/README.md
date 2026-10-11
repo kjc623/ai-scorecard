@@ -5,7 +5,9 @@ never an identity — and returns labels with a confidence band; when a stage ca
 parser failure, unreadable body) the answer is `degraded`, carries no labels and names the stage.
 The pipeline is normalisation (NFKC), the rules in [`rules/default.json`](rules/default.json) with
 their validators, then the keyword model in [`rules/model.json`](rules/model.json) for classes no
-rule labelled. Documents (docx, xlsx, pptx, odt, ods, zip, gzip) are parsed in a separate
+rule labelled. A request may also carry the tenant's custom labels from the policy bundle: each is
+applied, within the rules stage's budget, when the text holds one of its words or customer names as
+whole words, whatever their case. Documents (docx, xlsx, pptx, odt, ods, zip, gzip) are parsed in a separate
 `parse-child` process per document, under a parent-enforced timeout, memory and output limit.
 
 ## How it runs
