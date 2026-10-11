@@ -16,6 +16,7 @@ import {
   deviceStatusStatement,
   erasureEvidenceStatement,
   flushCheckStatement,
+  peopleStatement,
   teamCoverageStatement,
   submissionDetailStatement,
 } from './blocks.js';
@@ -145,6 +146,9 @@ export const TEMPLATES = Object.freeze({
           order: [{ by: 'submissions', dir: 'desc' }],
           limit: limitOf(params, 400, 2000),
         },
+        // The people behind the usage, counted once each, travel with a read of every tool: the
+        // per-tool `users` cannot be added up into how many people used AI.
+        extras: [(q) => (q.filters.length === 0 ? peopleStatement(q) : null)],
         // A tool with no decision still appears (the view LEFT JOINs), reporting
         // sanctioned_state NULL, which the response must render as `unknown` and never as
         // `unsanctioned`.

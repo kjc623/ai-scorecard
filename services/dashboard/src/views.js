@@ -207,6 +207,52 @@ export function peopleTile(state, label, options = {}) {
   return tile(label, { kind: 'number', text: formatCount(most) }, 'At least this many: the most counted in any one period of the window.', options);
 }
 
+/** Who a count of people is out of, in words. */
+const PEOPLE_BASIS = Object.freeze({
+  directory: 'active people in the directory',
+  devices: 'people signed in on an enrolled device',
+});
+
+/**
+ * The people a read of every tool counted once each, split by the sanction of the tools they used,
+ * and who they are out of: the directory's active people when a directory is synced, else the
+ * people signed in on an enrolled device. Nothing when the read did not count them.
+ */
+export function peopleOf(state) {
+  const row = state?.meta?.extras?.people?.[0];
+  if (!row) return null;
+  const n = (value) => (value === null || value === undefined ? null : Number(value));
+  const directory = n(row.directory_people) ?? 0;
+  const devices = n(row.device_people) ?? 0;
+  const basis = directory > 0 ? 'directory' : devices > 0 ? 'devices' : null;
+  return Object.freeze({
+    people: n(row.people),
+    sanctionedOnly: n(row.people_sanctioned_only),
+    both: n(row.people_both),
+    notSanctionedOnly: n(row.people_unsanctioned_only),
+    of: basis === 'directory' ? directory : basis === 'devices' ? devices : null,
+    basis,
+  });
+}
+
+/**
+ * Who the people counted are out of, in words. People not in the directory can send prompts, so the
+ * count can exceed it; it is then beside the directory, not a part of it.
+ */
+function outOf(counted) {
+  if (counted?.of === null || counted?.of === undefined) return null;
+  const whole = `${formatCount(counted.of)} ${PEOPLE_BASIS[counted.basis]}`;
+  return (counted.people ?? 0) <= counted.of ? `of ${whole}` : `more than the ${whole}`;
+}
+
+/** The people who used AI in the window, each once, out of the people who could have; the busiest period's count when the read did not count them. */
+function usersTile(state, options) {
+  const counted = peopleOf(state);
+  if (counted?.people === null || counted?.people === undefined) return peopleTile(state, 'Users', options);
+  const note = outOf(counted) ?? 'Each person counted once, however many tools they used.';
+  return tile('Users', { kind: 'number', text: formatCount(counted.people) }, note, options);
+}
+
 /** A tile from one group's folded measure. */
 function foldedTile(label, group, measure, formatter = formatCount, options = {}) {
   const value = group ? foldedMeasure(group, measure) : { kind: 'absent' };
@@ -538,7 +584,7 @@ export function postureView({ devices, tools = null, coverage }, { preset = null
       measureTile('Prompts', usage, 'submissions', formatCount, { trend: trendOf(usage), href: at('#tools'), moreLabel: 'Tools' }),
       attachmentsTile(usage, { preset }),
       sensitiveTile(usage, { href: at('#insights') }),
-      peopleTile(usage, 'Users', { href: '#person', moreLabel: 'Users' }),
+      usersTile(usage, { href: '#person', moreLabel: 'Users' }),
       reportingTile(cov),
     ]),
     blocks: Object.freeze([
@@ -865,6 +911,173 @@ export function insightsView({ usage, previous = null, classes = null, rules = n
       rulesTable(rules, ruleMatches),
     ]),
     series: Object.freeze(exposureSeries(usage)),
+    tables: Object.freeze([]),
+    ...shared(usage, notes),
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Insights: Adoption
+// ---------------------------------------------------------------------------------------------
+
+/** The people who used AI, out of the people who could have, split by the sanction of their tools. */
+function peopleShare(counted, before, { period, emptyText }) {
+  const total = counted?.people ?? 0;
+  const part = (key, label, count) => Object.freeze({ key, label, count: count ?? 0, share: total > 0 ? (count ?? 0) / total : 0 });
+  const of = counted?.of ?? null;
+  const share = of !== null && of > 0 && total <= of ? ` (${formatPercent(total / of)})` : '';
+  const change = counted && before ? changeOf({ kind: 'number', value: total }, { kind: 'number', value: before.people ?? 0 }, period) : null;
+  return Object.freeze({
+    kind: 'share',
+    title: 'People using AI',
+    total,
+    totalLabel: of !== null ? `${outOf(counted)}${share}` : (total === 1 ? 'person' : 'people'),
+    emptyText: counted ? emptyText : 'The people could not be counted for this window.',
+    note: change?.text ?? null,
+    parts: Object.freeze([
+      part('sanctioned', 'Only sanctioned tools', counted?.sanctionedOnly),
+      part('both', 'Both', counted?.both),
+      part('unsanctioned', 'Only tools not sanctioned', counted?.notSanctionedOnly),
+    ]),
+  });
+}
+
+/**
+ * The applications that sent their first prompt in the window, newest first: when, whether they
+ * are sanctioned, and how many people have used them since. Each opens its tool's screen.
+ */
+function newToolsTable(firstSeen, { link, earliest }) {
+  const rows = firstSeen && !firstSeen.isRefusal
+    ? firstSeen.data.map((row) => Object.freeze({
+      tool_cell: Object.freeze({
+        primary: toolName(row),
+        mono: !row.tool_name,
+        title: `Tool fingerprint ${row.tool}`,
+        secondary: isSite({ key: row.tool }) ? NOT_CATALOGUED : toolName(row) === UNRECOGNISED_TOOL ? String(row.tool) : null,
+      }),
+      sanctioned_state: SANCTION_TEXT[row.sanctioned_state] ? row.sanctioned_state : 'unknown',
+      sanctioned_state_text: SANCTION_TEXT[row.sanctioned_state] ?? SANCTION_TEXT.unknown,
+      first_seen_day: formatInstant(row.first_seen).slice(0, 10),
+      people: row.people === null || row.people === undefined ? null : Number(row.people),
+      href: link ? link(String(row.tool)) : null,
+    }))
+    : [];
+  let summary = null;
+  if (rows.length > 0) {
+    const n = rows.length;
+    const count = (state) => rows.filter((r) => r.sanctioned_state === state).length;
+    const parts = [];
+    if (count('unsanctioned') > 0) parts.push(`${formatCount(count('unsanctioned'))} ${count('unsanctioned') === 1 ? 'is' : 'are'} unsanctioned`);
+    if (count('unknown') > 0) parts.push(`${formatCount(count('unknown'))} ${count('unknown') === 1 ? 'has' : 'have'} no decision yet`);
+    const more = firstSeen.page?.next_cursor ? 'More than' : null;
+    const said = `${more ? `${more} ` : ''}${plural(n, 'application', 'applications')} sent ${n === 1 && !more ? 'its' : 'their'} first prompt in this window`;
+    summary = parts.length > 0 ? `${said}; ${parts.join(' and ')}.` : `${said}; ${n === 1 && !more ? 'it is' : 'all are'} sanctioned.`;
+    if (earliest) summary = `${summary} ${earliest}`;
+  }
+  const emptyText = !firstSeen ? 'The applications new in this window could not be read.'
+    : firstSeen.isRefusal ? `The applications new in this window could not be read: ${firstSeen.error?.message ?? firstSeen.resultState}.`
+      : 'No application sent its first prompt in this window.';
+  return Object.freeze({
+    kind: 'table',
+    ...tableFrom({ data: rows }, {
+      title: 'New this period',
+      columns: [
+        column('tool_cell', 'Application', 'stack'),
+        column('sanctioned_state', 'Sanction', 'status'),
+        column('first_seen_day', 'First seen'),
+        column('people', 'People since', 'measure'),
+      ],
+      emptyText,
+    }),
+    ...(summary ? { summary } : {}),
+    rowHref: 'href',
+    breakdowns: false,
+  });
+}
+
+const SHIFT_PARTS = Object.freeze(['sanctioned', 'unknown', 'unsanctioned']);
+
+/**
+ * Prompts per bucket split by the sanction of the tool they went to, and the sanctioned share at
+ * the start of the window against its end: whether use is moving to sanctioned tools.
+ */
+function sanctionShift(shift) {
+  if (!shift || shift.isRefusal || !(shift.meta?.source ?? '').startsWith('mart.')) return null;
+  const byBucket = new Map();
+  for (const row of shift.data) {
+    const bucket = row.bucket ?? 'total';
+    if (!byBucket.has(bucket)) byBucket.set(bucket, new Map(SHIFT_PARTS.map((key) => [key, 0])));
+    const value = measureOf(row, 'submissions');
+    const key = SHIFT_PARTS.includes(row.sanctioned_state) ? row.sanctioned_state : 'unknown';
+    if (value.kind === 'number') byBucket.get(bucket).set(key, byBucket.get(bucket).get(key) + value.value);
+  }
+  const points = [...byBucket.entries()]
+    .sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+    .map(([bucket, parts]) => Object.freeze({
+      bucket,
+      value: { kind: 'number', value: [...parts.values()].reduce((a, b) => a + b, 0) },
+      parts: Object.freeze(SHIFT_PARTS.map((key) => Object.freeze({ key, label: SANCTION_TEXT[key], value: parts.get(key) }))),
+    }));
+  const counted = points.filter((p) => p.value.value > 0);
+  if (counted.length === 0) return null;
+  const sanctioned = (point) => point.parts[0].value / point.value.value;
+  const unit = shift.meta?.applied_bucket ?? 'bucket';
+  const last = counted[counted.length - 1];
+  const first = counted[0];
+  let summary = `Sanctioned tools took ${formatPercent(sanctioned(last))} of prompts`;
+  if (counted.length === 1) summary += ' in this window.';
+  else {
+    const move = Math.round(sanctioned(last) * 100) - Math.round(sanctioned(first) * 100);
+    summary += ` in the latest ${unit}, ${move === 0 ? 'the same as' : move > 0 ? 'up from' : 'down from'} ${formatPercent(sanctioned(first))} in the first.`;
+  }
+  return Object.freeze({
+    kind: 'series',
+    title: `Prompts per ${unit}, by sanction`,
+    points: Object.freeze(points),
+    summary,
+    unavailable: false,
+    reason: null,
+  });
+}
+
+/**
+ * Insights, Adoption: how many people used AI out of how many could have, and on which side of the
+ * sanction line; the applications new in the window; and whether prompts are moving to sanctioned
+ * tools. The people are compared with the period of the same length just before the window.
+ *
+ * @param {object} input
+ * @param {object} input.usage        view state for tool usage over the window (Q1), with its people
+ * @param {object} [input.previous]   the same read over the previous period
+ * @param {object} [input.firstSeen]  view state for the tools first seen in the window
+ * @param {object} [input.shift]      view state for prompts per bucket by sanction
+ */
+export function adoptionView({ usage, previous = null, firstSeen = null, shift = null }, { preset = 'd7', link = toolHref } = {}) {
+  const period = previousPeriod(preset);
+  const counted = peopleOf(usage);
+  const before = peopleOf(comparable(previous));
+  const notes = [
+    'People using AI counts everyone who sent a prompt in the window once, however many tools and days they used.',
+    'A tool not sanctioned is one marked unsanctioned or with no decision yet.',
+  ];
+  if (counted?.basis === 'directory') notes.push('The people are out of everyone the directory lists as active.');
+  else if (counted?.basis === 'devices') notes.push('No directory is synced, so the people are out of everyone last signed in on an enrolled device.');
+  else if (counted) notes.push('No directory is synced and no enrolled device has said who is signed in, so there is no count to compare with.');
+  notes.push(before
+    ? `The change compares this window with ${period}.`
+    : `${period[0].toUpperCase()}${period.slice(1)} could not be read, so no change is shown.`);
+  notes.push('An application counts from the day it sent its first prompt here, under any of its fingerprints; People since counts everyone who has used it from then until now.');
+  // Nothing before the window means collection began inside it, so every tool in use is new.
+  const fresh = comparable(previous) && previous.data.length === 0 ? 'Nothing was recorded before this window, so every application in use is new.' : null;
+  const shiftSeries = sanctionShift(shift);
+  return screen('insights', 'Insights', null, 'mart.v_tool_usage', {
+    subtitle: 'Adoption: how many people use AI, which applications are new, and whether use is moving to sanctioned tools.',
+    lead: Object.freeze([peopleShare(counted, before, { period, emptyText: emptyLine(usage, 'No one sent a prompt in this window.') })]),
+    tiles: Object.freeze([]),
+    blocks: Object.freeze([
+      newToolsTable(firstSeen, { link: link ? (fingerprint) => link(fingerprint, preset) : null, earliest: fresh }),
+      ...(shiftSeries ? [shiftSeries] : []),
+    ]),
+    series: Object.freeze([]),
     tables: Object.freeze([]),
     ...shared(usage, notes),
   });

@@ -11,11 +11,14 @@ import { createQueryApi, httpTransport, loadSession, createAdminApi, httpAdminTr
 import { readState } from './states.js';
 import { QUESTIONS, context } from './questions.js';
 import {
-  postureView, insightsView, toolsView, toolView, unsanctionedView, teamsView, teamView, classesView,
+  postureView, insightsView, adoptionView, toolsView, toolView, unsanctionedView, teamsView, teamView, classesView,
   personView, peopleView, devicesView, eventView, auditView, refusalView,
   needsInputView,
 } from './views.js';
-import { buildListDocument, buildPeopleDocument, buildRuleMatchesDocument, buildTeamMembersDocument } from './dsl.js';
+import {
+  buildFirstSeenDocument, buildListDocument, buildPeopleDocument, buildRuleMatchesDocument, buildSanctionShiftDocument,
+  buildTeamMembersDocument,
+} from './dsl.js';
 import { renderScreen, renderNav } from './render.js';
 import { shellNavItems, groupOf, readCollapsed, wireShell } from './shell.js';
 import { allowedPageIds, filterNavItems, mayOpen } from './session.js';
@@ -154,7 +157,9 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
             return { view: mode.view(await ask(mode.questionId, ctx), { preset: ctx.preset }), shell: shell() };
           }
           if (screen.id === 'teams') return { view: await teamsScreen(params, ctx), shell: shell() };
-          if (screen.id === 'insights') return { view: await insightsScreen(ctx), shell: shell() };
+          if (screen.id === 'insights') {
+            return { view: params.filters.view === 'adoption' ? await adoptionScreen(ctx) : await insightsScreen(ctx), shell: shell() };
+          }
           const state = await ask(screen.questionId, ctx);
           return { view: viewFor(screen.id, state, params), shell: shell() };
         }
@@ -243,6 +248,20 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
     return insightsView({ usage, previous, classes, rules, ruleMatches }, { preset: ctx.preset });
   }
 
+  /**
+   * Insights, Adoption: the window's tool usage, which carries the people who used AI; the same
+   * read of the period before it, for the change; the applications first seen in the window; and
+   * the prompts per bucket by sanction. Only the window's usage is needed; without the others their
+   * panels say what is missing. The previous period is read first, as on Exposure.
+   */
+  async function adoptionScreen(ctx) {
+    const previous = await part(() => ask('q1_tools_ranked', context({ preset: ctx.preset, now: new Date(Date.parse(ctx.window.from)) })));
+    const usage = await ask('q1_tools_ranked', ctx);
+    const firstSeen = await part(async () => readState(await api.run(buildFirstSeenDocument({ window: ctx.window }))));
+    const shift = await part(async () => readState(await api.run(buildSanctionShiftDocument({ window: ctx.window }))));
+    return adoptionView({ usage, previous, firstSeen, shift }, { preset: ctx.preset });
+  }
+
   /** The Teams screen: every team, or one team when the address names it. */
   async function teamsScreen(params, ctx) {
     const team = params.filters.team ? String(params.filters.team) : null;
@@ -313,12 +332,22 @@ function presetsFor(screen, preset, filters) {
   return { current, items };
 }
 
-/** The switch a screen carries beside its window: what Usage shows. */
+/** The tabs of Insights, each a question a customer asks; Exposure is the default. */
+const INSIGHTS_TABS = Object.freeze({ exposure: 'Exposure', adoption: 'Adoption' });
+
+/** The switch a screen carries beside its window: what Usage shows, and which tab of Insights. */
 function switchFor(screen, preset, filters) {
   const link = (extra) => {
     const query = new URLSearchParams({ ...(PRESET_LABELS[preset] ? { preset } : {}), ...extra }).toString();
     return `#${screen.id}${query ? `?${query}` : ''}`;
   };
+  if (screen.id === 'insights') {
+    return {
+      label: 'Show',
+      current: INSIGHTS_TABS[filters.view] ? filters.view : 'exposure',
+      items: Object.entries(INSIGHTS_TABS).map(([id, label]) => ({ id, label, href: link(id === 'exposure' ? {} : { view: id }) })),
+    };
+  }
   // One tool's screen is reached from the list; it has no list to switch.
   if (screen.id === 'tools' && !filters.tool) {
     return {

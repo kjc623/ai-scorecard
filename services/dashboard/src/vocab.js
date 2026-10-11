@@ -103,6 +103,13 @@ export const SOURCES = Object.freeze({
     subjectBearing: true,
     note: 'subject-bearing: every read is audited; sanctioned state is joined at read time',
   }),
+  'mart.v_tool_first_seen': Object.freeze({
+    kind: 'list',
+    label: 'Tools by the day they first sent a prompt',
+    dimensions: Object.freeze(['tool']),
+    measures: Object.freeze([]),
+    note: 'one row per tool first seen in the window, with its sanction and its people counted, never named',
+  }),
   'mart.agg_org_period': Object.freeze({
     kind: 'aggregate',
     label: 'Usage per department',

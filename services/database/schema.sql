@@ -1645,6 +1645,10 @@ CREATE TABLE mart.agg_tool_user_period (
   PRIMARY KEY (tenant_id, bucket_start, bucket_size, tool_fingerprint, user_ref)
 );
 
+-- One tool's people over a span of days, read without scanning every tool's rows in that span.
+CREATE INDEX agg_tool_user_period_by_tool ON mart.agg_tool_user_period (tenant_id, tool_fingerprint, bucket_size, bucket_start)
+  INCLUDE (user_ref);
+
 -- Sensitive data per class. users is carried so the read layer can suppress small cells.
 CREATE TABLE mart.agg_class_period (
   tenant_id        uuid NOT NULL,
@@ -1822,6 +1826,22 @@ SELECT a.tenant_id,
   LEFT JOIN ops.tool_sanction s
     ON s.tenant_id = a.tenant_id
    AND s.tool_key = c.app_key;
+
+-- The day each tool first sent a prompt. A catalogue app counts once, from the first of its
+-- fingerprints to appear, and carries every fingerprint it has been seen under; a fingerprint
+-- outside the catalogue is a tool of its own.
+CREATE VIEW mart.v_tool_first_seen
+WITH (security_invoker = true) AS
+SELECT a.tenant_id,
+       c.app_key                                                              AS tool_key,
+       (array_agg(a.tool_fingerprint ORDER BY a.bucket_start, a.tool_fingerprint))[1] AS tool_fingerprint,
+       array_agg(DISTINCT a.tool_fingerprint)                                 AS fingerprints,
+       min(a.bucket_start)                                                    AS first_seen
+  FROM mart.agg_tool_period a
+  LEFT JOIN ref.tool_catalogue c
+    ON c.tool_fingerprint = a.tool_fingerprint
+ WHERE a.bucket_size = 'day' AND a.submissions > 0
+ GROUP BY a.tenant_id, c.app_key, CASE WHEN c.app_key IS NULL THEN a.tool_fingerprint END;
 
 -- A fingerprint's display name: the shared catalogue's; for `host:<host>`, a destination no app
 -- claims, the host; else "Unrecognised tool". Any other raw fingerprint is never shown as a name,
@@ -2687,7 +2707,8 @@ GRANT SELECT ON ingest.submission, ingest.observation TO sac_query;
 GRANT SELECT ON mart.finding, mart.agg_tool_period, mart.agg_tool_user_period,
       mart.agg_class_period, mart.agg_org_period, mart.agg_user_period, mart.agg_device_period,
       mart.agg_team_period, mart.agg_rule_period, mart.v_device_liveness, mart.v_tool_usage,
-      mart.v_finding, mart.v_tenant_suspension_impact, mart.v_person, mart.v_team_member_period TO sac_query;
+      mart.v_finding, mart.v_tenant_suspension_impact, mart.v_person, mart.v_team_member_period,
+      mart.v_tool_first_seen TO sac_query;
 -- The enforcement rules, for the matches per rule on Insights: what each rule matches and does, and
 -- the names of the custom labels it names. Never who last edited a rule.
 GRANT SELECT (tenant_id, position, rule_id, action, match) ON ops.enforcement_rule TO sac_query;
