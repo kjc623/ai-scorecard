@@ -15,20 +15,21 @@ import (
 )
 
 // decided is an enforcement hook that records d whatever the labels.
-func decided(d protocol.Decision) func([]string, bool) protocol.Decision {
-	return func([]string, bool) protocol.Decision { return d }
+func decided(d protocol.Decision) func([]string, bool, string) protocol.Decision {
+	return func([]string, bool, string) protocol.Decision { return d }
 }
 
 // enforceCall is what one call of the enforcement hook saw.
 type enforceCall struct {
-	labels []string
-	known  bool
+	labels  []string
+	known   bool
+	userRef string
 }
 
 // recordingHook records each call and answers with the rule id "seen".
-func recordingHook(calls *[]enforceCall) func([]string, bool) protocol.Decision {
-	return func(labels []string, known bool) protocol.Decision {
-		*calls = append(*calls, enforceCall{labels: labels, known: known})
+func recordingHook(calls *[]enforceCall) func([]string, bool, string) protocol.Decision {
+	return func(labels []string, known bool, userRef string) protocol.Decision {
+		*calls = append(*calls, enforceCall{labels: labels, known: known, userRef: userRef})
 		return protocol.Decision{RuleID: "seen", Action: protocol.ActionLogged, DecidedLocally: true}
 	}
 }
@@ -47,7 +48,7 @@ func recordedDecision(t *testing.T, sink *recordingSink) protocol.Decision {
 	return *env.PolicyDecision
 }
 
-func promptObservation(body string, hook func([]string, bool) protocol.Decision) Observation {
+func promptObservation(body string, hook func([]string, bool, string) protocol.Decision) Observation {
 	return Observation{
 		Route:           protocol.RouteProxyTLS,
 		Kind:            protocol.KindPrompt,
@@ -87,6 +88,22 @@ func TestPipelineEnforcesOverTheClassifiersLabels(t *testing.T) {
 	}
 	if got := recordedDecision(t, sink); got.RuleID != "seen" {
 		t.Fatalf("recorded %+v, want the hook's decision", got)
+	}
+}
+
+// The hook is told who the prompt is attributed to, so a rule naming people can match.
+func TestPipelineEnforcesForThePersonTheObservationNames(t *testing.T) {
+	sink := &recordingSink{}
+	p := newTestPipeline(t, sink, m0Bundle())
+	var calls []enforceCall
+	obs := promptObservation("anything", recordingHook(&calls))
+	obs.Content = &tripwireReader{t: t}
+	obs.Person = &Person{UserRef: "u_0123456789abcdef0123456789abcdef", SubjectName: "ana"}
+	if _, err := p.Process(context.Background(), obs); err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if len(calls) != 1 || calls[0].userRef != "u_0123456789abcdef0123456789abcdef" {
+		t.Fatalf("hook saw %+v, want the observation's person", calls)
 	}
 }
 

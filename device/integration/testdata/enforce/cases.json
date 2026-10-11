@@ -1223,6 +1223,118 @@
         "action": "block",
         "message": "Project Falcon stays out of AI tools."
       }
+    },
+    {
+      "name": "a rule naming people matches a prompt from one of them",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "allow_finance",
+            "action": "allow",
+            "match": {
+              "users": [
+                "u_0123456789abcdef0123456789abcdef"
+              ]
+            },
+            "message": ""
+          },
+          {
+            "rule_id": "block_rest",
+            "action": "block",
+            "match": {},
+            "message": "msg block_rest"
+          }
+        ],
+        "sanctioned_tools": []
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true,
+        "user_ref": "u_0123456789abcdef0123456789abcdef"
+      },
+      "want": {
+        "rule_id": "allow_finance",
+        "action": "allow"
+      }
+    },
+    {
+      "name": "a rule naming people does not match a prompt from someone else",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "allow_finance",
+            "action": "allow",
+            "match": {
+              "users": [
+                "u_0123456789abcdef0123456789abcdef"
+              ]
+            },
+            "message": ""
+          },
+          {
+            "rule_id": "block_rest",
+            "action": "block",
+            "match": {},
+            "message": "msg block_rest"
+          }
+        ],
+        "sanctioned_tools": []
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true,
+        "user_ref": "u_22222222222222222222222222222222"
+      },
+      "want": {
+        "rule_id": "block_rest",
+        "action": "block",
+        "message": "msg block_rest"
+      }
+    },
+    {
+      "name": "a rule naming people does not match a prompt no person is named for",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "allow_finance",
+            "action": "allow",
+            "match": {
+              "users": [
+                "u_0123456789abcdef0123456789abcdef"
+              ]
+            },
+            "message": ""
+          },
+          {
+            "rule_id": "block_rest",
+            "action": "block",
+            "match": {},
+            "message": "msg block_rest"
+          }
+        ],
+        "sanctioned_tools": []
+      },
+      "input": {
+        "route": "proxy.tls",
+        "tool_fingerprint": "chatgpt.com",
+        "labels": [
+          "credential"
+        ],
+        "labels_known": true
+      },
+      "want": {
+        "rule_id": "block_rest",
+        "action": "block",
+        "message": "msg block_rest"
+      }
     }
   ]
 }

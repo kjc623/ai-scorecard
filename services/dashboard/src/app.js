@@ -28,6 +28,8 @@ import { createSettings } from './settings.js';
 import { createDirectory } from './directory.js';
 import { renderDirectory } from './directory-render.js';
 import { renderSettings } from './settings-render.js';
+import { createRules } from './rules.js';
+import { renderRuleDialog, renderRules } from './rules-render.js';
 import { createTeamEditor } from './team-editor.js';
 import { renderTeamAdd, renderTeamDialog, renderTeamEdit } from './team-editor-render.js';
 
@@ -37,6 +39,9 @@ import { renderTeamAdd, renderTeamDialog, renderTeamEdit } from './team-editor-r
  */
 export const SCREENS = Object.freeze([
   Object.freeze({ id: 'posture', label: 'Overview', question: null, kind: 'posture' }),
+  // Rules: the enforcement rules and the custom labels they name, over the admin API (rules.js),
+  // with each rule's prompts from the query API.
+  Object.freeze({ id: 'rules', label: 'Rules', question: null, kind: 'admin' }),
   Object.freeze({ id: 'insights', label: 'Insights', question: null, kind: 'answer' }),
   Object.freeze({ id: 'tools', label: 'Tools', question: 1, kind: 'answer', questionId: 'q1_tools_ranked' }),
   Object.freeze({ id: 'teams', label: 'Teams', question: 3, kind: 'answer', questionId: 'q3_team_growth' }),
@@ -403,24 +408,32 @@ function saveDownload(document, data, filename) {
   view.setTimeout(() => view.URL.revokeObjectURL(href), 60_000);
 }
 
+/** What a control acts on, so a repaint can find the same control again. */
+function controlKey(el) {
+  const d = el.dataset ?? {};
+  return [d.team ?? d.rl, d.value, d.field, d.index, d.label].join('\u0000');
+}
+
 /**
- * Repaint a container without losing the reader's place: the list keeps its scroll, and the
- * control that had the focus has it again (a checkbox by what it ticks, a field by its id, a button
- * by its action), or the panel takes it, so the focus never leaves an open dialog.
+ * Repaint a container without losing the reader's place: the list and the panel keep their scroll,
+ * and the control that had the focus has it again (a checkbox by what it ticks, a field by its id, a
+ * button by what it acts on), or the panel takes it, so the focus never leaves an open dialog.
  */
 function repaint(document, container, html) {
   const active = document.activeElement;
   const inside = Boolean(active) && typeof container.contains === 'function' && container.contains(active);
-  const was = inside ? { pick: active.dataset?.teamPick, id: active.id, team: active.dataset?.team, value: active.dataset?.value, caret: active.selectionStart } : null;
-  const scroll = container.querySelector?.('.pick-list')?.scrollTop ?? 0;
+  const was = inside ? { pick: active.dataset?.teamPick ?? active.dataset?.rlPick, id: active.id, key: controlKey(active), caret: active.selectionStart } : null;
+  const scrolled = ['.pick-list', '.dialog-body'].map((selector) => [selector, container.querySelector?.(selector)?.scrollTop ?? 0]);
   container.innerHTML = html;
-  const list = container.querySelector?.('.pick-list');
-  if (list) list.scrollTop = scroll;
+  for (const [selector, top] of scrolled) {
+    const el = container.querySelector?.(selector);
+    if (el) el.scrollTop = top;
+  }
   if (!was) return;
-  const all = [...(container.querySelectorAll?.('input, button') ?? [])];
-  const target = was.pick !== undefined ? all.find((el) => el.dataset.teamPick === was.pick)
+  const all = [...(container.querySelectorAll?.('input, button, select, textarea') ?? [])];
+  const target = was.pick !== undefined ? all.find((el) => (el.dataset.teamPick ?? el.dataset.rlPick) === was.pick)
     : was.id ? all.find((el) => el.id === was.id)
-      : all.find((el) => el.dataset.team === was.team && el.dataset.value === was.value);
+      : all.find((el) => controlKey(el) === was.key);
   if (target && !target.disabled) {
     target.focus({ preventScroll: true });
     if (typeof was.caret === 'number' && typeof target.setSelectionRange === 'function') target.setSelectionRange(was.caret, was.caret);
@@ -469,11 +482,14 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   let deployment = null;
   let settings = null;
   let directory = null;
+  let rules = null;
   let editor = null;
   // An admin adds and edits teams on Teams; the server refuses the admin API to anyone else.
   const mayManage = mayOpen(allowed, 'directory');
   // The add and edit pop-up lives outside the screen, so a screen repaint never closes it.
   const dialog = document.getElementById('team-dialog');
+  // So does the rule panel.
+  const ruleDialog = document.getElementById('rule-dialog');
 
   function paintDeployment(state) {
     if (paintedScreen === 'deployment') root.innerHTML = renderDeployment(state, { eyebrow: groupOf('deployment') });
@@ -505,6 +521,23 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   function directoryController() {
     directory ??= createDirectory({ admin: adminApi, onChange: paintDirectory });
     return directory;
+  }
+
+  /** Rules and its panel. The tab is in the address, so Back and a shared link open it. */
+  function paintRules(state) {
+    if (paintedScreen === 'rules') {
+      const tab = parseHash(document.location.hash).filters.view === 'labels' ? 'labels' : 'rules';
+      repaint(document, root, renderRules(state, { tab, eyebrow: groupOf('rules'), insights: mayOpen(allowed, 'insights') }));
+    }
+    if (!ruleDialog) return;
+    repaint(document, ruleDialog, renderRuleDialog(state));
+    if (state.panel && !ruleDialog.open && typeof ruleDialog.showModal === 'function') ruleDialog.showModal();
+    if (!state.panel && ruleDialog.open && typeof ruleDialog.close === 'function') ruleDialog.close();
+  }
+
+  function rulesController() {
+    rules ??= createRules({ admin: adminApi, query: active, onChange: paintRules });
+    return rules;
   }
 
   function paintEditor(state) {
@@ -559,6 +592,12 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       return;
     }
     if (screen.kind === 'admin') {
+      if (screen.id === 'rules') {
+        const controller = rulesController();
+        paintRules(controller.state);
+        if (!sameScreen || controller.state.status !== 'ready') await controller.load();
+        return;
+      }
       if (screen.id === 'directory') {
         const controller = directoryController();
         paintDirectory(controller.state);
@@ -592,14 +631,19 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   // The handler returns the render promise. A browser ignores a listener's return value, so this
   // costs nothing there; it means a test can await a navigation and read the finished page rather
   // than racing it.
-  // A browser fires hashchange on the window, not the document. Moving anywhere closes the pop-up.
+  // A browser fires hashchange on the window, not the document. Moving anywhere closes the pop-up
+  // and the rule panel; a rule kept in the unsaved list stays there.
   (document.defaultView ?? document).addEventListener('hashchange', () => {
     editor?.close();
+    if (rules?.state.panel) rules.act({ rl: 'cancel' });
     return render();
   });
-  // The browser closes the dialog itself on Escape; the pop-up's state follows it.
+  // The browser closes a dialog itself on Escape; the pop-up's and the panel's state follow it.
   dialog?.addEventListener?.('close', () => {
     if (editor?.state.open) editor.close();
+  });
+  ruleDialog?.addEventListener?.('close', () => {
+    if (rules?.state.panel) rules.act({ rl: 'cancel' });
   });
   document.addEventListener('submit', (event) => {
     const form = event.target;
@@ -608,6 +652,12 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       event.preventDefault();
       const field = form.querySelector?.('[data-settings-draft]');
       if (field && settings) settings.act({ action: 'save-retention', appliesTo: field.dataset.settingsDraft });
+      return;
+    }
+    // Rules' forms: Enter in the filter applies it, Enter in the panel's search searches.
+    if (form?.dataset?.rlForm !== undefined) {
+      event.preventDefault();
+      if (rules) rules.act({ rl: form.dataset.rlForm });
       return;
     }
     // The team pop-up's forms: Enter in the name saves, Enter in the search searches.
@@ -629,8 +679,19 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     document.location.hash = /^u_[0-9a-f]{32}$/.test(value) ? `#person?subject=${encodeURIComponent(value)}`
       : value ? `#person?q=${encodeURIComponent(value)}` : '#person';
   });
-  // Deployment's buttons name their action in data-dep; Settings' controls name theirs in data-action.
+  // Deployment's buttons name their action in data-dep; Settings' controls name theirs in
+  // data-action, and Rules' in data-rl.
   document.addEventListener('click', (event) => {
+    // A rule's ⋯ menu closes when anything else is clicked.
+    for (const menu of document.querySelectorAll?.('details.rl-menu[open]') ?? []) {
+      if (!menu.contains(event.target)) menu.open = false;
+    }
+    const rlTarget = event.target?.closest?.('[data-rl]');
+    if (rlTarget && rules && rlTarget.tagName !== 'SELECT' && !rlTarget.disabled) {
+      event.preventDefault();
+      rules.act({ ...rlTarget.dataset });
+      return;
+    }
     const teamTarget = event.target?.closest?.('[data-team]');
     if (teamTarget && !teamTarget.disabled) {
       event.preventDefault();
@@ -656,6 +717,18 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   });
   // A per-tool override or other select names its action in data-action and fires change, not click.
   document.addEventListener('change', (event) => {
+    const rlPick = event.target?.dataset?.rlPick;
+    if (rlPick !== undefined && rules) {
+      rules.act({ rl: 'user', value: rlPick });
+      // A tick the panel refused does not stay ticked.
+      event.target.checked = Boolean(rules.state.panel?.rule.users.includes(rlPick));
+      return;
+    }
+    const rlSelect = event.target?.closest?.('select[data-rl]');
+    if (rlSelect && rules) {
+      rules.act({ rl: rlSelect.dataset.rl, value: rlSelect.value });
+      return;
+    }
     const pick = event.target?.dataset?.teamPick;
     if (pick !== undefined && editor) {
       editor.toggle(pick);
@@ -670,10 +743,19 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   document.addEventListener('input', (event) => {
     const draft = event.target?.dataset?.settingsDraft;
     if (draft && settings) settings.setRetentionDraft(draft, event.target.value);
-    const ruleField = event.target?.dataset?.ruleDraft;
-    if (ruleField && settings) settings.setRuleDraft(ruleField, event.target.value);
-    const labelField = event.target?.dataset?.labelDraft;
-    if (labelField && settings) settings.setLabelDraft(labelField, event.target.value);
+    const ruleField = event.target?.dataset?.rlDraft;
+    if (ruleField && rules) {
+      rules.setDraft(ruleField, event.target.value);
+      // Emptying the panel's search shows everything again.
+      if (ruleField === 'query' && event.target.value === '' && rules.state.panel?.picker.term) rules.act({ rl: 'pick-search' });
+    }
+    if (event.target?.dataset?.rlQuery !== undefined && rules) {
+      rules.setQuery(event.target.value);
+      // Emptying the filter lists every rule again.
+      if (event.target.value === '' && rules.state.filter !== '') rules.act({ rl: 'filter' });
+    }
+    const labelField = event.target?.dataset?.rlLabelDraft;
+    if (labelField && rules) rules.setLabelDraft(labelField, event.target.value);
     const killRoute = event.target?.dataset?.killSwitchReason;
     if (killRoute && settings) settings.setKillSwitchReason(killRoute, event.target.value);
     const field = event.target?.dataset?.depDraft;
@@ -687,5 +769,5 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   });
   await render();
 
-  return { render, dashboard, deployment: () => deployment, settings: () => settings, directory: () => directory, editor: () => editor };
+  return { render, dashboard, deployment: () => deployment, settings: () => settings, directory: () => directory, rules: () => rules, editor: () => editor };
 }

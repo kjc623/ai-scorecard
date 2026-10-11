@@ -55,10 +55,13 @@ type Memory struct {
 	endpoint        map[string]*store.EndpointCollectors
 	endpointTools   map[string]map[string]store.EndpointTool
 	rules           map[string][]store.EnforcementRule
-	customLabels    map[string][]store.CustomLabel
-	killSwitches    map[string][]store.KillSwitch
-	dataClasses     []string
-	catalog         []store.CatalogApp
+	// ruleUsers is, by tenant and by a value a rule's users may hold, its name and the refs it
+	// reaches (canonical refs and their aliases), as SetRuleUser gives them.
+	ruleUsers    map[string]map[string]memoryRuleUser
+	customLabels map[string][]store.CustomLabel
+	killSwitches map[string][]store.KillSwitch
+	dataClasses  []string
+	catalog      []store.CatalogApp
 }
 
 var _ store.Store = (*Memory)(nil)
@@ -92,6 +95,7 @@ func New() *Memory {
 		endpoint:          map[string]*store.EndpointCollectors{},
 		endpointTools:     map[string]map[string]store.EndpointTool{},
 		rules:             map[string][]store.EnforcementRule{},
+		ruleUsers:         map[string]map[string]memoryRuleUser{},
 		customLabels:      map[string][]store.CustomLabel{},
 		killSwitches:      map[string][]store.KillSwitch{},
 		dataClasses: []string{"credential", "customer_pii", "government_id", "health", "legal_commercial",
@@ -756,6 +760,7 @@ func (m *Memory) PolicyInputs(_ context.Context, tenantID string) (store.PolicyI
 	sort.Strings(in.InterceptionHosts)
 	in.Endpoint = m.endpointLocked(tenantID)
 	in.Rules = copyRules(m.rules[tenantID])
+	in.RuleUserRefs = m.ruleUserRefsLocked(tenantID)
 	in.CustomLabels = copyCustomLabels(m.customLabels[tenantID])
 	in.KillSwitches = append([]store.KillSwitch{}, m.killSwitches[tenantID]...)
 	in.SanctionedTools = []string{}
@@ -1130,6 +1135,86 @@ func (m *Memory) ReplaceEnforcementRules(_ context.Context, tenantID string, rul
 	return nil
 }
 
+type memoryRuleUser struct {
+	name    string
+	members int64
+	refs    []string
+}
+
+// SetRuleUser makes value (such as "group:<id>") a person, group, department, unit or team the
+// directory knows, named name, with members people whose refs (canonical and aliases) are refs. A
+// value never set is a group or team that no longer exists, except a "user:" value, which reaches
+// its own ref.
+func (m *Memory) SetRuleUser(tenantID, value, name string, members int64, refs ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ruleUsers[tenantID] == nil {
+		m.ruleUsers[tenantID] = map[string]memoryRuleUser{}
+	}
+	m.ruleUsers[tenantID][value] = memoryRuleUser{name: name, members: members, refs: append([]string{}, refs...)}
+}
+
+func (m *Memory) ruleUserLocked(tenantID, value string) (memoryRuleUser, bool) {
+	if u, ok := m.ruleUsers[tenantID][value]; ok {
+		return u, true
+	}
+	kind, ref, _ := strings.Cut(value, ":")
+	switch kind {
+	case "user":
+		return memoryRuleUser{members: 1, refs: []string{ref}}, true
+	case "department", "org_unit":
+		return memoryRuleUser{name: ref}, true
+	}
+	return memoryRuleUser{}, false
+}
+
+func (m *Memory) ruleUserRefsLocked(tenantID string) map[string][]string {
+	out := map[string][]string{}
+	for _, r := range m.rules[tenantID] {
+		if r.Disabled {
+			continue
+		}
+		var refs []string
+		for _, v := range r.Users {
+			u, _ := m.ruleUserLocked(tenantID, v)
+			for _, ref := range u.refs {
+				if !slices.Contains(refs, ref) {
+					refs = append(refs, ref)
+				}
+			}
+		}
+		if len(refs) > 0 {
+			sort.Strings(refs)
+			out[r.RuleID] = refs
+		}
+	}
+	return out
+}
+
+// RuleUsers implements store.Store.
+func (m *Memory) RuleUsers(_ context.Context, tenantID string) ([]store.RuleUser, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return nil, store.ErrUnknownTenant
+	}
+	var values []string
+	for _, r := range m.rules[tenantID] {
+		for _, v := range r.Users {
+			if !slices.Contains(values, v) {
+				values = append(values, v)
+			}
+		}
+	}
+	sort.Strings(values)
+	out := []store.RuleUser{}
+	for _, v := range values {
+		u, found := m.ruleUserLocked(tenantID, v)
+		out = append(out, store.RuleUser{Value: v, Name: u.name, Members: u.members, Found: found})
+	}
+	return out, nil
+}
+
 // ReplaceCustomLabels implements store.Store. Like the database's trigger, leaving out a label a
 // rule names refuses the whole list. The list is kept by display name, as the SQL store reads it.
 func (m *Memory) ReplaceCustomLabels(_ context.Context, tenantID string, labels []store.CustomLabel, audit store.AuditEntry) error {
@@ -1189,6 +1274,7 @@ func copyRules(rules []store.EnforcementRule) []store.EnforcementRule {
 	for _, r := range rules {
 		r.Match = store.RuleMatch{Labels: list(r.Match.Labels), Tools: list(r.Match.Tools),
 			Categories: list(r.Match.Categories), Sanction: list(r.Match.Sanction), Routes: list(r.Match.Routes)}
+		r.Users = list(r.Users)
 		out = append(out, r)
 	}
 	return out

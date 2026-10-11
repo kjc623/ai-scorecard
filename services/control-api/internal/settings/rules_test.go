@@ -32,6 +32,11 @@ func (r *rig) rules(t *testing.T) string {
 	return canonical(t, rec.Body.String())
 }
 
+// withUsers is a {"rules":[...]} document as the GET reads it when no rule names people.
+func withUsers(doc string) string {
+	return strings.TrimSuffix(doc, "}") + `,"users":[]}`
+}
+
 func canonical(t *testing.T, doc string) string {
 	t.Helper()
 	var v any
@@ -48,7 +53,7 @@ func canonical(t *testing.T, doc string) string {
 // audit row with the previous and the new list.
 func TestRulesReplaceTheOrderedList(t *testing.T) {
 	r := newRig(t)
-	if got := r.rules(t); got != `{"rules":[]}` {
+	if got := r.rules(t); got != `{"rules":[],"users":[]}` {
 		t.Fatalf("a tenant without rules reads %s", got)
 	}
 
@@ -57,12 +62,12 @@ func TestRulesReplaceTheOrderedList(t *testing.T) {
 	}
 	first := canonical(t, `{"rules":[
 	  {"rule_id":"block_credentials","action":"block","match":{"labels":["credential"],"tools":[],"categories":[],"sanction":[],"routes":[]},
-	   "message":"Remove the credential and try again.","link":"https://intranet.example/ai"},
+	   "message":"Remove the credential and try again.","link":"https://intranet.example/ai","users":[],"enabled":true},
 	  {"rule_id":"warn.unsanctioned-agents","action":"warn","match":{"labels":[],"tools":[],"categories":["coding_agent"],"sanction":["unsanctioned"],"routes":[]},
-	   "message":"Use the approved coding agent."},
-	  {"rule_id":"allow_hooks","action":"allow","match":{"labels":[],"tools":["app:claude_code"],"categories":[],"sanction":[],"routes":["tool.hook","proxy.tls"]},"message":""}]}`)
-	if got := r.rules(t); got != first {
-		t.Fatalf("after the first PUT:\n got %s\nwant %s", got, first)
+	   "message":"Use the approved coding agent.","users":[],"enabled":true},
+	  {"rule_id":"allow_hooks","action":"allow","match":{"labels":[],"tools":["app:claude_code"],"categories":[],"sanction":[],"routes":["tool.hook","proxy.tls"]},"message":"","users":[],"enabled":true}]}`)
+	if got := r.rules(t); got != withUsers(first) {
+		t.Fatalf("after the first PUT:\n got %s\nwant %s", got, withUsers(first))
 	}
 
 	reordered := `{"rules":[
@@ -72,16 +77,16 @@ func TestRulesReplaceTheOrderedList(t *testing.T) {
 		t.Fatalf("reorder: %d %s", rec.Code, rec.Body)
 	}
 	second := canonical(t, `{"rules":[
-	  {"rule_id":"allow_hooks","action":"allow","match":{"labels":[],"tools":["app:claude_code"],"categories":[],"sanction":[],"routes":["tool.hook","proxy.tls"]},"message":""},
-	  {"rule_id":"block_credentials","action":"warn","match":{"labels":["credential","payment_card"],"tools":[],"categories":[],"sanction":[],"routes":[]},"message":"Check before you send."}]}`)
-	if got := r.rules(t); got != second {
-		t.Fatalf("after the reorder:\n got %s\nwant %s", got, second)
+	  {"rule_id":"allow_hooks","action":"allow","match":{"labels":[],"tools":["app:claude_code"],"categories":[],"sanction":[],"routes":["tool.hook","proxy.tls"]},"message":"","users":[],"enabled":true},
+	  {"rule_id":"block_credentials","action":"warn","match":{"labels":["credential","payment_card"],"tools":[],"categories":[],"sanction":[],"routes":[]},"message":"Check before you send.","users":[],"enabled":true}]}`)
+	if got := r.rules(t); got != withUsers(second) {
+		t.Fatalf("after the reorder:\n got %s\nwant %s", got, withUsers(second))
 	}
 
 	if rec := r.do(t, "admin", "PUT", rulesPath, `{"rules":[]}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("clear: %d %s", rec.Code, rec.Body)
 	}
-	if got := r.rules(t); got != `{"rules":[]}` {
+	if got := r.rules(t); got != `{"rules":[],"users":[]}` {
 		t.Fatalf("after clearing: %s", got)
 	}
 
@@ -146,7 +151,15 @@ func TestRulesRefuseEveryBadValue(t *testing.T) {
 		{"a label outside the data classes", rule(`{"rule_id":"r","action":"block","message":"x","match":{"labels":["credential","secrets"]}}`), apierr.CodeInvalidRequest, ""},
 		{"an unknown match list", rule(`{"rule_id":"r","action":"block","message":"x","match":{"apps":["cursor"]}}`), apierr.CodeSchemaViolation, ""},
 		{"a match list that is not a list", rule(`{"rule_id":"r","action":"block","message":"x","match":{"labels":"credential"}}`), apierr.CodeSchemaViolation, ""},
-		{"an unknown rule field", rule(`{"rule_id":"r","action":"block","message":"x","enabled":true}`), apierr.CodeSchemaViolation, ""},
+		{"an unknown rule field", rule(`{"rule_id":"r","action":"block","message":"x","priority":1}`), apierr.CodeSchemaViolation, ""},
+		{"a user that is an address", rule(`{"rule_id":"r","action":"allow","users":["user:ana@example.com"]}`), apierr.CodeInvalidRequest, "users"},
+		{"a group that is not an id", rule(`{"rule_id":"r","action":"allow","users":["group:finance"]}`), apierr.CodeInvalidRequest, "users"},
+		{"an unknown kind", rule(`{"rule_id":"r","action":"allow","users":["role:admin"]}`), apierr.CodeInvalidRequest, "users"},
+		{"an empty department", rule(`{"rule_id":"r","action":"allow","users":["department:"]}`), apierr.CodeInvalidRequest, "users"},
+		{"a department of 1025 characters", rule(`{"rule_id":"r","action":"allow","users":["department:` + strings.Repeat("d", 1025) + `"]}`), apierr.CodeInvalidRequest, "users"},
+		{"a value twice", rule(`{"rule_id":"r","action":"allow","users":["department:Finance","department:Finance"]}`), apierr.CodeInvalidRequest, "users"},
+		{"users that is not a list", rule(`{"rule_id":"r","action":"allow","users":"department:Finance"}`), apierr.CodeSchemaViolation, ""},
+		{"enabled that is not a boolean", rule(`{"rule_id":"r","action":"allow","enabled":"no"}`), apierr.CodeSchemaViolation, ""},
 	}
 	for _, c := range cases {
 		rec := r.do(t, "admin", "PUT", rulesPath, c.body)
@@ -233,5 +246,40 @@ func TestGetCarriesTheAppCategories(t *testing.T) {
 	)
 	if got := read(); got != `["ide","local_runtime"]` {
 		t.Fatalf("app_categories = %s", got)
+	}
+}
+
+// TestRulesNameWhoTheyApplyTo: a rule keeps the people, groups, departments, units and teams it
+// names and whether it is enabled; the GET names each value once, with how many people it reaches,
+// and a group that no longer exists is read as not found.
+func TestRulesNameWhoTheyApplyTo(t *testing.T) {
+	r := newRig(t)
+	const group = "group:0b6f3c2e-1d4a-4c8b-9e7f-112233445566"
+	const gone = "team:0b6f3c2e-1d4a-4c8b-9e7f-112233445599"
+	const person = "user:u_0123456789abcdef0123456789abcdef"
+	r.store.SetRuleUser(tenantA, group, "Finance", 2, "u_11111111111111111111111111111111", "u_22222222222222222222222222222222")
+	r.store.SetRuleUser(tenantA, person, "Ana Ruiz", 1, "u_0123456789abcdef0123456789abcdef")
+	body := `{"rules":[
+	  {"rule_id":"allow_legal","action":"allow","users":["` + group + `","department:Legal"],"enabled":false},
+	  {"rule_id":"block_people","action":"block","message":"No.","users":["` + person + `","` + gone + `","` + group + `"]}]}`
+	if rec := r.do(t, "admin", "PUT", rulesPath, body); rec.Code != http.StatusNoContent {
+		t.Fatalf("PUT: %d %s", rec.Code, rec.Body)
+	}
+	empty := `{"labels":[],"tools":[],"categories":[],"sanction":[],"routes":[]}`
+	want := canonical(t, `{"rules":[
+	  {"rule_id":"allow_legal","action":"allow","match":`+empty+`,"message":"","users":["`+group+`","department:Legal"],"enabled":false},
+	  {"rule_id":"block_people","action":"block","match":`+empty+`,"message":"No.","users":["`+person+`","`+gone+`","`+group+`"],"enabled":true}],
+	 "users":[
+	  {"value":"department:Legal","name":"Legal","members":0,"found":true},
+	  {"value":"`+group+`","name":"Finance","members":2,"found":true},
+	  {"value":"`+gone+`","name":"","members":0,"found":false},
+	  {"value":"`+person+`","name":"Ana Ruiz","members":1,"found":true}]}`)
+	if got := r.rules(t); got != want {
+		t.Fatalf("GET:\n got %s\nwant %s", got, want)
+	}
+	audits := r.store.Audits()
+	next, _ := json.Marshal(audits[len(audits)-1].Detail["new"])
+	if !strings.Contains(string(next), `"enabled":false`) || !strings.Contains(string(next), `"users":["`+person) {
+		t.Fatalf("the audit does not carry who the rules apply to or that one is disabled: %s", next)
 	}
 }

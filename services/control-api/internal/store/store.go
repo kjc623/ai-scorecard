@@ -205,6 +205,10 @@ type PolicyInputs struct {
 	Endpoint       EndpointSettings
 	// Rules is the tenant's enforcement rules, in order.
 	Rules []EnforcementRule
+	// RuleUserRefs is, by rule id, the refs an enabled rule's users reach: each member's canonical
+	// ref and its aliases, sorted, since a device derives whichever ref it can resolve. A rule whose
+	// users reach nobody is absent.
+	RuleUserRefs map[string][]string
 	// CustomLabels is the tenant's custom labels, by display name.
 	CustomLabels []CustomLabel
 	// SanctionedTools is the catalogue fingerprints of the tools the tenant has sanctioned
@@ -246,6 +250,27 @@ type EnforcementRule struct {
 	Message string
 	// Link is an https URL shown with the message; "" for none.
 	Link string
+	// Users is who the rule applies to, empty for everyone: "user:<canonical ref>", "group:<scim
+	// id>", "department:<name>", "org_unit:<distinguished name>" or "team:<team id>".
+	Users []string
+	// Disabled keeps the rule in its place without sending it to devices.
+	Disabled bool
+}
+
+// RuleUserKinds is the closed set of what a rule's users name, as the prefix of each value.
+var RuleUserKinds = []string{"user", "group", "department", "org_unit", "team"}
+
+// MaxRuleUsers is the most people, groups, departments, units and teams one rule may name.
+const MaxRuleUsers = 200
+
+// RuleUser is one value a rule's users name, as the console shows it: its name (the person's, the
+// group's or team's, or the department or unit itself) and how many people it reaches now. Found is
+// false for a group or team that no longer exists.
+type RuleUser struct {
+	Value   string
+	Name    string
+	Members int64
+	Found   bool
 }
 
 // RuleMatch is a rule's match lists. Every non-empty list must match; an empty one matches
@@ -496,6 +521,8 @@ type Store interface {
 	// the previous and the new list. ErrUnknownRuleLabel when a rule names a label that is neither
 	// in ref.data_class nor a custom label of the tenant; the list in force is then unchanged.
 	ReplaceEnforcementRules(ctx context.Context, tenantID string, rules []EnforcementRule, audit AuditEntry) error
+	// RuleUsers names every value the tenant's rules' users hold, sorted by value.
+	RuleUsers(ctx context.Context, tenantID string) ([]RuleUser, error)
 	// ReplaceCustomLabels replaces the tenant's custom labels in one transaction and audits the
 	// previous and the new list: a label left out is deleted, the others are written. A label's code
 	// never changes. ErrCustomLabelInUse when a label left out is named by an enforcement rule; the

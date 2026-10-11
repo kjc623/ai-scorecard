@@ -236,7 +236,7 @@ test('without the rules the matches are listed by rule id, and no rule is called
 test('a tenant with no rule is told that every prompt is logged, and where rules are set', () => {
   const table = rulesBlock(insightsView({ usage: usageOf(TOOL_ROWS), rules: rulesOf([]), ruleMatches: matchesOf([]) }));
   assert.deepEqual(table.rows, []);
-  assert.equal(table.emptyText, 'No enforcement rule is set, so every prompt is logged. Rules are set in Settings.');
+  assert.equal(table.emptyText, 'No enforcement rule is set, so every prompt is logged. Rules are set on the Rules page.');
   assert.equal(table.summary, undefined);
 });
 
@@ -269,7 +269,7 @@ test('without the previous period no change is shown, and the page says why', as
 test('a window with prompts and no sensitive one says how a prompt becomes sensitive', () => {
   const quiet = usageOf(TOOL_ROWS.map((row) => ({ ...row, sensitive: 0, sensitive_blocked: 0, sensitive_warned: 0, sensitive_logged: 0 })));
   const view = insightsView({ usage: quiet });
-  assert.match(view.notes[0], /Nothing counts as sensitive until an enforcement rule names a label; rules are set in Settings\./);
+  assert.match(view.notes[0], /Nothing counts as sensitive until an enforcement rule names a label; rules are set on the Rules page\./);
   assert.deepEqual(view.blocks[0].items, []);
   assert.equal(view.blocks[0].summary, null);
   assert.equal(view.blocks[0].emptyText, 'No sensitive prompt in this window.');
@@ -283,9 +283,9 @@ test('a window with nothing recorded shows the funnel\'s empty line, not a row o
   assert.match(renderFunnel(view.lead[0]), /<p class="block-empty">No prompts in this window\.<\/p>/);
 });
 
-test('Insights sits under Archive, last in the navigation, and Search follows Overview', () => {
+test('Insights sits under Archive, last in the navigation, and Search follows Overview and Rules', () => {
   const items = shellNavItems();
-  assert.deepEqual(items.slice(0, 3).map((i) => i.id), ['posture', 'explore', 'tools']);
+  assert.deepEqual(items.slice(0, 4).map((i) => i.id), ['posture', 'rules', 'explore', 'tools']);
   assert.deepEqual(items.at(-1), { id: 'insights', label: 'Insights', question: null, group: 'Archive', icon: 'archive', groupIcon: 'archive', href: '#insights' });
   const nav = renderNav(items, 'insights', { collapsed: ['Archive'] });
   assert.match(nav, /<details class="nav-group" data-group="Archive" open><summary><svg class="nav-icon"[^>]*>.*?<\/svg><span>Archive<\/span>/, 'the group holding the current page is open');
