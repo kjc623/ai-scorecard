@@ -822,7 +822,7 @@ function rulesTable(rules, matches) {
   } else if (known && !counted) {
     summary = 'The prompts each rule matched could not be read for this window.';
   }
-  const emptyText = known ? 'No enforcement rule is set, so every prompt is logged. Rules are set in Settings.'
+  const emptyText = known ? 'No enforcement rule is set, so every prompt is logged. Rules are set on the Rules page.'
     : rules?.isRefusal ? `The rules could not be read: ${rules.error?.message ?? rules.resultState}.`
       : 'The rules could not be read.';
   return Object.freeze({
@@ -894,7 +894,7 @@ export function insightsView({ usage, previous = null, classes = null, rules = n
   const prompts = sumMeasure(usage, 'submissions');
   const sensitive = sumMeasure(usage, 'sensitive');
   if (sensitive.kind === 'number' && sensitive.value === 0 && prompts.kind === 'number' && prompts.value > 0) {
-    notes.unshift('No prompt in this window matched a rule that names one of its labels. Nothing counts as sensitive until an enforcement rule names a label; rules are set in Settings.');
+    notes.unshift('No prompt in this window matched a rule that names one of its labels. Nothing counts as sensitive until an enforcement rule names a label; rules are set on the Rules page.');
   }
   notes.push(before
     ? `Each change compares this window with ${period}.`

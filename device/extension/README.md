@@ -29,12 +29,14 @@ messaging host `com.shadowaicapture.capture_core` for the extension's id, which 
 observations in a bounded memory queue and reports the channel absent.
 
 Policy comes from `capture-core`: a `policy_sync` answers with the decoded payload of the signed
-bundle in force, which the extension holds in memory. The mode is `tenant_default_mode` or the
-tool's `tool_modes` entry, whichever is more restrictive; when the bundle also scopes by population,
-device, notice or class prior, the extension asks `capture-core` (`mode_query`). The bundle's
-`rules` and `sanctioned_tools` are matched as `capture-core/enforce` matches them, with no labels
-(the extension classifies nothing); a `warn` holds the request for the user's confirmation and a
-`block` cancels it, each showing the rule's message and link in the page.
+bundle in force, which the extension holds in memory, with its rules as they apply to the person the
+browser runs as: a rule that names other people is left out, and one that names this person no
+longer names anyone. The mode is `tenant_default_mode` or the tool's `tool_modes` entry, whichever
+is more restrictive; when the bundle also scopes by population, device, notice or class prior, the
+extension asks `capture-core` (`mode_query`). The bundle's `rules` and `sanctioned_tools` are
+matched as `capture-core/enforce` matches them, with no labels (the extension classifies nothing); a
+`warn` holds the request for the user's confirmation and a `block` cancels it, each showing the
+rule's message and link in the page.
 
 | Permission | Why |
 |---|---|

@@ -1,17 +1,20 @@
 # dashboard
 
-The analyst-facing web application: Overview, Usage (tools, data classes, teams, and users: the
-people list and each person's page), Devices, Audit trail, Settings (Settings, Deployment, Identity
-Providers), Archive (pre-production only: Insights, with Exposure, the prompts that matched an
-enforcement rule on one of their labels, what happened to them, the tools they went to and the
-labels involved, each against the period before, and every enforcement rule with the prompts it
-matched; and Adoption, how many people use AI out of the directory, split by the sanction of their
-tools, the applications that sent their first prompt in the window, and each day's or week's
-prompts by sanction), and the Search page, where an analyst lists events, findings,
-devices and audit entries, opens a device to see each of its collectors with its state and cause,
-searches prompt text, and reads an event's stored prompt. An admin adds, edits and deletes teams on
-Teams, from any mix of the people they tick and the groups, departments and units the identity
-provider synced and other teams.
+The analyst-facing web application: Overview, Rules (the enforcement rules, read top to bottom like
+a firewall's rulebase: each rule for the people, groups, departments, units or teams it names, the
+tools and the labels it checks, its action and the prompts it decided over 30 days, edited as a
+draft that is saved whole; and the custom labels rules can name), Usage (tools, data classes, teams,
+and users: the people list and each person's page), Devices, Audit trail, Settings (Settings,
+Deployment, Identity Providers), Archive (pre-production only: Insights, with Exposure, the prompts
+that matched an enforcement rule on one of their labels, what happened to them, the tools they went
+to and the labels involved, each against the period before, and every enforcement rule with the
+prompts it matched; and Adoption, how many people use AI out of the directory, split by the sanction
+of their tools, the applications that sent their first prompt in the window, and each day's or
+week's prompts by sanction), and the Search page, where an analyst lists events, findings, devices
+and audit entries, opens a device to see each of its collectors with its state and cause, searches
+prompt text, and reads an event's stored prompt. An admin adds, edits and deletes teams on Teams,
+from any mix of the people they tick and the groups, departments and units the identity provider
+synced and other teams.
 
 It has two halves and no dependencies:
 
