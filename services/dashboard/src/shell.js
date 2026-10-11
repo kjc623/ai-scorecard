@@ -8,18 +8,20 @@
 import { escapeHtml } from './render.js';
 
 /**
- * The navigation: the top-level destinations, with the three usage screens under one group and the
- * admin's settings under another. Every other screen is reached from a row or a switch on one of
- * these. A signed-in role sees only the items it may use (session.js).
+ * The navigation: Rules beside Overview, the usage screens under one group, the admin's settings
+ * under another, and the pages still being built under Archive, which only pre-production offers.
+ * Every other screen is reached from a row or a switch on one of these. A signed-in role sees only
+ * the items its server offers it (session.js), and a group with none of its items offered is not
+ * shown.
  */
 export const NAV_GROUPS = Object.freeze([
   { group: null, icon: 'overview', ids: ['posture'], labels: { posture: 'Overview' } },
-  { group: null, icon: 'insights', ids: ['insights'], labels: { insights: 'Insights' } },
   { group: null, icon: 'rules', ids: ['rules'], labels: { rules: 'Rules' } },
   { group: 'Usage', icon: 'usage', ids: ['tools', 'teams', 'person'], labels: { tools: 'Tools', teams: 'Teams', person: 'Users' } },
   { group: null, icon: 'collection', ids: ['devices'], labels: { devices: 'Devices' } },
   { group: null, icon: 'governance', ids: ['audit'], labels: { audit: 'Audit trail' } },
   { group: 'Settings', icon: 'settings', ids: ['settings', 'deployment', 'directory'], labels: { settings: 'Settings', deployment: 'Deployment', directory: 'Identity Providers' } },
+  { group: 'Archive', icon: 'archive', ids: ['insights'], labels: { insights: 'Insights' } },
 ]);
 
 const NAV_FOLDED = Object.freeze(NAV_GROUPS.filter((g) => g.folded).map((g) => g.group));

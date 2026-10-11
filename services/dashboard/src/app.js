@@ -150,7 +150,7 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
           const devices = await ask('q7_devices', context({ preset: ctx.preset, limit: 500, filters: params.filters ?? {}, now: now() }));
           // The summary reads one more question.
           const tools = await part(() => ask('q1_tools_ranked', ctx));
-          return { view: postureView({ devices, tools }, { preset: ctx.preset }), shell: shell() };
+          return { view: postureView({ devices, tools }, { preset: ctx.preset, insights: params.insights !== false }), shell: shell() };
         }
         case 'answer': {
           if (screen.questionId === 'q6_subject_series' || screen.questionId === 'q9_event_detail') {
@@ -364,9 +364,12 @@ function switchFor(screen, preset, filters) {
   return null;
 }
 
-/** A screen the signed-in roles cannot use, said rather than attempted: the server refuses it anyway. */
+/**
+ * A screen the server does not offer this session, said rather than attempted: one the signed-in
+ * roles cannot use, which the server refuses anyway, or one still being built outside pre-production.
+ */
 function notPermittedView(screen) {
-  return needsInputView({ id: screen.id, title: screen.label, question: null, hint: 'Your role cannot use this page. The navigation shows the pages it can.' });
+  return needsInputView({ id: screen.id, title: screen.label, question: null, hint: 'This page is not offered to you here. The navigation shows the pages you can use.' });
 }
 
 /**
@@ -598,7 +601,7 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     const typing = sameScreen && document.activeElement?.name === 'subject';
     // While the next read runs the page keeps what it shows, dimmed: no blank, no jump.
     root.setAttribute?.('aria-busy', 'true');
-    const { view, shell } = await dashboard.load(screen.id, { preset, filters, mayManage });
+    const { view, shell } = await dashboard.load(screen.id, { preset, filters, mayManage, insights: mayOpen(allowed, 'insights') });
     root.setAttribute?.('aria-busy', 'false');
     const { preset: _preset, ...others } = filters;
     root.innerHTML = renderScreen(view, { ...shell, eyebrow: groupOf(screen.id), switch: switchFor(screen, preset, others), presets: presetsFor(screen, preset, others), tool: toolFor(screen, filters) });

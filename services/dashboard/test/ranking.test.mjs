@@ -476,6 +476,15 @@ test('the Overview tiles open the screens they summarise', async () => {
   assert.deepEqual(view.tables, []);
 });
 
+test('where Insights is not offered, the Sensitive prompts tile still counts and opens nothing', async () => {
+  const { view } = await dashboardFor().load('posture', { preset: 'd30', insights: false });
+  const sensitive = view.tiles.find((t) => t.label === 'Sensitive prompts');
+  assert.equal(sensitive.href, undefined);
+  assert.equal(sensitive.moreLabel, undefined);
+  assert.equal(sensitive.value.kind, 'number');
+  assert.doesNotMatch(renderScreen(view, SHELL), /#insights/);
+});
+
 test('a share of one part is the figure and a whole bar, with the other parts kept as zeros, and a split draws and links only the parts that count something', () => {
   const all = readState(envelope('ok', {
     data: [{ bucket: '2026-09-30T00:00:00Z', tool: 'tls_f412811be7ac6539', tool_key: 'chatgpt_web', tool_name: 'ChatGPT', sanctioned_state: 'sanctioned', submissions: 40, users: 3 }],

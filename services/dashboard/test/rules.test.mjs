@@ -16,7 +16,7 @@ import { renderRuleDialog, renderRules, ruleSentence } from '../src/rules-render
 import { createSettings } from '../src/settings.js';
 import { renderSettings } from '../src/settings-render.js';
 import { boot } from '../src/app.js';
-import { shellNavItems } from '../src/shell.js';
+import { groupOf, shellNavItems } from '../src/shell.js';
 import { pagesForRoles } from '../server/session.mjs';
 import { validate } from '../../query-api/src/validate.js';
 import { fakeDocument } from './helpers.mjs';
@@ -761,11 +761,12 @@ const click = (dataset, tagName = 'BUTTON') => ({
   preventDefault() {},
 });
 
-test('Rules sits directly under Insights in the navigation, with Search after it, for a role that may change settings', () => {
-  assert.deepEqual(shellNavItems().slice(0, 4).map((i) => i.id), ['posture', 'insights', 'rules', 'explore']);
+test('Rules sits directly under Overview in the navigation, with Search after it, for a role that may change settings', () => {
+  assert.deepEqual(shellNavItems().slice(0, 4).map((i) => i.id), ['posture', 'rules', 'explore', 'tools']);
   assert.deepEqual(shellNavItems().find((i) => i.id === 'rules'), { id: 'rules', label: 'Rules', question: null, group: null, icon: 'rules', groupIcon: 'rules', href: '#rules' });
-  assert.ok(pagesForRoles(['admin']).includes('rules'));
-  for (const role of ['viewer', 'analyst', 'content_reader']) assert.equal(pagesForRoles([role]).includes('rules'), false, role);
+  assert.equal(groupOf('rules'), null, 'a page of its own, under no group');
+  for (const environment of ['prod', 'preprod']) assert.ok(pagesForRoles(['admin'], { environment }).includes('rules'), environment);
+  for (const role of ['viewer', 'analyst', 'content_reader']) assert.equal(pagesForRoles([role], { environment: 'preprod' }).includes('rules'), false, role);
 });
 
 test('an admin opens Rules from the navigation; the page renders over the admin API and the Labels tab is in the address', async () => {
@@ -785,7 +786,7 @@ test('a viewer is shown no Rules; reaching it directly is refused in the page an
   await boot({ document: doc, api: createQueryApi({ transport: fixtureTransport() }), admin, session: session(['viewer'], ['posture', 'insights', 'tools', 'teams', 'devices']) });
   assert.doesNotMatch(doc.html('nav'), />Rules</);
   await doc.navigate('#rules');
-  assert.match(doc.html('app'), /Your role cannot use this page/);
+  assert.match(doc.html('app'), /This page is not offered to you here\./);
   assert.equal(requests.length, 0, 'the admin API was not asked');
 });
 
