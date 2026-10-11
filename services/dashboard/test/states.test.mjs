@@ -127,3 +127,12 @@ test('every fixture envelope is renderable, and each carries a documented state'
     assert.ok(Array.isArray(state.banners), `${name} has banners`);
   }
 });
+
+test('partial coverage is one banner, whichever state carries it; a degraded read on full coverage says so once too', () => {
+  const partial = bannersFor(envelope('coverage_degraded', { data: [], freshness: FRESH, coverage: PARTIAL }));
+  assert.equal(partial.filter((b) => b.about === 'coverage').length, 1, 'the partial line already says every figure is a floor');
+  assert.ok(!partial.some((b) => b.title.startsWith('Coverage degraded')));
+  const degraded = bannersFor(envelope('coverage_degraded', { data: [], freshness: FRESH, coverage: COMPLETE }));
+  assert.deepEqual(degraded.filter((b) => b.about === 'coverage').map((b) => b.title), ['Coverage degraded: this is a floor']);
+  assert.equal(emptyStateFor(readState(envelope('coverage_degraded', { data: [], freshness: FRESH, coverage: PARTIAL }))).title, 'Nothing recorded, on partial coverage');
+});

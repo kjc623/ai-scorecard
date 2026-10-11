@@ -158,9 +158,16 @@ test('the rail filters narrow a prompt-text search, and a person with no content
   const sent = asked.filter(([kind]) => kind === 'search').pop()[1];
   assert.equal(sent.subject, subject, 'the person filter reaches the search');
 
-  await explorer.setFilter('subject', 'nobody@example');
+  await explorer.setFilter('subject', 'u_0000');
   assert.equal(explorer.state.text.status, 'ready');
   assert.equal(explorer.state.text.hits.length, 0, 'a different person returns none');
+
+  // A name that stands for nobody yet holds the search, rather than widening it to everyone.
+  await explorer.setFilter('subject', 'Nobody');
+  assert.equal(explorer.state.problems[0]?.code, 'unknown_person');
+  assert.equal(explorer.state.text.status, 'refused');
+  assert.equal(explorer.state.text.problem.code, 'filters_unsettled');
+  assert.ok(!asked.filter(([kind]) => kind === 'search').some(([, body]) => body.subject === 'Nobody'), 'no search was sent with the name');
 });
 
 test('the window switch applies to prompt-text results', async () => {

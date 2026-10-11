@@ -1001,6 +1001,11 @@ export const SOURCES = Object.freeze({
       's.first_occurred_at AS first_occurred_at',
       's.last_occurred_at AS last_occurred_at',
       's.user_ref AS "subject"',
+      // The person's names joined at read time, as the people list has them: the account name the
+      // device reported with the submission (absent for a hashed tenant) and the directory's current
+      // display name. `subject` keeps the reference, which is the identity behind both.
+      's.subject_name AS "subject_name"',
+      '(SELECT ud.display_name FROM ops.user_dim ud WHERE ud.tenant_id = s.tenant_id AND ud.user_ref = s.user_ref) AS "directory_name"',
       's.tool_fingerprint AS "tool"',
       // The display name joined at read time; the raw fingerprint travels beside it in `tool`.
       'ops.tool_display_name(s.tool_fingerprint) AS "tool_name"',
@@ -1088,6 +1093,10 @@ export const SOURCES = Object.freeze({
       'f.class_code AS "class"',
       'f.severity AS "severity"',
       'f.user_ref AS "subject"',
+      // The same two names the event list carries, read from the submission the finding is on and
+      // from the directory.
+      '(SELECT s.subject_name FROM ingest.submission s WHERE s.tenant_id = f.tenant_id AND s.submission_id = f.submission_id) AS "subject_name"',
+      '(SELECT ud.display_name FROM ops.user_dim ud WHERE ud.tenant_id = f.tenant_id AND ud.user_ref = f.user_ref) AS "directory_name"',
       'f.tool_fingerprint AS "tool"',
       'ops.tool_display_name(f.tool_fingerprint) AS "tool_name"',
       'f.collection_mode AS "mode"',

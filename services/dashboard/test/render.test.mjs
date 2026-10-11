@@ -120,8 +120,11 @@ test('the overview summarises usage, data classes and findings beside the enroll
   assert.equal(view.title, 'Overview');
   assert.deepEqual(view.tiles.map((t) => t.label), ['Submissions', 'People (lower bound)', 'Open findings', 'Devices reporting']);
   assert.match(view.tiles[3].note, /of 4,620 enrolled devices/);
-  assert.deepEqual(view.tables.map((t) => t.title), ['Tools', 'Data classes', 'Findings']);
-  assert.equal(view.tables[0].href, '#tools');
+  assert.deepEqual(view.tiles[3].split.map((p) => [p.label, p.count, p.href]), [['Reporting', 4180, '#devices?status=reporting'], ['Not reporting', 440, '#devices?status=attention']]);
+  assert.deepEqual(view.blocks.map((b) => [b.kind, b.title]), [['share', 'Where submissions went'], ['ranking', 'Tools in use'], ['ranking', 'Sensitive data by class']]);
+  assert.equal(view.blocks[1].href, '#tools');
+  assert.equal(view.blocks[2].href, '#tools?view=classes');
+  assert.deepEqual(view.tables.map((t) => t.title), ['Findings']);
   const titles = view.banners.map((b) => b.title);
   assert.equal(new Set(titles).size, titles.length, 'a warning every read carries is said once');
   assert.ok(!view.banners.some((b) => b.about === 'coverage'), 'coverage is said by the devices reporting tile, not a banner');
@@ -130,8 +133,8 @@ test('the overview summarises usage, data classes and findings beside the enroll
 test('an overview panel whose read is not yet covered says so instead of "none"', () => {
   const blind = { resultState: 'not_yet_covered', data: [], banners: [], meta: {} };
   const view = postureView({ devices: null, tools: blind, classes: null, findings: null });
-  assert.match(view.tables[0].emptyText, /^Not yet covered\./);
-  assert.equal(view.tables[2].emptyText, 'No finding was raised in this window.');
+  assert.match(view.blocks[1].emptyText, /^Not yet covered\./);
+  assert.equal(view.tables[0].emptyText, 'No finding was raised in this window.');
 });
 
 test('Usage switches between tools, data classes and unsanctioned use, and Devices narrows to what needs attention', async () => {
@@ -153,7 +156,7 @@ test('the devices screen says the fleet, what needs attention, and each device i
   assert.deepEqual(view.tiles[0].split.map((p) => [p.label, p.count]), [['Reporting', 4180], ['Not reporting', 440]]);
   assert.equal(view.tiles[1].href, '#devices?status=attention');
   assert.deepEqual(view.tables.map((x) => x.title), ['Devices']);
-  assert.deepEqual(view.tables[0].columns.map((c) => c.label), ['Device', 'User', 'Directory name', 'Status', 'Collectors', 'Last seen', 'Agent version', 'Mode', 'OS', 'Management', '']);
+  assert.deepEqual(view.tables[0].columns.map((c) => c.label), ['Device', 'Status', 'User', '']);
   assert.equal(view.tables[0].rows.length, 4, 'one row per device');
   assert.deepEqual(view.filters.map((f) => f.label), ['Status', 'OS', 'Management']);
   const html = renderScreen(view, SHELL);
@@ -167,7 +170,7 @@ test('the devices screen says the fleet, what needs attention, and each device i
   assert.match(html, /alice@contoso\.example/);
   assert.match(html, /Alice Smith/, 'the directory display name is shown beside the account name');
   assert.match(html, /1\.4\.2/);
-  assert.match(html, /m3/);
+  assert.match(html, /M3 · prompt/, 'the collection mode is said in words, not as a code');
   assert.match(html, /2 healthy/, 'a device sums its collectors by state');
   assert.match(html, /1 degraded · 1 healthy/, 'the worst state leads');
   assert.ok(!/Spool|watermark/i.test(html), 'pipeline internals are not on this screen');

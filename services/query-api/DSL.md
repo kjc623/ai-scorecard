@@ -132,6 +132,11 @@ configuration joined at read time: the tenant's decision on the tool the fingerp
 (`ops.tool_sanction` through the catalogue's `app_key`); NULL (no decision, or a fingerprint outside
 the catalogue) renders as `unknown`, never `unsanctioned`.
 
+The event and finding lists carry the person's names beside the reference in `subject`:
+`subject_name` is the account name the device reported with the submission (NULL for a tenant whose
+device identity is hashed) and `directory_name` is the directory's current display name (NULL when the
+directory has not named the person). Both are joined at read time; the reference stays the identity.
+
 **`mart.agg_user_period` requires a subject filter** (`subject eq` or `subject in`). Its row grain
 *is* a person, so a read without one would be a list of people, which the product never offers. The
 refusal is `unsupported_query_shape / subject_scope_required` and the fix is in `error.detail.fix`.

@@ -3,6 +3,11 @@
 // Nothing here decides whether a value exists. An absent measure is not a number and never reaches
 // these functions as one; see states.js for that decision.
 
+/** A count with its noun: "1 person", "3 people". */
+export function plural(value, one, many) {
+  return `${formatCount(value)} ${Number(value) === 1 ? one : many}`;
+}
+
 /** Group thousands. Deterministic, locale-independent, so a test can assert it. */
 export function formatCount(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—';
@@ -23,6 +28,14 @@ export function formatBytes(value) {
   }
   const rendered = unit === 0 ? String(Math.round(v)) : v.toFixed(v < 10 ? 1 : 0);
   return `${value < 0 ? '-' : ''}${rendered} ${units[unit]}`;
+}
+
+/** A share of a whole as a whole percentage; a share too small to round to one says so rather than reading as nothing. */
+export function formatPercent(share) {
+  if (typeof share !== 'number' || !Number.isFinite(share)) return '—';
+  const pct = share * 100;
+  if (pct > 0 && pct < 1) return '<1%';
+  return `${Math.round(pct)}%`;
 }
 
 /** A score is a proportion; two decimals is all the information a MaxScore has. */

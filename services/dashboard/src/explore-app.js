@@ -18,10 +18,10 @@ import { createQueryApi, httpTransport, createContentApi, httpContentTransport, 
 import { renderNav } from './render.js';
 import { shellNavItems, readCollapsed, wireShell } from './shell.js';
 import { allowedPageIds, filterNavItems } from './session.js';
-import { windowFor } from './dsl.js';
+import { windowFor, buildPeopleDocument } from './dsl.js';
 import { readState } from './states.js';
 import {
-  EXPLORE_DATASETS, EXPLORE_DEFAULT_DATASET, exploreDataset, exploreWindowPreset,
+  EXPLORE_DATASETS, EXPLORE_DEFAULT_DATASET, exploreDataset, exploreWindowPreset, isUserRef,
   parseExploreQuery, formatExploreQuery, checkExploreFilter,
   buildExploreRequest, buildExploreRecordRequest, buildExploreCollectorsRequest, encodeExploreHash, decodeExploreHash, exploreUserInput,
 } from './explore-model.js';
@@ -98,6 +98,8 @@ export function createExplorer({ api, content = null, export: exportApi = null, 
     dataset: first.id,
     windowPreset: first.defaultWindow,
     filters: Object.freeze({}),
+    /** The name behind each user reference the page has matched; null when the people list has none. */
+    names: Object.freeze({}),
     includeClientGenerated: false,
     queryText: '',
     problems: Object.freeze([]),
@@ -123,6 +125,7 @@ export function createExplorer({ api, content = null, export: exportApi = null, 
   let detailSeq = 0;
   let textSeq = 0;
   let contentSeq = 0;
+  let filterSeq = 0;
 
   function set(patch) {
     // Retrieved content belongs to the record it was retrieved for. Any change of the open record
@@ -206,13 +209,82 @@ export function createExplorer({ api, content = null, export: exportApi = null, 
     return Promise.all([listRun, searchText(state.text.query)]).then(() => state);
   }
 
-  function applyFilters(dataset, filters, problems = []) {
-    set({
-      filters: Object.freeze({ ...filters }),
-      queryText: problems.length > 0 ? state.queryText : formatExploreQuery(filters, dataset),
-      problems: Object.freeze([...problems]),
+  function personProblem(code, value, message, fix, extra = {}) {
+    return Object.freeze({ code, token: `subject:${value}`, value, message, fix, ...extra });
+  }
+
+  /** The name behind a reference, learnt from the people list once; the read it is for does not wait. */
+  function learnName(ref) {
+    if (Object.prototype.hasOwnProperty.call(state.names, ref)) return;
+    set({ names: Object.freeze({ ...state.names, [ref]: null }) });
+    ask(() => buildPeopleDocument({ subject: ref, limit: 1 })).then((result) => {
+      const row = result.isRefusal ? null : result.data[0] ?? null;
+      const name = row && typeof row.name === 'string' && row.name !== '' && row.name !== ref ? row.name : null;
+      if (name) set({ names: Object.freeze({ ...state.names, [ref]: name }) });
     });
-    return refresh();
+  }
+
+  /**
+   * A typed name settled against the people list: the reference of the one person whose name
+   * starts with it, or the problem that stops it standing for anyone. Several people, nobody, or
+   * a people read that was refused each hold the User filter out of every read until the name is
+   * settled, so neither the list nor the prompt search is asked for a name.
+   */
+  async function matchName(value) {
+    const result = await ask(() => buildPeopleDocument({ search: value, limit: 10 }));
+    if (result.isRefusal) {
+      return { problem: personProblem('people_unavailable', value, `"${value}" could not be matched to a person: the people list was not read.`, 'Try again, or filter by user reference.') };
+    }
+    const matches = result.data.filter((row) => typeof row.subject === 'string' && row.subject !== '');
+    if (matches.length === 0) {
+      return { problem: personProblem('unknown_person', value, `Nobody's name starts with "${value}".`, 'Type the start of a name as the directory spells it, or a user reference such as u_4f21.') };
+    }
+    if (matches.length === 1) {
+      const [row] = matches;
+      set({ names: Object.freeze({ ...state.names, [row.subject]: typeof row.name === 'string' && row.name !== '' ? row.name : value }) });
+      return { subject: row.subject };
+    }
+    const count = `${matches.length}${result.page?.next_cursor ? ' or more' : ''}`;
+    return {
+      problem: personProblem('ambiguous_person', value, `${count} people's names start with "${value}".`, 'Choose one:', {
+        choices: Object.freeze(matches.map((row) => Object.freeze({ subject: row.subject, name: typeof row.name === 'string' && row.name !== '' ? row.name : row.subject }))),
+      }),
+    };
+  }
+
+  /**
+   * The filters with the User filter settled: a reference stays as it is (and learns its name), a
+   * typed name becomes a reference or a problem. Only a name needs the people list before the
+   * read, so only a name makes the change wait.
+   */
+  function settleSubject(filters) {
+    const value = typeof filters.subject === 'string' ? filters.subject.trim() : '';
+    if (value === '') return { filters, problems: [] };
+    if (isUserRef(value)) {
+      learnName(value);
+      return { filters, problems: [] };
+    }
+    const { subject: _typed, ...rest } = filters;
+    return matchName(value).then((match) => (match.subject
+      ? { filters: { ...rest, subject: match.subject }, problems: [] }
+      : { filters: rest, problems: [match.problem] }));
+  }
+
+  function applyFilters(dataset, filters, problems = []) {
+    const seq = ++filterSeq;
+    const apply = (settled) => {
+      // A newer change of the filters landed while the people list was being read: it wins.
+      if (seq !== filterSeq) return state;
+      const all = [...problems, ...settled.problems];
+      set({
+        filters: Object.freeze({ ...settled.filters }),
+        queryText: all.length > 0 ? state.queryText : formatExploreQuery(settled.filters, dataset, state.names),
+        problems: Object.freeze(all),
+      });
+      return refresh();
+    };
+    const settled = settleSubject(filters);
+    return typeof settled.then === 'function' ? settled.then(apply) : apply(settled);
   }
 
   /** Search with the text of the query bar. */
@@ -343,6 +415,13 @@ export function createExplorer({ api, content = null, export: exportApi = null, 
     const pageSize = state.text.pageSize ?? TEXT_IDLE.pageSize;
     const filters = textFiltersOf(state.filters);
     const ignored = Object.freeze(textIgnoredOf(state.filters));
+    // A filter with a problem is settled first, as it is for the list: a User name that stands for
+    // nobody yet must not widen the search to everyone.
+    if (state.problems.length > 0) {
+      textRan = null;
+      set({ text: Object.freeze({ ...TEXT_IDLE, status: 'refused', query: text, pageSize, ignored, problem: Object.freeze({ code: 'filters_unsettled', message: 'The filters above have a problem. The prompt search waits until it is fixed.' }) }) });
+      return state;
+    }
     if (!content) {
       textRan = null;
       set({ text: Object.freeze({ ...TEXT_IDLE, status: 'refused', query: text, pageSize, ignored, problem: Object.freeze({ code: 'no_content_path', message: 'This page has no content path behind it.' }) }) });
@@ -476,13 +555,19 @@ export function createExplorer({ api, content = null, export: exportApi = null, 
   /** Put the page into the state a link describes, search, and open the linked result. */
   async function restore(hash) {
     const decoded = decodeExploreHash(hash);
+    const seq = ++filterSeq;
+    // A link names the person by reference; one that carries a name is settled the way the rail
+    // settles it.
+    const settled = await settleSubject(decoded.filters);
+    if (seq !== filterSeq) return state;
+    const problems = Object.freeze([...decoded.problems, ...settled.problems]);
     set({
       dataset: decoded.dataset.id,
       windowPreset: decoded.windowPreset,
-      filters: decoded.filters,
+      filters: Object.freeze({ ...settled.filters }),
       includeClientGenerated: decoded.includeClientGenerated,
-      queryText: formatExploreQuery(decoded.filters, decoded.dataset),
-      problems: decoded.problems,
+      queryText: formatExploreQuery(settled.filters, decoded.dataset, state.names),
+      problems,
     });
     await run();
     if (decoded.open && state.status === 'ready') await open(decoded.open);

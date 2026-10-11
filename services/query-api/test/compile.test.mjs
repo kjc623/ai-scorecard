@@ -149,7 +149,10 @@ test('the directory join is emitted only when a directory dimension is used', ()
     window: { ...baseDoc().window },
     limit: 10,
   });
-  assert.ok(!plain.text.includes('ops.user_dim'));
+  assert.ok(!plain.text.includes('LEFT JOIN ops.user_dim'));
+  // The directory's display name travels on every row as a keyed lookup, not as the join.
+  assert.ok(plain.text.includes('ud.display_name'));
+  assert.ok(plain.text.includes('s.subject_name AS "subject_name"'));
   const joined = read({
     query_version: '1',
     source: 'ingest.submission',

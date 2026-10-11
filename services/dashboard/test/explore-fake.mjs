@@ -32,6 +32,30 @@ const SAMPLE_TOOLS = Object.freeze([
   'tls_7659f7a5e64cd885', 'tls_a40a04ef6e27de9f', 'tls_9230903190dcf0dc', 'shadow_llm_gateway',
 ]);
 const SAMPLE_DEPARTMENTS = Object.freeze(['Engineering', 'Finance', 'Legal', 'Customer Success', 'Sales', 'People']);
+/** The names the directory and the devices know, by person index; a missing entry is a person known by reference only. */
+const SAMPLE_PEOPLE = Object.freeze([
+  { directory: 'Alice Smith', account: 'alice.smith@customer.example' },
+  { directory: 'Alicia Wong', account: 'alicia.wong@customer.example' },
+  { directory: 'Ben Okafor', account: 'ben.okafor@customer.example' },
+  { directory: 'Chloe Haddad', account: 'chloe.haddad@customer.example' },
+  { directory: 'Dev Patel', account: 'dev.patel@customer.example' },
+  { directory: 'Erik Lindqvist', account: 'erik.lindqvist@customer.example' },
+  { directory: 'Fatima Noor', account: 'fatima.noor@customer.example' },
+  { directory: 'Grace Chen', account: 'grace.chen@customer.example' },
+  { directory: 'Hugo Martins', account: 'hugo.martins@customer.example' },
+  { directory: 'Imogen Reid', account: 'imogen.reid@customer.example' },
+  { directory: 'Jonah Weiss', account: 'jonah.weiss@customer.example' },
+  { directory: 'Kyle Clark', account: 'kyle@customer.example' },
+  { directory: 'Lena Fischer', account: 'lena.fischer@customer.example' },
+  { directory: 'Mateo Ruiz', account: 'mateo.ruiz@customer.example' },
+  { directory: 'Nadia Petrova', account: 'nadia.petrova@customer.example' },
+  { directory: 'Omar Siddiqui', account: 'omar.siddiqui@customer.example' },
+  { directory: 'Priya Nair', account: 'priya.nair@customer.example' },
+  { directory: null, account: 'quinn.baker@customer.example' },
+  { directory: null, account: 'rosa.alvarez@customer.example' },
+  { directory: 'Sam Taylor', account: null },
+  { directory: 'Tomasz Nowak', account: 'tomasz.nowak@customer.example' },
+]);
 const SAMPLE_CLASSES = Object.freeze(['customer_pii', 'source_code', 'credential', 'payment_card', 'legal_commercial', 'government_id', 'health']);
 const SAMPLE_RULES = Object.freeze({
   payment_card: Object.freeze({ rule: 'PAYMENT_CARD_PAN', rule_title: 'Payment card number', severity: 'critical' }),
@@ -81,11 +105,23 @@ export function buildExploreSample(now) {
   const pick = (list) => list[Math.floor(rand() * list.length)];
   const end = now.getTime() - 4 * 60_000;
 
-  const people = Array.from({ length: 23 }, (_, i) => Object.freeze({
-    subject: `u_${sampleHex(Math.imul(i + 3, 48271), 4)}`,
-    department: SAMPLE_DEPARTMENTS[i % SAMPLE_DEPARTMENTS.length],
-    device: sampleUuid(0xd0, i % 14),
-  }));
+  // Each person as the people list names them: most by the directory's display name, some only by
+  // the account name their device reported, two by nothing but the reference. Two names share a
+  // prefix ("Ali"), so a name can match more than one person.
+  const people = Array.from({ length: 23 }, (_, i) => {
+    const subject = `u_${sampleHex(Math.imul(i + 3, 48271), 4)}`;
+    const named = SAMPLE_PEOPLE[i] ?? null;
+    const directoryName = named?.directory ?? null;
+    const subjectName = named?.account ?? null;
+    return Object.freeze({
+      subject,
+      name: directoryName ?? subjectName ?? subject,
+      directory_name: directoryName,
+      subject_name: subjectName,
+      department: SAMPLE_DEPARTMENTS[i % SAMPLE_DEPARTMENTS.length],
+      device: sampleUuid(0xd0, i % 14),
+    });
+  });
 
   const events = [];
   let cursorMs = end;
@@ -117,6 +153,8 @@ export function buildExploreSample(now) {
       first_occurred_at: sampleIso(occurred),
       last_occurred_at: sampleIso(occurred + Math.floor(rand() * 180_000)),
       subject: person.subject,
+      subject_name: person.subject_name,
+      directory_name: person.directory_name,
       tool,
       device: person.device,
       department: person.department,
@@ -153,6 +191,8 @@ export function buildExploreSample(now) {
         class: label.class,
         severity: rule.severity,
         subject: event.subject,
+        subject_name: event.subject_name,
+        directory_name: event.directory_name,
         tool: event.tool,
         mode: event.mode,
         review_state: reviewRoll < 0.6 ? 'open' : reviewRoll < 0.8 ? 'disputed' : 'confirmed',
@@ -245,6 +285,7 @@ export function buildExploreSample(now) {
   }
 
   return Object.freeze({
+    people: Object.freeze(people),
     events: Object.freeze(events),
     findings: Object.freeze(findings),
     devices: Object.freeze(devices),
@@ -468,7 +509,34 @@ export function createExploreFake({ now = () => new Date(), scenario = 'realisti
     });
   }
 
+  // The people list: a case-insensitive name prefix, or one reference. Ordered by name, as the
+  // product orders it.
+  function peopleReply(body) {
+    if (current === 'busy') return STATE_ENVELOPES.busy;
+    const filters = body.filters ?? [];
+    const prefix = filters.find((f) => f.field === 'name_key' && f.op === 'starts_with')?.value ?? null;
+    const subject = filters.find((f) => f.field === 'subject' && f.op === 'eq')?.value ?? null;
+    let rows = current === 'empty' ? [] : [...sample.people];
+    if (prefix !== null) rows = rows.filter((row) => row.name.toLowerCase().startsWith(String(prefix).toLowerCase()));
+    if (subject !== null) rows = rows.filter((row) => row.subject === subject);
+    rows.sort((a, b) => a.name.localeCompare(b.name) || a.subject.localeCompare(b.subject));
+    const limit = typeof body.limit === 'number' ? body.limit : 50;
+    const slice = rows.slice(0, limit);
+    return sampleEnvelope(slice.length > 0 ? 'ok' : 'empty', {
+      data: slice.map((row) => Object.freeze({
+        subject: row.subject, name: row.name, directory_name: row.directory_name, subject_name: row.subject_name,
+        department: row.department, org_unit: null, directory_status: row.directory_name ? 'active' : 'unknown', last_active_day: null,
+      })),
+      page: Object.freeze({ returned: slice.length, next_cursor: rows.length > limit ? 'sample.people.more' : null, snapshot_upper_bound: sampleIso(now().getTime()), newer_events_exist: false }),
+      freshness: freshFor('mart.v_person'),
+      coverage: coverage(),
+      audit: audited(),
+      meta: { source: 'mart.v_person', kind: 'list' },
+    });
+  }
+
   const answer = (body) => {
+    if (body?.source === 'mart.v_person') return peopleReply(body);
     if (body?.source === 'ops.collector_state') return collectorsReply(body);
     if (SAMPLE_LISTS[body?.template]) return listReply(body);
     if (body?.template === 'q9_event_detail') return recordReply(body);

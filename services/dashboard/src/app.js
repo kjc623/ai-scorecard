@@ -11,7 +11,7 @@ import { createQueryApi, httpTransport, loadSession, createAdminApi, httpAdminTr
 import { readState } from './states.js';
 import { QUESTIONS, context } from './questions.js';
 import {
-  postureView, toolsView, unsanctionedView, teamsView, classesView,
+  postureView, toolsView, toolView, unsanctionedView, teamsView, teamView, classesView,
   personView, peopleView, devicesView, eventView, auditView, refusalView,
   needsInputView,
 } from './views.js';
@@ -75,9 +75,10 @@ export function refusalFrom(error, { title = 'Read refused' } = {}) {
  *
  * @param {object} input
  * @param {ReturnType<typeof createQueryApi>} input.api
+ * @param {ReturnType<typeof createAdminApi>|null} [input.admin] the admin API, for the team list an admin sees on Teams
  * @param {Date} [input.now]
  */
-export function createDashboard({ api, now = () => new Date() }) {
+export function createDashboard({ api, admin = null, now = () => new Date() }) {
   /** The last coverage and freshness blocks seen are kept, for a screen that reads nothing itself. */
   const observed = { coverage: null, freshness: null, watermarks: new Map() };
 
@@ -103,6 +104,27 @@ export function createDashboard({ api, now = () => new Date() }) {
     return state;
   }
 
+  /** A read beside the main one. One that fails leaves its panel empty rather than taking the page down. */
+  async function part(run) {
+    try {
+      return await run();
+    } catch {
+      return null;
+    }
+  }
+
+  /** A read whose refusal is shown in place: the error becomes a refusal state, with its reason. */
+  async function refusable(run) {
+    try {
+      return await run();
+    } catch (error) {
+      return readState(error?.envelope ?? {
+        result_state: error?.resultState ?? 'unsupported_query_shape',
+        error: { code: error?.reason ?? 'client_error', message: String(error?.message ?? error) },
+      });
+    }
+  }
+
   /**
    * Load one screen. Returns `{view, shell}`; never throws for an API-level problem, because a
    * refusal is a state to render rather than a crash.
@@ -115,32 +137,23 @@ export function createDashboard({ api, now = () => new Date() }) {
       switch (screen.kind) {
         case 'posture': {
           const devices = await ask('q7_devices', context({ preset: ctx.preset, limit: 500, filters: params.filters ?? {}, now: now() }));
-          // The summary reads three more questions. One that fails leaves its panel empty rather
-          // than taking the page down.
-          const part = async (questionId) => {
-            try {
-              return await ask(questionId, ctx);
-            } catch {
-              return null;
-            }
-          };
-          const tools = await part('q1_tools_ranked');
-          const classes = await part('q4_class_mix');
-          const findings = await part('q5_findings');
-          return { view: postureView({ devices, tools, classes, findings }), shell: shell() };
+          // The summary reads three more questions.
+          const tools = await part(() => ask('q1_tools_ranked', ctx));
+          const classes = await part(() => ask('q4_class_mix', ctx));
+          const findings = await part(() => ask('q5_findings', ctx));
+          return { view: postureView({ devices, tools, classes, findings }, { preset: ctx.preset }), shell: shell() };
         }
         case 'answer': {
           if (screen.questionId === 'q6_subject_series' || screen.questionId === 'q9_event_detail') {
             return { view: needsInputView({ id: screen.id, title: screen.label, question: null, hint: 'This screen needs an identifier from another screen.' }), shell: shell() };
           }
           if (screen.id === 'tools') {
+            if (params.filters.tool) return { view: await toolScreen(String(params.filters.tool), ctx), shell: shell() };
             const mode = USAGE_MODES[usageMode(params.filters)];
-            return { view: mode.view(await ask(mode.questionId, ctx)), shell: shell() };
+            return { view: mode.view(await ask(mode.questionId, ctx), { preset: ctx.preset }), shell: shell() };
           }
+          if (screen.id === 'teams') return { view: await teamsScreen(params, ctx), shell: shell() };
           const state = await ask(screen.questionId, ctx);
-          if (screen.id === 'teams') {
-            return { view: teamsView(state, { manageHref: params.mayManage ? '#directory' : null, members: await teamMembers(state, ctx) }), shell: shell() };
-          }
           return { view: viewFor(screen.id, state, params), shell: shell() };
         }
         case 'input': {
@@ -177,25 +190,69 @@ export function createDashboard({ api, now = () => new Date() }) {
   }
 
   /**
+   * One tool's screen: its usage, who is using it (a subject-bearing read, refused for a role
+   * that may not see people, and shown as such), and the findings it produced.
+   */
+  async function toolScreen(tool, ctx) {
+    const usage = await ask('q1_tools_ranked', context({ preset: ctx.preset, filters: { tool }, now: now() }));
+    // The people read names the tool, so it lists its people whatever its sanction; a tool with
+    // no cell in the window has nobody to list.
+    const people = usage.data.some((row) => String(row.tool) === tool)
+      ? await refusable(() => ask('q2_unsanctioned_users', context({ preset: ctx.preset, filters: { tool }, now: now() })))
+      : null;
+    const findings = await refusable(() => ask('q5_findings', context({ preset: ctx.preset, filters: { tool }, now: now() })));
+    return toolView({ usage, people, findings, names: await namesFor(people) }, { tool, preset: ctx.preset });
+  }
+
+  /**
+   * The names behind the references a roster carries, from the people list: the directory's name
+   * when a sync supplied one, else the one the device reported. A reference with no name is
+   * absent from the map and is listed by reference; a lookup that fails leaves the roster as it is.
+   */
+  async function namesFor(roster) {
+    const subjects = [...new Set((roster && !roster.isRefusal ? roster.data : []).map((row) => row.subject).filter((s) => typeof s === 'string' && s !== ''))];
+    if (subjects.length === 0) return {};
+    const people = await part(async () => readState(await api.run(buildPeopleDocument({ subjects, limit: subjects.length }))));
+    const names = {};
+    for (const row of people?.data ?? []) {
+      const name = row.directory_name ?? row.name ?? row.subject_name ?? null;
+      if (name && name !== row.subject) names[row.subject] = String(name);
+    }
+    return names;
+  }
+
+  /** The Teams screen: every team, or one team when the address names it. */
+  async function teamsScreen(params, ctx) {
+    const manageHref = params.mayManage ? '#directory' : null;
+    const team = params.filters.team ? String(params.filters.team) : null;
+    // An admin's team list names the teams with no usage, so a quiet team is listed rather than
+    // absent, and one team's screen is named even when it has no cell in the window.
+    const teams = params.mayManage && admin
+      ? await part(async () => {
+        const answer = await admin.directory();
+        return answer.state === 'available' ? answer.data.teams : null;
+      })
+      : null;
+    if (team) {
+      const state = await ask('q3_team_growth', context({ preset: ctx.preset, filters: { team }, now: now() }));
+      return teamView(state, { team, members: await teamMembers(state, ctx, [team]), teams, manageHref, preset: ctx.preset });
+    }
+    const state = await ask('q3_team_growth', ctx);
+    const members = await teamMembers(state, ctx);
+    return teamsView(state, { manageHref, members, teams, preset: ctx.preset });
+  }
+
+  /**
    * The people behind the teams with usage. A role that may not see people, or a read that fails,
    * leaves the team totals standing and says why the people are missing.
    */
-  async function teamMembers(teams, ctx) {
-    const ids = teams.data.map((row) => row.team).filter(Boolean);
+  async function teamMembers(teams, ctx, ids = teams.data.map((row) => row.team).filter(Boolean)) {
     if (teams.isRefusal || ids.length === 0) return null;
-    try {
-      return readState(await api.run(buildTeamMembersDocument({ window: ctx.window, teams: ids })));
-    } catch (error) {
-      return readState(error?.envelope ?? {
-        result_state: error?.resultState ?? 'unsupported_query_shape',
-        error: { code: error?.reason ?? 'client_error', message: String(error?.message ?? error) },
-      });
-    }
+    return refusable(async () => readState(await api.run(buildTeamMembersDocument({ window: ctx.window, teams: ids }))));
   }
 
   function viewFor(screenId, state, params) {
     switch (screenId) {
-      case 'teams': return teamsView(state, { manageHref: params.mayManage ? '#directory' : null });
       case 'devices': return devicesView(state, { filters: params.filters ?? {}, now: now() });
       case 'audit': return state.resultState === 'audit_chain_broken' ? refusalView(state, { title: 'Audit' }) : auditView(state);
       default: return refusalView(state, { title: screenId });
@@ -242,7 +299,8 @@ function switchFor(screen, preset, filters) {
     const query = new URLSearchParams({ ...(PRESET_LABELS[preset] ? { preset } : {}), ...extra }).toString();
     return `#${screen.id}${query ? `?${query}` : ''}`;
   };
-  if (screen.id === 'tools') {
+  // One tool's screen is reached from the list; it has no list to switch.
+  if (screen.id === 'tools' && !filters.tool) {
     return {
       label: 'Show',
       current: usageMode(filters),
@@ -300,7 +358,7 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   // One dashboard for the whole session, so the last coverage read carries across navigation.
   const active = api ?? createQueryApi({ transport: httpTransport() });
   const adminApi = admin ?? createAdminApi({ transport: httpAdminTransport() });
-  const dashboard = createDashboard({ api: active });
+  const dashboard = createDashboard({ api: active, admin: adminApi });
   // A signed-in role may see fewer pages than the shell names; the server says which, and
   // query-api and control-api refuse what lies behind the rest.
   const session = givenSession !== undefined ? givenSession : await loadSession();
@@ -308,6 +366,8 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   const navItems = filterNavItems(NAV_ITEMS, allowed);
   const navIds = new Set(NAV_ITEMS.map((item) => item.id));
   const collapsed = readCollapsed(document);
+  // The tab is titled by the product name the page itself shows, so the two cannot disagree.
+  const brand = document.querySelector?.('.brand h1')?.textContent?.trim() || 'Sundial';
 
   let paintedNav = null;
   let paintedScreen = null;
@@ -388,9 +448,13 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       return;
     }
     const typing = sameScreen && document.activeElement?.name === 'subject';
+    // While the next read runs the page keeps what it shows, dimmed: no blank, no jump.
+    root.setAttribute?.('aria-busy', 'true');
     const { view, shell } = await dashboard.load(screen.id, { preset, filters, mayManage: mayOpen(allowed, 'directory') });
+    root.setAttribute?.('aria-busy', 'false');
     const { preset: _preset, ...others } = filters;
     root.innerHTML = renderScreen(view, { ...shell, eyebrow: groupOf(screen.id), switch: switchFor(screen, preset, others), presets: presetsFor(screen, preset, others) });
+    document.title = `${view?.title ?? screen.label} · ${brand}`;
     if (typing) root.querySelector?.('input[name="subject"]')?.focus();
   }
 

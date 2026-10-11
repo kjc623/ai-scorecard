@@ -32,14 +32,14 @@ const EXPORTABLE = Object.freeze(['ingest.submission', 'mart.v_finding']);
 /** The CSV columns per source, the same field names the list read returns. */
 const CSV_COLUMNS = Object.freeze({
   'ingest.submission': Object.freeze([
-    'submission_id', 'received_at', 'first_occurred_at', 'last_occurred_at', 'subject', 'tool',
-    'tool_name', 'device', 'mode', 'action', 'content_state', 'route', 'detection_basis',
+    'submission_id', 'received_at', 'first_occurred_at', 'last_occurred_at', 'subject', 'subject_name',
+    'directory_name', 'tool', 'tool_name', 'device', 'mode', 'action', 'content_state', 'route', 'detection_basis',
     'prompt_kind', 'merge_confidence', 'confidence', 'observation_count', 'size_bytes', 'labels',
     'observed_routes',
   ]),
   'mart.v_finding': Object.freeze([
-    'submission_id', 'detected_at', 'rule', 'rule_title', 'class', 'severity', 'subject', 'tool',
-    'tool_name', 'mode', 'decided_locally', 'review_state', 'reviewed_by', 'reviewed_at',
+    'submission_id', 'detected_at', 'rule', 'rule_title', 'class', 'severity', 'subject', 'subject_name',
+    'directory_name', 'tool', 'tool_name', 'mode', 'decided_locally', 'review_state', 'reviewed_by', 'reviewed_at',
     'policy_action',
   ]),
 });
