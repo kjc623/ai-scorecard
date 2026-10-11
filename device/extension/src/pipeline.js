@@ -122,8 +122,6 @@ export function createPipeline({
     if (!shape.match && shape.score >= CANDIDATE_FLOOR) {
       holdCandidate({
         request_id: detail.requestId,
-        tool_fingerprint: null,
-        vector: null,
         shape,
         request,
         size_bytes: body.size,
@@ -341,12 +339,13 @@ export function createPipeline({
     if (!verdict.match) return { matched: false, reason: verdict.reason, score: verdict.score };
 
     // A held request's body was not kept, so a response contract can never become a way to read
-    // content.
+    // content. Its fingerprint comes from the destination, like every other observation's.
+    const fingerprint = await computeToolFingerprint(adapter, request);
     const followUp = decorate(
       observationBody({
         client_id: 'pending',
         route: ROUTE.EXT_PAGE_CONTEXT,
-        tool_fingerprint: entry.tool_fingerprint || 'tf1:unread',
+        tool_fingerprint: fingerprint.fingerprint,
         occurred_at: new Date(clock()).toISOString(),
         monotonic_offset_ms: Math.max(0, Math.round(monotonic())),
         size_bytes: entry.size_bytes,
@@ -356,7 +355,7 @@ export function createPipeline({
       {
         mode: entry.mode,
         gate: { mode: entry.mode, resolution: { reason: 'response_contract' }, bytes: null, unread_reason: null },
-        fingerprint: { fingerprint: entry.tool_fingerprint || 'tf1:unread', vector: entry.vector || {}, canonical: '' },
+        fingerprint,
         shape: entry.shape,
         host: entry.host,
         unread_reason: null,

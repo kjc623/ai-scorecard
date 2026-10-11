@@ -11,6 +11,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { webcrypto } from 'node:crypto';
+
+import { computeToolFingerprint } from '../src/tool-fingerprint.js';
 import { extensionCatalogue, loadFixtures, replay } from '../test-support/tool-replay.mjs';
 
 const catalogue = extensionCatalogue();
@@ -38,6 +41,14 @@ for (const fixture of fixtures) {
       { events: expected.events, observed: expected.observed, attributed: expected.attributed, prompt: expected.prompt },
       `${fixture.tool}: ${detail}`,
     );
+  });
+}
+
+for (const fixture of fixtures) {
+  test(`${fixture.tool}: every event is named by its destination, whichever path emitted it`, async () => {
+    const { fingerprint } = await computeToolFingerprint({ crypto: webcrypto }, { url: fixture.request.url });
+    const got = await replay(fixture, { catalogue });
+    for (const event of got.events) assert.equal(event.fingerprint, fingerprint, `${fixture.tool}: the ${event.route} event`);
   });
 }
 

@@ -9,6 +9,7 @@
  */
 
 import test from 'node:test';
+import { webcrypto } from 'node:crypto';
 import assert from 'node:assert/strict';
 
 import { createHarness, settle, waitFor } from '../test-support/harness.mjs';
@@ -16,6 +17,7 @@ import { chromeRequest, INVALID_UTF8 } from '../test-support/fake-chrome.mjs';
 import { CHAT_BODY, DRAFT_BODY, STREAMING_RESPONSE } from '../test-support/fixtures.mjs';
 import { COUNTER, CORE_TYPE, REFUSAL, TYPE } from '../src/messages.js';
 import { normaliseBody } from '../src/request-body.js';
+import { computeToolFingerprint } from '../src/tool-fingerprint.js';
 
 /** A real delay, for the one test that has to let a backoff window elapse. */
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -681,6 +683,8 @@ test('a weak submission is upgraded when the response contract agrees, on the hi
   const observations = observationFrames(h.core);
   assert.ok(observations.length >= 1, 'the response contract produced an observation the request alone did not');
   assert.equal(observations[observations.length - 1].route, 'ext.page_context', 'the canonical route for this evidence');
+  const { fingerprint } = await computeToolFingerprint({ crypto: webcrypto }, { url: 'https://saas.example-ai.invalid/api/assist' });
+  assert.equal(observations[observations.length - 1].tool_fingerprint, fingerprint, 'named by its destination, like every other observation, so the catalogue can name the tool');
   const counters = h.app.health.counters.snapshot().counters;
   assert.ok(counters.emitted >= 1);
 });
