@@ -435,6 +435,79 @@ test('teams and their people read under their current names, and people list by 
   );
 });
 
+test('one person is one row in every listing and count, whichever refs their devices derived for them', { skip: SKIP }, async () => {
+  // Kyle's canonical ref, and the object-id ref a device derived before the directory named him:
+  // rows under it are what the rollup has not yet moved to the canonical ref.
+  const kyle = `u_${'a'.repeat(32)}`;
+  const kyleOid = `u_${'b'.repeat(32)}`;
+  const teams = [];
+  await scratch(
+    async (client) => {
+      await client.query(
+        "INSERT INTO ops.user_dim (tenant_id, user_ref, department, display_name, status) VALUES (ops.current_tenant(), $1, 'Engineering', 'Kyle Clark', 'active')",
+        [kyle],
+      );
+      await client.query(
+        'INSERT INTO ops.user_ref_alias (tenant_id, alias_ref, user_ref) VALUES (ops.current_tenant(), $1, $1), (ops.current_tenant(), $2, $1)',
+        [kyle, kyleOid],
+      );
+      await client.query(
+        `INSERT INTO ops.device (tenant_id, device_id, os, last_user_ref, last_subject_name) VALUES
+           (ops.current_tenant(), gen_random_uuid(), 'windows', $1, 'kyle@example.com'),
+           (ops.current_tenant(), gen_random_uuid(), 'windows', $2, 'AzureAD\\KyleClark')`,
+        [kyle, kyleOid],
+      );
+      // Three teams: one by department, one choosing him by the device-derived ref, one including both.
+      for (const name of ['Engineering', 'Pilot', 'Everyone']) {
+        teams.push((await client.query(
+          "INSERT INTO ops.team (tenant_id, name, created_by) VALUES (ops.current_tenant(), $1, 'db-test') RETURNING team_id::text",
+          [name],
+        )).rows[0].team_id);
+      }
+      await client.query("INSERT INTO ops.team_include (tenant_id, team_id, kind, match_value, added_by) VALUES (ops.current_tenant(), $1, 'department', 'Engineering', 'db-test')", [teams[0]]);
+      await client.query("INSERT INTO ops.team_member (tenant_id, team_id, user_ref, added_by) VALUES (ops.current_tenant(), $1, $2, 'db-test')", [teams[1], kyleOid]);
+      await client.query("INSERT INTO ops.team_member (tenant_id, team_id, user_ref, added_by) VALUES (ops.current_tenant(), $1, $2, 'db-test')", [teams[2], kyle]);
+      for (const other of [teams[0], teams[1]]) {
+        await client.query("INSERT INTO ops.team_include (tenant_id, team_id, kind, included_team_id, added_by) VALUES (ops.current_tenant(), $1, 'team', $2, 'db-test')", [teams[2], other]);
+      }
+      for (const [day, user] of [['2026-09-02', kyleOid], ['2026-09-02', kyle], ['2026-09-03', kyle]]) {
+        await client.query(
+          "INSERT INTO mart.agg_user_period (tenant_id, bucket_start, bucket_size, user_ref, submissions, bytes_total, tools_used) VALUES (ops.current_tenant(), $1, 'day', $2, 2, 20, 1)",
+          [day, user],
+        );
+        await client.query(
+          "INSERT INTO mart.agg_tool_user_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, user_ref, submissions, bytes_total) VALUES (ops.current_tenant(), $1, 'day', 'tool_a', $2, 2, 20)",
+          [day, user],
+        );
+      }
+      await client.query(
+        "INSERT INTO mart.agg_tool_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, submissions, users, bytes_total) VALUES (ops.current_tenant(), '2026-09-02', 'day', 'tool_a', 6, 1, 60)",
+      );
+    },
+    async (client, tenant) => {
+      const ctx = { now: NOW, tenant, actorId: 'db-test', cursorKey: KEY };
+      const run = (request) => executePlan(plan(request, ctx), { ...ctx, client: nested(client) });
+
+      const people = await run({ query_version: '1', source: 'mart.v_person', filters: [], limit: 50 });
+      assert.deepEqual(people.data.map((p) => [p.subject, p.name]), [[kyle, 'Kyle Clark']], 'the people list');
+
+      const tools = await run({ query_version: '1', template: 'q1_tools_ranked', params: { window: WINDOW, limit: 100 } });
+      const counted = tools.meta.extras.people[0];
+      assert.deepEqual([Number(counted.people), Number(counted.directory_people), Number(counted.device_people)], [1, 1, 1], 'the Users tile and Adoption\'s people');
+
+      // The roster's rows are per day; the dashboard folds them per person.
+      const roster = await run({ query_version: '1', source: 'mart.v_team_member_period', dimensions: ['team', 'subject'], measures: ['submissions'], filters: [{ field: 'team', op: 'in', value: teams }], window: WINDOW, limit: 100 });
+      const perTeam = new Map();
+      for (const r of roster.data) {
+        assert.equal(r.subject, kyle, 'every row is under the canonical ref');
+        assert.equal(r.name, 'Kyle Clark');
+        perTeam.set(r.team_name, (perTeam.get(r.team_name) ?? 0) + Number(r.submissions));
+      }
+      assert.deepEqual([...perTeam].sort(), [['Engineering', 6], ['Everyone', 6], ['Pilot', 6]], 'each team has all his prompts');
+    },
+  );
+});
+
 test('the rules list names the custom labels and tools each rule names, and the matches per rule read beside it', { skip: SKIP }, async () => {
   await scratch(
     async (client) => {
