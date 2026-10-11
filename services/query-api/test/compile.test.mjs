@@ -40,8 +40,9 @@ test('every filter value is a bound parameter with an explicit cast', () => {
       ],
     }),
   );
-  assert.match(statement.text, /t\.tool_fingerprint = \$\d+::text/);
-  assert.match(statement.text, /starts_with\(t\.tool_fingerprint, \$\d+::text\)/);
+  // A tool matches every fingerprint it was seen under; a prefix is tested on the tool itself.
+  assert.match(statement.text, /t\.tool_fingerprint = ANY \(\(SELECT ops\.tool_fingerprints\(ARRAY\[\$\d+::text\]\)\)\)/);
+  assert.match(statement.text, /starts_with\(t\.tool_id, \$\d+::text\)/);
   assert.match(statement.text, /t\.sanctioned_state = ANY\(\$\d+::text\[\]\)/);
   assert.ok(statement.text.includes('t.sanctioned_state IS NULL'));
   for (const value of ['claude_web', 'chat']) assert.ok(statement.params.includes(value), `missing param ${value}`);
@@ -87,12 +88,12 @@ test('the window is half-open and bound', () => {
 
 test('ordering ends in a total key, and bucket leads a series', () => {
   const statement = read(baseDoc({ order: [{ by: 'submissions', dir: 'desc' }] }));
-  assert.match(statement.text, /ORDER BY t\.bucket_start DESC NULLS LAST, SUM\(t\.submissions\) DESC NULLS LAST, t\.tool_fingerprint ASC NULLS LAST/);
+  assert.match(statement.text, /ORDER BY t\.bucket_start DESC NULLS LAST, SUM\(t\.submissions\) DESC NULLS LAST, t\.tool_id ASC NULLS LAST/);
 });
 
 test('a time series without a caller ordering still orders by bucket then grouping keys', () => {
   const statement = read(baseDoc({ dimensions: ['tool'], order: [] }));
-  assert.match(statement.text, /ORDER BY t\.bucket_start DESC NULLS LAST, t\.tool_fingerprint ASC NULLS LAST/);
+  assert.match(statement.text, /ORDER BY t\.bucket_start DESC NULLS LAST, t\.tool_id ASC NULLS LAST/);
 });
 
 test('the effective ordering key is exposed for the cursor to bind to', () => {
@@ -105,13 +106,13 @@ test('the effective ordering key is exposed for the cursor to bind to', () => {
 
 test('a rollup emits GROUPING SETS so the published total travels with the cells', () => {
   const statement = read(baseDoc({ rollup: true, dimensions: ['tool'], limit: undefined }));
-  assert.ok(statement.text.includes('GROUP BY GROUPING SETS ((t.bucket_start, t.tool_fingerprint), ())'));
+  assert.ok(statement.text.includes('GROUP BY GROUPING SETS ((t.bucket_start, t.tool_id), ())'));
 });
 
 test('distinct-subject measures are served as a lower bound, and the response says so', () => {
-  const { compiled: hard } = compiled(baseDoc({ dimensions: ['tool'], measures: ['users'] }));
-  assert.ok(hard.text.includes('MAX(t.users) AS "users"'));
-  assert.equal(hard.meta.measure_semantics.users, 'exact', 'a cell at the source grain is exact');
+  const { compiled: tool } = compiled(baseDoc({ dimensions: ['tool'], measures: ['users'] }));
+  assert.ok(tool.text.includes('MAX(t.users) AS "users"'));
+  assert.equal(tool.meta.measure_semantics.users, 'distinct_lower_bound', 'a tool cell combines the rows of every fingerprint it was seen under');
 
   const { compiled: soft } = compiled(
     baseDoc({ source: 'mart.agg_class_period', dimensions: ['class'], measures: ['users', 'submissions'] }),
@@ -238,7 +239,7 @@ test('a keyset cursor becomes an expanded predicate over the mixed-direction tot
   );
   assert.match(
     compiledStatement.text,
-    /\(t\.bucket_start < \$5::timestamptz\) OR \(t\.bucket_start = \$5::timestamptz AND SUM\(t\.submissions\) < \$6::numeric\) OR \(t\.bucket_start = \$5::timestamptz AND SUM\(t\.submissions\) = \$6::numeric AND t\.tool_fingerprint > \$7::text\)/,
+    /\(t\.bucket_start < \$5::timestamptz\) OR \(t\.bucket_start = \$5::timestamptz AND SUM\(t\.submissions\) < \$6::numeric\) OR \(t\.bucket_start = \$5::timestamptz AND SUM\(t\.submissions\) = \$6::numeric AND t\.tool_id > \$7::text\)/,
   );
 });
 

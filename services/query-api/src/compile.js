@@ -153,8 +153,8 @@ export function compile(validated, opts = {}) {
 
   for (const entry of source.extraSelect ?? []) {
     // A derived display column belongs in the SELECT only when its grouping key is actually
-    // grouped: `tool_name` is a function of `tool_fingerprint`, so a query that does not GROUP BY
-    // tool cannot select it at all. A plain string is unconditional; an object with
+    // grouped: `tool_name` is a function of the tool, so a query that does not GROUP BY tool
+    // cannot select it at all. A plain string is unconditional; an object with
     // `whenDimensions` is emitted only when every named dimension is grouped.
     if (typeof entry === 'string') {
       select.push(entry);
@@ -371,6 +371,25 @@ function compileFilter(filter, source, bind) {
     return `${expr} @> jsonb_build_array(jsonb_build_object('class', ${bind(filter.value)}${cast}))`;
   }
 
+  // A tool is recorded under several fingerprints, and its dimension groups them: equality and
+  // membership match every fingerprint of the tools named, on the fingerprint column, so the
+  // filter keeps that column's index. The set is computed once per statement, not once per row.
+  if (dimension.fingerprints) {
+    const members = (placeholder) => `${dimension.fingerprints} = ANY ((SELECT ops.tool_fingerprints(${placeholder})))`;
+    switch (filter.op) {
+      case 'eq':
+        return members(`ARRAY[${bind(filter.value)}${cast}]`);
+      case 'ne':
+        return `NOT (${members(`ARRAY[${bind(filter.value)}${cast}]`)})`;
+      case 'in':
+        return members(`${bind(filter.value)}${arrayCast}`);
+      case 'not_in':
+        return `NOT (${members(`${bind(filter.value)}${arrayCast}`)})`;
+      default:
+        break;
+    }
+  }
+
   // An array column: equality and membership test whether any element matches, and is_null asks
   // whether the array is empty. Ordering comparisons have no meaning over a set.
   if (dimension.array) {
@@ -427,6 +446,8 @@ function compileFilter(filter, source, bind) {
 function collapsesGrain(query, source) {
   if (source.kind !== 'aggregate') return false;
   if (query.bucket === 'week' || query.bucket === 'month') return true;
+  // A tool groups the rows of every fingerprint it was seen under.
+  if (query.dimensions.some((name) => source.dimensions[name]?.fingerprints)) return true;
   const grouped = new Set(query.dimensions);
   // The bucket is part of the source grain and is always grouped when it is asked for.
   if (query.bucket) grouped.add('bucket');

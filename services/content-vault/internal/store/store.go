@@ -184,7 +184,7 @@ const (
 // SearchFilters narrow a search by submission metadata. Zero values add no predicate.
 type SearchFilters struct {
 	Subject      string // ingest.submission.user_ref
-	Tool         string // ingest.submission.tool_fingerprint
+	Tool         string // a tool (ops.tool_id): every fingerprint that counts as it
 	Device       string // ingest.submission.device_id
 	Mode         string // ingest.submission.collection_mode
 	ReceivedFrom time.Time

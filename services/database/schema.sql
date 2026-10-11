@@ -1731,6 +1731,7 @@ CREATE TABLE mart.agg_user_period (
   user_ref         text NOT NULL,
   submissions      bigint NOT NULL CHECK (submissions >= 0),
   bytes_total      bigint NOT NULL CHECK (bytes_total >= 0),
+  -- The tools used in the bucket, each counted once however many fingerprints it was seen under.
   tools_used       bigint NOT NULL CHECK (tools_used >= 0),
   block_events     bigint NOT NULL DEFAULT 0 CHECK (block_events >= 0),
   PRIMARY KEY (tenant_id, bucket_start, bucket_size, user_ref)
