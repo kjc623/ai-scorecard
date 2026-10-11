@@ -460,7 +460,7 @@ export function createHandler({
       rows = await withClient((client) => inTransaction(client, { tenant: principal.tenant, statementTimeoutMs: OPERATIONAL_TIMEOUT_MS }, async () => (await client.query(
         `SELECT s.submission_id::text AS submission_id, s.user_ref AS user_ref, s.subject_name AS subject_name,
                 ud.display_name AS directory_name,
-                s.tool_fingerprint AS tool, ops.tool_display_name(s.tool_fingerprint) AS tool_name,
+                ops.tool_id(s.tool_fingerprint) AS tool, ops.tool_display_name(s.tool_fingerprint) AS tool_name,
                 s.device_id::text AS device, d.hostname AS hostname
            FROM ingest.submission s
            LEFT JOIN ops.device d

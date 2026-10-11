@@ -214,7 +214,8 @@ export function peopleStatement(query) {
       "         bool_or(coalesce(s.sanctioned_state, 'unknown') <> 'sanctioned') AS other",
       '    FROM mart.agg_tool_user_period u',
       '    LEFT JOIN ref.tool_catalogue c ON c.tool_fingerprint = u.tool_fingerprint',
-      '    LEFT JOIN ops.tool_sanction s ON s.tenant_id = u.tenant_id AND s.tool_key = c.app_key',
+      '    LEFT JOIN mart.v_tool_host h ON h.tenant_id = u.tenant_id AND h.tool_fingerprint = u.tool_fingerprint',
+      '    LEFT JOIN ops.tool_sanction s ON s.tenant_id = u.tenant_id AND s.tool_key = coalesce(c.app_key, h.app_key)',
       '   WHERE u.tenant_id = ops.current_tenant()',
       '     AND u.bucket_start >= $1::timestamptz AND u.bucket_start < $2::timestamptz',
       '     AND u.bucket_size = $3::text',
@@ -252,6 +253,32 @@ export function flushCheckStatement(subject, window) {
       '   AND s.received_at >= $2::timestamptz AND s.received_at < $3::timestamptz',
     ].join('\n'),
     params: Object.freeze([subject, window.from, window.to]),
+  });
+}
+
+/**
+ * How many tools one person used in the window, each counted once however many fingerprints and
+ * buckets it was seen under, as the tool lists count them (registry toolRows): the per-bucket
+ * `tools_used` cannot be added up into it.
+ *
+ * @param {string} subject
+ * @param {{window:{from:string,to:string},bucket:string|null}} query
+ */
+export function subjectToolsStatement(subject, query) {
+  const bucketSize = query.bucket && NATIVE_BUCKETS.includes(query.bucket) ? query.bucket : 'day';
+  return Object.freeze({
+    id: 'subject_tools',
+    text: [
+      "SELECT count(DISTINCT coalesce('app:' || coalesce(c.app_key, h.app_key), u.tool_fingerprint))::bigint AS tools",
+      '  FROM mart.agg_tool_user_period u',
+      '  LEFT JOIN ref.tool_catalogue c ON c.tool_fingerprint = u.tool_fingerprint',
+      '  LEFT JOIN mart.v_tool_host h ON h.tenant_id = u.tenant_id AND h.tool_fingerprint = u.tool_fingerprint',
+      ' WHERE u.tenant_id = ops.current_tenant()',
+      '   AND u.user_ref = $1::text',
+      '   AND u.bucket_start >= $2::timestamptz AND u.bucket_start < $3::timestamptz',
+      '   AND u.bucket_size = $4::text',
+    ].join('\n'),
+    params: Object.freeze([subject, query.window.from, query.window.to, bucketSize]),
   });
 }
 

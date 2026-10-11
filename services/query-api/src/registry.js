@@ -100,7 +100,9 @@ export const COARSENING_ORDER = Object.freeze(['hour', 'day', 'week', 'month']);
  * @property {string} [orderSql]  Frozen reference used in ORDER BY / keyset when `sql` is nullable.
  * @property {string} type        text | uuid | timestamp | date | number | boolean
  * @property {boolean} nullable   true only when the column itself admits NULL.
- * @property {boolean} [startsWith] `starts_with` permitted (tool fingerprints only).
+ * @property {boolean} [startsWith] `starts_with` permitted (tools only).
+ * @property {string|null} [fingerprints] A tool's raw fingerprint column: eq/in on the tool match
+ *                                  every fingerprint of the tools named (ops.tool_fingerprints).
  * @property {number} cardinality Cost-guard estimate for this dimension in one tenant.
  * @property {ReadonlyArray<string>} [values] Closed vocabulary, where the schema CHECK fixes one.
  */
@@ -126,6 +128,7 @@ function dim(name, sql, type, opts = {}) {
     cardinality: opts.cardinality ?? 100,
     // An array column holds one value per element; eq and in test membership, is_null emptiness.
     array: opts.array ?? false,
+    fingerprints: opts.fingerprints ?? null,
     values: opts.values ? Object.freeze([...opts.values]) : undefined,
     operators,
   });
@@ -207,6 +210,41 @@ const CONFIDENCE_CARD = { cardinality: 4 };
 const MERGE_CONF_CARD = { cardinality: 2 };
 
 /**
+ * A tool aggregate read with the tool each row counts as, so a list of tools has one row per tool
+ * however many fingerprints it was seen under. `tool_id` is ops.tool_id() of the row's fingerprint:
+ * the app's own fingerprint, `app:<app_key>`, when the catalogue or an app's inference domain claims
+ * it, else the fingerprint. It is joined rather than called, so a recorded host is resolved once
+ * (mart.v_tool_host) and not once per row. `tool_key` is the app, NULL outside the catalogue.
+ */
+function toolRows(table, alias) {
+  return `(SELECT x.*, coalesce('app:' || coalesce(xc.app_key, xh.app_key), x.tool_fingerprint) AS tool_id,`
+    + ' coalesce(xc.app_key, xh.app_key) AS tool_key'
+    + ` FROM ${table} x`
+    + ' LEFT JOIN ref.tool_catalogue xc ON xc.tool_fingerprint = x.tool_fingerprint'
+    + ' LEFT JOIN mart.v_tool_host xh ON xh.tenant_id = x.tenant_id AND xh.tool_fingerprint = x.tool_fingerprint)'
+    + ` ${alias}`;
+}
+
+/** The `tool` dimension of rows that carry `tool_id`: it groups and returns the tool, never a fingerprint. */
+function toolDim(alias) {
+  return dim('tool', `${alias}.tool_id`, 'text', { startsWith: true, fingerprints: `${alias}.tool_fingerprint`, ...TOOL_CARD });
+}
+
+/** The present-tense sanction decision on the tool a row counts as. */
+function sanctionJoin(alias) {
+  return Object.freeze({
+    id: 'sanction',
+    sql: `LEFT JOIN ops.tool_sanction ot ON ot.tenant_id = ${alias}.tenant_id AND ot.tool_key = ${alias}.tool_key`,
+    when: Object.freeze(['sanctioned_state']),
+  });
+}
+
+/** The tool's display name, selected only when the tool is grouped, of which it is a function. */
+function toolName(alias) {
+  return Object.freeze({ sql: `ops.tool_display_name(${alias}.tool_id) AS "tool_name"`, whenDimensions: Object.freeze(['tool']) });
+}
+
+/**
  * A tool's sensitive prompts (its enforcement rule matched on a label the rule names) by outcome,
  * and the attachments its prompts described beside the prompts collected with content, the only
  * ones that can describe one.
@@ -236,7 +274,7 @@ export const SOURCES = Object.freeze({
     bucket: { startColumn: 't.bucket_start', sizeColumn: 't.bucket_size', sizes: NATIVE_BUCKETS },
     dimensions: Object.freeze({
       bucket: dim('bucket', 't.bucket_start', 'timestamp'),
-      tool: dim('tool', 't.tool_fingerprint', 'text', { startsWith: true, ...TOOL_CARD }),
+      tool: toolDim('t'),
       sanctioned_state: dim('sanctioned_state', 't.sanctioned_state', 'text', {
         nullable: true,
         ...SANCTIONED_CARD,
@@ -259,17 +297,11 @@ export const SOURCES = Object.freeze({
     subjectBearing: false,
     requiresSubjectScope: false,
     indexes: Object.freeze(['mart.agg_tool_period PK (tenant_id, bucket_start, bucket_size, tool_fingerprint)']),
-    // The display name is joined at read time from ref.tool_catalogue through
-    // ops.tool_display_name(); `tool` keeps returning the raw fingerprint, so the name can never
-    // hide which behaviour-derived tool a row is about, and an unknown fingerprint is returned as
-    // "Unrecognised tool" with `tool` beside it. `tool_key` is the catalogue app the fingerprint
-    // belongs to, the unit a tenant sanctions, so the fingerprints of one tool count as one; it is
-    // NULL for a fingerprint outside the catalogue. Both are selected only when `tool` is a
-    // grouping dimension, because both are functions of the grouped fingerprint.
-    extraSelect: Object.freeze([
-      Object.freeze({ sql: 'ops.tool_display_name(t.tool_fingerprint) AS "tool_name"', whenDimensions: Object.freeze(['tool']) }),
-      Object.freeze({ sql: '(SELECT c.app_key FROM ref.tool_catalogue c WHERE c.tool_fingerprint = t.tool_fingerprint) AS "tool_key"', whenDimensions: Object.freeze(['tool']) }),
-    ]),
+    // `tool` is the tool a row counts as (the view's tool_id), so the fingerprints of one tool are
+    // one row, and its display name is joined at read time from ref.tool_catalogue through
+    // ops.tool_display_name(). A fingerprint no app claims is a tool of its own, returned as
+    // "Unrecognised tool" (or its host) with the fingerprint in `tool`.
+    extraSelect: Object.freeze([toolName('t')]),
     warnings: Object.freeze([
       'mart.v_tool_usage exposes no detections/rollup_events/degraded_events: a detection-only tool (mode I) or a rollup-only tool cannot appear in this source. Use source mart.agg_tool_period for those measures.',
     ]),
@@ -279,14 +311,14 @@ export const SOURCES = Object.freeze({
     id: 'mart.agg_tool_period',
     kind: 'aggregate',
     label: 'Tool usage by bucket, full measure set (mart.agg_tool_period)',
-    from: 'mart.agg_tool_period t',
+    from: toolRows('mart.agg_tool_period', 't'),
     tenantColumn: 't.tenant_id',
     costClass: 'aggregate',
     time: null,
     bucket: { startColumn: 't.bucket_start', sizeColumn: 't.bucket_size', sizes: NATIVE_BUCKETS },
     dimensions: Object.freeze({
       bucket: dim('bucket', 't.bucket_start', 'timestamp'),
-      tool: dim('tool', 't.tool_fingerprint', 'text', { startsWith: true, ...TOOL_CARD }),
+      tool: toolDim('t'),
       sanctioned_state: dim('sanctioned_state', 'ot.sanctioned_state', 'text', { nullable: true, ...SANCTIONED_CARD }),
     }),
     measures: Object.freeze({
@@ -309,18 +341,10 @@ export const SOURCES = Object.freeze({
     subjectBearing: false,
     requiresSubjectScope: false,
     indexes: Object.freeze(['mart.agg_tool_period PK (tenant_id, bucket_start, bucket_size, tool_fingerprint)']),
-    joins: Object.freeze([
-      Object.freeze({
-        id: 'tool',
-        sql: 'LEFT JOIN ref.tool_catalogue tc ON tc.tool_fingerprint = t.tool_fingerprint LEFT JOIN ops.tool_sanction ot ON ot.tenant_id = t.tenant_id AND ot.tool_key = tc.app_key',
-        when: Object.freeze(['sanctioned_state']),
-      }),
-    ]),
-    extraSelect: Object.freeze([
-      Object.freeze({ sql: 'ops.tool_display_name(t.tool_fingerprint) AS "tool_name"', whenDimensions: Object.freeze(['tool']) }),
-    ]),
+    joins: Object.freeze([sanctionJoin('t')]),
+    extraSelect: Object.freeze([toolName('t')]),
     warnings: Object.freeze([
-      'sanctioned_state is present-tense configuration joined at read time (the decision on the tool the fingerprint belongs to, ops.tool_sanction through ref.tool_catalogue), never a property of the aggregate row.',
+      'sanctioned_state is present-tense configuration joined at read time (the decision on the tool the row counts as, ops.tool_sanction), never a property of the aggregate row.',
     ]),
   }),
 
@@ -331,14 +355,14 @@ export const SOURCES = Object.freeze({
     id: 'mart.agg_tool_user_period',
     kind: 'aggregate',
     label: 'Usage per tool per subject per bucket (mart.agg_tool_user_period)',
-    from: 'mart.agg_tool_user_period a',
+    from: toolRows('mart.agg_tool_user_period', 'a'),
     tenantColumn: 'a.tenant_id',
     costClass: 'aggregate',
     time: null,
     bucket: { startColumn: 'a.bucket_start', sizeColumn: 'a.bucket_size', sizes: NATIVE_BUCKETS },
     dimensions: Object.freeze({
       bucket: dim('bucket', 'a.bucket_start', 'timestamp'),
-      tool: dim('tool', 'a.tool_fingerprint', 'text', { startsWith: true, ...TOOL_CARD }),
+      tool: toolDim('a'),
       sanctioned_state: dim('sanctioned_state', 'ot.sanctioned_state', 'text', { nullable: true, ...SANCTIONED_CARD }),
       subject: dim('subject', 'a.user_ref', 'text', { ...USER_CARD }),
     }),
@@ -358,22 +382,14 @@ export const SOURCES = Object.freeze({
       'mart.agg_tool_user_period PK (tenant_id, bucket_start, bucket_size, tool_fingerprint, user_ref)',
       'mart.agg_tool_user_period agg_tool_user_period_by_tool (tenant_id, tool_fingerprint, bucket_size, bucket_start) INCLUDE (user_ref)',
     ]),
-    // SANCTION is joined present-tense from ops.tool_sanction through the catalogue, exactly as Q1
-    // does: a decision made after a bucket was written changes what the next read says about it,
-    // and never rewrites the bucket.
-    joins: Object.freeze([
-      Object.freeze({
-        id: 'tool',
-        sql: 'LEFT JOIN ref.tool_catalogue tc ON tc.tool_fingerprint = a.tool_fingerprint LEFT JOIN ops.tool_sanction ot ON ot.tenant_id = a.tenant_id AND ot.tool_key = tc.app_key',
-        when: Object.freeze(['sanctioned_state']),
-      }),
-    ]),
-    extraSelect: Object.freeze([
-      Object.freeze({ sql: 'ops.tool_display_name(a.tool_fingerprint) AS "tool_name"', whenDimensions: Object.freeze(['tool']) }),
-    ]),
+    // SANCTION is joined present-tense from ops.tool_sanction, exactly as Q1 does: a decision made
+    // after a bucket was written changes what the next read says about it, and never rewrites the
+    // bucket.
+    joins: Object.freeze([sanctionJoin('a')]),
+    extraSelect: Object.freeze([toolName('a')]),
     warnings: Object.freeze([
       'An unscoped window beyond 7 days is refused by the cost guard when subject is a grouping dimension.',
-      'sanctioned_state is present-tense configuration joined at read time (the decision on the tool the fingerprint belongs to, ops.tool_sanction through ref.tool_catalogue), never a property of the aggregate row; NULL means no decision, or a fingerprint outside the catalogue, rendered as `unknown`, never as `unsanctioned`.',
+      'sanctioned_state is present-tense configuration joined at read time (the decision on the tool the row counts as, ops.tool_sanction), never a property of the aggregate row; NULL means no decision, or a tool outside the catalogue, rendered as `unknown`, never as `unsanctioned`.',
     ]),
   }),
 
@@ -387,7 +403,8 @@ export const SOURCES = Object.freeze({
     time: { name: 'first_seen', sql: 'f.first_seen', type: 'timestamp', maxDays: 366 },
     bucket: null,
     dimensions: Object.freeze({
-      tool: dim('tool', 'f.tool_fingerprint', 'text', { startsWith: true, ...TOOL_CARD }),
+      // The view's tool_fingerprint is the tool's id, one row per tool.
+      tool: dim('tool', 'f.tool_fingerprint', 'text', { startsWith: true, fingerprints: 'f.tool_fingerprint', ...TOOL_CARD }),
     }),
     measures: Object.freeze({}),
     grain: Object.freeze(['first_seen', 'tool']),
@@ -408,7 +425,6 @@ export const SOURCES = Object.freeze({
     listSelect: Object.freeze([
       'f.first_seen AS first_seen',
       'f.tool_fingerprint AS "tool"',
-      'f.tool_key AS tool_key',
       'ops.tool_display_name(f.tool_fingerprint) AS tool_name',
       '(SELECT ts.sanctioned_state FROM ops.tool_sanction ts WHERE ts.tenant_id = f.tenant_id AND ts.tool_key = f.tool_key) AS sanctioned_state',
       "(SELECT count(DISTINCT u.user_ref) FROM mart.agg_tool_user_period u WHERE u.tenant_id = f.tenant_id AND u.tool_fingerprint = ANY (f.fingerprints) AND u.bucket_size = 'day' AND u.bucket_start >= f.first_seen) AS people",
@@ -429,7 +445,7 @@ export const SOURCES = Object.freeze({
     id: 'mart.agg_org_period',
     kind: 'aggregate',
     label: 'Usage per department and population per bucket (mart.agg_org_period)',
-    from: 'mart.agg_org_period o',
+    from: toolRows('mart.agg_org_period', 'o'),
     tenantColumn: 'o.tenant_id',
     costClass: 'aggregate',
     time: null,
@@ -442,7 +458,7 @@ export const SOURCES = Object.freeze({
         cardinality: 8,
         orderSql: "coalesce(o.population, chr(1))",
       }),
-      tool: dim('tool', 'o.tool_fingerprint', 'text', { startsWith: true, ...TOOL_CARD }),
+      tool: toolDim('o'),
     }),
     measures: Object.freeze({
       submissions: measure('submissions', 'o.submissions'),
@@ -461,6 +477,7 @@ export const SOURCES = Object.freeze({
       'mart.agg_org_period PK (tenant_id, bucket_start, bucket_size, department, tool_fingerprint, population)',
       'mart.agg_org_period (tenant_id, department, bucket_start DESC)',
     ]),
+    extraSelect: Object.freeze([toolName('o')]),
     warnings: Object.freeze([
       'This source is empty for a tenant with no directory sync: the answer is not_yet_covered / directory_not_synced, never a zero line.',
       'o.department is NOT NULL in the table, so users with no directory row are absent here rather than present as an `unmapped` series; the q3 template computes the unmapped residual from mart.agg_tool_period.',
@@ -471,7 +488,7 @@ export const SOURCES = Object.freeze({
     id: 'mart.agg_team_period',
     kind: 'aggregate',
     label: 'Usage per team per bucket (mart.agg_team_period)',
-    from: 'mart.agg_team_period tp',
+    from: toolRows('mart.agg_team_period', 'tp'),
     tenantColumn: 'tp.tenant_id',
     costClass: 'aggregate',
     time: null,
@@ -479,7 +496,7 @@ export const SOURCES = Object.freeze({
     dimensions: Object.freeze({
       bucket: dim('bucket', 'tp.bucket_start', 'timestamp'),
       team: dim('team', 'tp.team_id', 'uuid', { ...TEAM_CARD }),
-      tool: dim('tool', 'tp.tool_fingerprint', 'text', { startsWith: true, ...TOOL_CARD }),
+      tool: toolDim('tp'),
     }),
     measures: Object.freeze({
       submissions: measure('submissions', 'tp.submissions'),
@@ -504,7 +521,7 @@ export const SOURCES = Object.freeze({
         sql: '(SELECT tt.name FROM ops.team tt WHERE tt.tenant_id = ops.current_tenant() AND tt.team_id = tp.team_id) AS "team_name"',
         whenDimensions: Object.freeze(['team']),
       }),
-      Object.freeze({ sql: 'ops.tool_display_name(tp.tool_fingerprint) AS "tool_name"', whenDimensions: Object.freeze(['tool']) }),
+      toolName('tp'),
     ]),
     warnings: Object.freeze([
       'A team counts the usage of its current members: membership is read when the rollup runs, not when a prompt was sent.',
@@ -519,7 +536,7 @@ export const SOURCES = Object.freeze({
     id: 'mart.agg_class_period',
     kind: 'aggregate',
     label: 'Sensitive-data class mix per bucket (mart.agg_class_period)',
-    from: 'mart.agg_class_period c',
+    from: toolRows('mart.agg_class_period', 'c'),
     tenantColumn: 'c.tenant_id',
     costClass: 'aggregate',
     time: null,
@@ -530,7 +547,7 @@ export const SOURCES = Object.freeze({
         ...CLASS_CARD,
         values: ['payment_card', 'government_id', 'credential', 'customer_pii', 'source_code', 'legal_commercial', 'health'],
       }),
-      tool: dim('tool', 'c.tool_fingerprint', 'text', { startsWith: true, ...TOOL_CARD }),
+      tool: toolDim('c'),
       severity: dim('severity', 'c.severity', 'text', {
         ...SEVERITY_CARD,
         values: ['low', 'medium', 'high', 'critical'],
@@ -560,6 +577,7 @@ export const SOURCES = Object.freeze({
     subjectBearing: false,
     requiresSubjectScope: false,
     indexes: Object.freeze(['mart.agg_class_period PK (tenant_id, bucket_start, bucket_size, class_code, tool_fingerprint, severity, classifier_version)']),
+    extraSelect: Object.freeze([toolName('c')]),
     warnings: Object.freeze([
       'submissions counts submissions CARRYING that class: one submission with three labels contributes to three rows. Summing class rows and calling the result "submissions" overstates volume. The q4 template returns the non-additive total separately, from mart.agg_tool_period.',
       'max_score is MAX over the collapsed rows, not a sum: it is a score, not a counter.',
@@ -1048,7 +1066,7 @@ export const SOURCES = Object.freeze({
     bucket: null,
     dimensions: Object.freeze({
       subject: dim('subject', 's.user_ref', 'text', { ...USER_CARD }),
-      tool: dim('tool', 's.tool_fingerprint', 'text', { startsWith: true, ...TOOL_CARD }),
+      tool: dim('tool', 'ops.tool_id(s.tool_fingerprint)', 'text', { startsWith: true, fingerprints: 's.tool_fingerprint', ...TOOL_CARD }),
       device: dim('device', 's.device_id', 'uuid', { ...DEVICE_CARD }),
       mode: dim('mode', 's.collection_mode', 'text', { ...MODE_CARD, values: ['m0', 'm1', 'm2', 'm3'] }),
       action: dim('action', 's.policy_action', 'text', {
@@ -1153,8 +1171,9 @@ export const SOURCES = Object.freeze({
       // display name. `subject` keeps the reference, which is the identity behind both.
       's.subject_name AS "subject_name"',
       '(SELECT ud.display_name FROM ops.user_dim ud WHERE ud.tenant_id = s.tenant_id AND ud.user_ref = s.user_ref) AS "directory_name"',
-      's.tool_fingerprint AS "tool"',
-      // The display name joined at read time; the raw fingerprint travels beside it in `tool`.
+      // The tool the event counts as, as every list of tools names it, and its display name, both
+      // resolved at read time; the event's own fingerprint is in its detail.
+      'ops.tool_id(s.tool_fingerprint) AS "tool"',
       'ops.tool_display_name(s.tool_fingerprint) AS "tool_name"',
       's.device_id AS "device"',
       's.collection_mode AS "mode"',
@@ -1214,7 +1233,7 @@ export const SOURCES = Object.freeze({
         values: ['payment_card', 'government_id', 'credential', 'customer_pii', 'source_code', 'legal_commercial', 'health'],
       }),
       subject: dim('subject', 'f.user_ref', 'text', { ...USER_CARD }),
-      tool: dim('tool', 'f.tool_fingerprint', 'text', { startsWith: true, ...TOOL_CARD }),
+      tool: dim('tool', 'ops.tool_id(f.tool_fingerprint)', 'text', { startsWith: true, fingerprints: 'f.tool_fingerprint', ...TOOL_CARD }),
       review_state: dim('review_state', 'f.review_state', 'text', {
         ...REVIEW_CARD,
         values: ['open', 'disputed', 'confirmed'],
@@ -1247,7 +1266,7 @@ export const SOURCES = Object.freeze({
       // from the directory.
       '(SELECT s.subject_name FROM ingest.submission s WHERE s.tenant_id = f.tenant_id AND s.submission_id = f.submission_id) AS "subject_name"',
       '(SELECT ud.display_name FROM ops.user_dim ud WHERE ud.tenant_id = f.tenant_id AND ud.user_ref = f.user_ref) AS "directory_name"',
-      'f.tool_fingerprint AS "tool"',
+      'ops.tool_id(f.tool_fingerprint) AS "tool"',
       'ops.tool_display_name(f.tool_fingerprint) AS "tool_name"',
       'f.collection_mode AS "mode"',
       'f.decided_locally AS "decided_locally"',

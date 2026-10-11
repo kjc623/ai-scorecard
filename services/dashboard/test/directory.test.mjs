@@ -109,3 +109,18 @@ test('a person\'s page is titled with their name and links to their prompts', ()
   assert.match(html, /Engineering ·/);
   assert.ok(html.includes(`href="explore.html#events?subject=${ADA}"`));
 });
+
+test('a person\'s Tools used counts each tool once across the window, not the sum of the days', () => {
+  const rows = [
+    { bucket: '2026-09-29T00:00:00Z', subject: ADA, submissions: 4, tools_used: 2, block_events: 0, bytes_total: 10 },
+    { bucket: '2026-09-30T00:00:00Z', subject: ADA, submissions: 6, tools_used: 2, block_events: 0, bytes_total: 10 },
+  ];
+  const counted = readState(envelope('ok', {
+    data: rows, freshness: FRESH, coverage: COMPLETE,
+    meta: { source: 'mart.agg_user_period', extras: { subject_tools: [{ tools: 3 }] } },
+  }));
+  const tools = (view) => view.tiles.find((t) => t.label === 'Tools used').value;
+  assert.deepEqual(tools(personView(counted, { subject: ADA })), { kind: 'number', text: '3' });
+  const uncounted = readState(envelope('ok', { data: rows, freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.agg_user_period' } }));
+  assert.deepEqual(tools(personView(uncounted, { subject: ADA })), { kind: 'absent', text: '—' }, 'four is not a count of tools');
+});

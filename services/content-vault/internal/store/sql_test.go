@@ -292,6 +292,28 @@ func TestLiveSearch(t *testing.T) {
 		Filters: store.SearchFilters{Subject: "someone-else"}}); err != nil || len(none.Hits) != 0 {
 		t.Fatalf("subject filter = %+v, %v", none.Hits, err)
 	}
+
+	// A tool matches every fingerprint that counts as it, whichever of them names it: the two
+	// prompts recorded under ChatGPT's extension host hash and under a host its domain covers are
+	// both ChatGPT (web).
+	l.as(w.tenant, func(tx *sql.Tx) {
+		l.exec(tx, `UPDATE ingest.submission
+		               SET tool_fingerprint = CASE WHEN submission_id = $2::uuid
+		                                           THEN 'tf2:a64fvqypthxcqzcwgpxxeeo4kvhk5onujlq22qafww3ql422pxyq'
+		                                           ELSE 'host:new.chatgpt.com' END
+		             WHERE tenant_id = $1 AND submission_id IN ($2::uuid, $3::uuid)`, w.tenant, subs[0], subs[1])
+	})
+	for _, tool := range []string{"app:chatgpt_web", "host:new.chatgpt.com"} {
+		byTool, err := l.svc.Search(ctx, vault.SearchRequest{TenantID: w.tenant, Principal: "alice", Query: "contoso",
+			Filters: store.SearchFilters{Tool: tool}})
+		if err != nil || len(byTool.Hits) != 2 {
+			t.Fatalf("tool filter %q = %+v, %v; want both prompts", tool, byTool.Hits, err)
+		}
+	}
+	if other, err := l.svc.Search(ctx, vault.SearchRequest{TenantID: w.tenant, Principal: "alice", Query: "contoso",
+		Filters: store.SearchFilters{Tool: "tool-a"}}); err != nil || len(other.Hits) != 0 {
+		t.Fatalf("tool filter tool-a = %+v, %v", other.Hits, err)
+	}
 }
 
 func TestLiveTierAndPromptKind(t *testing.T) {
