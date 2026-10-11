@@ -102,12 +102,12 @@ offered is `unknown_dimension` / `unknown_measure`, and the error lists what is 
 
 | Source | Dimensions | Measures |
 |---|---|---|
-| `mart.v_tool_usage` | `bucket`, `tool`, `sanctioned_state` | `submissions`, `users`, `bytes_total`, `blocked`, `warned`, `logged` |
-| `mart.agg_tool_period` | `bucket`, `tool`, `sanctioned_state` | the six above plus `detections`, `rollup_events`, `degraded_events` |
+| `mart.v_tool_usage` | `bucket`, `tool`, `sanctioned_state` | `submissions`, `users`, `bytes_total`, `blocked`, `warned`, `logged`, `sensitive`, `sensitive_blocked`, `sensitive_warned`, `sensitive_logged`, `attachments`, `content_prompts` |
+| `mart.agg_tool_period` | `bucket`, `tool`, `sanctioned_state` | the twelve above plus `detections`, `rollup_events`, `degraded_events` |
 | `mart.agg_tool_user_period` | `bucket`, `tool`, `sanctioned_state`, `subject` | `submissions`, `bytes_total` |
 | `mart.agg_org_period` | `bucket`, `department`, `population`, `tool` | `submissions`, `users` |
 | `mart.agg_team_period` | `bucket`, `team`, `tool` | `submissions`, `users` |
-| `mart.agg_class_period` | `bucket`, `class`, `tool`, `severity`, `classifier_version` | `submissions`, `users`, `max_score`, `degraded_events` |
+| `mart.agg_class_period` | `bucket`, `class`, `tool`, `severity`, `classifier_version` | `submissions`, `users`, `max_score`, `degraded_events`, `flagged`, `flagged_blocked`, `flagged_warned`, `flagged_logged` |
 | `mart.agg_user_period` | `bucket`, `subject` | `submissions`, `bytes_total`, `tools_used`, `block_events` |
 | `mart.v_team_member_period` | `bucket`, `team`, `subject` | `submissions` |
 | `mart.agg_device_period` | `bucket`, `device`, `collector` | `healthy_days`, `degraded_days`, `absent_days`, `tampered_days`, `spool_dropped` |
@@ -120,8 +120,8 @@ offered is `unknown_dimension` / `unknown_measure`, and the error lists what is 
 | `ops.audit` | `actor_type`, `actor`, `action`, `object_type`, `subject`, `case` | — |
 
 Extra filter-only columns (not groupable): on `ingest.submission` — `submission_id`, `received_at`,
-`first_occurred_at`, `last_occurred_at`, `expires_at`, `size_bytes`, `observation_count`, and the
-predicate `class`; on `mart.v_finding` — `detected_at`, `submission_id`, `rule_id`; on
+`first_occurred_at`, `last_occurred_at`, `expires_at`, `size_bytes`, `observation_count`,
+`attachment_count`, and the predicate `class`; on `mart.v_finding` — `detected_at`, `submission_id`, `rule_id`; on
 `ops.audit` — `audit_seq`, `occurred_at`, `object_id`; on `mart.v_device_liveness` — `enrolled_at`,
 `last_seen_at`, `revoked_at`, `spool_depth`, `spool_dropped_total`; on `mart.v_person` — `last_active_day`.
 
@@ -168,6 +168,11 @@ The window column is filterable under its own name (`received_at`, `detected_at`
   `labels @> jsonb_build_array(jsonb_build_object('class', $n))` and served by the `labels` GIN.
 * `prompt_kind` on `ingest.submission` filters through `coalesce(prompt_kind, 'unknown')`, so a
   row whose kind the device did not decide is never dropped by `ne`; the raw column is returned.
+* `sensitive` on the tool sources counts prompts whose enforcement rule matched on a label the rule
+  names, and `sensitive_blocked`/`_warned`/`_logged` split them by outcome; `flagged` and its
+  splits on `mart.agg_class_period` count, per class, the prompts that class made sensitive.
+  `attachments` sums the attachments prompts described; read it beside `content_prompts`, since
+  only a prompt collected with content (M1 and above) can describe one.
 
 ### 2.4 Buckets, grouping and ordering
 
@@ -220,7 +225,7 @@ Every template declares exactly these parameters; anything else is an error.
 | `q5_findings` | `mart.v_finding` | `window`, `limit`, `cursor`, `severity`, `rule`, `review_state`, `subject`, `tool`, `class` | review state `open` means nobody has looked |
 | `q6_subject_series` | `mart.agg_user_period` | `subject` (**required**), `window`, `bucket`, `limit` | carries `meta.extras.flush_check` |
 | `q7_devices` | `mart.v_device_liveness` | `limit`, `cursor`, `liveness`, `collector_state`, `collector`, `device_os`, `managed_state`, `region` | **no window**; four liveness values stay distinct; one row per device, with its collectors' states summed; `collector` and `collector_state` filter on the device's set; fleet-wide counts in `meta.extras.device_status` |
-| `q8_activity` | `ingest.submission` | `window`, `limit`, `cursor`, `subject`, `tool`, `device`, `class`, `content_state`, `action`, `mode`, `department`, `prompt_kind`, `prompt_kind_not` | window ≤ 31 days; both clocks returned; `prompt_kind` includes only that kind and `prompt_kind_not` excludes it |
+| `q8_activity` | `ingest.submission` | `window`, `limit`, `cursor`, `subject`, `tool`, `device`, `class`, `content_state`, `action`, `mode`, `department`, `prompt_kind`, `prompt_kind_not`, `attachments` | window ≤ 31 days; both clocks returned; `prompt_kind` includes only that kind and `prompt_kind_not` excludes it; `attachments: yes` keeps the events that described an attachment |
 | `q9_event_detail` | `ingest.submission` | `submission_id` (**required**), `received_at_hint` | single record; `data` is one row per observation, each carrying the submission's columns |
 | `q10_audit_trail` | `ops.audit` | `window`, `limit`, `cursor`, `actor`, `action`, `object_type`, `subject`, `case` | hash links verified in SQL before the page is returned |
 

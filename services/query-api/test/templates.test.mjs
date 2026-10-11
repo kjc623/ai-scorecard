@@ -209,6 +209,17 @@ test('q8 refuses a prompt_kind outside the closed vocabulary', () => {
   );
 });
 
+test('q8 attachments: yes keeps the submissions that described an attachment', () => {
+  const p = plan({ query_version: '1', template: 'q8_activity', params: { ...PARAMS.q8_activity, attachments: 'yes' } }, { now: NOW });
+  const read = p.statements.find((s) => s.id === 'read');
+  assert.ok(read.text.includes('s.attachment_count > $'), 'attachments must compile as a count above zero');
+  assert.ok(read.params.includes(0), 'the zero must be bound');
+  assert.equal(
+    rejection(() => plan({ query_version: '1', template: 'q8_activity', params: { ...PARAMS.q8_activity, attachments: 'no' } }, { now: NOW })).reason,
+    'malformed_document',
+  );
+});
+
 test('q9 is a single record read: submission and observations, audited first', () => {
   const p = plan({ query_version: '1', template: 'q9_event_detail', params: PARAMS.q9_event_detail }, { now: NOW });
   assert.equal(p.mode, 'single');

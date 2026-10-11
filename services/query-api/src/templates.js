@@ -135,7 +135,8 @@ export const TEMPLATES = Object.freeze({
           // The sanction rides with the tool: one state per fingerprint, so grouping by it
           // splits no row, and every row says whether its tool is sanctioned.
           dimensions: ['tool', 'sanctioned_state'],
-          measures: ['submissions', 'users', 'bytes_total', 'blocked', 'warned', 'logged'],
+          measures: ['submissions', 'users', 'bytes_total', 'blocked', 'warned', 'logged',
+            'sensitive', 'sensitive_blocked', 'sensitive_warned', 'sensitive_logged', 'attachments', 'content_prompts'],
           filters: filtersOf([
             eq('tool', optionalStr(params, 'tool')),
             eq('sanctioned_state', oneOf(params, 'sanctioned_state', ['sanctioned', 'unsanctioned', 'unknown'])),
@@ -265,7 +266,7 @@ export const TEMPLATES = Object.freeze({
           source: 'mart.agg_class_period',
           bucket: bucketOf(params, 'day'),
           dimensions,
-          measures: ['submissions', 'users', 'max_score', 'degraded_events'],
+          measures: ['submissions', 'users', 'max_score', 'degraded_events', 'flagged', 'flagged_blocked', 'flagged_warned', 'flagged_logged'],
           filters: filtersOf([
             eq('class', optionalStr(params, 'class')),
             eq('severity', optionalStr(params, 'severity')),
@@ -395,7 +396,7 @@ export const TEMPLATES = Object.freeze({
     title: 'What happened in this window, for this tool or person?',
     source: 'ingest.submission',
     kind: 'list',
-    params: ['window', 'limit', 'cursor', 'subject', 'tool', 'device', 'class', 'content_state', 'action', 'mode', 'department', 'prompt_kind', 'prompt_kind_not'],
+    params: ['window', 'limit', 'cursor', 'subject', 'tool', 'device', 'class', 'content_state', 'action', 'mode', 'department', 'prompt_kind', 'prompt_kind_not', 'attachments'],
     build(params) {
       return {
         document: {
@@ -416,6 +417,8 @@ export const TEMPLATES = Object.freeze({
             // the dimension compiles through coalesce(..., 'unknown') so it never drops a NULL row.
             eq('prompt_kind', oneOf(params, 'prompt_kind', ['user', 'client_generated', 'unknown'])),
             eq('prompt_kind', oneOf(params, 'prompt_kind_not', ['user', 'client_generated', 'unknown']), 'ne'),
+            // `attachments: yes` keeps the submissions that described at least one attachment.
+            oneOf(params, 'attachments', ['yes']) ? { field: 'attachment_count', op: 'gt', value: 0 } : null,
           ]),
           window: windowOf(params),
           limit: limitOf(params, 50, 500),
