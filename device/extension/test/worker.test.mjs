@@ -289,6 +289,35 @@ test('an over-cap body is sized and hashed, emitted degraded, and never held who
   assert.equal(obs.degraded_reason, 'content_over_cap', 'an over-cap body is degraded, never reported as "clean"');
 });
 
+// ── form bodies ─────────────────────────────────────────────────────────────────────────────
+
+test('a chat message sent as a form hands over what the person typed, not the form', async () => {
+  const h = await started();
+  // The shape of a ChatGPT message: the typed text in `prompt`, beside the client's state and
+  // anti-abuse tokens, as Chrome hands a form body over (parsed, keys in order).
+  const formData = {
+    assistantMessageId: ['pending-2d9f789d-34d6-4eb4-b0e0-0fac380bcbeb'],
+    chatRequirementsToken: [`gAAAAAB${'q'.repeat(400)}`],
+    conversationState: ['{"messages":[],"parentMessageId":"client-created-root","userMessageCount":0}'],
+    prompt: ['testing1234ogogogogog'],
+    proofToken: [`gAAAAAB${'p'.repeat(200)}`],
+  };
+  const form = Object.entries(formData).map(([k, v]) => `${k}=${v[0]}`).join('&');
+  await h.fake.drive('body', chromeRequest({
+    url: 'https://chat.example-ai.invalid/backend-api/conversation/updates',
+    headers: { 'content-type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+    formData,
+  }));
+  await settle();
+
+  const obs = h.core.lastObservation();
+  assert.ok(obs, 'the message is a submission');
+  assert.equal(obs.has_content, true);
+  assert.equal(Buffer.from(h.core.lastDecodedContent()).toString('utf8'), 'testing1234ogogogogog');
+  assert.equal(await h.core.lastComputedDigest(), obs.content_digest, 'the digest is of the typed text');
+  assert.equal(obs.size_bytes, form.length, 'the size is of the whole form');
+});
+
 // ── inline warn/block ───────────────────────────────────────────────────────────────────────
 
 /** A bundle at m1 holding `rules`; nothing is sanctioned, so every browser tool is unsanctioned. */
