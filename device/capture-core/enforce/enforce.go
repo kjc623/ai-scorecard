@@ -28,6 +28,8 @@ type Input struct {
 	// lists labels does not match.
 	Labels      []string
 	LabelsKnown bool
+	// UserRef is the person the prompt is attributed to, "" when no person is named.
+	UserRef string
 }
 
 // Decision is what the first matching rule asks for.
@@ -77,6 +79,9 @@ func matches(b *policy.Bundle, m policy.RuleMatch, in Input) bool {
 	if len(m.Routes) > 0 && !slices.Contains(m.Routes, in.Route) {
 		return false
 	}
+	if len(m.Users) > 0 && (in.UserRef == "" || !slices.Contains(m.Users, in.UserRef)) {
+		return false
+	}
 	return true
 }
 
@@ -108,14 +113,14 @@ func RecordedAction(d Decision, canEnforce bool) protocol.Decision {
 }
 
 // Hook returns the pipeline's enforcement hook for one observation on a route. It reads the bundle
-// in force when the pipeline calls it, after classification, so a rule change applies to the next
-// decision without a restart.
-func Hook(bundles func() *policy.Bundle, route protocol.Route, tool string, canEnforce bool) func(labels []string, known bool) protocol.Decision {
-	return func(labels []string, known bool) protocol.Decision {
+// in force when the pipeline calls it, after classification and attribution, so a rule change
+// applies to the next decision without a restart.
+func Hook(bundles func() *policy.Bundle, route protocol.Route, tool string, canEnforce bool) func(labels []string, known bool, userRef string) protocol.Decision {
+	return func(labels []string, known bool, userRef string) protocol.Decision {
 		var b *policy.Bundle
 		if bundles != nil {
 			b = bundles()
 		}
-		return RecordedAction(Evaluate(b, Input{Route: route, ToolFingerprint: tool, Labels: labels, LabelsKnown: known}), canEnforce)
+		return RecordedAction(Evaluate(b, Input{Route: route, ToolFingerprint: tool, Labels: labels, LabelsKnown: known, UserRef: userRef}), canEnforce)
 	}
 }

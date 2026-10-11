@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,11 +56,11 @@ func TestEnforcementRulesAgainstPostgres(t *testing.T) {
 	first := []store.EnforcementRule{
 		{RuleID: "block_credentials", Action: "block", Match: store.RuleMatch{Labels: []string{"credential"}, Tools: []string{},
 			Categories: []string{}, Sanction: []string{}, Routes: []string{"proxy.tls"}},
-			Message: "Remove the credential and try again.", Link: "https://intranet.example/ai"},
+			Message: "Remove the credential and try again.", Link: "https://intranet.example/ai", Users: []string{}},
 		{RuleID: "warn.unsanctioned", Action: "warn", Match: store.RuleMatch{Labels: []string{}, Tools: []string{"cursor"},
 			Categories: []string{"coding_agent"}, Sanction: []string{"unsanctioned"}, Routes: []string{}},
-			Message: "Use the approved coding agent."},
-		{RuleID: "allow_rest", Action: "allow", Match: empty},
+			Message: "Use the approved coding agent.", Users: []string{}},
+		{RuleID: "allow_rest", Action: "allow", Match: empty, Users: []string{}},
 	}
 	if err := st.ReplaceEnforcementRules(ctx, tenant, first, audit); err != nil {
 		t.Fatal(err)
@@ -153,4 +155,98 @@ func canonicalJSON(t *testing.T, doc []byte) string {
 	}
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+// TestRuleUsersAgainstPostgres drives who rules apply to as sac_control: a person, a provisioned
+// group (its active members only), a department, a unit and the units below it, and a team reach
+// their members' canonical refs and the aliases of those refs; a disabled rule and a group since
+// removed reach nobody; the console's read names each value with how many people it reaches.
+func TestRuleUsersAgainstPostgres(t *testing.T) {
+	owner := pgtest.Open(t)
+	st := store.NewSQL(pgtest.OpenAs(t, "sac_control"))
+	ctx := context.Background()
+	tenant := pgtest.Tenant(t, owner, "eastus")
+	audit := store.AuditEntry{TenantID: tenant, ActorType: store.ActorUser, ActorID: "admin@example.com",
+		Action: "tenant.enforcement_rules.set", ObjectType: "tenant", ObjectID: tenant, OccurredAt: time.Now().UTC().Truncate(time.Microsecond)}
+	ref := func(n byte) string { return "u_" + strings.Repeat(string("0123456789abcdef"[n]), 32) }
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := owner.ExecContext(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	ana, bo, cy, di := ref(1), ref(2), ref(3), ref(4)
+	group, gone, team := pgtest.UUID(t), pgtest.UUID(t), pgtest.UUID(t)
+	user := func(n byte, r string, active bool) string {
+		id := pgtest.UUID(t)
+		exec(`INSERT INTO ops.scim_user (tenant_id, scim_id, user_name_hash, resource_enc, user_ref, active)
+		      VALUES ($1::uuid, $2::uuid, decode(repeat($3, 32), 'hex'), '\x00', $4, $5)`, tenant, id, fmt.Sprintf("%02x", n), r, active)
+		return id
+	}
+	anaID, boID := user(1, ana, true), user(2, bo, false)
+	exec(`INSERT INTO ops.scim_group (tenant_id, scim_id, display_name) VALUES ($1::uuid, $2::uuid, 'Finance')`, tenant, group)
+	exec(`INSERT INTO ops.scim_group_member (tenant_id, group_id, user_id) VALUES ($1::uuid, $2::uuid, $3::uuid), ($1::uuid, $2::uuid, $4::uuid)`, tenant, group, anaID, boID)
+	exec(`INSERT INTO ops.user_ref_alias (tenant_id, alias_ref, user_ref) VALUES ($1::uuid, $2, $3)`, tenant, ref(9), ana)
+	exec(`INSERT INTO ops.user_dim (tenant_id, user_ref, department, org_unit, display_name) VALUES
+	      ($1::uuid, $2, 'Legal', 'OU=Paris,OU=Legal,DC=contoso,DC=com', 'Cy Young'),
+	      ($1::uuid, $3, 'Sales', 'OU=Legal,DC=contoso,DC=com', NULL)`, tenant, cy, di)
+	exec(`INSERT INTO ops.team (tenant_id, team_id, name, created_by) VALUES ($1::uuid, $2::uuid, 'Pilot', 'x')`, tenant, team)
+	exec(`INSERT INTO ops.team_member (tenant_id, team_id, user_ref, added_by) VALUES ($1::uuid, $2::uuid, $3, 'x')`, tenant, team, di)
+
+	rules := []store.EnforcementRule{
+		{RuleID: "allow_finance", Action: "allow", Users: []string{"group:" + group}},
+		{RuleID: "allow_legal", Action: "allow", Users: []string{"department:legal"}},
+		{RuleID: "allow_unit", Action: "allow", Users: []string{"org_unit:OU=Legal,DC=contoso,DC=com"}},
+		{RuleID: "allow_pilot", Action: "allow", Users: []string{"team:" + team, "user:" + cy}},
+		{RuleID: "allow_off", Action: "allow", Users: []string{"user:" + cy}, Disabled: true},
+		{RuleID: "block_gone", Action: "block", Message: "x", Users: []string{"group:" + gone}},
+		{RuleID: "block_rest", Action: "block", Message: "x"},
+	}
+	if err := st.ReplaceEnforcementRules(ctx, tenant, rules, audit); err != nil {
+		t.Fatal(err)
+	}
+	read, err := st.EnforcementRules(ctx, tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read[4].Disabled || read[0].Disabled || !reflect.DeepEqual(read[3].Users, rules[3].Users) || !reflect.DeepEqual(read[6].Users, []string{}) {
+		t.Fatalf("rules read back as %+v", read)
+	}
+	in, err := st.PolicyInputs(ctx, tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][]string{
+		"allow_finance": {ana, ref(9)},
+		"allow_legal":   {cy},
+		"allow_unit":    {cy, di},
+		"allow_pilot":   {cy, di},
+	}
+	if !reflect.DeepEqual(in.RuleUserRefs, want) {
+		t.Fatalf("rule user refs = %v, want %v", in.RuleUserRefs, want)
+	}
+	users, err := st.RuleUsers(ctx, tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byValue := map[string]store.RuleUser{}
+	for _, u := range users {
+		byValue[u.Value] = u
+	}
+	for value, w := range map[string]store.RuleUser{
+		"group:" + group:                      {Name: "Finance", Members: 1, Found: true},
+		"group:" + gone:                       {Name: "", Members: 0, Found: false},
+		"department:legal":                    {Name: "legal", Members: 1, Found: true},
+		"org_unit:OU=Legal,DC=contoso,DC=com": {Name: "OU=Legal,DC=contoso,DC=com", Members: 2, Found: true},
+		"team:" + team:                        {Name: "Pilot", Members: 1, Found: true},
+		"user:" + cy:                          {Name: "Cy Young", Members: 1, Found: true},
+	} {
+		w.Value = value
+		if byValue[value] != w {
+			t.Errorf("%s = %+v, want %+v", value, byValue[value], w)
+		}
+	}
+	if len(users) != 6 {
+		t.Fatalf("rule users = %+v, want each value once", users)
+	}
 }

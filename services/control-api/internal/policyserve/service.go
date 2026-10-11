@@ -322,7 +322,7 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 			NodeRequire: true,
 		},
 		Endpoint:        composeEndpoint(in.Endpoint),
-		Rules:           composeRules(in.Rules, in.ToolFingerprints),
+		Rules:           composeRules(in.Rules, in.ToolFingerprints, in.RuleUserRefs),
 		CustomLabels:    composeCustomLabels(in.CustomLabels),
 		SanctionedTools: sanctioned(in.SanctionedTools),
 		Catalog:         composeCatalog(in.Catalog),
@@ -423,14 +423,24 @@ func composeCatalog(apps []store.CatalogApp) []CatalogApp {
 	return out
 }
 
-// composeRules is the bundle's rules list, in the tenant's order.
-// composeRules is the bundle's rules. A rule's tools list names tool keys; the bundle carries the
-// tools' catalogue fingerprints, sorted, because devices match fingerprints. A key the catalogue
-// does not know contributes nothing.
-func composeRules(rules []store.EnforcementRule, fingerprints map[string][]string) []Rule {
+// composeRules is the bundle's rules, in the tenant's order. A rule's tools list names tool keys;
+// the bundle carries the tools' catalogue fingerprints, sorted, because devices match fingerprints.
+// A key the catalogue does not know contributes nothing. A rule's users become the refs they reach,
+// which is what a device derives for the person at it; a rule whose users reach nobody can match
+// nothing, so it is left out with the disabled rules, and the rules after it keep their order.
+func composeRules(rules []store.EnforcementRule, fingerprints map[string][]string, userRefs map[string][]string) []Rule {
 	list := func(v []string) []string { return append([]string{}, v...) }
 	out := make([]Rule, 0, len(rules))
 	for _, r := range rules {
+		if r.Disabled {
+			continue
+		}
+		var users []string
+		if len(r.Users) > 0 {
+			if users = list(userRefs[r.RuleID]); len(users) == 0 {
+				continue
+			}
+		}
 		m := r.Match
 		tools := []string{}
 		for _, key := range m.Tools {
@@ -443,7 +453,7 @@ func composeRules(rules []store.EnforcementRule, fingerprints map[string][]strin
 		sort.Strings(tools)
 		out = append(out, Rule{RuleID: r.RuleID, Action: r.Action, Message: r.Message, Link: r.Link,
 			Match: RuleMatch{Labels: list(m.Labels), Tools: tools, Categories: list(m.Categories),
-				Sanction: list(m.Sanction), Routes: list(m.Routes)}})
+				Sanction: list(m.Sanction), Routes: list(m.Routes), Users: users}})
 	}
 	return out
 }

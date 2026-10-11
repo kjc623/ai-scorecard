@@ -477,7 +477,7 @@ CREATE TABLE ops.endpoint_tool_setting (
 -- The tenant's enforcement rules, in order, delivered in the policy bundle's rules list. The device
 -- applies the first rule whose every non-empty match list matches. The list is replaced as a whole,
 -- so position is dense from 0. A label must be a ref.data_class code or one of the tenant's custom
--- labels (ops.enforce_rule_labels).
+-- labels (ops.enforce_rule_labels). A disabled rule keeps its place and is not sent to devices.
 CREATE TABLE ops.enforcement_rule (
   tenant_id   uuid NOT NULL REFERENCES ops.tenant(tenant_id),
   position    int NOT NULL CHECK (position >= 0),
@@ -488,8 +488,18 @@ CREATE TABLE ops.enforcement_rule (
   link        text CHECK (link LIKE 'https://_%'),
   updated_by  text NOT NULL,
   updated_at  timestamptz NOT NULL DEFAULT now(),
+  -- Who the rule applies to, empty for everyone: people (user:<canonical ref>), provisioned groups
+  -- (group:<scim id>), departments (department:<name>), units (org_unit:<distinguished name>) and
+  -- teams (team:<team id>). The policy bundle carries their members' refs and aliases. Kept apart
+  -- from match, which query-api reads, because it names people.
+  users       jsonb NOT NULL DEFAULT '[]'::jsonb,
+  enabled     boolean NOT NULL DEFAULT true,
   PRIMARY KEY (tenant_id, rule_id),
   CONSTRAINT enforcement_rule_position_unique UNIQUE (tenant_id, position),
+  CONSTRAINT enforcement_rule_users_shape CHECK (
+    jsonb_typeof(users) = 'array'
+    AND NOT jsonb_path_exists(users, 'strict $[*] ? (@.type() != "string")')
+    AND NOT jsonb_path_exists(users, '$[*] ? (!(@ like_regex "^(user:u_[0-9a-f]{32}|(group|team):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(department|org_unit):.+)$"))')),
   -- match holds only the five match lists, each an array of strings.
   CONSTRAINT enforcement_rule_match_shape CHECK (
     jsonb_typeof(match) = 'object'

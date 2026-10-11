@@ -646,13 +646,25 @@ func (h *Handler) handleKillSwitch(w http.ResponseWriter, r *http.Request) {
 // --- GET and PUT /admin/v1/settings/rules --------------------------------------------------
 
 // ruleJSON is one enforcement rule in the policy bundle's spelling. Every match list is sent, empty
-// when it matches anything.
+// when it matches anything. Users is who the rule applies to, empty for everyone; a rule sent
+// without enabled is enabled.
 type ruleJSON struct {
 	RuleID  string        `json:"rule_id"`
 	Action  string        `json:"action"`
 	Match   ruleMatchJSON `json:"match"`
 	Message string        `json:"message"`
 	Link    string        `json:"link,omitempty"`
+	Users   []string      `json:"users"`
+	Enabled *bool         `json:"enabled,omitempty"`
+}
+
+// ruleUserJSON names one value the rules' users hold. Found is false for a group or team that no
+// longer exists, which reaches nobody.
+type ruleUserJSON struct {
+	Value   string `json:"value"`
+	Name    string `json:"name"`
+	Members int64  `json:"members"`
+	Found   bool   `json:"found"`
 }
 
 type ruleMatchJSON struct {
@@ -664,10 +676,17 @@ type ruleMatchJSON struct {
 }
 
 type rulesJSON struct {
-	Rules []ruleJSON `json:"rules"`
+	Rules []ruleJSON     `json:"rules"`
+	Users []ruleUserJSON `json:"users"`
 }
 
 var ruleIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_.-]{0,127}$`)
+
+// ruleUserPattern is a value a rule's users may hold, as ops.enforcement_rule refuses the rest; a
+// department or unit is also at most maxRuleUserName characters.
+var ruleUserPattern = regexp.MustCompile(`^(user:u_[0-9a-f]{32}|(group|team):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(department|org_unit):.+)$`)
+
+const maxRuleUserName = 1024
 
 // maxRuleMessage is the longest message a rule may carry, in characters.
 const maxRuleMessage = 280
@@ -689,12 +708,22 @@ func (h *Handler) handleGetRules(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, apierr.Internal(fmt.Errorf("read enforcement rules: %w", err)))
 		return
 	}
-	out := rulesJSON{Rules: []ruleJSON{}}
+	users, err := h.store.RuleUsers(r.Context(), p.Tenant)
+	if err != nil {
+		h.fail(w, apierr.Internal(fmt.Errorf("read rule users: %w", err)))
+		return
+	}
+	out := rulesJSON{Rules: []ruleJSON{}, Users: []ruleUserJSON{}}
 	for _, rule := range rules {
 		m := rule.Match
+		enabled := !rule.Disabled
 		out.Rules = append(out.Rules, ruleJSON{RuleID: rule.RuleID, Action: rule.Action, Message: rule.Message, Link: rule.Link,
 			Match: ruleMatchJSON{Labels: listJSON(m.Labels), Tools: listJSON(m.Tools), Categories: listJSON(m.Categories),
-				Sanction: listJSON(m.Sanction), Routes: listJSON(m.Routes)}})
+				Sanction: listJSON(m.Sanction), Routes: listJSON(m.Routes)},
+			Users: listJSON(rule.Users), Enabled: &enabled})
+	}
+	for _, u := range users {
+		out.Users = append(out.Users, ruleUserJSON(u))
 	}
 	h.writeJSON(w, http.StatusOK, out)
 }
@@ -796,9 +825,22 @@ func validRules(in []ruleJSON) ([]store.EnforcementRule, error) {
 				return nil, refuse(i, "match.routes", fmt.Sprintf("match.routes %q is not a collection route", v))
 			}
 		}
+		if len(rule.Users) > store.MaxRuleUsers {
+			return nil, refuse(i, "users", fmt.Sprintf("users names more than %d people, groups, departments, units and teams", store.MaxRuleUsers))
+		}
+		for j, v := range rule.Users {
+			_, name, _ := strings.Cut(v, ":")
+			if !ruleUserPattern.MatchString(v) || utf8.RuneCountInString(name) > maxRuleUserName {
+				return nil, refuse(i, "users", fmt.Sprintf("users %q is not user:<ref>, group:<id>, department:<name>, org_unit:<name> or team:<id>", v))
+			}
+			if slices.Contains(rule.Users[:j], v) {
+				return nil, refuse(i, "users", fmt.Sprintf("users names %q twice", v))
+			}
+		}
 		out = append(out, store.EnforcementRule{RuleID: rule.RuleID, Action: rule.Action, Message: rule.Message, Link: rule.Link,
 			Match: store.RuleMatch{Labels: listJSON(m.Labels), Tools: listJSON(m.Tools), Categories: listJSON(m.Categories),
-				Sanction: listJSON(m.Sanction), Routes: listJSON(m.Routes)}})
+				Sanction: listJSON(m.Sanction), Routes: listJSON(m.Routes)},
+			Users: listJSON(rule.Users), Disabled: rule.Enabled != nil && !*rule.Enabled})
 	}
 	return out, nil
 }

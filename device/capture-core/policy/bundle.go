@@ -213,15 +213,20 @@ type Rule struct {
 
 // RuleMatch is a rule's conditions. Every non-empty list must match; an empty list matches
 // anything; inside a list any value matches. Labels are classifier classes, Tools tool
-// fingerprints, Categories app catalog categories, and Sanction sanctioned or unsanctioned, decided
-// against the bundle's SanctionedTools.
+// fingerprints, Categories app catalog categories, Sanction sanctioned or unsanctioned, decided
+// against the bundle's SanctionedTools, and Users the user_refs of the people the rule applies to,
+// which a prompt no person is named for never matches.
 type RuleMatch struct {
 	Labels     []string         `json:"labels"`
 	Tools      []string         `json:"tools"`
 	Categories []string         `json:"categories"`
 	Sanction   []string         `json:"sanction"`
 	Routes     []protocol.Route `json:"routes"`
+	Users      []string         `json:"users,omitempty"`
 }
+
+// userRefPattern is a derived user_ref (protocol.DeriveUserRef).
+var userRefPattern = regexp.MustCompile(`^u_[0-9a-f]{32}$`)
 
 var customLabelPattern = regexp.MustCompile(`^custom_[a-z0-9_]{1,56}$`)
 
@@ -798,6 +803,11 @@ func validRules(rules []Rule) error {
 		for _, route := range r.Match.Routes {
 			if !route.Valid() {
 				return fmt.Errorf("policy: rule %s matches route %q outside the closed vocabulary", r.RuleID, route)
+			}
+		}
+		for _, ref := range r.Match.Users {
+			if !userRefPattern.MatchString(ref) {
+				return fmt.Errorf("policy: rule %s names a user that is not a derived user_ref", r.RuleID)
 			}
 		}
 	}

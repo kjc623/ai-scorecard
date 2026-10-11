@@ -231,9 +231,9 @@ func (n *Normalizer) prompt(ctx context.Context, from otlp.Sender, a attrs, at t
 
 // enforce is the prompt's enforcement hook. Route tool.otel reports a prompt after Codex has sent
 // it, so it can never block or warn: the matching rule is recorded as logged.
-func (n *Normalizer) enforce() func(labels []string, known bool) protocol.Decision {
+func (n *Normalizer) enforce() func(labels []string, known bool, userRef string) protocol.Decision {
 	if n.cfg.Bundles == nil {
-		return func([]string, bool) protocol.Decision {
+		return func([]string, bool, string) protocol.Decision {
 			return enforce.RecordedAction(enforce.Decision{RuleID: enforce.DefaultRuleID, Action: policy.RuleAllow}, false)
 		}
 	}

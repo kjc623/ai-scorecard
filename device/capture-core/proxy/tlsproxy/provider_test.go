@@ -80,7 +80,7 @@ func (p *fakePipeline) Process(ctx context.Context, obs core.Observation) (core.
 	}
 	if obs.Enforce != nil {
 		known := p.mode.ReadsContent() && !obs.OverCap && !out.Degraded
-		d := obs.Enforce(p.labels, known)
+		d := obs.Enforce(p.labels, known, "")
 		p.mu.Lock()
 		p.decisions = append(p.decisions, d)
 		p.mu.Unlock()
