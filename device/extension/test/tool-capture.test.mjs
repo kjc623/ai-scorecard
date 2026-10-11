@@ -11,17 +11,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { webcrypto } from 'node:crypto';
+import { toolFingerprint } from '../src/tool-fingerprint.js';
+import { bundleCatalog, loadFixtures, replay, toolCatalogue, webTools } from '../test-support/tool-replay.mjs';
 
-import { computeToolFingerprint } from '../src/tool-fingerprint.js';
-import { extensionCatalogue, loadFixtures, replay } from '../test-support/tool-replay.mjs';
-
-const catalogue = extensionCatalogue();
+const catalogue = toolCatalogue();
+const catalog = bundleCatalog();
 const fixtures = loadFixtures();
 
 test('every web tool in the app catalogue has a capture fixture', () => {
   const covered = new Set(fixtures.map((f) => f.app_key));
-  for (const { app_key, display_name } of catalogue.values()) {
+  for (const [app_key, display_name] of webTools(catalogue)) {
     assert.ok(covered.has(app_key), `${display_name} (${app_key}) has no fixture in test/tools/`);
   }
 });
@@ -33,7 +32,7 @@ for (const fixture of fixtures) {
     const expected = fixture.expect;
     if (!expected.observed || !expected.attributed || !expected.prompt || expected.events !== 1) assert.ok(expected.why, `${fixture.file} says why the tool is not fully captured`);
 
-    const got = await replay(fixture, { catalogue });
+    const got = await replay(fixture, { catalogue, catalog });
     const events = got.events.map((e) => `${e.route} ${e.named ?? 'not catalogued'} ${JSON.stringify(e.content)}`).join('; ');
     const detail = `score ${got.score} [${got.signals.join(', ')}], events: ${events || 'none'}`;
     assert.deepEqual(
@@ -46,8 +45,8 @@ for (const fixture of fixtures) {
 
 for (const fixture of fixtures) {
   test(`${fixture.tool}: every event is named by its destination, whichever path emitted it`, async () => {
-    const { fingerprint } = await computeToolFingerprint({ crypto: webcrypto }, { url: fixture.request.url });
-    const got = await replay(fixture, { catalogue });
+    const fingerprint = toolFingerprint(catalog, fixture.request.url);
+    const got = await replay(fixture, { catalogue, catalog });
     for (const event of got.events) assert.equal(event.fingerprint, fingerprint, `${fixture.tool}: the ${event.route} event`);
   });
 }

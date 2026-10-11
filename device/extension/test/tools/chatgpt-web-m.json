@@ -1,0 +1,43 @@
+{
+  "tool": "ChatGPT (web) on m.chatgpt.com",
+  "app_key": "chatgpt_web",
+  "source": {
+    "kind": "documented",
+    "from": "the address the reference VM's ChatGPT prompts went to on 2026-10-11, m.chatgpt.com, with the form body of chatgpt-web.json",
+    "checked": "2026-10-11"
+  },
+  "typed": "summarise this week's sales figures",
+  "request": {
+    "url": "https://m.chatgpt.com/backend-api/f/conversation",
+    "method": "POST",
+    "form": {
+      "assistantMessageId": [
+        "pending-2d9f789d-34d6-4eb4-b0e0-0fac380bcbeb"
+      ],
+      "chatRequirementsToken": [
+        "gAAAAABqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+      ],
+      "conversationState": [
+        "{\"messages\":[],\"parentMessageId\":\"client-created-root\",\"userMessageCount\":0}"
+      ],
+      "prompt": [
+        "summarise this week's sales figures"
+      ],
+      "proofToken": [
+        "gAAAAABpppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppppp"
+      ]
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "content-type": "text/event-stream; charset=utf-8"
+    }
+  },
+  "expect": {
+    "events": 1,
+    "observed": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

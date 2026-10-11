@@ -3282,6 +3282,45 @@ END $$;
 RESET ROLE;
 
 -- =====================================================================================
+-- T86  Tool names
+-- =====================================================================================
+
+DO $$
+DECLARE
+  bad text;
+BEGIN
+  -- The browser extension names a request after an app known by its inference domains alone, so a
+  -- web tool with another kind of signal could not be named from the browser.
+  SELECT string_agg(DISTINCT c.app_key, ', ') INTO bad
+    FROM ref.tool_catalogue c
+   WHERE c.signal_kind = 'extension'
+     AND (EXISTS (SELECT 1 FROM ref.app_signal s WHERE s.app_key = c.app_key AND s.kind <> 'inference_domain')
+          OR NOT EXISTS (SELECT 1 FROM ref.app_signal s WHERE s.app_key = c.app_key AND s.kind = 'inference_domain'));
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T86 web tools not known by their inference domains alone: %', bad;
+  END IF;
+END $$;
+
+SET ROLE sac_query;
+DO $$
+BEGIN
+  IF ops.tool_display_name('host:claude.ai') IS DISTINCT FROM 'claude.ai' THEN
+    RAISE EXCEPTION 'FAIL T86 a destination no app claims is not shown as its host';
+  END IF;
+  IF ops.tool_display_name('host:') IS DISTINCT FROM 'Unrecognised tool' THEN
+    RAISE EXCEPTION 'FAIL T86 a destination with no host has a name';
+  END IF;
+  IF ops.tool_display_name('tf2:a64fvqypthxcqzcwgpxxeeo4kvhk5onujlq22qafww3ql422pxyq') IS DISTINCT FROM 'ChatGPT (web)' THEN
+    RAISE EXCEPTION 'FAIL T86 prompts stored under m.chatgpt.com''s fingerprint are not ChatGPT (web)';
+  END IF;
+  IF ops.tool_display_name('tf2:never_catalogued') IS DISTINCT FROM 'Unrecognised tool' THEN
+    RAISE EXCEPTION 'FAIL T86 an uncatalogued fingerprint has a name';
+  END IF;
+  RAISE NOTICE 'PASS T86 web tools are known by their domains; a destination no app claims is shown as its host, nothing else is guessed';
+END $$;
+RESET ROLE;
+
+-- =====================================================================================
 -- Report
 -- =====================================================================================
 
