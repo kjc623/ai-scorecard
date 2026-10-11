@@ -685,6 +685,26 @@ test('a weak submission is upgraded when the response contract agrees, on the hi
   assert.ok(counters.emitted >= 1);
 });
 
+test('a submission already observed is not observed again when its response completes', async () => {
+  const h = await started();
+  const bodyText = JSON.stringify(CHAT_BODY);
+  await h.fake.dispatch(chromeRequest({ requestId: 'sent-1', url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: bodyText }));
+  await settle(2);
+  await h.fake.completeListener()({
+    requestId: 'sent-1',
+    url: CHAT_URL,
+    method: 'POST',
+    statusCode: 200,
+    responseHeaders: Object.entries(STREAMING_RESPONSE.headers).map(([name, value]) => ({ name, value })),
+    type: 'xmlhttprequest',
+    timeStamp: 1,
+  });
+  await settle(2);
+
+  assert.equal(observationFrames(h.core).length, 1, 'one submission, one observation');
+  assert.equal(Buffer.from(h.core.lastDecodedContent()).toString('utf8'), bodyText, 'its content is the body, encoded once');
+});
+
 test('a response for a request the predicate never held changes nothing', async () => {
   const h = await started();
   const listener = h.fake.completeListener();
