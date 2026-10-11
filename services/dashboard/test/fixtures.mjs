@@ -174,6 +174,27 @@ const CLASS_ROWS = Object.freeze([
   Object.freeze({ bucket: DAY, class: 'health', severity: 'high', submissions: 4, users: 2, max_score: 0.81, degraded_events: 0, flagged: 0, flagged_blocked: 0, flagged_warned: 0, flagged_logged: 0 }),
 ]);
 
+// The enforcement rules in the order a device applies them, as query-api lists them: a custom label
+// and a tool carry their names beside the keys the rule stores.
+const RULE_ROWS = Object.freeze([
+  Object.freeze({ position: 1, rule: 'secrets.block', action: 'block', match: { labels: ['credential', 'custom_falcon'], sanction: ['unsanctioned'] }, label_names: { custom_falcon: 'Project Falcon' }, tool_names: null }),
+  Object.freeze({ position: 2, rule: 'pii.warn', action: 'warn', match: { labels: ['customer_pii'] }, label_names: null, tool_names: null }),
+  Object.freeze({ position: 3, rule: 'credential.allow', action: 'allow', match: { labels: ['credential'] }, label_names: null, tool_names: null }),
+  Object.freeze({ position: 4, rule: 'claude-code.warn', action: 'warn', match: { tools: ['claude_code'], routes: ['tool.hook'] }, label_names: null, tool_names: { claude_code: 'Claude Code' } }),
+  Object.freeze({ position: 5, rule: 'runtime.block', action: 'block', match: { categories: ['local_runtime'] }, label_names: null, tool_names: null }),
+]);
+
+// The prompts each rule decided, by week: a window across two weeks reads two rows for a rule, and
+// a rule since removed still has its rows. runtime.block matched nothing.
+const RULE_MATCH_ROWS = Object.freeze([
+  Object.freeze({ bucket: '2026-09-28T00:00:00Z', rule: 'secrets.block', matches: 9, blocked: 9, warned: 0, logged: 0 }),
+  Object.freeze({ bucket: '2026-09-21T00:00:00Z', rule: 'secrets.block', matches: 4, blocked: 4, warned: 0, logged: 0 }),
+  Object.freeze({ bucket: '2026-09-28T00:00:00Z', rule: 'pii.warn', matches: 80, blocked: 0, warned: 78, logged: 2 }),
+  Object.freeze({ bucket: '2026-09-28T00:00:00Z', rule: 'credential.allow', matches: 66, blocked: 0, warned: 0, logged: 66 }),
+  Object.freeze({ bucket: '2026-09-28T00:00:00Z', rule: 'claude-code.warn', matches: 310, blocked: 0, warned: 40, logged: 270 }),
+  Object.freeze({ bucket: '2026-09-21T00:00:00Z', rule: 'legacy.block', matches: 2, blocked: 2, warned: 0, logged: 0 }),
+]);
+
 const PERSON_ROWS = Object.freeze([
   Object.freeze({ bucket: '2026-09-24T00:00:00Z', subject: 'u_4f21', submissions: 41, bytes_total: 900_000, tools_used: 3, block_events: 1 }),
   Object.freeze({ bucket: '2026-09-25T00:00:00Z', subject: 'u_4f21', submissions: 44, bytes_total: 940_000, tools_used: 3, block_events: 0 }),
@@ -332,6 +353,18 @@ const REALISTIC = Object.freeze({
       extras: { class_total: [{ submissions_total: 4210 }] },
     },
   }),
+  'ops.enforcement_rule': ok({
+    data: RULE_ROWS,
+    freshness: freshness({ aggregate: 'ops.enforcement_rule', state: 'fresh', aggregate_note: 'current state' }),
+    coverage: coverage({ state: 'partial' }),
+    meta: { source: 'ops.enforcement_rule' },
+  }),
+  'mart.agg_rule_period': ok({
+    data: RULE_MATCH_ROWS,
+    freshness: freshness({ aggregate: 'mart.agg_rule_period' }),
+    coverage: coverage({ state: 'partial' }),
+    meta: { source: 'mart.agg_rule_period', applied_bucket: 'week' },
+  }),
   q5_findings: ok({
     data: FINDING_ROWS,
     page: page({ returned: 2, next_cursor: 'eyJvIjoiYzEifQ.c2ln', newer_events_exist: true }),
@@ -484,4 +517,4 @@ export function fixtureTransport(scenario = 'realistic') {
   });
 }
 
-export { TOOL_ROWS, DEVICE_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, TEAM_ROWS, TEAM_MEMBER_ROWS, PEOPLE_ROWS, CLASS_ROWS, PERSON_ROWS, WINDOW };
+export { TOOL_ROWS, DEVICE_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, TEAM_ROWS, TEAM_MEMBER_ROWS, PEOPLE_ROWS, CLASS_ROWS, PERSON_ROWS, RULE_ROWS, RULE_MATCH_ROWS, WINDOW };

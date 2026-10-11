@@ -201,6 +201,8 @@ const OS_CARD = { cardinality: 2 };
 const GAP_CARD = { cardinality: 8 };
 const SANCTIONED_CARD = { cardinality: 3 };
 const DEVICE_CARD = { cardinality: 5000 };
+// A tenant keeps at most 100 enforcement rules (control-api).
+const RULE_CARD = { cardinality: 100 };
 const CONFIDENCE_CARD = { cardinality: 4 };
 const MERGE_CONF_CARD = { cardinality: 2 };
 
@@ -516,6 +518,83 @@ export const SOURCES = Object.freeze({
     warnings: Object.freeze([
       'submissions counts submissions CARRYING that class: one submission with three labels contributes to three rows. Summing class rows and calling the result "submissions" overstates volume. The q4 template returns the non-additive total separately, from mart.agg_tool_period.',
       'max_score is MAX over the collapsed rows, not a sum: it is a score, not a counter.',
+    ]),
+  }),
+
+  // -------------------------------------------------------------------------------------------
+  // Insights — the prompts each enforcement rule decided, and the rules themselves.
+  // -------------------------------------------------------------------------------------------
+  'mart.agg_rule_period': Object.freeze({
+    id: 'mart.agg_rule_period',
+    kind: 'aggregate',
+    label: 'Prompts per enforcement rule per bucket (mart.agg_rule_period)',
+    from: 'mart.agg_rule_period r',
+    tenantColumn: 'r.tenant_id',
+    costClass: 'aggregate',
+    time: null,
+    bucket: { startColumn: 'r.bucket_start', sizeColumn: 'r.bucket_size', sizes: NATIVE_BUCKETS },
+    dimensions: Object.freeze({
+      bucket: dim('bucket', 'r.bucket_start', 'timestamp'),
+      rule: dim('rule', 'r.rule_id', 'text', { ...RULE_CARD }),
+    }),
+    measures: Object.freeze({
+      matches: measure('matches', 'r.matches'),
+      blocked: measure('blocked', 'r.blocked'),
+      warned: measure('warned', 'r.warned'),
+      logged: measure('logged', 'r.logged'),
+    }),
+    grain: Object.freeze(['bucket', 'rule']),
+    order: Object.freeze([
+      { dim: 'bucket', dir: 'desc' },
+      { dim: 'rule', dir: 'asc' },
+    ]),
+    subjectBearing: false,
+    requiresSubjectScope: false,
+    indexes: Object.freeze(['mart.agg_rule_period PK (tenant_id, bucket_start, bucket_size, rule_id)']),
+    warnings: Object.freeze([
+      'A rule is counted under the id the device applied: a rule since removed keeps its rows, and a prompt no rule matched has none.',
+    ]),
+  }),
+
+  'ops.enforcement_rule': Object.freeze({
+    id: 'ops.enforcement_rule',
+    kind: 'list',
+    label: "The tenant's enforcement rules, in the order a device applies them (ops.enforcement_rule)",
+    from: 'ops.enforcement_rule er',
+    tenantColumn: 'er.tenant_id',
+    costClass: 'operational',
+    time: null,
+    bucket: null,
+    dimensions: Object.freeze({
+      rule: dim('rule', 'er.rule_id', 'text', { ...RULE_CARD }),
+      position: dim('position', 'er.position', 'number', { ...RULE_CARD }),
+      action: dim('action', 'er.action', 'text', { ...ACTION_CARD, values: ['allow', 'warn', 'block'] }),
+    }),
+    measures: Object.freeze({}),
+    grain: Object.freeze(['rule']),
+    order: Object.freeze([
+      { dim: 'position', dir: 'asc' },
+      { dim: 'rule', dir: 'asc' },
+    ]),
+    // A rule names labels, tools and the like, never a person; who last edited it is not selected.
+    subjectBearing: false,
+    requiresSubjectScope: false,
+    indexes: Object.freeze([
+      'ops.enforcement_rule PK (tenant_id, rule_id)',
+      'ops.enforcement_rule enforcement_rule_position_unique (tenant_id, position)',
+    ]),
+    // The custom labels and the tools a rule names come with their names, so a reader sees what
+    // the rule matches rather than its codes.
+    listSelect: Object.freeze([
+      'er.position AS "position"',
+      'er.rule_id AS "rule"',
+      'er.action AS "action"',
+      'er.match AS match',
+      "(SELECT jsonb_object_agg(cl.label, cl.display_name) FROM ops.custom_label cl WHERE cl.tenant_id = er.tenant_id AND er.match->'labels' @> to_jsonb(cl.label)) AS label_names",
+      "(SELECT jsonb_object_agg(a.app_key, a.display_name) FROM ref.app a WHERE er.match->'tools' @> to_jsonb(a.app_key)) AS tool_names",
+    ]),
+    warnings: Object.freeze([
+      'The rules as they stand now, not as they stood when a prompt was decided.',
     ]),
   }),
 
@@ -1260,6 +1339,8 @@ export const SOURCE_WATERMARK = Object.freeze({
   'mart.agg_org_period': 'mart.agg_org_period',
   'mart.agg_team_period': 'mart.agg_team_period',
   'mart.agg_class_period': 'mart.agg_class_period',
+  'mart.agg_rule_period': 'mart.agg_rule_period',
+  'ops.enforcement_rule': null,
   'mart.agg_user_period': 'mart.agg_user_period',
   'mart.agg_device_period': 'mart.agg_device_period',
   'mart.v_device_liveness': null,

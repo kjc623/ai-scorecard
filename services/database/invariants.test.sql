@@ -2929,12 +2929,23 @@ END $$;
 
 RESET ROLE;
 
+-- query-api reads what each of its tenant's rules matches and does, never the message a person is
+-- shown, the link, or who edited the rule.
 SET ROLE sac_query;
 DO $$
 BEGIN
+  IF (SELECT string_agg(rule_id || ':' || action || ':' || match::text, ',' ORDER BY position) FROM ops.enforcement_rule)
+     IS DISTINCT FROM 'allow_rest:allow:{},block_credentials:block:{"labels": ["credential"]}' THEN
+    RAISE EXCEPTION 'FAIL T80 query-api does not read its own tenant''s rules, and only those';
+  END IF;
   BEGIN
-    PERFORM 1 FROM ops.enforcement_rule;
-    RAISE EXCEPTION 'FAIL T80 query-api can read the enforcement rules';
+    PERFORM message FROM ops.enforcement_rule;
+    RAISE EXCEPTION 'FAIL T80 query-api can read an enforcement rule''s message';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  BEGIN
+    PERFORM updated_by FROM ops.enforcement_rule;
+    RAISE EXCEPTION 'FAIL T80 query-api can read who edited an enforcement rule';
   EXCEPTION WHEN insufficient_privilege THEN NULL;
   END;
 END $$;
@@ -3270,12 +3281,16 @@ BEGIN
 END $$;
 RESET ROLE;
 
+-- query-api reads the name of each of its tenant's custom labels, never the terms that define it.
 SET ROLE sac_query;
 DO $$
 BEGIN
+  IF (SELECT string_agg(label || ':' || display_name, ',') FROM ops.custom_label) IS DISTINCT FROM 'custom_project_falcon:Falcon' THEN
+    RAISE EXCEPTION 'FAIL T85 query-api does not read its own tenant''s custom label names, and only those';
+  END IF;
   BEGIN
-    PERFORM 1 FROM ops.custom_label;
-    RAISE EXCEPTION 'FAIL T85 query-api can read the custom labels';
+    PERFORM terms FROM ops.custom_label;
+    RAISE EXCEPTION 'FAIL T85 query-api can read a custom label''s terms';
   EXCEPTION WHEN insufficient_privilege THEN NULL;
   END;
 END $$;

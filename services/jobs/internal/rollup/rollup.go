@@ -60,6 +60,7 @@ func Aggregates(bucketSize string) ([]Aggregate, error) {
 		{Name: "mart.agg_tool_period", SQL: fmt.Sprintf(toolPeriodSQL, trunc)},
 		{Name: "mart.agg_tool_user_period", SQL: fmt.Sprintf(toolUserPeriodSQL, trunc)},
 		{Name: "mart.agg_class_period", SQL: fmt.Sprintf(classPeriodSQL, trunc)},
+		{Name: "mart.agg_rule_period", SQL: fmt.Sprintf(rulePeriodSQL, trunc)},
 		{Name: "mart.agg_org_period", SQL: fmt.Sprintf(orgPeriodSQL, trunc)},
 		{Name: "mart.agg_team_period", SQL: fmt.Sprintf(teamPeriodSQL, trunc)},
 		{Name: "mart.agg_user_period", SQL: fmt.Sprintf(userPeriodSQL, trunc)},
@@ -280,6 +281,33 @@ ON CONFLICT (tenant_id, bucket_start, bucket_size, class_code, tool_fingerprint,
       max_score = EXCLUDED.max_score, degraded_events = EXCLUDED.degraded_events,
       flagged = EXCLUDED.flagged, flagged_blocked = EXCLUDED.flagged_blocked,
       flagged_warned = EXCLUDED.flagged_warned, flagged_logged = EXCLUDED.flagged_logged`
+
+// rulePeriodSQL is the prompts each enforcement rule decided, by what the route did. A prompt no
+// rule matched is recorded under the device's default, policy.default, which is not a rule.
+var rulePeriodSQL = `
+WITH src AS (
+  SELECT date_trunc(%[1]s, s.received_at) AS bucket_start, s.policy_rule_id AS rule_id,
+         count(*) AS matches,
+         count(*) FILTER (WHERE s.policy_action = 'blocked') AS blocked,
+         count(*) FILTER (WHERE s.policy_action = 'warned')  AS warned,
+         count(*) FILTER (WHERE s.policy_action = 'logged')  AS logged
+    FROM ingest.submission s
+   WHERE s.tenant_id = $1 AND s.received_at >= $2 AND s.received_at < $3 AND s.kind = 'prompt'
+     AND s.policy_rule_id IS NOT NULL AND s.policy_rule_id <> 'policy.default'
+   GROUP BY 1, 2
+),
+gone AS (
+  DELETE FROM mart.agg_rule_period m
+   WHERE m.tenant_id = $1 AND m.bucket_size = %[1]s
+     AND m.bucket_start >= $2 AND m.bucket_start < $3
+     AND NOT EXISTS (SELECT 1 FROM src WHERE src.bucket_start = m.bucket_start AND src.rule_id = m.rule_id)
+)
+INSERT INTO mart.agg_rule_period (tenant_id, bucket_start, bucket_size, rule_id, matches, blocked, warned, logged)
+SELECT $1, src.bucket_start, %[1]s, src.rule_id, src.matches, src.blocked, src.warned, src.logged
+  FROM src
+ON CONFLICT (tenant_id, bucket_start, bucket_size, rule_id) DO UPDATE
+  SET matches = EXCLUDED.matches, blocked = EXCLUDED.blocked,
+      warned = EXCLUDED.warned, logged = EXCLUDED.logged`
 
 // orgPeriodSQL is usage by department. It is empty for a tenant with no directory sync, because
 // department and population live in ops.user_dim and a person with no row there cannot be

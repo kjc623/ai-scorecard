@@ -65,7 +65,7 @@ func TestRollupAgainstPostgreSQL(t *testing.T) {
 	expect(t, tx, "org rows without a directory",
 		`SELECT count(*)::text FROM mart.agg_org_period WHERE tenant_id = $1`, "0", tenant)
 	expect(t, tx, "day watermarks",
-		`SELECT count(*)::text FROM ops.aggregate_watermark WHERE tenant_id = $1 AND bucket_size = 'day'`, "6", tenant)
+		`SELECT count(*)::text FROM ops.aggregate_watermark WHERE tenant_id = $1 AND bucket_size = 'day'`, "7", tenant)
 
 	// A second run over the same inputs leaves the same values and the same number of rows.
 	runBucket(t, tx, tenant, BucketDay, from, to)
@@ -155,7 +155,8 @@ func TestRollupTeams(t *testing.T) {
 
 // TestRollupSensitive checks that a prompt is sensitive only when its enforcement rule matched on
 // a label the rule names, that each outcome is counted apart, that a class is flagged only when its
-// rule names it, and that attachments are summed beside the prompts able to describe one.
+// rule names it, that attachments are summed beside the prompts able to describe one, and that
+// each rule's prompts are counted by outcome while a prompt no rule matched counts under none.
 func TestRollupSensitive(t *testing.T) {
 	tx := pgtest.Tx(t, pgtest.Open(t))
 	tenant, device := pgtest.Tenant(t, tx)
@@ -228,6 +229,10 @@ func TestRollupSensitive(t *testing.T) {
 		`SELECT string_agg(coalesce(attachment_count::text, 'none'), ',' ORDER BY first_occurred_at)
 		   FROM ingest.submission WHERE tenant_id = $1`,
 		"2,1,none,none,none,none", tenant)
+	expect(t, tx, "rule rows",
+		`SELECT string_agg(rule_id||'|'||matches||'|'||blocked||'|'||warned||'|'||logged, ',' ORDER BY rule_id)
+		   FROM mart.agg_rule_period WHERE tenant_id = $1 AND bucket_start = $2::timestamptz`,
+		"cred.allow|1|0|0|1,pii.block|1|1|0|0,pii.warn|1|0|1|0,tool.block|1|1|0|0", tenant, bucket)
 
 	// A rule that no longer names the label stops making its prompts sensitive on the next pass.
 	pgtest.AsOwner(t, tx)
@@ -387,7 +392,7 @@ func TestTenantPassAsJobsRole(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect(t, tx, "watermarks", `SELECT count(*)::text FROM ops.aggregate_watermark WHERE tenant_id = $1`,
-		fmt.Sprint(len(BucketSizes)*6), tenant)
+		fmt.Sprint(len(BucketSizes)*7), tenant)
 	expect(t, tx, "prompts in today's day bucket",
 		`SELECT sum(submissions)::text FROM mart.agg_tool_period
 		  WHERE tenant_id = $1 AND bucket_size = 'day' AND tool_fingerprint = 'toolA'`, "1", tenant)

@@ -36,6 +36,7 @@ export const ENDPOINT_TOOLS = Object.freeze([
 
 /** What an enforcement rule does to a submission it matches. */
 export const RULE_ACTIONS = Object.freeze(['allow', 'warn', 'block']);
+export const RULE_ACTION_LABELS = Object.freeze({ allow: 'Allow', warn: 'Warn', block: 'Block' });
 
 /** The app catalog's categories by display name, in the order the editor offers those the catalog's apps fall in. */
 export const RULE_CATEGORIES = Object.freeze([
@@ -76,6 +77,7 @@ const REASON_CODE = /^[a-z][a-z0-9_.-]{0,63}$/;
 
 /** A rule's match lists, in the order the editor shows them. */
 export const RULE_MATCH_FIELDS = Object.freeze(['labels', 'tools', 'categories', 'sanction', 'routes']);
+export const RULE_MATCH_TITLES = Object.freeze({ labels: 'Labels', tools: 'Tools', categories: 'Categories', sanction: 'Sanction', routes: 'Routes' });
 
 export const MAX_RULES = 100;
 export const MAX_RULE_MESSAGE = 280;

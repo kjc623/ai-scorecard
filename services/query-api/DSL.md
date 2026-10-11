@@ -84,12 +84,14 @@ because their presence is an attempt rather than a typo:
 | `mart.agg_org_period` | aggregate | usage by department | PK + `(tenant, department, bucket_start DESC)` |
 | `mart.agg_team_period` | aggregate | Q3 teams | PK + `(tenant, team_id, bucket_start DESC)` |
 | `mart.agg_class_period` | aggregate | Q4 classes | PK |
+| `mart.agg_rule_period` | aggregate | the prompts each enforcement rule decided, for Insights | PK |
 | `mart.agg_user_period` | aggregate | Q6 one subject | PK + `(tenant, user_ref, bucket_start DESC, bucket_size)` |
 | `mart.v_team_member_period` | aggregate | the people behind each team's total | `mart.agg_user_period` PK |
 | `mart.agg_device_period` | aggregate | Q7 history | PK |
 | `mart.v_device_liveness` | list | Q7 current state, one row per device with its collectors summed | `ops.device (tenant, last_seen_at)` |
 | `mart.v_person` | list | the people the directory and the devices know, by name | `ops.user_dim` PK |
 | `ops.collector_state` | list | one device's collectors: state, cause (`error_code`), last report | PK |
+| `ops.enforcement_rule` | list | the enforcement rules in the order a device applies them, with the names of the custom labels (`label_names`) and tools (`tool_names`) each names | PK, `(tenant, position)` |
 | `ops.coverage_snapshot` | list | coverage gaps | PK + partial `(tenant, snapshot_day) WHERE NOT observed` |
 | `ingest.submission` | list | Q8, Q9 | `submission_by_received`/`_by_user`/`_by_tool`/`_by_device`, `submission_labels_gin` |
 | `mart.v_finding` | list | Q5 | `mart.finding (tenant, detected_at DESC, submission_id)` |
@@ -108,12 +110,14 @@ offered is `unknown_dimension` / `unknown_measure`, and the error lists what is 
 | `mart.agg_org_period` | `bucket`, `department`, `population`, `tool` | `submissions`, `users` |
 | `mart.agg_team_period` | `bucket`, `team`, `tool` | `submissions`, `users` |
 | `mart.agg_class_period` | `bucket`, `class`, `tool`, `severity`, `classifier_version` | `submissions`, `users`, `max_score`, `degraded_events`, `flagged`, `flagged_blocked`, `flagged_warned`, `flagged_logged` |
+| `mart.agg_rule_period` | `bucket`, `rule` | `matches`, `blocked`, `warned`, `logged` |
 | `mart.agg_user_period` | `bucket`, `subject` | `submissions`, `bytes_total`, `tools_used`, `block_events` |
 | `mart.v_team_member_period` | `bucket`, `team`, `subject` | `submissions` |
 | `mart.agg_device_period` | `bucket`, `device`, `collector` | `healthy_days`, `degraded_days`, `absent_days`, `tampered_days`, `spool_dropped` |
 | `mart.v_device_liveness` | `device`, `device_os`, `managed_state`, `region`, `liveness`, `collector` (set), `collector_state` (set) | — (a list) |
 | `mart.v_person` | `subject`, `name`, `name_key` (lower-cased name, `starts_with`), `department`, `directory_status` | — (a list) |
 | `ops.collector_state` | `device`, `collector`, `collector_state` | — (a list) |
+| `ops.enforcement_rule` | `rule`, `position`, `action` | — (a list) |
 | `ops.coverage_snapshot` | `snapshot_day`, `device`, `collector`, `gap_reason`, `observed`, `expected` | — |
 | `ingest.submission` | `subject`, `tool`, `device`, `mode`, `action`, `content_state`, `route`, `detection_basis`, `prompt_kind`, `merge_confidence`, `confidence`, `department`, `population`, `manager` | — |
 | `mart.v_finding` | `severity`, `rule`, `class`, `subject`, `tool`, `review_state`, `mode`, `decided_locally` | — |

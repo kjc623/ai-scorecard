@@ -10,7 +10,7 @@ import { insightsView, postureView } from '../src/views.js';
 import { createDashboard } from '../src/app.js';
 import { createQueryApi } from '../src/transport.js';
 import { shellNavItems } from '../src/shell.js';
-import { TOOL_ROWS, fixtureTransport } from './fixtures.mjs';
+import { RULE_MATCH_ROWS, RULE_ROWS, TOOL_ROWS, fixtureTransport } from './fixtures.mjs';
 import { COMPLETE, FRESH, PARTIAL, envelope } from './helpers.mjs';
 
 const NOW = () => new Date('2026-10-01T12:00:00Z');
@@ -155,6 +155,95 @@ test('what was exposed lists the labels a rule matched, by sensitive prompts and
     ['credential', 'critical', 60, 35, 5, 20],
   ], 'a label no rule matched is not listed');
   assert.ok(view.notes.includes('24 events in this window could not be classified, so they carry no label and none is counted as sensitive.'));
+});
+
+const listOf = (data, source) => readState(envelope('ok', { data, freshness: FRESH, coverage: COMPLETE, meta: { source } }));
+const rulesOf = (data = RULE_ROWS) => listOf(data, 'ops.enforcement_rule');
+const matchesOf = (data = RULE_MATCH_ROWS, meta = {}) => readState(envelope('ok', { data, freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.agg_rule_period', applied_bucket: 'week', ...meta } }));
+const refusedRead = () => readState(envelope('query_too_broad', { error: { code: 'cost_estimate_exceeded', message: 'The window is too broad for this read' } }));
+const rulesBlock = (view) => view.blocks.find((block) => block.title === 'Rules');
+const ruleRow = ({ row }) => [row.rule.primary, row.rule.secondary, row.action, row.action_text, row.matches, row.logged, row.blocked, row.warned];
+
+test('Rules reads the rules as they stand and the prompts each matched in the window, a week at a time', async () => {
+  const { dashboard, sent } = dashboardWith();
+  await dashboard.load('insights', {});
+  assert.deepEqual(sent.find((b) => b.source === 'ops.enforcement_rule'), { query_version: '1', source: 'ops.enforcement_rule', filters: [], limit: 100 });
+  const matches = sent.find((b) => b.source === 'mart.agg_rule_period');
+  assert.deepEqual([matches.bucket, matches.dimensions, matches.window], ['week', ['rule'], { from: '2026-09-24T12:00:00.000Z', to: '2026-10-01T12:00:00.000Z' }]);
+
+  sent.length = 0;
+  await dashboard.load('insights', { preset: 'h24' });
+  assert.equal(sent.find((b) => b.source === 'mart.agg_rule_period').bucket, 'hour');
+});
+
+test('Rules lists every rule in the order a device applies it, what it matches, and the prompts it matched by outcome', async () => {
+  const { view } = await dashboardWith().dashboard.load('insights', {});
+  const table = rulesBlock(view);
+  assert.equal(table.kind, 'table');
+  assert.deepEqual(table.columns.map((c) => c.label), ['Rule', 'Action', 'Matched', 'Allowed', 'Blocked', 'Warned']);
+  assert.deepEqual(table.rows.map(ruleRow), [
+    ['secrets.block', 'Rule 1 · Labels: credential or Project Falcon; Sanction: Unsanctioned', 'blocked', 'Block', 13, 0, 13, 0],
+    ['pii.warn', 'Rule 2 · Labels: customer_pii', 'warned', 'Warn', 80, 2, 0, 78],
+    ['credential.allow', 'Rule 3 · Labels: credential', 'allowed', 'Allow', 66, 66, 0, 0],
+    ['claude-code.warn', 'Rule 4 · Tools: Claude Code; Routes: Tool hooks', 'warned', 'Warn', 310, 270, 0, 40],
+    ['runtime.block', 'Rule 5 · Categories: Local model runtime', 'blocked', 'Block', 0, 0, 0, 0],
+    ['legacy.block', 'No longer a rule', 'removed', 'Removed', 2, 0, 2, 0],
+  ], 'a rule that matched nothing is listed with zeros, and a removed rule after the rest');
+  assert.equal(table.summary, '4 of 5 rules matched a prompt in this window; 1 matched none.');
+
+  const html = renderScreen(view, {});
+  assert.match(html, /<p class="block-summary">4 of 5 rules matched a prompt in this window; 1 matched none\.<\/p>/);
+  assert.match(html, /<span class="cell-stack"><span class="cell-primary v-mono">secrets\.block<\/span><span class="cell-secondary">Rule 1 · Labels: credential or Project Falcon; Sanction: Unsanctioned<\/span><\/span>/);
+  assert.match(html, /<span class="v-vocab v-vocab-blocked" title="blocked">Block<\/span>/);
+  assert.match(html, /<span class="v-vocab v-vocab-removed" title="removed">Removed<\/span>/);
+});
+
+test('the Rules summary says when every rule matched, or none did', () => {
+  const usage = usageOf(TOOL_ROWS);
+  const twoRules = rulesOf(RULE_ROWS.slice(0, 2));
+  const every = insightsView({ usage, rules: twoRules, ruleMatches: matchesOf() });
+  assert.equal(rulesBlock(every).summary, 'Every rule matched at least one prompt in this window.');
+  const none = insightsView({ usage, rules: twoRules, ruleMatches: matchesOf([]) });
+  assert.equal(rulesBlock(none).summary, 'No rule matched a prompt in this window.');
+  assert.deepEqual(rulesBlock(none).rows.map(({ row }) => row.matches), [0, 0]);
+});
+
+test('a rule with no condition matches any prompt, and says so', () => {
+  const anyPrompt = rulesOf([{ position: 1, rule: 'everything.warn', action: 'warn', match: {}, label_names: null, tool_names: null }]);
+  const view = insightsView({ usage: usageOf(TOOL_ROWS), rules: anyPrompt, ruleMatches: matchesOf([]) });
+  assert.equal(rulesBlock(view).rows[0].row.rule.secondary, 'Rule 1 · Any prompt');
+});
+
+test('without the matches the rules are still listed, with their counts absent and the reason given', () => {
+  const view = insightsView({ usage: usageOf(TOOL_ROWS), rules: rulesOf(), ruleMatches: refusedRead() });
+  const table = rulesBlock(view);
+  assert.equal(table.rows.length, 5);
+  assert.ok(table.rows.every(({ row }) => row.matches === null && row.blocked === null));
+  assert.equal(table.summary, 'The prompts each rule matched could not be read for this window.');
+});
+
+test('without the rules the matches are listed by rule id, and no rule is called removed', () => {
+  const table = rulesBlock(insightsView({ usage: usageOf(TOOL_ROWS), rules: refusedRead(), ruleMatches: matchesOf() }));
+  assert.deepEqual(table.rows.map(ruleRow).slice(0, 2), [
+    ['claude-code.warn', null, 'unknown', 'Not read', 310, 270, 0, 40],
+    ['pii.warn', null, 'unknown', 'Not read', 80, 2, 0, 78],
+  ], 'the busiest rule first');
+  assert.equal(table.summary, undefined);
+  assert.equal(rulesBlock(insightsView({ usage: usageOf(TOOL_ROWS), rules: refusedRead(), ruleMatches: matchesOf([]) })).emptyText, 'The rules could not be read: The window is too broad for this read.');
+});
+
+test('a tenant with no rule is told that every prompt is logged, and where rules are set', () => {
+  const table = rulesBlock(insightsView({ usage: usageOf(TOOL_ROWS), rules: rulesOf([]), ruleMatches: matchesOf([]) }));
+  assert.deepEqual(table.rows, []);
+  assert.equal(table.emptyText, 'No enforcement rule is set, so every prompt is logged. Rules are set in Settings.');
+  assert.equal(table.summary, undefined);
+});
+
+test('a matches read cut short says Rules undercounts', () => {
+  const view = insightsView({ usage: usageOf(TOOL_ROWS), rules: rulesOf(), ruleMatches: matchesOf(RULE_MATCH_ROWS, { truncated: true }) });
+  assert.ok(view.notes.includes('Not every rule\'s matches could be read for this window, so Rules undercounts; a shorter window reads them all.'));
+  const whole = insightsView({ usage: usageOf(TOOL_ROWS), rules: rulesOf(), ruleMatches: matchesOf() });
+  assert.ok(!whole.notes.some((note) => /undercounts/.test(note)));
 });
 
 test('the trend stacks each bucket\'s sensitive prompts by outcome', async () => {

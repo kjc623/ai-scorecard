@@ -10,7 +10,8 @@ import { formatInstant } from './format.js';
 import { COLLECTION_MODE_LABELS } from './vocab.js';
 import {
   COLLECTION_MODES, SANCTION_STATES, ENDPOINT_COLLECTORS, ENDPOINT_TOOLS, effectiveMode, modeIncreaseNeedsConfirmation, searchTierAllowed,
-  RULE_ACTIONS, RULE_CATEGORIES, RULE_SANCTIONS, RULE_ROUTES, RULE_MATCH_FIELDS, MAX_RULES, MAX_RULE_MESSAGE, KILL_SWITCH_ROUTES,
+  RULE_ACTIONS, RULE_ACTION_LABELS, RULE_CATEGORIES, RULE_SANCTIONS, RULE_ROUTES, RULE_MATCH_FIELDS, RULE_MATCH_TITLES, MAX_RULES,
+  MAX_RULE_MESSAGE, KILL_SWITCH_ROUTES,
   CUSTOM_LABEL_FIELDS, MAX_CUSTOM_LABELS,
 } from './settings.js';
 
@@ -294,8 +295,6 @@ function stKillSwitch(state) {
   return stCard('Kill switch', body);
 }
 
-const ACTION_LABELS = Object.freeze({ allow: 'Allow', warn: 'Warn', block: 'Block' });
-const MATCH_TITLES = Object.freeze({ labels: 'Labels', tools: 'Tools', categories: 'Categories', sanction: 'Sanction', routes: 'Routes' });
 const CATEGORY_LABELS = Object.freeze(Object.fromEntries(RULE_CATEGORIES.map((c) => [c.key, c.label])));
 const ROUTE_LABELS = Object.freeze(Object.fromEntries(RULE_ROUTES.map((r) => [r.key, r.label])));
 
@@ -327,7 +326,7 @@ function matchValueLabel(field, value, data) {
 }
 
 function ruleConditions(rule, data) {
-  const parts = RULE_MATCH_FIELDS.filter((f) => rule.match[f].length > 0).map((f) => `<span class="dp-sub">${escapeHtml(MATCH_TITLES[f])}</span>`
+  const parts = RULE_MATCH_FIELDS.filter((f) => rule.match[f].length > 0).map((f) => `<span class="dp-sub">${escapeHtml(RULE_MATCH_TITLES[f])}</span>`
     + rule.match[f].map((v) => `<span class="v-text">${escapeHtml(matchValueLabel(f, v, data))}</span>`).join(' or '));
   return parts.length ? parts.join('') : '<span class="v-text">Any prompt</span>';
 }
@@ -337,16 +336,16 @@ function stRuleEditor(state) {
   const data = state.data;
   const field = (name, label, value, attrs = '') => `<label class="dp-label" for="st-rule-${name}">${escapeHtml(label)}</label>`
     + `<input class="dp-input" id="st-rule-${name}" data-rule-draft="${name}" value="${escapeHtml(value)}" autocomplete="off"${attrs}>`;
-  const actions = RULE_ACTIONS.map((a) => segItem(ACTION_LABELS[a], a, rule.action, { action: 'rule-action', value: a })).join('');
+  const actions = RULE_ACTIONS.map((a) => segItem(RULE_ACTION_LABELS[a], a, rule.action, { action: 'rule-action', value: a })).join('');
   const pickers = RULE_MATCH_FIELDS.map((f) => {
     const current = rule.match[f];
     const options = matchOptions(f, data, current);
     const items = options.length === 0
       ? `<span class="v-absent">${(f === 'labels' && data.data_classes === null && data.custom_labels === null) || (f === 'categories' && data.app_categories === null) ? 'not reported' : 'none known yet'}</span>`
-      : `<div class="seg dp-seg" style="flex-wrap:wrap;border-radius:14px" role="group" aria-label="${escapeHtml(MATCH_TITLES[f])}">`
+      : `<div class="seg dp-seg" style="flex-wrap:wrap;border-radius:14px" role="group" aria-label="${escapeHtml(RULE_MATCH_TITLES[f])}">`
         + options.map(([value, label]) => `<button type="button" class="seg-item" aria-pressed="${current.includes(value)}" data-action="rule-match" data-field="${f}" data-value="${escapeHtml(value)}">${escapeHtml(label)}</button>`).join('')
         + '</div>';
-    return `<span class="dp-label">${escapeHtml(MATCH_TITLES[f])}</span>${items}`;
+    return `<span class="dp-label">${escapeHtml(RULE_MATCH_TITLES[f])}</span>${items}`;
   }).join('');
   return `<div class="dp-form" data-rule-editor="${index === null ? 'new' : index}">`
     + `<p class="dp-note"><strong>${index === null ? 'New rule' : `Rule ${index + 1}`}</strong></p>`

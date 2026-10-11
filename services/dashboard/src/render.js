@@ -215,6 +215,7 @@ export function renderTable(table) {
   const count = table.rows.length > 0 ? `<span class="block-count">${table.rows.length}</span>` : '';
   const more = table.href ? `<a class="block-link" href="${escapeHtml(table.href)}">${escapeHtml(table.moreLabel ?? 'View all')}</a>` : '';
   return `<section class="table-block card"><div class="card-core"><header class="block-head"><h3>${escapeHtml(table.title)}</h3>${count}${more}</header>`
+    + (table.summary ? `<p class="block-summary">${escapeHtml(table.summary)}</p>` : '')
     + (table.breakdowns === false ? '' : renderBreakdowns(table))
     + `<div class="table-scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}${empty}</tbody></table></div></div></section>`;
 }
