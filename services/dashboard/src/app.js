@@ -605,6 +605,8 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     if (draft && settings) settings.setRetentionDraft(draft, event.target.value);
     const ruleField = event.target?.dataset?.ruleDraft;
     if (ruleField && settings) settings.setRuleDraft(ruleField, event.target.value);
+    const labelField = event.target?.dataset?.labelDraft;
+    if (labelField && settings) settings.setLabelDraft(labelField, event.target.value);
     const killRoute = event.target?.dataset?.killSwitchReason;
     if (killRoute && settings) settings.setKillSwitchReason(killRoute, event.target.value);
     const field = event.target?.dataset?.depDraft;

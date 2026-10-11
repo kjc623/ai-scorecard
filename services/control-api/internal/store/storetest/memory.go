@@ -55,6 +55,7 @@ type Memory struct {
 	endpoint        map[string]*store.EndpointCollectors
 	endpointTools   map[string]map[string]store.EndpointTool
 	rules           map[string][]store.EnforcementRule
+	customLabels    map[string][]store.CustomLabel
 	killSwitches    map[string][]store.KillSwitch
 	dataClasses     []string
 	catalog         []store.CatalogApp
@@ -91,6 +92,7 @@ func New() *Memory {
 		endpoint:          map[string]*store.EndpointCollectors{},
 		endpointTools:     map[string]map[string]store.EndpointTool{},
 		rules:             map[string][]store.EnforcementRule{},
+		customLabels:      map[string][]store.CustomLabel{},
 		killSwitches:      map[string][]store.KillSwitch{},
 		dataClasses: []string{"credential", "customer_pii", "government_id", "health", "legal_commercial",
 			"payment_card", "source_code"},
@@ -754,6 +756,7 @@ func (m *Memory) PolicyInputs(_ context.Context, tenantID string) (store.PolicyI
 	sort.Strings(in.InterceptionHosts)
 	in.Endpoint = m.endpointLocked(tenantID)
 	in.Rules = copyRules(m.rules[tenantID])
+	in.CustomLabels = copyCustomLabels(m.customLabels[tenantID])
 	in.KillSwitches = append([]store.KillSwitch{}, m.killSwitches[tenantID]...)
 	in.SanctionedTools = []string{}
 	in.ToolFingerprints = map[string][]string{}
@@ -863,6 +866,7 @@ func (m *Memory) Settings(_ context.Context, tenantID string) (store.Settings, e
 	}
 	out.Endpoint = m.endpointLocked(tenantID)
 	out.DataClasses = append([]string(nil), m.dataClasses...)
+	out.CustomLabels = copyCustomLabels(m.customLabels[tenantID])
 	out.AppCategories = []string{}
 	for _, a := range m.catalog {
 		if !slices.Contains(out.AppCategories, a.Category) {
@@ -1101,17 +1105,20 @@ func (m *Memory) EnforcementRules(_ context.Context, tenantID string) ([]store.E
 	return copyRules(m.rules[tenantID]), nil
 }
 
-// ReplaceEnforcementRules implements store.Store. Like the database's trigger, a label outside the
-// data classes refuses the whole list.
+// ReplaceEnforcementRules implements store.Store. Like the database's trigger, a label that is
+// neither a data class nor one of the tenant's custom labels refuses the whole list.
 func (m *Memory) ReplaceEnforcementRules(_ context.Context, tenantID string, rules []store.EnforcementRule, audit store.AuditEntry) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.tenants[tenantID]; !ok {
 		return store.ErrUnknownTenant
 	}
+	custom := func(l string) bool {
+		return slices.ContainsFunc(m.customLabels[tenantID], func(c store.CustomLabel) bool { return c.Label == l })
+	}
 	for _, r := range rules {
 		for _, l := range r.Match.Labels {
-			if !slices.Contains(m.dataClasses, l) {
+			if !slices.Contains(m.dataClasses, l) && !custom(l) {
 				return store.ErrUnknownRuleLabel
 			}
 		}
@@ -1121,6 +1128,49 @@ func (m *Memory) ReplaceEnforcementRules(_ context.Context, tenantID string, rul
 	audit.Detail = merge(audit.Detail, map[string]any{"previous": store.RulesDetail(previous), "new": store.RulesDetail(rules)})
 	m.audit(audit)
 	return nil
+}
+
+// ReplaceCustomLabels implements store.Store. Like the database's trigger, leaving out a label a
+// rule names refuses the whole list. The list is kept by display name, as the SQL store reads it.
+func (m *Memory) ReplaceCustomLabels(_ context.Context, tenantID string, labels []store.CustomLabel, audit store.AuditEntry) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	previous := m.customLabels[tenantID]
+	for _, p := range previous {
+		if slices.ContainsFunc(labels, func(l store.CustomLabel) bool { return l.Label == p.Label }) {
+			continue
+		}
+		for _, r := range m.rules[tenantID] {
+			if slices.Contains(r.Match.Labels, p.Label) {
+				return store.ErrCustomLabelInUse
+			}
+		}
+	}
+	next := copyCustomLabels(labels)
+	slices.SortFunc(next, func(a, b store.CustomLabel) int {
+		if c := strings.Compare(a.DisplayName, b.DisplayName); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Label, b.Label)
+	})
+	m.customLabels[tenantID] = next
+	audit.Detail = merge(audit.Detail, map[string]any{"previous": store.CustomLabelsDetail(previous), "new": store.CustomLabelsDetail(labels)})
+	m.audit(audit)
+	return nil
+}
+
+// copyCustomLabels copies a custom label list with every list non-nil, as the SQL store reads it back.
+func copyCustomLabels(labels []store.CustomLabel) []store.CustomLabel {
+	out := make([]store.CustomLabel, 0, len(labels))
+	list := func(v []string) []string { return append([]string{}, v...) }
+	for _, l := range labels {
+		l.Words, l.CustomerNames, l.FileExtensions, l.FileNames = list(l.Words), list(l.CustomerNames), list(l.FileExtensions), list(l.FileNames)
+		out = append(out, l)
+	}
+	return out
 }
 
 // copyRules copies a rule list with every match list non-nil, as the SQL store reads it back.

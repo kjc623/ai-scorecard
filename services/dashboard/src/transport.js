@@ -14,7 +14,7 @@ import {
   ADMIN_DIRECTORY_ENDPOINT, ADMIN_TEAMS_ENDPOINT,
   ADMIN_SETTINGS_ENDPOINT, ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT, ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT,
   ADMIN_SETTINGS_RETENTION_ENDPOINT, ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT, ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT,
-  ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT, ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT, ADMIN_SETTINGS_RULES_ENDPOINT,
+  ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT, ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT, ADMIN_SETTINGS_RULES_ENDPOINT, ADMIN_SETTINGS_CUSTOM_LABELS_ENDPOINT,
   ADMIN_SETTINGS_KILL_SWITCH_ENDPOINT,
 } from './vocab.js';
 
@@ -416,6 +416,10 @@ export function createAdminApi({ transport }) {
     setRules(rules) {
       return done({ method: 'PUT', path: ADMIN_SETTINGS_RULES_ENDPOINT, body: { rules } });
     },
+    /** The whole list: control-api replaces the tenant's custom labels with exactly these. */
+    setCustomLabels(labels) {
+      return done({ method: 'PUT', path: ADMIN_SETTINGS_CUSTOM_LABELS_ENDPOINT, body: { custom_labels: labels } });
+    },
     /** Trip (with its reason code) or clear one interception route's kill switch. */
     setKillSwitch(route, on, reasonCode) {
       const body = reasonCode ? { on, reason_code: reasonCode } : { on };
@@ -556,6 +560,7 @@ export function normaliseSettings(body) {
     content_search: ['disabled', 'attachment_names', 'full_text'].includes(body.content_search) ? body.content_search : 'disabled',
     tls_inspection: nullableBoolean(body.tls_inspection),
     data_classes: Array.isArray(body.data_classes) ? Object.freeze(body.data_classes.filter((c) => typeof c === 'string' && c !== '')) : null,
+    custom_labels: normaliseCustomLabels(body.custom_labels),
     app_categories: Array.isArray(body.app_categories) ? Object.freeze(body.app_categories.filter((c) => typeof c === 'string' && c !== '')) : null,
     tools: Object.freeze(tools),
     devices: Object.freeze(devices),
@@ -576,6 +581,18 @@ function normaliseKillSwitches(switches) {
 }
 
 const nullableBoolean = (value) => (typeof value === 'boolean' ? value : null);
+
+const CUSTOM_LABEL_LISTS = Object.freeze(['words', 'customer_names', 'file_extensions', 'file_names']);
+
+/** The custom labels: null when the server sent none, each with its name and every list an array of strings. */
+export function normaliseCustomLabels(labels) {
+  if (!Array.isArray(labels)) return null;
+  return Object.freeze(labels.filter((l) => l && typeof l === 'object' && typeof l.label === 'string' && l.label !== '').map((l) => Object.freeze({
+    label: l.label,
+    display_name: typeof l.display_name === 'string' && l.display_name !== '' ? l.display_name : l.label,
+    ...Object.fromEntries(CUSTOM_LABEL_LISTS.map((f) => [f, Object.freeze((Array.isArray(l[f]) ? l[f] : []).filter((v) => typeof v === 'string'))])),
+  })));
+}
 
 const RULE_MATCH_LISTS = Object.freeze(['labels', 'tools', 'categories', 'sanction', 'routes']);
 

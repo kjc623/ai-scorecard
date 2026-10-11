@@ -42,7 +42,22 @@ type ClassifyRequest struct {
 
 	// Budget returns the budget as a duration, for the Go side.
 	Budget time.Duration `json:"-"`
+
+	// CustomLabels is the tenant's own labels and the terms that mark content with each: the
+	// classifier labels the content with a label when its normalised text holds one of the label's
+	// terms as whole words, in any case. Terms are policy, never identity.
+	CustomLabels []CustomLabelTerms `json:"custom_labels,omitempty"`
 }
+
+// CustomLabelTerms is one custom label as the classifier applies it: the class it labels with and
+// the words and phrases that mark content with it.
+type CustomLabelTerms struct {
+	Label string   `json:"label"`
+	Terms []string `json:"terms"`
+}
+
+// CustomLabelScore is the score of a custom label: a term matched or it did not.
+const CustomLabelScore = 1.0
 
 // EffectiveBudget returns the request's budget as a duration, honouring whichever field the
 // caller set. A zero budget means "no explicit budget": the host then applies its own default

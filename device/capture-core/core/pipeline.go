@@ -542,6 +542,9 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 		if len(obs.AttachmentContent) > 0 {
 			p.classifyAttachments(ctx, c, obs.AttachmentContent, res.Mode, &in, &out)
 		}
+		if in.PromptKind != protocol.PromptKindClientGenerated {
+			in.Labels = mergeLabels(in.Labels, p.fileLabels(atts))
+		}
 		if res.Mode == protocol.ModeM2 && in.Excerpt == nil {
 			in.Excerpt = degradedExcerpt()
 		}
@@ -799,6 +802,9 @@ func (p *Pipeline) classify(ctx context.Context, mode protocol.CollectionMode, m
 		BudgetMS: int64(budget / time.Millisecond),
 		Budget:   budget,
 	}
+	if p.Bundles != nil {
+		req.CustomLabels = p.Bundles().ClassifyTerms()
+	}
 	if err := req.Validate(); err != nil {
 		return protocol.ClassifyResponse{}, err
 	}
@@ -816,6 +822,22 @@ func (p *Pipeline) classify(ctx context.Context, mode protocol.CollectionMode, m
 		return protocol.ClassifyResponse{}, fmt.Errorf("core: classifier response refused: %w", err)
 	}
 	return resp, nil
+}
+
+// fileLabels is the custom labels the attached files carry by their names.
+func (p *Pipeline) fileLabels(atts []dedup.Attachment) []protocol.Label {
+	if p.Bundles == nil || len(atts) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(atts))
+	for _, a := range atts {
+		names = append(names, a.Name)
+	}
+	var out []protocol.Label
+	for _, l := range p.Bundles().FileLabels(names) {
+		out = append(out, protocol.Label{Class: l, Score: protocol.CustomLabelScore})
+	}
+	return out
 }
 
 // maxLabels is the envelope's cap on one event's labels.

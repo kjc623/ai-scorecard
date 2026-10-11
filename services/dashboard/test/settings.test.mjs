@@ -9,7 +9,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { createAdminApi, createQueryApi, normaliseSettings, normaliseRules } from '../src/transport.js';
-import { createSettings, modeIncreaseNeedsConfirmation, searchTierAllowed, effectiveMode } from '../src/settings.js';
+import { createSettings, modeIncreaseNeedsConfirmation, searchTierAllowed, effectiveMode, parseTerms, customLabelCode } from '../src/settings.js';
 import { renderSettings } from '../src/settings-render.js';
 import { boot } from '../src/app.js';
 import { fakeDocument } from './helpers.mjs';
@@ -765,6 +765,152 @@ test('enforcement rules: a message, a rule id and a tool name from the API are e
   assert.match(card, /&lt;img src=x onerror=alert\(1\)&gt;/);
 });
 
+// ---------------------------------------------------------------------------------------------
+// Custom labels
+// ---------------------------------------------------------------------------------------------
+
+const PUT_LABELS = 'PUT /admin/v1/settings/custom-labels';
+
+function falcon() {
+  return {
+    label: 'custom_project_falcon', display_name: 'Project Falcon',
+    words: ['falcon roadmap'], customer_names: ['Acme Corp'], file_extensions: ['dwg'], file_names: ['falcon*.xlsx'],
+  };
+}
+
+function labelsCard(page) {
+  const start = page.indexOf('<h3>Custom labels</h3>');
+  assert.ok(start >= 0, 'the page has a custom labels card');
+  return page.slice(start, page.indexOf('</section>', start));
+}
+
+/** A page whose settings serve `labels` and `rules`, and whose label PUT stores what it is sent. */
+async function withLabels(labels = [falcon()], rules = servedRules(), put = null) {
+  let served = labels;
+  return loaded({
+    [GET]: () => ({ status: 200, body: populated({ custom_labels: served }) }),
+    [RULES]: () => ({ status: 200, body: rules }),
+    [PUT_LABELS]: put ?? ((spec) => { served = spec.body.custom_labels; return { status: 204 }; }),
+  });
+}
+
+test('custom labels: the card lists each label by name with its words, customer names, file types and file names', async () => {
+  const { html } = await withLabels();
+  const card = labelsCard(html());
+  assert.match(card, /Project Falcon/);
+  assert.match(card, /custom_project_falcon/);
+  for (const term of ['falcon roadmap', 'Acme Corp', 'dwg', 'falcon\\*\\.xlsx']) assert.match(card, new RegExp(term));
+  assert.match(card, /data-action="label-edit" data-label="custom_project_falcon"/);
+  assert.match(card, /data-action="label-add"/);
+  const none = await withLabels([]);
+  assert.match(labelsCard(none.html()), /No custom labels\./);
+  const unread = await loaded({ [GET]: () => ({ status: 200, body: populated() }) });
+  assert.equal(unread.controller.state.data.custom_labels, null, 'labels the server did not send are null, never none');
+  assert.match(labelsCard(unread.html()), /not reported/);
+  assert.doesNotMatch(labelsCard(unread.html()), /data-action="label-add"/);
+});
+
+test('custom labels: adding one sends the whole list with the new label under a code from its name, then re-reads', async () => {
+  const { controller, requests, html } = await withLabels();
+  await controller.act({ action: 'label-add' });
+  assert.match(labelsCard(html()), /data-label-draft="display_name"/);
+  controller.setLabelDraft('display_name', 'Café Unicode');
+  controller.setLabelDraft('words', 'blue moon\n\nBlue Moon\n  orbit ');
+  controller.setLabelDraft('file_extensions', '.PDF, tar.gz pdf');
+  await controller.act({ action: 'label-save' });
+  const sent = puts(requests);
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].path, '/admin/v1/settings/custom-labels');
+  assert.deepEqual(sent[0].body, {
+    custom_labels: [
+      falcon(),
+      { label: 'custom_cafe_unicode', display_name: 'Café Unicode', words: ['blue moon', 'orbit'], customer_names: [], file_extensions: ['pdf', 'tar.gz'], file_names: [] },
+    ],
+  });
+  assert.equal(requests.at(-2).path, '/admin/v1/settings', 'the page re-reads after the write');
+  assert.equal(controller.state.labels.editor, null);
+  assert.deepEqual(controller.state.data.custom_labels.map((l) => l.display_name), ['Project Falcon', 'Café Unicode']);
+});
+
+test('custom labels: editing keeps the code, so a rename keeps what rules name', async () => {
+  const { controller, requests } = await withLabels();
+  await controller.act({ action: 'label-edit', label: 'custom_project_falcon' });
+  assert.equal(controller.state.labels.editor.file_extensions, 'dwg');
+  controller.setLabelDraft('display_name', 'Falcon');
+  controller.setLabelDraft('customer_names', 'Acme Corp\nGlobex');
+  await controller.act({ action: 'label-save' });
+  const [sent] = puts(requests);
+  assert.deepEqual(sent.body.custom_labels, [{ ...falcon(), display_name: 'Falcon', customer_names: ['Acme Corp', 'Globex'] }]);
+});
+
+test('custom labels: a label the server would refuse is not sent, and says why', async () => {
+  const { controller, requests, html } = await withLabels();
+  await controller.act({ action: 'label-add' });
+  controller.setLabelDraft('display_name', 'project falcon');
+  controller.setLabelDraft('words', 'x');
+  await controller.act({ action: 'label-save' });
+  assert.match(controller.state.labels.editor.problem.message, /already called/);
+  controller.setLabelDraft('display_name', 'Other');
+  controller.setLabelDraft('words', '');
+  await controller.act({ action: 'label-save' });
+  assert.match(controller.state.labels.editor.problem.message, /at least one/);
+  controller.setLabelDraft('file_extensions', 'pd f!');
+  await controller.act({ action: 'label-save' });
+  assert.match(controller.state.labels.editor.problem.message, /not a file type/);
+  assert.equal(puts(requests).length, 0);
+  assert.match(labelsCard(html()), /Not saved\./);
+});
+
+test('custom labels: deleting sends the list without it; a label a rule names is refused with the rule', async () => {
+  const rules = servedRules();
+  rules.rules[0].match.labels = ['credential', 'custom_project_falcon'];
+  const used = await withLabels([falcon()], rules);
+  await used.controller.act({ action: 'label-delete', label: 'custom_project_falcon' });
+  assert.equal(puts(used.requests).length, 0);
+  assert.match(labelsCard(used.html()), /Rule block_credentials names Project Falcon/);
+
+  const free = await withLabels();
+  await free.controller.act({ action: 'label-delete', label: 'custom_project_falcon' });
+  assert.deepEqual(puts(free.requests)[0].body, { custom_labels: [] });
+  assert.deepEqual(free.controller.state.data.custom_labels, []);
+
+  const refused = await withLabels([falcon()], servedRules(),
+    () => ({ status: 409, body: { error: 'custom_label_in_use', message: 'an enforcement rule names the label' } }));
+  await refused.controller.act({ action: 'label-delete', label: 'custom_project_falcon' });
+  assert.match(labelsCard(refused.html()), /an enforcement rule names the label/);
+  assert.equal(refused.controller.state.data.custom_labels.length, 1);
+});
+
+test('custom labels: the rule editor offers them by name beside the data classes, and the rules table names them', async () => {
+  const rules = servedRules();
+  rules.rules[0].match.labels = ['custom_project_falcon'];
+  const { controller, html } = await withLabels([falcon()], rules);
+  assert.match(rulesCard(html()), /Project Falcon/);
+  await controller.act({ action: 'rule-add' });
+  const card = rulesCard(html());
+  assert.match(card, /data-field="labels" data-value="credential">credential</);
+  assert.match(card, /data-field="labels" data-value="custom_project_falcon">Project Falcon</);
+});
+
+test('custom labels: a name and terms from the API are escaped', async () => {
+  const { controller, html } = await withLabels([{ ...falcon(), display_name: '<img src=x onerror=alert(1)>', words: ['<b>w</b>'] }]);
+  await controller.act({ action: 'label-edit', label: 'custom_project_falcon' });
+  const card = labelsCard(html());
+  assert.doesNotMatch(card, /<img src=x|<b>w<\/b>/);
+  assert.match(card, /&lt;img src=x onerror=alert\(1\)&gt;/);
+});
+
+test('custom labels: the typed lists and the code a name gets', () => {
+  assert.deepEqual(parseTerms('file_extensions', '.PDF, dwg\ntar.gz  .pdf'), ['pdf', 'dwg', 'tar.gz']);
+  assert.deepEqual(parseTerms('words', ' a b \n\nA B\nc'), ['a b', 'c']);
+  assert.equal(customLabelCode('Project Falcon!'), 'custom_project_falcon');
+  assert.equal(customLabelCode('Project Falcon', ['custom_project_falcon']), 'custom_project_falcon_2');
+  assert.equal(customLabelCode('***'), 'custom_label');
+  assert.equal(customLabelCode('x'.repeat(90)).length, 63);
+  const data = normaliseSettings({ custom_labels: [{ label: 'custom_a', display_name: 'A', words: ['w', 3] }, null] });
+  assert.deepEqual(JSON.parse(JSON.stringify(data.custom_labels)), [{ label: 'custom_a', display_name: 'A', words: ['w'], customer_names: [], file_extensions: [], file_names: [] }]);
+});
+
 test('every string from the API is escaped', async () => {
   const body = populated();
   body.tools[0].display_name = '<img src=x onerror=alert(1)>';
@@ -814,6 +960,7 @@ test('an absent count is null after normalising, never 0', () => {
   assert.equal(data.tls_inspection, null, 'a TLS inspection setting the server did not send is null, never off');
   assert.equal(data.data_classes, null, 'data classes the server did not send are null, never none');
   assert.equal(data.app_categories, null, 'app categories the server did not send are null, never none');
+  assert.equal(data.custom_labels, null, 'custom labels the server did not send are null, never none');
   const rules = normaliseRules([{ rule_id: 'r', action: 'warn', match: { labels: ['credential', 7], routes: 'tool.hook' } }, null]);
   assert.deepEqual(JSON.parse(JSON.stringify(rules)), [{ rule_id: 'r', action: 'warn', match: { labels: ['credential'], tools: [], categories: [], sanction: [], routes: [] }, message: '', link: '' }]);
   const partial = normaliseSettings({ endpoint: { inventory: false, tools: { cursor: { hooks: true } } } });

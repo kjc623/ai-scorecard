@@ -9,7 +9,7 @@ import (
 )
 
 // The enforcement rules' statements, and the two other inputs a rule is written against: the
-// sanctioned tools and the data classes a label may name.
+// sanctioned tools and the data classes a label may name beside the tenant's custom labels.
 const (
 	SQLEnforcementRules = `
 SELECT rule_id, action, match, message, coalesce(link, '')

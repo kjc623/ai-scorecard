@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -225,6 +226,69 @@ func TestExcerptIsTheFirstConfirmedMatchAtM2Only(t *testing.T) {
 	}
 	if resp := h.Classify(context.Background(), req(protocol.ModeM2, "text/plain", "the physician reviewed the dosage and the symptoms")); resp.Excerpt != nil {
 		t.Errorf("a model-only label produced an excerpt: %+v", resp.Excerpt)
+	}
+}
+
+func TestCustomLabelsMatchWholeWordsInAnyCase(t *testing.T) {
+	custom := []protocol.CustomLabelTerms{
+		{Label: "custom_project_falcon", Terms: []string{"Falcon", "project  falcon"}},
+		{Label: "custom_customers", Terms: []string{"Acme Corp.", "Ｇｌｏｂｅｘ"}},
+		{Label: "custom_unused", Terms: []string{"zeppelin"}},
+	}
+	classify := func(body string) protocol.ClassifyResponse {
+		r := req(protocol.ModeM1, "text/plain", body)
+		r.CustomLabels = custom
+		return newHost(t).Classify(context.Background(), r)
+	}
+	for body, want := range map[string]string{
+		"Summarise the FALCON launch plan":                "custom_project_falcon",
+		"notes on project-falcon for acme corp":           "custom_customers,custom_project_falcon",
+		"draft a reply to globex about pricing":           "custom_customers",
+		"the falconry club meets on Tuesday":              "",
+		"Acme Corporation is a different company":         "",
+		"charge 4111 1111 1111 1111 to Acme Corp, please": "custom_customers,payment_card",
+	} {
+		resp := classify(body)
+		if err := resp.Validate(); err != nil {
+			t.Fatalf("%q: %v", body, err)
+		}
+		got := classes(resp)
+		if want != "" && strings.Contains(want, ",") {
+			// Labels are ordered by score, then class; a custom label scores 1.
+			parts := strings.Split(got, ",")
+			got = strings.Join(slices.Sorted(slices.Values(parts)), ",")
+		}
+		if got != want {
+			t.Errorf("%q labelled %q, want %q", body, got, want)
+		}
+		if want != "" && resp.Confidence != protocol.ConfidenceHigh {
+			t.Errorf("%q: a custom label is a rule match, so confidence is high, got %q", body, resp.Confidence)
+		}
+	}
+	m2 := req(protocol.ModeM2, "text/plain", "the falcon brief")
+	m2.CustomLabels = custom
+	if resp := newHost(t).Classify(context.Background(), m2); resp.Excerpt != nil {
+		t.Errorf("a custom label produced an excerpt: %+v", resp.Excerpt)
+	}
+}
+
+func TestCustomLabelsMatchInsideAnAttachedDocument(t *testing.T) {
+	r := req(protocol.ModeM1, docx, "PK")
+	r.CustomLabels = []protocol.CustomLabelTerms{{Label: "custom_project_falcon", Terms: []string{"falcon"}}}
+	resp := newHost(t, withParser(isolation.Result{Cause: isolation.CauseOK, Text: "Falcon: board summary"})).Classify(context.Background(), r)
+	if got := classes(resp); got != "custom_project_falcon" {
+		t.Errorf("the parsed document labelled %q, want the custom label", got)
+	}
+}
+
+func TestCustomLabelsCountAgainstTheRulesBudget(t *testing.T) {
+	r := req(protocol.ModeM1, "text/plain", strings.Repeat("plain words ", 50))
+	r.CustomLabels = []protocol.CustomLabelTerms{{Label: "custom_project_falcon", Terms: []string{"falcon"}}}
+	resp := newHost(t, budget(time.Nanosecond, time.Second, time.Second, time.Second)).Classify(context.Background(), r)
+	if resp.Confidence != protocol.ConfidenceDegraded || !slices.ContainsFunc(resp.Stages, func(s protocol.StageResult) bool {
+		return s.Stage == classify.StageRules && s.Truncated
+	}) {
+		t.Errorf("a custom label search past the rules budget did not degrade the rules stage: %+v", resp)
 	}
 }
 
