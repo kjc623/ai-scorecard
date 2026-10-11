@@ -7,7 +7,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildAgentDocument, buildDemandDocument, buildDiscoveryDocument, buildListDocument, buildRuleMatchesDocument, buildTemplate, windowFor, DashboardQueryError } from '../src/dsl.js';
+import { buildAgentDocument, buildDemandDocument, monthOf, monthWindow, buildDiscoveryDocument, buildListDocument, buildRuleMatchesDocument, buildTemplate, windowFor, DashboardQueryError } from '../src/dsl.js';
 import { SOURCES, TEMPLATES, TEMPLATE_NAMES, WINDOWS } from '../src/vocab.js';
 
 const WINDOW = { from: '2026-09-24T00:00:00Z', to: '2026-10-01T00:00:00Z' };
@@ -117,6 +117,17 @@ test('what coding agents report reads per tool and model, in the coarsest bucket
   });
   assert.equal(buildAgentDocument({ window: windowFor('h24', now) }).bucket, 'hour');
   refuses(() => buildAgentDocument({ window: { from: WINDOW.to, to: WINDOW.from } }), 'bad_window');
+});
+
+test('a calendar month is a UTC window read by the day, cut at now while it runs', () => {
+  const now = new Date('2026-10-11T09:30:00Z');
+  assert.deepEqual([monthOf(now), monthOf(now, 1), monthOf(new Date('2026-01-31T23:59:00Z'), 1)], ['2026-10', '2026-09', '2025-12']);
+  assert.deepEqual(monthWindow('2026-02', now), {
+    from: '2026-02-01T00:00:00.000Z', to: '2026-03-01T00:00:00.000Z', month: '2026-02', label: 'February 2026', short: 'Feb 2026', complete: true, bucket: 'day',
+  });
+  assert.deepEqual([monthWindow('2026-10', now).to, monthWindow('2026-10', now).complete], ['2026-10-11T09:30:00.000Z', false]);
+  refuses(() => monthWindow('2026-11', now), 'bad_window');
+  refuses(() => monthWindow('2026-13', now), 'unknown_window');
 });
 
 test('the vocabularies here are complete enough to describe every source and template', () => {

@@ -483,10 +483,11 @@ export function renderScreen(view, shell = {}) {
   const filters = renderFilters(view.filters);
   const series = (view.series ?? []).map(renderSeries).join('');
   // The reading notes are one click away rather than under every table: they matter, and they are
-  // the same on every visit. Where the screen reads from is one of them.
+  // the same on every visit. Where the screen reads from is one of them. A page made to be printed
+  // shows them open, since paper has nothing to click.
   const noteList = [...(view.notes ?? []), ...(view.sourceLabel ? [`Reads from ${view.sourceLabel}.`] : [])];
   const notes = noteList.length > 0
-    ? `<details class="notes"><summary>About this data<span class="notes-count">${noteList.length}</span></summary><ul>${noteList.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`
+    ? `<details class="notes"${view.notesOpen ? ' open' : ''}><summary>About this data<span class="notes-count">${noteList.length}</span></summary><ul>${noteList.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`
     : '';
   const badges = (view.badges ?? []).length > 0 ? ` <span class="screen-badges">${view.badges.map(chip).join('')}</span>` : '';
   const header = '<header class="screen-head"><div class="screen-title">'

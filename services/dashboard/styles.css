@@ -668,7 +668,7 @@ td.dp-action { text-align: right; white-space: nowrap; }
 }
 
 /* ── Teams: the pop-up "+ Add a Team" and "Edit team" open ─────────────────────────────── */
-.screen-tool { display: flex; justify-content: flex-end; }
+.screen-tool { display: flex; justify-content: flex-end; gap: 8px; }
 
 .dialog {
   width: min(680px, calc(100vw - 32px)); max-height: min(800px, calc(100dvh - 32px)); padding: 0; overflow: hidden;
@@ -857,4 +857,29 @@ td.dp-action { text-align: right; white-space: nowrap; }
 @media (max-width: 900px) {
   .dialog-side { border-radius: 0; }
   .rl-name-cell { min-width: 140px; }
+}
+
+/* ── print: the page alone, on paper's own light ground, for the Monthly report's PDF ──────── */
+@media print {
+  :root, :root:not([data-theme="light"]), :root[data-theme="dark"] {
+    color-scheme: light;
+    --bg: #ffffff; --tray: transparent; --panel: #ffffff; --sunken: #f0efea;
+    --ink: #131312; --text: #2f3437; --ink-soft: #6c6b66; --ink-faint: #a3a19b;
+    --line: rgb(17 17 17 / .12); --line-strong: rgb(17 17 17 / .2); --hi: transparent;
+    --accent: #4b47c9; --accent-soft: rgb(75 71 201 / .12);
+    --bad: #9f2f2d; --bad-bg: #fdebec; --warn: #8a5d00; --warn-bg: #fbf3db; --ok: #2f6235; --ok-bg: #e9f2e8;
+    --info: #1f6c9f; --info-bg: #e1f3fe; --on-ink: #ffffff; --shadow: none;
+    --hatch: repeating-linear-gradient(45deg, #e9e8e2 0 6px, #ffffff 6px 12px);
+  }
+  @page { margin: 14mm; }
+  body { background: #ffffff; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+  body::before, .side, .screen-tools, .screen-actions { display: none; }
+  .shell { display: block; min-height: 0; }
+  /* A4's width at the screen's scale would cut the widest tables, so the page is set smaller. */
+  .app { padding: 0; max-width: none; zoom: .75; }
+  .screen { gap: 12px; }
+  .eyebrow { display: none; }
+  .table-scroll { overflow: visible; }
+  .card, .notes, table tr { break-inside: avoid; }
+  .notes summary::before { content: none; }
 }

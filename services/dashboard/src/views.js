@@ -1616,6 +1616,92 @@ export function agentsView({ agents, previous = null }, { preset = 'd7' } = {}) 
 }
 
 // ---------------------------------------------------------------------------------------------
+// Insights: Monthly report
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The Monthly report: one calendar month's exposure, the people using AI and the applications new
+ * in it, and what discovery found, each as its Insights tab shows it for that month, compared with
+ * the month before. It is a page to print, which the browser saves as a PDF.
+ *
+ * @param {object} input
+ * @param {object} input.usage        view state for tool usage over the month (Q1), with its people
+ * @param {object} [input.previous]   the same read over the month before
+ * @param {object} [input.classes]    view state for the class mix over the month (Q4)
+ * @param {object} [input.firstSeen]  view state for the tools first seen in the month
+ * @param {object} [input.found]      view state for what discovery found in the month, with the inventory scan beside it
+ * @param {object} [input.prompts]    view state for the prompts per tool in the month
+ * @param {object} options
+ * @param {{label: string, from: string, to: string, complete: boolean}} options.month  the month's window
+ * @param {{label: string}} options.before  the month before's window
+ * @param {Date} options.made  when the report was made
+ * @param {{current: string, items: object[]}} [options.months]  the months the reader can pick
+ */
+export function reportView({ usage, previous = null, classes = null, firstSeen = null, found = null, prompts = null }, { month, before: prior, made, months = null, link = toolHref }) {
+  const period = prior.label;
+  const before = comparable(previous);
+  const linkTo = link ? (fingerprint) => link(fingerprint, null) : null;
+  const counted = peopleOf(usage);
+  const last = new Date(Date.parse(month.to) - 1).toISOString().slice(0, 10);
+  const range = `${month.from.slice(0, 10)} to ${last}${month.complete ? '' : ', so far'}`;
+
+  const trend = exposureSeries(usage).map((series) => Object.freeze({ kind: 'series', ...series }));
+  const exposedEmpty = !classes ? 'The labels could not be read for this month.'
+    : classes.isRefusal ? `The labels could not be read: ${classes.error?.message ?? classes.resultState}.`
+      : emptyLine(classes, 'No label a rule names was found in this month.');
+  const fresh = before && before.data.length === 0 ? `Nothing was recorded before ${month.label}, so every application in use is new.` : null;
+
+  const scan = found && !found.isRefusal ? scanOf(found) : null;
+  const tools = found && !found.isRefusal ? foundTools(found) : [];
+  const reporting = found?.coverage?.devices_reporting ?? null;
+  const foundBlock = foundTable(tools, {
+    reporting: reporting === null ? null : Number(reporting),
+    link: linkTo,
+    prompted: promptsByTool(prompts),
+    truncated: Boolean(found?.meta?.truncated),
+    emptyText: !found || found.isRefusal ? 'What discovery found could not be read for this month.' : emptyLine(found, 'Discovery found no AI application on a device in this month.'),
+  });
+  // Where the scan stands is read as the report is made, not as it stood in the month.
+  const scanLine = scan
+    ? `As this report was made, the inventory scan had not reported in the last 24 hours on ${formatCount(scan.notScanned)} of ${plural(scan.enrolled, 'enrolled device', 'enrolled devices')}, so what they hold is not known.`
+    : null;
+  const summary = [foundBlock.summary, scanLine].filter(Boolean).join(' ');
+
+  let compared = `${period} could not be read, so no change is shown.`;
+  if (before) compared = `Each change compares it with ${period}.`;
+  else if (!month.complete) compared = `${month.label} is not over, so it is not compared with ${period}.`;
+  const notes = [
+    `Every figure is the one the Insights tabs show for ${month.label}. ${compared}`,
+    'A prompt is sensitive when the enforcement rule it matched names one of its labels; only the labels that rule names count for it.',
+    'Allowed counts the sensitive prompts the matching rule only logged, and those sent by a route that cannot block.',
+    'Sensitive prompts are counted against the rules as they stand now, so a rule edited since can change the figures for recent days.',
+    'A prompt with two labels a rule names is counted under each in What was exposed.',
+    'People using AI counts everyone who sent a prompt in the month once, however many tools and days they used.',
+    ...(counted?.basis === 'directory' ? ['The people are out of everyone the directory lists as active.'] : []),
+    ...(counted?.basis === 'devices' ? ['No directory is synced, so the people are out of everyone last signed in on an enrolled device.'] : []),
+    'An application counts from the day it sent its first prompt here, under any of its fingerprints; People since counts everyone who has used it from then until now.',
+    'Found on devices counts the devices that reported a finding on its busiest day in the month, out of the devices reporting now.',
+  ];
+  return screen('insights', 'Monthly report', null, 'mart.v_tool_usage', {
+    subtitle: `${month.label}: ${range}, in UTC. Made ${formatInstant(made.toISOString())}.`,
+    lead: Object.freeze([exposureFunnel(usage, before, { period, emptyText: emptyLine(usage, 'No prompts in this month.') })]),
+    tiles: Object.freeze([]),
+    blocks: Object.freeze([
+      ...trend,
+      exposedTable(classes, { emptyText: exposedEmpty }),
+      peopleShare(counted, peopleOf(before), { period, emptyText: emptyLine(usage, 'No one sent a prompt in this month.') }),
+      newToolsTable(firstSeen, { link: linkTo, earliest: fresh }),
+      Object.freeze({ ...foundBlock, ...(summary ? { summary } : {}) }),
+    ]),
+    series: Object.freeze([]),
+    tables: Object.freeze([]),
+    months,
+    notesOpen: true,
+    ...shared(usage, notes),
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
 // The ten questions
 // ---------------------------------------------------------------------------------------------
 

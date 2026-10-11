@@ -74,6 +74,37 @@ export function windowFor(preset, now = new Date()) {
   return Object.freeze({ from: from.toISOString(), to: to.toISOString(), label: spec.label, preset, bucket: spec.bucket });
 }
 
+const MONTH_NAMES = Object.freeze(['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']);
+
+/** The calendar month, in UTC, `back` months before the one `now` falls in, as "YYYY-MM". */
+export function monthOf(now = new Date(), back = 0) {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - back, 1)).toISOString().slice(0, 7);
+}
+
+/**
+ * A calendar month in UTC as a window read by the day: from its first day to the next month's, or
+ * to `now` while the month is still running. `month` is "YYYY-MM".
+ */
+export function monthWindow(month, now = new Date()) {
+  const match = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(String(month));
+  if (!match) throw new DashboardQueryError('unknown_window', `A month is written as YYYY-MM, not "${String(month)}".`);
+  const year = Number(match[1]);
+  const index = Number(match[2]) - 1;
+  const from = new Date(Date.UTC(year, index, 1));
+  const end = new Date(Date.UTC(year, index + 1, 1));
+  if (now <= from) throw new DashboardQueryError('bad_window', `${MONTH_NAMES[index]} ${year} has not begun.`);
+  const to = end < now ? end : new Date(now.getTime());
+  return Object.freeze({
+    from: from.toISOString(),
+    to: to.toISOString(),
+    month: String(month),
+    label: `${MONTH_NAMES[index]} ${year}`,
+    short: `${MONTH_NAMES[index].slice(0, 3)} ${year}`,
+    complete: to.getTime() === end.getTime(),
+    bucket: 'day',
+  });
+}
+
 function checkWindow(window) {
   if (!isObject(window)) {
     throw new DashboardQueryError('missing_window', 'A window is required: no read in this DSL is unbounded.');

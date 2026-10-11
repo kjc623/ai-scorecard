@@ -11,13 +11,13 @@ import { createQueryApi, httpTransport, loadSession, createAdminApi, httpAdminTr
 import { readState } from './states.js';
 import { QUESTIONS, context } from './questions.js';
 import {
-  postureView, insightsView, adoptionView, discoveredView, demandView, agentsView, toolsView, toolView, unsanctionedView, teamsView, teamView, classesView,
+  postureView, insightsView, adoptionView, discoveredView, demandView, agentsView, reportView, toolsView, toolView, unsanctionedView, teamsView, teamView, classesView,
   personView, peopleView, devicesView, eventView, auditView, refusalView,
   needsInputView,
 } from './views.js';
 import {
   buildAgentDocument, buildDemandDocument, buildDiscoveryDocument, buildFirstSeenDocument, buildListDocument, buildPeopleDocument, buildRuleMatchesDocument,
-  buildSanctionShiftDocument, buildTeamMembersDocument, buildToolPromptsDocument,
+  buildSanctionShiftDocument, buildTeamMembersDocument, buildToolPromptsDocument, monthOf, monthWindow,
 } from './dsl.js';
 import { renderScreen, renderNav } from './render.js';
 import { shellNavItems, groupOf, readCollapsed, wireShell } from './shell.js';
@@ -301,8 +301,35 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
     return agentsView({ agents, previous }, { preset: ctx.preset });
   }
 
-  /** The tabs of Insights other than Exposure, by the `view` that names them. */
-  const INSIGHTS_SCREENS = Object.freeze({ adoption: adoptionScreen, discovered: discoveredScreen, demand: demandScreen, agents: agentsScreen });
+  /**
+   * Insights, Monthly report: one calendar month as the Exposure, Adoption and Discovered tabs read
+   * it, beside the month before, for the changes. The month the address names, if it has begun,
+   * else the last complete one; a month still running is not compared with a whole one. Only the
+   * month's tool usage is needed; without the others their sections say what is missing. The month
+   * before is read first, so the freshness the page reports is the month's own.
+   */
+  async function reportScreen(ctx) {
+    const at = now();
+    const offered = Array.from({ length: REPORT_MONTHS }, (_, back) => monthOf(at, back)).reverse();
+    const chosen = offered.includes(ctx.filters.month) ? ctx.filters.month : monthOf(at, 1);
+    const month = monthWindow(chosen, at);
+    const before = monthWindow(monthOf(new Date(Date.parse(month.from)), 1), at);
+    const previous = month.complete ? await part(() => ask('q1_tools_ranked', context({ window: before }))) : null;
+    const usage = await ask('q1_tools_ranked', context({ window: month }));
+    const classes = await part(() => ask('q4_class_mix', context({ window: month })));
+    const firstSeen = await part(async () => readState(await api.run(buildFirstSeenDocument({ window: month }))));
+    const prompts = await part(async () => readState(await api.run(buildToolPromptsDocument({ window: month }))));
+    const found = await part(async () => readState(await api.run(buildDiscoveryDocument({ window: month }))));
+    const months = {
+      label: 'Month',
+      current: chosen,
+      items: offered.map((id) => ({ id, label: monthWindow(id, at).short, href: `#insights?view=report&month=${id}` })),
+    };
+    return reportView({ usage, previous, classes, firstSeen, found, prompts }, { month, before, made: at, months });
+  }
+
+  /** The tabs of Insights other than Exposure, and its Monthly report, by the `view` that names them. */
+  const INSIGHTS_SCREENS = Object.freeze({ adoption: adoptionScreen, discovered: discoveredScreen, demand: demandScreen, agents: agentsScreen, report: reportScreen });
 
   /** The Teams screen: every team, or one team when the address names it. */
   async function teamsScreen(params, ctx) {
@@ -373,6 +400,9 @@ function presetsFor(screen, preset, filters) {
   });
   return { current, items };
 }
+
+/** The months the Monthly report offers: this one so far and the ones before it. */
+const REPORT_MONTHS = 6;
 
 /** The tabs of Insights, each a question a customer asks; Exposure is the default. */
 const INSIGHTS_TABS = Object.freeze({ exposure: 'Exposure', adoption: 'Adoption', discovered: 'Discovered', demand: 'Demand', agents: 'Coding agents' });
@@ -583,8 +613,17 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     return editor;
   }
 
-  /** The control an admin has in the Teams header: add a team on the list, edit it on a team's screen. */
+  /**
+   * A screen's own control: on Insights, the Monthly report, which the report itself saves as a PDF
+   * through the browser's print; on Teams, an admin adds a team on the list and edits it on a team's
+   * screen.
+   */
   function toolFor(screen, filters) {
+    if (screen.id === 'insights') {
+      return filters.view === 'report'
+        ? '<a class="btn btn-small btn-quiet" href="#insights">Back to Insights</a><button type="button" class="btn btn-small btn-primary" data-print>Save as PDF</button>'
+        : '<a class="btn btn-small" href="#insights?view=report">Monthly report</a>';
+    }
     if (screen.id !== 'teams' || !mayManage) return null;
     return filters.team ? renderTeamEdit(String(filters.team)) : renderTeamAdd();
   }
@@ -641,7 +680,15 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     const { view, shell } = await dashboard.load(screen.id, { preset, filters, mayManage, insights: mayOpen(allowed, 'insights') });
     root.setAttribute?.('aria-busy', 'false');
     const { preset: _preset, ...others } = filters;
-    root.innerHTML = renderScreen(view, { ...shell, eyebrow: groupOf(screen.id), switch: switchFor(screen, preset, others), presets: presetsFor(screen, preset, others), tool: toolFor(screen, filters) });
+    // The Monthly report picks a month, in place of a window and the tabs.
+    const months = view?.months ?? null;
+    root.innerHTML = renderScreen(view, {
+      ...shell,
+      eyebrow: groupOf(screen.id),
+      switch: months ?? switchFor(screen, preset, others),
+      presets: months ? null : presetsFor(screen, preset, others),
+      tool: toolFor(screen, filters),
+    });
     document.title = `${view?.title ?? screen.label} · ${brand}`;
     if (typing) root.querySelector?.('input[name="subject"]')?.focus();
   }
@@ -710,6 +757,11 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     if (rlTarget && rules && rlTarget.tagName !== 'SELECT' && !rlTarget.disabled) {
       event.preventDefault();
       rules.act({ ...rlTarget.dataset });
+      return;
+    }
+    if (event.target?.closest?.('[data-print]')) {
+      event.preventDefault();
+      document.defaultView?.print?.();
       return;
     }
     const teamTarget = event.target?.closest?.('[data-team]');
