@@ -37,7 +37,7 @@ const TENANT = '00000000-0000-4000-8000-0000000000aa';
 // ---------------------------------------------------------------------------------------------
 
 test('each role maps to the pages it may open', () => {
-  assert.deepEqual(pagesFor('viewer').sort(), ['devices', 'posture', 'teams', 'tools']);
+  assert.deepEqual(pagesFor('viewer').sort(), ['devices', 'insights', 'posture', 'teams', 'tools']);
   for (const role of ['analyst', 'content_reader']) {
     assert.ok(pagesFor(role).includes('person'), `${role} may open Users`);
     assert.ok(pagesFor(role).includes('explore'), `${role} may open Search`);

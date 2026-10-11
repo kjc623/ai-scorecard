@@ -170,6 +170,7 @@ export const QUESTIONS = Object.freeze({
       department: ctx.filters.department,
       prompt_kind: ctx.filters.prompt_kind,
       prompt_kind_not: ctx.filters.prompt_kind_not,
+      attachments: ctx.filters.attachments,
     })),
   },
 

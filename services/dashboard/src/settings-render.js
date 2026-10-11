@@ -326,7 +326,7 @@ function matchValueLabel(field, value, data) {
 function ruleConditions(rule, data) {
   const parts = RULE_MATCH_FIELDS.filter((f) => rule.match[f].length > 0).map((f) => `<span class="dp-sub">${escapeHtml(MATCH_TITLES[f])}</span>`
     + rule.match[f].map((v) => `<span class="v-text">${escapeHtml(matchValueLabel(f, v, data))}</span>`).join(' or '));
-  return parts.length ? parts.join('') : '<span class="v-text">Any submission</span>';
+  return parts.length ? parts.join('') : '<span class="v-text">Any prompt</span>';
 }
 
 function stRuleEditor(state) {
@@ -383,9 +383,9 @@ function stRules(state) {
     + stButton('Edit', { action: 'rule-edit', index: String(i) }, { kind: 'quiet', small: true, disabled: locked })
     + stButton('Delete', { action: 'rule-delete', index: String(i) }, { kind: 'quiet', small: true, disabled: locked })
     + '</td></tr>').join('');
-  const empty = list.length === 0 ? '<tr class="row-empty"><td colspan="5">No rules. Every submission is logged.</td></tr>' : '';
+  const empty = list.length === 0 ? '<tr class="row-empty"><td colspan="5">No rules. Every prompt is logged.</td></tr>' : '';
   const unsaved = state.rules.draft !== null;
-  const body = '<p>The first rule that matches a submission decides what happens to it; a submission no rule matches is logged. <em>Warn</em> and <em>block</em> show the message to the person. The list reaches each device on its next policy poll once it is saved.</p>'
+  const body = '<p>The first rule that matches a prompt decides what happens to it; a prompt no rule matches is logged. <em>Warn</em> and <em>block</em> show the message to the person. The list reaches each device on its next policy poll once it is saved.</p>'
     + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">#</th><th scope="col">Action</th><th scope="col">Conditions</th><th scope="col">Message</th><th scope="col"><span class="sr">Order and edit</span></th></tr></thead>'
     + `<tbody>${rows}${empty}</tbody></table></div>`
     + (state.rules.editor ? stRuleEditor(state) : '')

@@ -52,12 +52,12 @@ function page(overrides = {}) {
 // The tool column carries the catalogue's display name beside the fingerprint, as the API joins it;
 // a fingerprint the catalogue does not list arrives as "Unrecognised tool".
 const TOOL_ROWS = Object.freeze([
-  Object.freeze({ bucket: DAY, tool: 'tls_b6681b043244c43f', tool_name: 'Claude Code', sanctioned_state: 'unsanctioned', submissions: 812, users: 214, bytes_total: 41_000_000, blocked: 12, warned: 40, logged: 760 }),
+  Object.freeze({ bucket: DAY, tool: 'tls_b6681b043244c43f', tool_name: 'Claude Code', sanctioned_state: 'unsanctioned', submissions: 812, users: 214, bytes_total: 41_000_000, blocked: 12, warned: 40, logged: 760, sensitive: 40, sensitive_blocked: 12, sensitive_warned: 8, sensitive_logged: 20, attachments: 30, content_prompts: 800 }),
   // A small cell: two people. Its numbers are published like any other.
-  Object.freeze({ bucket: DAY, tool: 'shadow_llm_gateway', tool_name: 'Unrecognised tool', sanctioned_state: 'unknown', submissions: 3, users: 2, bytes_total: 120_000, blocked: 0, warned: 1, logged: 2 }),
+  Object.freeze({ bucket: DAY, tool: 'shadow_llm_gateway', tool_name: 'Unrecognised tool', sanctioned_state: 'unknown', submissions: 3, users: 2, bytes_total: 120_000, blocked: 0, warned: 1, logged: 2, sensitive: 1, sensitive_blocked: 0, sensitive_warned: 0, sensitive_logged: 1, attachments: 0, content_prompts: 3 }),
   // A genuine zero: we looked and there was none. This is an answer, not a secret.
-  Object.freeze({ bucket: DAY, tool: 'legacy_summariser', tool_name: 'Legacy summariser', sanctioned_state: 'sanctioned', submissions: 0, users: 0, bytes_total: 0, blocked: 0, warned: 0, logged: 0 }),
-  Object.freeze({ bucket: DAY, tool: 'tls_f412811be7ac6539', tool_name: 'ChatGPT', sanctioned_state: 'sanctioned', submissions: 4021, users: 1877, bytes_total: 190_000_000, blocked: 3, warned: 210, logged: 3808 }),
+  Object.freeze({ bucket: DAY, tool: 'legacy_summariser', tool_name: 'Legacy summariser', sanctioned_state: 'sanctioned', submissions: 0, users: 0, bytes_total: 0, blocked: 0, warned: 0, logged: 0, sensitive: 0, sensitive_blocked: 0, sensitive_warned: 0, sensitive_logged: 0, attachments: 0, content_prompts: 0 }),
+  Object.freeze({ bucket: DAY, tool: 'tls_f412811be7ac6539', tool_name: 'ChatGPT', sanctioned_state: 'sanctioned', submissions: 4021, users: 1877, bytes_total: 190_000_000, blocked: 3, warned: 210, logged: 3808, sensitive: 120, sensitive_blocked: 3, sensitive_warned: 70, sensitive_logged: 47, attachments: 210, content_prompts: 3000 }),
 ]);
 
 const DEVICE_ROWS = Object.freeze([
@@ -169,9 +169,9 @@ const PEOPLE_ROWS = Object.freeze([
 ]);
 
 const CLASS_ROWS = Object.freeze([
-  Object.freeze({ bucket: DAY, class: 'customer_pii', severity: 'high', submissions: 1204, users: 388, max_score: 0.94, degraded_events: 12 }),
-  Object.freeze({ bucket: DAY, class: 'credential', severity: 'critical', submissions: 402, users: 122, max_score: 1, degraded_events: 12 }),
-  Object.freeze({ bucket: DAY, class: 'health', severity: 'high', submissions: 4, users: 2, max_score: 0.81, degraded_events: 0 }),
+  Object.freeze({ bucket: DAY, class: 'customer_pii', severity: 'high', submissions: 1204, users: 388, max_score: 0.94, degraded_events: 12, flagged: 90, flagged_blocked: 10, flagged_warned: 50, flagged_logged: 30 }),
+  Object.freeze({ bucket: DAY, class: 'credential', severity: 'critical', submissions: 402, users: 122, max_score: 1, degraded_events: 12, flagged: 60, flagged_blocked: 5, flagged_warned: 20, flagged_logged: 35 }),
+  Object.freeze({ bucket: DAY, class: 'health', severity: 'high', submissions: 4, users: 2, max_score: 0.81, degraded_events: 0, flagged: 0, flagged_blocked: 0, flagged_warned: 0, flagged_logged: 0 }),
 ]);
 
 const PERSON_ROWS = Object.freeze([

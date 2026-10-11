@@ -86,13 +86,13 @@ test('a tool cell shows the name, and the fingerprint only beside an unrecognise
 
 test('the tile for a total counts a small cell in full, and says absent when no cell carries the measure', () => {
   const mixed = readState(envelope('ok', { data: [{ submissions: 10 }, { submissions: 2 }], freshness: FRESH, coverage: COMPLETE }));
-  const submissions = toolsView(mixed).tiles.find((t) => t.label === 'Submissions');
+  const submissions = toolsView(mixed).tiles.find((t) => t.label === 'Prompts');
   assert.equal(submissions.value.kind, 'number');
   assert.equal(submissions.value.text, '12');
   assert.equal(submissions.note, null);
 
   const none = readState(envelope('ok', { data: [{ tool: 'a' }], freshness: FRESH, coverage: COMPLETE }));
-  assert.equal(toolsView(none).tiles.find((t) => t.label === 'Submissions').value.kind, 'absent');
+  assert.equal(toolsView(none).tiles.find((t) => t.label === 'Prompts').value.kind, 'absent');
 });
 
 test('a series refuses to exist for an event source and draws every bucket to scale, small ones included', () => {
@@ -118,10 +118,10 @@ test('the overview summarises usage beside the enrolled denominator', async () =
   const { view } = await dashboard.load('posture', {});
   assert.equal(view.id, 'posture');
   assert.equal(view.title, 'Overview');
-  assert.deepEqual(view.tiles.map((t) => t.label), ['Submissions', 'Users', 'Devices reporting']);
-  assert.match(view.tiles[2].note, /of 4,620 enrolled devices/);
-  assert.deepEqual(view.tiles[2].split.map((p) => [p.label, p.count, p.href]), [['Reporting', 4180, '#devices?status=reporting'], ['Not reporting', 440, '#devices?status=attention']]);
-  assert.deepEqual(view.blocks.map((b) => [b.kind, b.title]), [['share', 'Where submissions went'], ['ranking', 'Tools in use']]);
+  assert.deepEqual(view.tiles.map((t) => t.label), ['Prompts', 'Attachments', 'Sensitive prompts', 'Users', 'Devices reporting']);
+  assert.match(view.tiles[4].note, /of 4,620 enrolled devices/);
+  assert.deepEqual(view.tiles[4].split.map((p) => [p.label, p.count, p.href]), [['Reporting', 4180, '#devices?status=reporting'], ['Not reporting', 440, '#devices?status=attention']]);
+  assert.deepEqual(view.blocks.map((b) => [b.kind, b.title]), [['share', 'Where prompts went'], ['ranking', 'Tools in use']]);
   assert.equal(view.blocks[1].href, '#tools');
   assert.deepEqual(view.tables, []);
   const titles = view.banners.map((b) => b.title);

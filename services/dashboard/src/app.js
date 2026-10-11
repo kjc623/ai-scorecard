@@ -11,7 +11,7 @@ import { createQueryApi, httpTransport, loadSession, createAdminApi, httpAdminTr
 import { readState } from './states.js';
 import { QUESTIONS, context } from './questions.js';
 import {
-  postureView, toolsView, toolView, unsanctionedView, teamsView, teamView, classesView,
+  postureView, insightsView, toolsView, toolView, unsanctionedView, teamsView, teamView, classesView,
   personView, peopleView, devicesView, eventView, auditView, refusalView,
   needsInputView,
 } from './views.js';
@@ -34,6 +34,7 @@ import { renderTeamAdd, renderTeamDialog, renderTeamEdit } from './team-editor-r
  */
 export const SCREENS = Object.freeze([
   Object.freeze({ id: 'posture', label: 'Overview', question: null, kind: 'posture' }),
+  Object.freeze({ id: 'insights', label: 'Insights', question: null, kind: 'answer' }),
   Object.freeze({ id: 'tools', label: 'Tools', question: 1, kind: 'answer', questionId: 'q1_tools_ranked' }),
   Object.freeze({ id: 'teams', label: 'Teams', question: 3, kind: 'answer', questionId: 'q3_team_growth' }),
   Object.freeze({ id: 'person', label: 'Users', question: 6, kind: 'input', questionId: 'q6_subject_series' }),
@@ -153,6 +154,7 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
             return { view: mode.view(await ask(mode.questionId, ctx), { preset: ctx.preset }), shell: shell() };
           }
           if (screen.id === 'teams') return { view: await teamsScreen(params, ctx), shell: shell() };
+          if (screen.id === 'insights') return { view: await insightsScreen(ctx), shell: shell() };
           const state = await ask(screen.questionId, ctx);
           return { view: viewFor(screen.id, state, params), shell: shell() };
         }
@@ -180,7 +182,7 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
             return { view: personView(state, { subject, person }), shell: shell() };
           }
           const submissionId = params.filters?.submission_id;
-          if (!submissionId) return { view: needsInputView({ id: 'event', title: 'Event detail', question: null, hint: 'Reached from a row that names a submission.' }), shell: shell() };
+          if (!submissionId) return { view: needsInputView({ id: 'event', title: 'Event detail', question: null, hint: 'Reached from a row that names an event.' }), shell: shell() };
           const state = await ask('q9_event_detail', context({ filters: { submission_id: submissionId, received_at_hint: params.filters?.received_at_hint }, now: now() }));
           return { view: eventView(state), shell: shell() };
         }
@@ -223,6 +225,19 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
       if (name && name !== row.subject) names[row.subject] = String(name);
     }
     return names;
+  }
+
+  /**
+   * Insights: the window's tool usage and class mix, and the tool usage of the period of the same
+   * length just before it, which the changes are measured against. Only the window's usage is
+   * needed; without the others their panels say what is missing. The previous period is read
+   * first, so the coverage the page reports is the window's own.
+   */
+  async function insightsScreen(ctx) {
+    const previous = await part(() => ask('q1_tools_ranked', context({ preset: ctx.preset, now: new Date(Date.parse(ctx.window.from)) })));
+    const usage = await ask('q1_tools_ranked', ctx);
+    const classes = await part(() => ask('q4_class_mix', ctx));
+    return insightsView({ usage, previous, classes }, { preset: ctx.preset });
   }
 
   /** The Teams screen: every team, or one team when the address names it. */

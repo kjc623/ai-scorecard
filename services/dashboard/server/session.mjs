@@ -30,6 +30,7 @@ export const PRODUCT_ROLES = Object.freeze(Object.keys(ROLE_CAPABILITIES));
  */
 const PAGE_CAPABILITY = Object.freeze({
   posture: 'aggregate',
+  insights: 'aggregate',
   tools: 'aggregate',
   teams: 'aggregate',
   person: 'subject',
@@ -41,7 +42,7 @@ const PAGE_CAPABILITY = Object.freeze({
   settings: 'settings',
 });
 
-const ALWAYS_VISIBLE = Object.freeze(['posture', 'tools', 'teams']);
+const ALWAYS_VISIBLE = Object.freeze(['posture', 'insights', 'tools', 'teams']);
 
 /** The capabilities of one role. An unknown role carries none. */
 export function capabilitiesFor(role) {

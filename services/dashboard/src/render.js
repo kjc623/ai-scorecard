@@ -226,14 +226,24 @@ export function renderSeries(series) {
   if (series.unavailable) return open(`<p class="series-unavailable">No chart: ${escapeHtml(series.reason)}</p>`);
   if (series.points.length === 0) return open('<p class="series-unavailable">No points.</p>');
   const max = Math.max(1, ...series.points.map((p) => (p.value.kind === 'number' ? p.value.value : 0)));
+  // A point with parts is drawn as its parts stacked, first at the foot, and its tip names each.
+  const stacked = series.points.some((p) => Array.isArray(p.parts));
   const bars = series.points.map((p, i) => {
     const label = formatInstant(p.bucket).slice(0, 10) || 'total';
     const delay = `--i:${Math.min(i, 24)}`;
     const height = Math.max(1, Math.round((p.value.value / max) * 100));
-    return `<div class="bar" style="${delay}" tabindex="0" data-tip="${escapeHtml(label)} · ${escapeHtml(formatCount(p.value.value))}"><span class="bar-fill" style="--h:${height}"></span><span class="bar-label">${escapeHtml(label.slice(5))}</span></div>`;
+    const parts = (p.parts ?? []).filter((part) => part.value > 0);
+    const tip = `${label} · ${formatCount(p.value.value)}${parts.length > 0 ? ` (${parts.map((part) => `${part.label} ${formatCount(part.value)}`).join(', ')})` : ''}`;
+    const fill = stacked
+      ? `<span class="bar-stack" style="--h:${height}">${parts.map((part) => `<span class="bar-seg ${vocabClass(part.key)}" style="flex-grow:${part.value}"></span>`).join('')}</span>`
+      : `<span class="bar-fill" style="--h:${height}"></span>`;
+    return `<div class="bar" style="${delay}" tabindex="0" data-tip="${escapeHtml(tip)}">${fill}<span class="bar-label">${escapeHtml(label.slice(5))}</span></div>`;
   }).join('');
   const axis = `<div class="axis" aria-hidden="true"><span>${escapeHtml(formatCount(max))}</span><span>${escapeHtml(formatCount(Math.round(max / 2)))}</span><span>0</span></div>`;
-  return open(`<div class="chart">${axis}<div class="bars${series.points.length <= 3 ? ' bars-few' : ''}">${bars}</div></div>`);
+  const legend = stacked
+    ? `<ul class="dist-legend series-legend">${(series.points[0].parts ?? []).map((part) => `<li><span class="dist-dot ${vocabClass(part.key)}" aria-hidden="true"></span>${escapeHtml(part.label)}</li>`).join('')}</ul>`
+    : '';
+  return open(`<div class="chart">${axis}<div class="bars${series.points.length <= 3 ? ' bars-few' : ''}${stacked ? ' bars-stacked' : ''}">${bars}</div></div>${legend}`);
 }
 
 /**
@@ -275,7 +285,7 @@ export function renderShare(block) {
   if (parts.length === 0) return blockFrame('share', block, `<p class="block-empty">${escapeHtml(block.emptyText ?? 'Nothing to show.')}</p>`);
   // One part is the whole: a sentence says so, and a bar of one colour is not drawn.
   if (parts.length === 1 && parts[0].phrase) {
-    return blockFrame('share', block, `<p class="share-one">All <span class="v-number">${escapeHtml(formatCount(parts[0].count))}</span> submissions went to ${escapeHtml(parts[0].phrase)}.</p>`);
+    return blockFrame('share', block, `<p class="share-one">All <span class="v-number">${escapeHtml(formatCount(parts[0].count))}</span> prompts went to ${escapeHtml(parts[0].phrase)}.</p>`);
   }
   const bar = parts.map((p) => `<span class="dist-seg ${vocabClass(p.key)}" style="flex-grow:${Math.max(0, Number(p.count) || 0)}" title="${escapeHtml(p.label)}: ${escapeHtml(formatCount(p.count))} (${escapeHtml(formatPercent(p.share))})"></span>`).join('');
   const legend = parts.map((p) => `<li><span class="dist-dot ${vocabClass(p.key)}" aria-hidden="true"></span>${escapeHtml(p.label)}<span class="dist-n">${escapeHtml(formatCount(p.count))}</span><span class="dist-pct">${escapeHtml(formatPercent(p.share))}</span></li>`).join('');
@@ -323,13 +333,40 @@ export function renderRanking(block) {
       + (trends ? `<span class="rank-trend">${renderSparkline(item.trend)}</span>` : '')
       + `</${tag}></li>`;
   }).join('');
-  return blockFrame('rank', block, `${head}<ol class="rank">${rows}</ol>`, { count: items.length, classes: trends ? '' : ' rank-flat' });
+  const summary = block.summary ? `<p class="block-summary">${escapeHtml(block.summary)}</p>` : '';
+  return blockFrame('rank', block, `${summary}${head}<ol class="rank">${rows}</ol>`, { count: items.length, classes: trends ? '' : ' rank-flat' });
+}
+
+/** One stage of a funnel: what it counts, the count, its share of the stage before, and its change. */
+function renderStage(stage) {
+  return `<div class="funnel-step funnel-${escapeHtml(stage.key)}"><span class="funnel-label">${escapeHtml(stage.label)}</span>`
+    + `<span class="funnel-value">${renderValue(stage.value)}</span>`
+    + (stage.detail ? `<span class="funnel-detail">${escapeHtml(stage.detail)}</span>` : '')
+    + (stage.change ? `<span class="funnel-change funnel-${escapeHtml(stage.change.direction)}">${escapeHtml(stage.change.text)}</span>` : '')
+    + '</div>';
+}
+
+/**
+ * A funnel: each stage narrows the one before it, and the last splits into outcomes, drawn as one
+ * bar over them. Every number is in the text.
+ */
+export function renderFunnel(block) {
+  if (block.emptyText) return blockFrame('funnel', block, `<p class="block-empty">${escapeHtml(block.emptyText)}</p>`);
+  const arrow = '<span class="funnel-arrow" aria-hidden="true"></span>';
+  const outcomes = block.outcomes ?? [];
+  const drawn = outcomes.filter((o) => Number(o.count) > 0);
+  const bar = drawn.length > 0
+    ? `<div class="dist-bar funnel-bar" aria-hidden="true">${drawn.map((o) => `<span class="dist-seg ${vocabClass(o.key)}" style="flex-grow:${Number(o.count)}"></span>`).join('')}</div>`
+    : '';
+  return blockFrame('funnel', block, `<div class="funnel">${(block.stages ?? []).map(renderStage).join(arrow)}${arrow}`
+    + `<div class="funnel-outcomes">${bar}<div class="funnel-split">${outcomes.map(renderStage).join('')}</div></div></div>`);
 }
 
 /** A block of a screen, by its kind. */
 function renderBlock(block) {
   switch (block?.kind) {
     case 'ranking': return renderRanking(block);
+    case 'funnel': return renderFunnel(block);
     case 'share': return renderShare(block);
     case 'series': return renderSeries(block);
     case 'table': return renderTable(block);
@@ -464,6 +501,7 @@ export function renderScreen(view, shell = {}) {
 /** Thin-line icons for the navigation: one stroke weight, no fills. */
 const NAV_ICONS = Object.freeze({
   overview: '<circle cx="12" cy="12" r="8.5"/><path d="M12 12 16.5 8"/><path d="M12 3.5v2M20.5 12h-2M5.5 12h-2"/>',
+  insights: '<path d="m3.5 16.5 5.5-5.5 4 4 7.5-7.5"/><path d="M15.5 7.5h5v5"/>',
   search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>',
   usage: '<path d="M4 19.5V10M9.5 19.5v-15M15 19.5v-7M20.5 19.5V7"/>',
   collection: '<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M9 20h6M12 16v4"/>',
