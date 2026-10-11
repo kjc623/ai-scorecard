@@ -56,9 +56,14 @@ func (p *fakePipeline) ResolveMode(core.ScopeQuery) core.Resolution {
 
 func (p *fakePipeline) Process(ctx context.Context, obs core.Observation) (core.Outcome, error) {
 	out := core.Outcome{Route: obs.Route, Mode: p.mode, Emitted: true, Reason: core.ReasonEmitted}
-	p.mu.Lock()
-	p.observed = append(p.observed, obs)
-	p.mu.Unlock()
+	// The observation is recorded once Process is done, so a test that has seen it also sees the
+	// body read and the decision taken: a body over the cap is processed after the client has its
+	// response.
+	defer func() {
+		p.mu.Lock()
+		p.observed = append(p.observed, obs)
+		p.mu.Unlock()
+	}()
 	if obs.Content != nil && p.mode.ReadsContent() {
 		b, err := obs.Content.Read(ctx)
 		if err != nil {
