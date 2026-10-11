@@ -710,7 +710,7 @@ function rankTeams(state, { teams = null, link = teamHref, emptyText }) {
   }
   return Object.freeze({
     kind: 'ranking',
-    title: 'Teams by submissions',
+    title: 'Teams by usage',
     href: null,
     emptyText,
     itemLabel: 'Team',

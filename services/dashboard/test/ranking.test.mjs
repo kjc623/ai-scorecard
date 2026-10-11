@@ -194,6 +194,7 @@ test('the Teams screen ranks the teams and lists the admin\'s quiet teams with a
   assert.deepEqual(view.tables, [], 'each team\'s people are on Users and on the team\'s own screen');
   assert.ok(view.notes.some((n) => /used AI in this window; 2,680 are in at least one team and 1,530 are in none/.test(n)));
   const ranking = view.blocks[0];
+  assert.equal(ranking.title, 'Teams by usage');
   assert.deepEqual(ranking.items.map((i) => [i.label, i.value.value]), [['Engineering', 2210], ['Finance', 812], ['Legal', 7], ['Marketing', 0]], 'by submissions, then the team with no usage');
   assert.equal(ranking.items[0].href, '#teams?team=7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001');
   assert.equal(ranking.items[0].sublabel, '640 members · Group eng-all');
