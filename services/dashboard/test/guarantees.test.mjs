@@ -29,10 +29,12 @@ test('no per-person ranking: without a subject the Users page lists people by na
   const transport = fixtureTransport();
   const dashboard = createDashboard({ api: createQueryApi({ transport: { send: (body) => { sent.push(body); return transport.send(body); } } }), now: () => new Date('2026-10-01T12:00:00Z') });
   const { view } = await dashboard.load('person', { filters: {} });
-  assert.deepEqual(sent.map((b) => b.source ?? b.template), ['mart.v_person'], 'the per-person series is never read without a subject');
-  assert.equal(sent[0].measures, undefined);
-  assert.equal(sent[0].order, undefined, 'the list keeps the API\'s order, by name');
-  const table = view.tables[0];
+  const read = sent.map((b) => b.source ?? b.template);
+  assert.ok(!read.includes('q6_subject_series'), 'the per-person series is never read without a subject');
+  const list = sent.find((b) => b.source === 'mart.v_person');
+  assert.equal(list.measures, undefined);
+  assert.equal(list.order, undefined, 'the list keeps the API\'s order, by name');
+  const table = view.tables.find((t) => t.title === 'People');
   assert.deepEqual(table.rows.map((r) => r.row.name), ['Ada Lovelace', 'Grace Hopper', 'u_1b77']);
   assert.ok(table.columns.every((c) => !['submissions', 'bytes_total', 'tools_used'].includes(c.key)), 'no usage column to rank by');
   const html = renderScreen(view, SHELL);
@@ -51,15 +53,16 @@ test('the unsanctioned table is ordered by tool and person, never by volume', as
   assert.ok(view.notes.some((n) => /not a ranking/.test(n)));
 });
 
-test('the Teams page lists each team\'s people by team and name, never by volume, and says when a role cannot see them', async () => {
+test('the Users page lists each team\'s people by team and name, never by volume, and says when a role cannot see them', async () => {
   const sent = [];
   const transport = fixtureTransport();
   const dashboard = createDashboard({ api: createQueryApi({ transport: { send: (body) => { sent.push(body); return transport.send(body); } } }), now: () => new Date('2026-10-01T12:00:00Z') });
-  const { view } = await dashboard.load('teams', { preset: 'd30' });
+  const { view } = await dashboard.load('person', { preset: 'd30', filters: {} });
   const roster = sent.find((b) => b.source === 'mart.v_team_member_period');
   assert.equal(roster.order, undefined, 'the roster read asks for no ordering by a measure');
   assert.deepEqual(roster.filters, [{ field: 'team', op: 'in', value: ['7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0002', '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0003'] }], 'only the teams on the page are read');
-  const table = view.tables.find((t) => t.title === 'Submissions by person');
+  assert.equal(view.tables[0].title, 'Users', 'the roster sits first, under the search bar');
+  const table = view.tables[0];
   assert.deepEqual(table.rows.map((r) => `${r.row.team_name}/${r.row.name}`), ['Engineering/Ada Lovelace', 'Engineering/Grace Hopper', 'Engineering/u_1b77', 'Finance/Grace Hopper']);
   const html = renderScreen(view, SHELL);
   assert.ok(html.includes('href="#person?subject=u_9a02"'), 'a person opens their page');
@@ -71,11 +74,15 @@ test('the Teams page lists each team\'s people by team and name, never by volume
       : transport.send(body)) } }),
     now: () => new Date('2026-10-01T12:00:00Z'),
   });
-  const limited = (await viewer.load('teams', {})).view;
-  assert.ok(!limited.tables.some((t) => t.title === 'Submissions by person'), 'no roster for a role that may not see people');
-  assert.ok(limited.notes.some((n) => /team totals only/.test(n)));
-  const totals = limited.blocks.find((b) => b.title === 'Teams by submissions');
-  assert.equal(totals.items.length, 3, 'the team totals still show');
+  const limited = (await viewer.load('person', { filters: {} })).view;
+  assert.ok(!limited.tables.some((t) => t.title === 'Users'), 'no roster for a role that may not see people');
+  assert.ok(limited.notes.some((n) => /does not show each person's submissions/.test(n)));
+  assert.ok(limited.tables.some((t) => t.title === 'People'), 'the directory still shows');
+  const searched = [];
+  const searching = createDashboard({ api: createQueryApi({ transport: { send: (body) => { searched.push(body); return transport.send(body); } } }), now: () => new Date('2026-10-01T12:00:00Z') });
+  const found = (await searching.load('person', { filters: { q: 'Ada' } })).view;
+  assert.ok(!searched.some((b) => b.source === 'mart.v_team_member_period'), 'a search reads the directory alone');
+  assert.ok(!found.tables.some((t) => t.title === 'Users'));
 });
 
 test('no screen exposes a "most active people" table', async () => {

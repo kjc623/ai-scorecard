@@ -421,7 +421,8 @@ function renderPresets(presets, label = 'Window') {
 }
 
 /**
- * A whole screen: the summary first (tiles, then the ranked and shared blocks), the detail after
+ * A whole screen: the summary first (the lead blocks, the tiles, then the ranked and shared
+ * blocks), the detail after
  * (the chart, the filters, the tables). Partial coverage is one line under the title; a stale
  * aggregate, a refusal or a state that cannot say keeps its banner.
  */
@@ -430,6 +431,7 @@ export function renderScreen(view, shell = {}) {
   const status = renderStatusLine(view.banners ?? []);
   const banners = (view.banners ?? []).filter((b) => !quiet(b)).map(renderBanner).join('');
   const tiles = (view.tiles ?? []).length > 0 ? `<div class="tiles">${view.tiles.map(renderTile).join('')}</div>` : '';
+  const lead = (view.lead ?? []).map(renderBlock).join('');
   const blocks = (view.blocks ?? []).map(renderBlock).join('');
   const tables = (view.tables ?? []).map(renderTable).join('');
   const filters = renderFilters(view.filters);
@@ -456,7 +458,7 @@ export function renderScreen(view, shell = {}) {
   const actions = (view.actions ?? []).length > 0
     ? `<nav class="screen-actions">${view.actions.map((a) => `<a class="btn btn-small" href="${escapeHtml(a.href)}">${escapeHtml(a.label)}</a>`).join('')}</nav>`
     : '';
-  return `<article class="screen">${header}${renderSearch(view.search)}${actions}${status}${banners}${tiles}${blocks}${series}${filters}${tables}${notes}</article>`;
+  return `<article class="screen">${header}${renderSearch(view.search)}${actions}${status}${banners}${lead}${tiles}${blocks}${series}${filters}${tables}${notes}</article>`;
 }
 
 /** Thin-line icons for the navigation: one stroke weight, no fills. */
