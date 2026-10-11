@@ -233,6 +233,25 @@ export function buildDemandDocument({ window }) {
 }
 
 /**
+ * What coding agents report in the window, per tool and model, for Insights. The rows are folded
+ * per tool and per model on the page, so the read takes the coarsest bucket the window allows, as
+ * for what discovery found.
+ *
+ * @param {{window: {from: string, to: string, bucket?: string}}} input
+ */
+export function buildAgentDocument({ window }) {
+  return Object.freeze({
+    query_version: QUERY_VERSION,
+    source: 'mart.agg_agent_period',
+    bucket: window.bucket === 'hour' ? 'hour' : 'month',
+    dimensions: Object.freeze(['tool', 'model']),
+    measures: Object.freeze(['requests', 'actions', 'input_tokens', 'output_tokens', 'users', 'tool_users']),
+    window: checkWindow(window),
+    limit: 1999,
+  });
+}
+
+/**
  * The tools first seen in the window, newest first, for Insights. A tenant's first window can see
  * every tool it has for the first time; the page says so when the list runs past this limit.
  *

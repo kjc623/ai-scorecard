@@ -13,6 +13,7 @@ import { formatBytes, formatCount, formatInstant, formatLabels, formatPercent, f
 import { SOURCES, TEMPLATES, UNRECOGNISED_TOOL, SITE_PREFIX, COLLECTION_MODE_LABELS, WINDOWS } from './vocab.js';
 import { EXPLORE_DATASETS, encodeExploreHash } from './explore-model.js';
 import { RULE_ACTION_LABELS, RULE_CATEGORIES, RULE_MATCH_FIELDS, RULE_MATCH_TITLES, RULE_ROUTES } from './rules.js';
+import { ENDPOINT_TOOLS } from './settings.js';
 
 /** A total over a set of cells. A set in which no cell carries the measure has no total. */
 export function sumMeasure(state, measure) {
@@ -1442,6 +1443,175 @@ export function demandView(state, { preset = 'd7', tools = toolHref, teams = tea
     series: Object.freeze([]),
     tables: Object.freeze([]),
     ...shared(state, notes),
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Insights: Coding agents
+// ---------------------------------------------------------------------------------------------
+
+const AGENT_SUMS = Object.freeze(['requests', 'actions', 'input_tokens', 'output_tokens']);
+
+/** The sums of an agent read's rows, and the most people any one of them counted. */
+function agentTotals(rows, people) {
+  const totals = {};
+  for (const row of rows) {
+    for (const measure of [...AGENT_SUMS, people]) {
+      const value = measureOf(row, measure);
+      if (value.kind !== 'number') continue;
+      totals[measure] = measure === people ? Math.max(totals[measure] ?? 0, value.value) : (totals[measure] ?? 0) + value.value;
+    }
+  }
+  const of = (measure) => totals[measure] ?? null;
+  return Object.freeze({ requests: of('requests'), actions: of('actions'), input: of('input_tokens'), output: of('output_tokens'), people: of(people) });
+}
+
+/** An agent read folded by tool across its models, most input tokens first. */
+function agentTools(state) {
+  const tools = new Map();
+  for (const row of state?.data ?? []) {
+    const key = String(row.tool);
+    const tool = tools.get(key) ?? { key, row, rows: [] };
+    tool.rows.push(row);
+    tools.set(key, tool);
+  }
+  return [...tools.values()]
+    .map((tool) => Object.freeze({ ...tool, ...agentTotals(tool.rows, 'tool_users') }))
+    .sort((a, b) => (b.input ?? -1) - (a.input ?? -1) || toolName(a.row).localeCompare(toolName(b.row)));
+}
+
+/**
+ * An agent read folded by model, most input tokens first, with the tools that called it. The
+ * agents' actions name no model and are left out; a request whose model the agent did not report
+ * is kept, as a row of its own.
+ */
+function agentModels(state) {
+  const models = new Map();
+  for (const row of state?.data ?? []) {
+    const name = String(row.model ?? '');
+    if (name === '' && (measureOf(row, 'requests').value ?? 0) === 0) continue;
+    const model = models.get(name) ?? { name, rows: [], tools: new Set() };
+    model.rows.push(row);
+    model.tools.add(toolName(row));
+    models.set(name, model);
+  }
+  return [...models.values()]
+    .map((model) => Object.freeze({ ...model, ...agentTotals(model.rows, 'users') }))
+    .sort((a, b) => (b.input ?? -1) - (a.input ?? -1) || a.name.localeCompare(b.name));
+}
+
+/**
+ * Each coding agent that reported in the window: the people who used it, the actions it took, the
+ * tokens it sent and received, and how its input tokens moved against the period before.
+ */
+function agentToolsTable(tools, before, { period, emptyText }) {
+  const rows = tools.map((tool) => {
+    const earlier = before ? before.get(tool.key)?.input ?? 0 : null;
+    const change = earlier === null || tool.input === null ? null : changeOf({ kind: 'number', value: tool.input }, { kind: 'number', value: earlier }, period);
+    return Object.freeze({
+      tool_cell: toolCell(tool.row),
+      people: tool.people,
+      actions: tool.actions,
+      input_tokens: tool.input,
+      output_tokens: tool.output,
+      change: change?.text ?? null,
+    });
+  });
+  return Object.freeze({
+    kind: 'table',
+    ...tableFrom({ data: rows }, {
+      title: 'By tool',
+      columns: [
+        column('tool_cell', 'Tool', 'stack'),
+        column('people', 'People', 'measure'),
+        column('actions', 'Agent actions', 'measure'),
+        column('input_tokens', 'Input tokens', 'measure'),
+        column('output_tokens', 'Output tokens', 'measure'),
+        column('change', 'Change in input tokens'),
+      ],
+      emptyText,
+    }),
+    breakdowns: false,
+  });
+}
+
+/** Each model the agents called: the tools that called it, the input tokens it received, and its people. */
+function agentModelsTable(models, { emptyText }) {
+  const rows = models.map((model) => Object.freeze({
+    model: model.name || 'Not reported by the agent',
+    tools: [...model.tools].sort((a, b) => a.localeCompare(b)).join(', '),
+    input_tokens: model.input,
+    people: model.people,
+  }));
+  const top = models.find((model) => model.name !== '' && model.input !== null);
+  const reported = models.filter((model) => model.name !== '').length;
+  return Object.freeze({
+    kind: 'table',
+    ...tableFrom({ data: rows }, {
+      title: 'By model',
+      columns: [
+        column('model', 'Model'),
+        column('tools', 'Used by'),
+        column('input_tokens', 'Input tokens', 'measure'),
+        column('people', 'People', 'measure'),
+      ],
+      emptyText,
+    }),
+    ...(top ? { summary: `${plural(reported, 'model', 'models')} received code and context from coding agents in this window; ${top.name} received the most.` } : {}),
+    breakdowns: false,
+  });
+}
+
+/** A count tile with its change against the period before, when that period was read. */
+function agentTile(label, value, previous, note, period) {
+  if (value === null) return null;
+  const change = previous === null ? null : changeOf({ kind: 'number', value }, { kind: 'number', value: previous }, period);
+  return tile(label, { kind: 'number', text: formatCount(value) }, change ? `${note}. ${change.text}.` : note);
+}
+
+/**
+ * Insights, Coding agents: what coding agents send, and to which models. A coding agent reports
+ * only while it exports its own telemetry, so a tool with no row is unreported, not idle.
+ *
+ * @param {{agents: object, previous?: object|null}} states  the window's agent read and the period before's
+ */
+export function agentsView({ agents, previous = null }, { preset = 'd7' } = {}) {
+  const period = previousPeriod(preset);
+  const before = comparable(previous);
+  const tools = agentTools(agents);
+  const models = agentModels(agents);
+  const beforeTools = before ? new Map(agentTools(before).map((tool) => [tool.key, tool])) : null;
+  const total = agentTotals(agents.data, 'tool_users');
+  const earlier = before ? agentTotals(before.data, 'tool_users') : null;
+  const fallback = (label) => tile(label, { kind: 'absent', text: '—' }, absentNote(agents));
+  const exporting = ENDPOINT_TOOLS.filter((tool) => tool.otel).map((tool) => tool.label);
+  const silent = ENDPOINT_TOOLS.filter((tool) => !tool.otel && tool.hooks).map((tool) => tool.label);
+  const names = (list) => (list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list.join(''));
+  const notes = [
+    `${names(exporting)} report here while their OpenTelemetry switch is on in Settings${silent.length > 0 ? `; ${names(silent)} ${silent.length === 1 ? 'has' : 'have'} no telemetry the device can collect, so ${silent.length === 1 ? 'its' : 'their'} prompts are on Tools but not ${silent.length === 1 ? 'its' : 'their'} tokens` : ''}. A tool with no row reported nothing in this window.`,
+    'Input tokens are the code and context an agent sent to a model; agent actions are the tool calls it made, such as running a command or editing a file.',
+    `People counts the most people on any one ${agents.meta?.applied_bucket === 'hour' ? 'hour' : 'day'} in the window: a floor for the window, as on Tools.`,
+    before
+      ? `Each change compares this window with ${period}.`
+      : `${period[0].toUpperCase()}${period.slice(1)} could not be read, so no change is shown.`,
+  ];
+  const reported = models.filter((model) => model.name !== '').length;
+  return screen('insights', 'Insights', null, 'mart.agg_agent_period', {
+    subtitle: 'Coding agents: what coding agents send, and to which models.',
+    tiles: Object.freeze([
+      agentTile('Input tokens', total.input, earlier ? earlier.input ?? 0 : null, 'code and context sent to models in this window', period) ?? fallback('Input tokens'),
+      agentTile('Agent actions', total.actions, earlier ? earlier.actions ?? 0 : null, 'tool calls the agents made in this window', period) ?? fallback('Agent actions'),
+      tools.length > 0
+        ? tile('Models', { kind: 'number', text: formatCount(reported) }, `called by ${plural(tools.length, 'coding agent', 'coding agents')} in this window`)
+        : fallback('Models'),
+    ]),
+    blocks: Object.freeze([
+      agentToolsTable(tools, beforeTools, { period, emptyText: emptyLine(agents, 'No coding agent reported in this window.') }),
+      agentModelsTable(models, { emptyText: emptyLine(agents, 'No coding agent called a model in this window.') }),
+    ]),
+    series: Object.freeze([]),
+    tables: Object.freeze([]),
+    ...shared(agents, notes),
   });
 }
 

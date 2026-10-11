@@ -316,6 +316,7 @@ test('one tool is one row in every listing, however many fingerprints it was see
           await client.query("INSERT INTO mart.agg_team_period (tenant_id, bucket_start, bucket_size, team_id, tool_fingerprint, submissions, users) VALUES (ops.current_tenant(), $1, 'day', $3, $2, 1, 1)", [...args, team]);
           await client.query("INSERT INTO mart.agg_class_period (tenant_id, bucket_start, bucket_size, class_code, tool_fingerprint, severity, classifier_version, submissions, users) VALUES (ops.current_tenant(), $1, 'day', $3, $2, 'high', 'v1', 1, 1)", [...args, classCode]);
           await client.query("INSERT INTO mart.agg_discovery_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, discovery_type, item, devices, last_seen) VALUES (ops.current_tenant(), $1, 'day', $2, 'app_installed', '', 1, $1::timestamptz + interval '1 hour')", args);
+          await client.query("INSERT INTO mart.agg_agent_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, model, requests, actions, input_tokens, output_tokens, users, tool_users) VALUES (ops.current_tenant(), $1, 'day', $2, 'model-a', 1, 0, 10, 1, 1, 1)", args);
           await client.query(
             `INSERT INTO ingest.submission
                (tenant_id, submission_id, dedup_weak_key, kind, device_id, user_ref, tool_fingerprint,
@@ -527,6 +528,43 @@ test('what discovery found reads per tool under all its fingerprints, kind and i
       const scan = found.meta.extras.inventory_scan[0];
       assert.deepEqual([scan.devices_enrolled, scan.scanned, scan.not_scanned, scan.switched_off].map(Number), [3, 1, 1, 1],
         'a stale scan is not scanned, a scanner the policy switched off is apart, and a revoked device is not counted');
+    },
+  );
+});
+
+test('what coding agents report reads per tool under all its fingerprints and model, named and judged by the catalogue, people as the busiest day', { skip: SKIP }, async () => {
+  await scratch(
+    async (client) => {
+      await client.query("INSERT INTO ops.tool_sanction (tenant_id, tool_key, sanctioned_state, decided_by, decided_at) VALUES (ops.current_tenant(), 'claude_code', 'sanctioned', 'db-test', now())");
+      await client.query(
+        `INSERT INTO mart.agg_agent_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, model, requests, actions, input_tokens, output_tokens, users, tool_users) VALUES
+           (ops.current_tenant(), '2026-09-02', 'day', 'app:claude_code', 'claude-sonnet-4', 3, 0, 1800, 350, 2, 4),
+           (ops.current_tenant(), '2026-09-03', 'day', 'app:claude_code', 'claude-sonnet-4', 2, 0, 1200, 200, 3, 3),
+           (ops.current_tenant(), '2026-09-03', 'day', 'tls_b6681b043244c43f', 'claude-sonnet-4', 4, 0, 400, 40, 1, 2),
+           (ops.current_tenant(), '2026-09-03', 'hour', 'app:claude_code', 'claude-sonnet-4', 9, 0, 9000, 900, 9, 9),
+           (ops.current_tenant(), '2026-09-03', 'day', 'app:claude_code', '', 0, 7, 0, 0, 2, 3),
+           (ops.current_tenant(), '2026-09-03', 'day', 'app:codex', 'gpt-5', 1, 0, 40, 10, 1, 1),
+           (ops.current_tenant(), '2026-08-20', 'day', 'app:codex', 'gpt-5', 5, 0, 500, 50, 1, 1)`,
+      );
+    },
+    async (client, tenant) => {
+      const ctx = { now: NOW, tenant, actorId: 'db-test', cursorKey: KEY };
+      const read = await executePlan(
+        plan({ query_version: '1', source: 'mart.agg_agent_period', bucket: 'month', dimensions: ['tool', 'model'], measures: ['requests', 'actions', 'input_tokens', 'output_tokens', 'users', 'tool_users'], window: WINDOW, limit: 100 }, ctx),
+        { ...ctx, client: nested(client) },
+      );
+      assert.deepEqual(
+        read.data.map((r) => [r.tool, r.model, Number(r.requests), Number(r.actions), Number(r.input_tokens), Number(r.output_tokens), r.users, r.tool_users, r.tool_name, r.sanctioned_state]),
+        [
+          ['app:claude_code', '', 0, 7, 0, 0, 2, 3, 'Claude Code', 'sanctioned'],
+          ['app:claude_code', 'claude-sonnet-4', 9, 0, 3400, 590, 3, 4, 'Claude Code', 'sanctioned'],
+          ['app:codex', 'gpt-5', 1, 0, 40, 10, 1, 1, 'Codex CLI', null],
+        ],
+        'day rows in the window only, summed across fingerprints, with the busiest day\'s people',
+      );
+      assert.equal(read.meta.measure_semantics.users, 'distinct_lower_bound');
+      assert.equal(read.meta.measure_semantics.tool_users, 'distinct_lower_bound');
+      assert.equal(read.freshness.aggregate, 'mart.agg_agent_period');
     },
   );
 });

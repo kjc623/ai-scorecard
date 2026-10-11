@@ -10,14 +10,16 @@ that matched an enforcement rule on one of their labels, what happened to them, 
 to and the labels involved, each against the period before, and every enforcement rule with the
 prompts it matched; Adoption, how many people use AI out of the directory, split by the sanction of
 their tools, the applications that sent their first prompt in the window, and each day's or week's
-prompts by sanction; and Discovered, every AI application, CLI, IDE extension, local model and
+prompts by sanction; Discovered, every AI application, CLI, IDE extension, local model and
 inference endpoint the devices' inventory scan found, with the prompts each sent, and the devices
 whose scan is not reporting; Demand, the tools not sanctioned by team, each team's people using
-each out of its size, and the people each tool would need a seat for), and the Search page, where
-an analyst lists events, findings, devices and audit entries, opens a device to see each of its
-collectors with its state and cause, searches prompt text, and reads an event's stored prompt. An
-admin adds, edits and deletes teams on Teams, from any mix of the people they tick and the groups,
-departments and units the identity provider synced and other teams.
+each out of its size, and the people each tool would need a seat for; and Coding agents, each
+coding agent's people, actions and tokens against the period before, and the models that received
+its code and context), and the Search page, where an analyst lists events, findings, devices and
+audit entries, opens a device to see each of its collectors with its state and cause, searches
+prompt text, and reads an event's stored prompt. An admin adds, edits and deletes teams on Teams,
+from any mix of the people they tick and the groups, departments and units the identity provider
+synced and other teams.
 
 It has two halves and no dependencies:
 

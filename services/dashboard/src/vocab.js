@@ -165,6 +165,13 @@ export const SOURCES = Object.freeze({
     measures: Object.freeze(['devices']),
     note: 'devices is distinct within a bucket, so a window reads a lower bound; where the inventory scan stands travels beside it',
   }),
+  'mart.agg_agent_period': Object.freeze({
+    kind: 'aggregate',
+    label: 'What coding agents report',
+    dimensions: Object.freeze(['bucket', 'tool', 'model']),
+    measures: Object.freeze(['requests', 'actions', 'input_tokens', 'output_tokens', 'users', 'tool_users']),
+    note: 'an agent reports only while it exports its own telemetry; users and tool_users are distinct within a bucket, so a window reads a lower bound',
+  }),
   'ops.enforcement_rule': Object.freeze({
     kind: 'list',
     label: 'Enforcement rules',

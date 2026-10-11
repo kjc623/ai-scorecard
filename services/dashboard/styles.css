@@ -650,6 +650,9 @@ td.dp-action { text-align: right; white-space: nowrap; }
   .app { padding-left: 16px; padding-right: 16px; }
   .app { padding-top: 24px; }
   .screen-tools { align-items: flex-start; }
+  /* A switch longer than a phone is wide wraps onto a second row. */
+  .screen-switches { justify-content: flex-start; }
+  .screen-switches .seg { flex-wrap: wrap; border-radius: 18px; }
   .tile:first-child { grid-column: auto; }
   .tile:first-child .tile-value { font-size: 40px; }
   .axis, .bars { height: 150px; }
