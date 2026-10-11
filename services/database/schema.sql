@@ -1436,6 +1436,9 @@ CREATE TABLE ingest.submission (
   content_state      text NOT NULL DEFAULT 'not_captured' CHECK (content_state IN ('not_captured','local_only','uploaded','shredded')),
   shredded_reason    text CHECK (shredded_reason IN ('retention_expired','erasure','tenant_offboarded')),
   expires_at         timestamptz NOT NULL,
+  -- How many attachments the winning observation described. NULL when it described none, which
+  -- is every M0 prompt: M0 may not carry attachment descriptors, so their absence says nothing.
+  attachment_count   int CHECK (attachment_count >= 0),
   PRIMARY KEY (tenant_id, submission_id),
   FOREIGN KEY (tenant_id, device_id) REFERENCES ops.device(tenant_id, device_id),
   CONSTRAINT submission_shredded_requires_reason
@@ -1588,6 +1591,17 @@ CREATE TABLE mart.agg_tool_period (
   -- Events recorded while the classifier could not run, so an outage reads as a fall in classifier
   -- health rather than a fall in sensitive data.
   degraded_events  bigint NOT NULL DEFAULT 0 CHECK (degraded_events >= 0),
+  -- Sensitive prompts: those whose enforcement rule matched on a label the rule names, split by
+  -- what the route did. A rule that matched on tool, category, sanction or route alone does not
+  -- make a prompt sensitive.
+  sensitive         bigint NOT NULL DEFAULT 0 CHECK (sensitive >= 0),
+  sensitive_blocked bigint NOT NULL DEFAULT 0 CHECK (sensitive_blocked >= 0),
+  sensitive_warned  bigint NOT NULL DEFAULT 0 CHECK (sensitive_warned >= 0),
+  sensitive_logged  bigint NOT NULL DEFAULT 0 CHECK (sensitive_logged >= 0),
+  -- Attachments the window's prompts described, and the prompts collected at M1 or above, which
+  -- are the only ones that can describe one: with none, an attachment count of zero means unknown.
+  attachments       bigint NOT NULL DEFAULT 0 CHECK (attachments >= 0),
+  content_prompts   bigint NOT NULL DEFAULT 0 CHECK (content_prompts >= 0),
   PRIMARY KEY (tenant_id, bucket_start, bucket_size, tool_fingerprint)
 );
 
@@ -1617,6 +1631,12 @@ CREATE TABLE mart.agg_class_period (
   users            bigint NOT NULL CHECK (users >= 0),
   max_score        numeric(4,3) CHECK (max_score >= 0 AND max_score <= 1),
   degraded_events  bigint NOT NULL DEFAULT 0 CHECK (degraded_events >= 0),
+  -- Submissions carrying this class where it is one of the labels their enforcement rule matched
+  -- on, so the class made the prompt sensitive, and those split by what the route did.
+  flagged          bigint NOT NULL DEFAULT 0 CHECK (flagged >= 0),
+  flagged_blocked  bigint NOT NULL DEFAULT 0 CHECK (flagged_blocked >= 0),
+  flagged_warned   bigint NOT NULL DEFAULT 0 CHECK (flagged_warned >= 0),
+  flagged_logged   bigint NOT NULL DEFAULT 0 CHECK (flagged_logged >= 0),
   PRIMARY KEY (tenant_id, bucket_start, bucket_size, class_code, tool_fingerprint, severity, classifier_version)
 );
 
@@ -1745,7 +1765,13 @@ SELECT a.tenant_id,
        a.bytes_total,
        a.blocked,
        a.warned,
-       a.logged
+       a.logged,
+       a.sensitive,
+       a.sensitive_blocked,
+       a.sensitive_warned,
+       a.sensitive_logged,
+       a.attachments,
+       a.content_prompts
   FROM mart.agg_tool_period a
   LEFT JOIN ref.tool_catalogue c
     ON c.tool_fingerprint = a.tool_fingerprint
@@ -2144,6 +2170,8 @@ DECLARE
   v_weak          text;
   v_subject_name  text;
   v_user_ref      text;
+  v_attachments   int := CASE WHEN jsonb_typeof(p_envelope->'attachments') = 'array'
+                              THEN jsonb_array_length(p_envelope->'attachments') END;
 BEGIN
   SELECT f.fidelity_rank INTO v_fidelity FROM ref.route_fidelity f WHERE f.source = v_source;
   IF v_fidelity IS NULL THEN
@@ -2320,7 +2348,11 @@ BEGIN
            -- not_captured to local_only, and nothing here moves it back.
            content_state      = CASE WHEN s.content_state = 'not_captured' AND v_captured THEN 'local_only'
                                      ELSE s.content_state END,
-           expires_at         = greatest(s.expires_at, p_received_at + make_interval(days => v_ttl))
+           expires_at         = greatest(s.expires_at, p_received_at + make_interval(days => v_ttl)),
+           -- A route that described no attachments does not erase a count another route supplied.
+           attachment_count   = CASE WHEN v_fidelity < s.winning_fidelity
+                                     THEN coalesce(v_attachments, s.attachment_count)
+                                     ELSE coalesce(s.attachment_count, v_attachments) END
      WHERE s.tenant_id = v_tenant AND s.submission_id = v_sub_id;
 
     RETURN QUERY SELECT 'merged'::text, v_sub_id;
@@ -2332,7 +2364,7 @@ BEGIN
     tool_fingerprint, first_occurred_at, last_occurred_at, received_at, collection_mode, size_bytes,
     content_digest, labels, classifier_version, confidence, policy_action, policy_rule_id,
     decided_locally, winning_source, winning_fidelity, observed_routes, observation_count,
-    merge_confidence, content_state, expires_at
+    merge_confidence, content_state, expires_at, attachment_count
   )
   VALUES (
     v_tenant,
@@ -2357,7 +2389,8 @@ BEGIN
     v_source, v_fidelity, ARRAY[v_source], 1,
     CASE WHEN v_is_exact THEN 'high' ELSE 'low' END,
     CASE WHEN v_captured THEN 'local_only' ELSE 'not_captured' END,
-    p_received_at + make_interval(days => v_ttl)
+    p_received_at + make_interval(days => v_ttl),
+    v_attachments
   )
   RETURNING ingest.submission.submission_id INTO v_sub_id;
 
@@ -2626,6 +2659,8 @@ GRANT SELECT, UPDATE ON ops.usage_daily TO sac_ops;
 GRANT SELECT ON ops.subscription TO sac_ops;
 GRANT SELECT ON ops.tenant, ops.user_dim, ops.device, ops.collector_state,
       ops.retention_policy TO sac_ops;
+-- The rollup reads each prompt's enforcement rule to tell whether it matched on a label.
+GRANT SELECT ON ops.enforcement_rule TO sac_ops;
 GRANT SELECT ON ref.data_class, ref.rule, ref.route_fidelity,
       ref.collector, ref.retention_class TO sac_ops;
 GRANT INSERT ON ops.audit TO sac_ops;
