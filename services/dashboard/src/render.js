@@ -510,6 +510,7 @@ export function renderScreen(view, shell = {}) {
 /** Thin-line icons for the navigation: one stroke weight, no fills. */
 const NAV_ICONS = Object.freeze({
   overview: '<circle cx="12" cy="12" r="8.5"/><path d="M12 12 16.5 8"/><path d="M12 3.5v2M20.5 12h-2M5.5 12h-2"/>',
+  rules: '<path d="M10 6.5h10M10 12h10M10 17.5h10"/><path d="M4 6.5h2.5M4 12h2.5M4 17.5h2.5"/>',
   search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>',
   usage: '<path d="M4 19.5V10M9.5 19.5v-15M15 19.5v-7M20.5 19.5V7"/>',
   collection: '<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M9 20h6M12 16v4"/>',

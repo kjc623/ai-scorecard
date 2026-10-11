@@ -356,13 +356,13 @@ func TestBrokerBindsAfterPreflightAndBrokersRequests(t *testing.T) {
 	if obs.Enforce == nil {
 		t.Fatal("the broker emitted an observation with no policy decision; policy_decision is required for every prompt")
 	}
-	if got := obs.Enforce([]string{"source_code"}, true); got != (protocol.Decision{RuleID: "policy.default", Action: protocol.ActionLogged, DecidedLocally: true}) {
+	if got := obs.Enforce([]string{"source_code"}, true, ""); got != (protocol.Decision{RuleID: "policy.default", Action: protocol.ActionLogged, DecidedLocally: true}) {
 		t.Fatalf("with no rules the broker recorded %+v", got)
 	}
 	// The broker cannot stop a prompt, so a matching block rule from the bundle in force is
 	// recorded as logged under its id.
 	bundle.Rules = []policy.Rule{{RuleID: "block_local", Action: policy.RuleBlock, Match: policy.RuleMatch{Tools: []string{"local_inference"}, Routes: []protocol.Route{protocol.RouteProxyLoopback}}}}
-	if got := obs.Enforce(nil, false); got != (protocol.Decision{RuleID: "block_local", Action: protocol.ActionLogged, DecidedLocally: true}) {
+	if got := obs.Enforce(nil, false, ""); got != (protocol.Decision{RuleID: "block_local", Action: protocol.ActionLogged, DecidedLocally: true}) {
 		t.Fatalf("with a block rule the broker recorded %+v", got)
 	}
 	c := b.Counters().Cumulative()

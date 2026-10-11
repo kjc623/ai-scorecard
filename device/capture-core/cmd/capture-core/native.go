@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/attachments"
@@ -176,8 +177,8 @@ func agentRelease(v string) string {
 }
 
 // handlePolicySync hands the extension the payload of the bundle in force, the JSON object its
-// signature covered; the extension holds no durable state, so this is how it gets policy after a
-// restart.
+// signature covered, with its rules as they apply to the person the browser runs as; the extension
+// holds no durable state, so this is how it gets policy after a restart.
 func (h *nativeSession) handlePolicySync(msg protocol.NativeMessage) []byte {
 	var req protocol.PolicySyncRequest
 	if len(msg.Body) > 0 {
@@ -195,10 +196,62 @@ func (h *nativeSession) handlePolicySync(msg protocol.NativeMessage) []byte {
 			if err := json.Unmarshal(h.svc.store.InForceRaw(), &signed); err != nil {
 				return refusal(protocol.RefusalMalformed, "the bundle in force is not a signed bundle: %v", err)
 			}
-			answer.Bundle = signed.Payload
+			payload, err := forPerson(signed.Payload, b, h.person.UserRef)
+			if err != nil {
+				return refusal(protocol.RefusalMalformed, "the bundle in force: %v", err)
+			}
+			answer.Bundle = payload
 		}
 	}
 	return reply(protocol.TypePolicyBundle, msg.ID, answer)
+}
+
+// forPerson is the payload with the rules that name people narrowed to userRef, as enforce.ForPerson
+// narrows b, the same bundle decoded: a rule naming others is left out and one naming userRef no
+// longer names anyone, since the extension does not know who it runs as. A payload with no such
+// rule is returned as signed.
+func forPerson(payload json.RawMessage, b *policy.Bundle, userRef string) (json.RawMessage, error) {
+	if !slices.ContainsFunc(b.Rules, func(r policy.Rule) bool { return len(r.Match.Users) > 0 }) {
+		return payload, nil
+	}
+	var doc map[string]json.RawMessage
+	var rules []map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &doc); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(doc["rules"], &rules); err != nil {
+		return nil, err
+	}
+	if len(rules) != len(b.Rules) {
+		return nil, fmt.Errorf("the payload holds %d rules, the bundle %d", len(rules), len(b.Rules))
+	}
+	kept := make([]map[string]json.RawMessage, 0, len(rules))
+	for i, r := range b.Rules {
+		if len(r.Match.Users) == 0 {
+			kept = append(kept, rules[i])
+			continue
+		}
+		if userRef == "" || !slices.Contains(r.Match.Users, userRef) {
+			continue
+		}
+		var match map[string]json.RawMessage
+		if err := json.Unmarshal(rules[i]["match"], &match); err != nil {
+			return nil, err
+		}
+		delete(match, "users")
+		raw, err := json.Marshal(match)
+		if err != nil {
+			return nil, err
+		}
+		rules[i]["match"] = raw
+		kept = append(kept, rules[i])
+	}
+	raw, err := json.Marshal(kept)
+	if err != nil {
+		return nil, err
+	}
+	doc["rules"] = raw
+	return json.Marshal(doc)
 }
 
 func (h *nativeSession) handleModeQuery(msg protocol.NativeMessage) []byte {
@@ -247,7 +300,7 @@ func toCoreObservation(o protocol.ObservationMessage, bundles func() *policy.Bun
 	enforcer := enforce.Hook(bundles, o.Route, o.ToolFingerprint, false)
 	if d := o.Decision; d != nil {
 		decision := *d
-		enforcer = func([]string, bool) protocol.Decision { return decision }
+		enforcer = func([]string, bool, string) protocol.Decision { return decision }
 	}
 	atts := make([]dedup.Attachment, 0, len(o.Attachments))
 	for _, a := range o.Attachments {

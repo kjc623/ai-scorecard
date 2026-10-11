@@ -98,10 +98,11 @@ type Observation struct {
 	SizeBytes         int64
 
 	// Enforce decides what policy did about a prompt. The pipeline calls it once, after
-	// classification, with the event's label classes; known is false when no classification
-	// completed (M0, or confidence degraded). A prompt records a decision at every mode, including
-	// M0: a tenant can block a tool outright without reading content.
-	Enforce func(labels []string, known bool) protocol.Decision
+	// classification, with the event's label classes and the user_ref the event is attributed to;
+	// known is false when no classification completed (M0, or confidence degraded). A prompt
+	// records a decision at every mode, including M0: a tenant can block a tool outright without
+	// reading content.
+	Enforce func(labels []string, known bool, userRef string) protocol.Decision
 
 	// Content is nil when the provider has nothing to offer (M0, or a metadata-only
 	// observation). A non-nil reader at M0 is never called.
@@ -422,7 +423,7 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 				return out, err
 			}
 			in.DedupKey = key
-			in.Decision = decide(obs, nil, false)
+			in.Decision = decide(obs, nil, false, id.UserRef)
 			return p.finish(c, obs.ClientID, in, out, retention)
 		}
 
@@ -574,7 +575,7 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 				c.Add(protocol.CounterDropped)
 			}
 		}
-		in.Decision = decide(obs, in.Labels, in.Confidence != protocol.ConfidenceDegraded)
+		in.Decision = decide(obs, in.Labels, in.Confidence != protocol.ConfidenceDegraded, id.UserRef)
 	}
 
 	out.Confidence = in.Confidence
@@ -763,9 +764,9 @@ func (p *Pipeline) dedupKey(id Identity, tier string, obs Observation, digest st
 	return dedup.SurrogateKey(id.TenantID, id.DeviceID, obs.ToolFingerprint, string(obs.Kind), obs.OccurredAt, size, atts)
 }
 
-// decide runs the observation's enforcement hook over the event's label classes. Without a hook
-// the prompt carries no decision, and the envelope refuses it.
-func decide(obs Observation, labels []protocol.Label, known bool) *protocol.Decision {
+// decide runs the observation's enforcement hook over the event's label classes and the person it
+// is attributed to. Without a hook the prompt carries no decision, and the envelope refuses it.
+func decide(obs Observation, labels []protocol.Label, known bool, userRef string) *protocol.Decision {
 	if obs.Enforce == nil {
 		return nil
 	}
@@ -775,7 +776,7 @@ func decide(obs Observation, labels []protocol.Label, known bool) *protocol.Deci
 			classes = append(classes, l.Class)
 		}
 	}
-	d := obs.Enforce(classes, known)
+	d := obs.Enforce(classes, known, userRef)
 	return &d
 }
 

@@ -910,15 +910,15 @@ func (p *Provider) newRuling(req *http.Request) *ruling {
 
 // hook is the pipeline's enforcement hook. The pipeline calls it after classification; a decision
 // already taken without labels is recorded as taken.
-func (r *ruling) hook(labels []string, known bool) protocol.Decision {
+func (r *ruling) hook(labels []string, known bool, userRef string) protocol.Decision {
 	if !r.decided {
-		r.decide(labels, known)
+		r.decide(labels, known, userRef)
 	}
 	return enforce.RecordedAction(r.decision, r.canEnforce)
 }
 
-func (r *ruling) decide(labels []string, known bool) {
-	r.decision = enforce.Evaluate(r.bundles(), enforce.Input{Route: protocol.RouteProxyTLS, ToolFingerprint: r.tool, Labels: labels, LabelsKnown: known})
+func (r *ruling) decide(labels []string, known bool, userRef string) {
+	r.decision = enforce.Evaluate(r.bundles(), enforce.Input{Route: protocol.RouteProxyTLS, ToolFingerprint: r.tool, Labels: labels, LabelsKnown: known, UserRef: userRef})
 	r.decided = true
 }
 
@@ -926,7 +926,7 @@ func (r *ruling) decide(labels []string, known bool) {
 // stopped before deciding (no identity, a defect).
 func (r *ruling) settle() {
 	if !r.decided {
-		r.decide(nil, false)
+		r.decide(nil, false, "")
 	}
 }
 

@@ -8,13 +8,15 @@
 import { escapeHtml } from './render.js';
 
 /**
- * The navigation: the usage screens under one group, the admin's settings under another, and the
- * pages still being built under Archive, which only pre-production offers. Every other screen is
- * reached from a row or a switch on one of these. A signed-in role sees only the items its server
- * offers it (session.js), and a group with none of its items offered is not shown.
+ * The navigation: Rules beside Overview, the usage screens under one group, the admin's settings
+ * under another, and the pages still being built under Archive, which only pre-production offers.
+ * Every other screen is reached from a row or a switch on one of these. A signed-in role sees only
+ * the items its server offers it (session.js), and a group with none of its items offered is not
+ * shown.
  */
 export const NAV_GROUPS = Object.freeze([
   { group: null, icon: 'overview', ids: ['posture'], labels: { posture: 'Overview' } },
+  { group: null, icon: 'rules', ids: ['rules'], labels: { rules: 'Rules' } },
   { group: 'Usage', icon: 'usage', ids: ['tools', 'teams', 'person'], labels: { tools: 'Tools', teams: 'Teams', person: 'Users' } },
   { group: null, icon: 'collection', ids: ['devices'], labels: { devices: 'Devices' } },
   { group: null, icon: 'governance', ids: ['audit'], labels: { audit: 'Audit trail' } },
@@ -26,13 +28,13 @@ const NAV_FOLDED = Object.freeze(NAV_GROUPS.filter((g) => g.folded).map((g) => g
 
 /**
  * The navigation as renderNav takes it. `page` prefixes each screen link, so a sibling page links
- * back into the dashboard; the Explore page sits under Overview, as a top-level link, on both.
+ * back into the dashboard; the Explore page sits under Rules, as a top-level link, on both.
  */
 export function shellNavItems({ page = '', questionOf = () => null } = {}) {
   const items = NAV_GROUPS.flatMap(({ group, icon, ids, labels }) => ids.map((id) => ({
     id, label: labels[id], question: questionOf(id), group, icon, groupIcon: icon, href: `${page}#${id}`,
   })));
-  const at = items.findIndex((item) => item.id === 'posture') + 1;
+  const at = items.findIndex((item) => item.id === 'rules') + 1;
   return [
     ...items.slice(0, at),
     { id: 'explore', label: 'Search', href: 'explore.html', icon: 'search', group: null },
