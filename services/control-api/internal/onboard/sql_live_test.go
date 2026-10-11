@@ -69,6 +69,12 @@ func TestTenantCreateAndInviteAgainstPostgres(t *testing.T) {
 		t.Fatalf("CreateTenant: %v", err)
 	}
 	closeTenant(t, owner, second)
+	for id, want := range map[string]string{first: "disabled", second: "full_text"} {
+		var got string
+		if err := owner.QueryRow(`SELECT content_search FROM ops.tenant WHERE tenant_id = $1::uuid`, id).Scan(&got); err != nil || got != want {
+			t.Fatalf("prompt storage of a new tenant = %q, %v; want %q", got, err, want)
+		}
+	}
 
 	inv, err := onboard.CreateInvite(ctx, db, onboard.NewInvite{TenantID: first, Domains: []string{strings.ToUpper(domain)}, PublicURL: "https://app.example.test", Actor: "op"})
 	if err != nil {

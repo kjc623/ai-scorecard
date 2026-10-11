@@ -26,9 +26,12 @@ import (
 const (
 	sqlAdminSetTenant = `SELECT set_config('app.tenant_id', $1, true)`
 
+	// A tenant whose ceiling collects prompts starts with prompts stored and searchable; an admin
+	// turns that off in Settings. Below M3 nothing can be stored, so it starts off.
 	sqlAdminCreateTenant = `
-INSERT INTO ops.tenant (tenant_id, name, status, residency_region, ceiling_mode)
-VALUES ($1::uuid, $2::text, 'active', $3::text, $4::text)`
+INSERT INTO ops.tenant (tenant_id, name, status, residency_region, ceiling_mode, content_search)
+VALUES ($1::uuid, $2::text, 'active', $3::text, $4::text,
+        CASE WHEN $4::text = 'm3' THEN 'full_text' ELSE 'disabled' END)`
 
 	sqlAdminTenantName = `SELECT name FROM ops.tenant WHERE tenant_id = $1::uuid`
 

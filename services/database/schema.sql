@@ -204,7 +204,8 @@ CREATE TABLE ops.tenant (
   -- enforce_scope_overrides (section 8).
   scope_overrides              jsonb NOT NULL DEFAULT '{}'::jsonb,
   -- Content search tier, which is also whether prompt content is stored at all: at 'disabled' no
-  -- content upload is granted.
+  -- content upload is granted. Tenant creation sets 'full_text' at an M3 ceiling, so prompts are
+  -- stored and searchable unless an admin turns that off.
   --   disabled          structured filtering only (tool, user, date, class, rule, severity)
   --   attachment_names  adds substring and fuzzy search over attachment filenames (collected at M1)
   --   full_text         adds full-text search over prompt text (collected at M3)
