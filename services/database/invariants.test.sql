@@ -3362,7 +3362,7 @@ DECLARE
   n bigint;
   bad text;
 BEGIN
-  SELECT array_agg(DISTINCT t.tool_id ORDER BY t.tool_id) INTO ids FROM mart.v_tool_usage t WHERE t.bucket_start >= '2031-01-01';
+  SELECT array_agg(DISTINCT t.tool_id COLLATE "C" ORDER BY t.tool_id COLLATE "C") INTO ids FROM mart.v_tool_usage t WHERE t.bucket_start >= '2031-01-01';
   IF ids IS DISTINCT FROM ARRAY['app:chatgpt_web', 'host:t87.example.org', 'host:t87chatgpt.com'] THEN
     RAISE EXCEPTION 'FAIL T87 mart.v_tool_usage counts the rows as the tools %', ids;
   END IF;
