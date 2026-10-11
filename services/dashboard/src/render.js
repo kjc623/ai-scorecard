@@ -269,18 +269,19 @@ function blockFrame(kind, block, inner, { count = 0, classes = '' } = {}) {
   return `<section class="${kind}-block card${classes}"><div class="card-core"><header class="block-head"><h3>${escapeHtml(block.title)}</h3>${n}${note}${more}</header>${inner}</div></section>`;
 }
 
-/** Part-to-whole: one bar, and a legend that carries every part's count and share in words. */
+/**
+ * Part-to-whole: the whole as a figure, one bar, and a legend that carries every part's count and
+ * share in words. A part that counts nothing draws nothing; it stays in the legend as a zero.
+ */
 export function renderShare(block) {
-  const parts = (block.parts ?? []).filter((p) => Number(p.count) > 0);
-  if (parts.length === 0) return blockFrame('share', block, `<p class="block-empty">${escapeHtml(block.emptyText ?? 'Nothing to show.')}</p>`);
-  // One part is the whole: a sentence says so, and a bar of one colour is not drawn.
-  if (parts.length === 1 && parts[0].phrase) {
-    return blockFrame('share', block, `<p class="share-one">All <span class="v-number">${escapeHtml(formatCount(parts[0].count))}</span> submissions went to ${escapeHtml(parts[0].phrase)}.</p>`);
-  }
-  const bar = parts.map((p) => `<span class="dist-seg ${vocabClass(p.key)}" style="flex-grow:${Math.max(0, Number(p.count) || 0)}" title="${escapeHtml(p.label)}: ${escapeHtml(formatCount(p.count))} (${escapeHtml(formatPercent(p.share))})"></span>`).join('');
+  const parts = block.parts ?? [];
+  const drawn = parts.filter((p) => Number(p.count) > 0);
+  if (drawn.length === 0) return blockFrame('share', block, `<p class="block-empty">${escapeHtml(block.emptyText ?? 'Nothing to show.')}</p>`);
+  const figure = `<p class="share-total"><span class="tile-value">${escapeHtml(formatCount(block.total))}</span>${block.totalLabel ? `<span class="share-total-label">${escapeHtml(block.totalLabel)}</span>` : ''}</p>`;
+  const bar = drawn.map((p) => `<span class="dist-seg ${vocabClass(p.key)}" style="flex-grow:${Number(p.count)}" title="${escapeHtml(p.label)}: ${escapeHtml(formatCount(p.count))} (${escapeHtml(formatPercent(p.share))})"></span>`).join('');
   const legend = parts.map((p) => `<li><span class="dist-dot ${vocabClass(p.key)}" aria-hidden="true"></span>${escapeHtml(p.label)}<span class="dist-n">${escapeHtml(formatCount(p.count))}</span><span class="dist-pct">${escapeHtml(formatPercent(p.share))}</span></li>`).join('');
-  const said = parts.map((p) => `${p.label} ${formatPercent(p.share)}`).join(', ');
-  return blockFrame('share', block, `<div class="share"><div class="dist-bar share-bar" role="img" aria-label="${escapeHtml(said)}">${bar}</div><ul class="dist-legend">${legend}</ul></div>`);
+  const said = drawn.map((p) => `${p.label} ${formatCount(p.count)} (${formatPercent(p.share)})`).join(', ');
+  return blockFrame('share', block, `<div class="share">${figure}<div class="dist-bar share-bar" role="img" aria-label="${escapeHtml(said)}">${bar}</div><ul class="dist-legend">${legend}</ul></div>`);
 }
 
 /** One fact beside a ranked item: the number first, then what it counts. */
