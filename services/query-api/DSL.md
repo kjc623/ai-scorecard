@@ -85,6 +85,7 @@ because their presence is an attempt rather than a typo:
 | `mart.agg_team_period` | aggregate | Q3 teams | PK + `(tenant, team_id, bucket_start DESC)` |
 | `mart.agg_class_period` | aggregate | Q4 classes | PK |
 | `mart.agg_user_period` | aggregate | Q6 one subject | PK + `(tenant, user_ref, bucket_start DESC, bucket_size)` |
+| `mart.v_team_member_period` | aggregate | the people behind each team's total | `mart.agg_user_period` PK |
 | `mart.agg_device_period` | aggregate | Q7 history | PK |
 | `mart.v_device_liveness` | list | Q7 current state, one row per device with its collectors summed | `ops.device (tenant, last_seen_at)` |
 | `mart.v_person` | list | the people the directory and the devices know, by name | `ops.user_dim` PK |
@@ -108,6 +109,7 @@ offered is `unknown_dimension` / `unknown_measure`, and the error lists what is 
 | `mart.agg_team_period` | `bucket`, `team`, `tool` | `submissions`, `users` |
 | `mart.agg_class_period` | `bucket`, `class`, `tool`, `severity`, `classifier_version` | `submissions`, `users`, `max_score`, `degraded_events` |
 | `mart.agg_user_period` | `bucket`, `subject` | `submissions`, `bytes_total`, `tools_used`, `block_events` |
+| `mart.v_team_member_period` | `bucket`, `team`, `subject` | `submissions` |
 | `mart.agg_device_period` | `bucket`, `device`, `collector` | `healthy_days`, `degraded_days`, `absent_days`, `tampered_days`, `spool_dropped` |
 | `mart.v_device_liveness` | `device`, `device_os`, `managed_state`, `region`, `liveness`, `collector` (set), `collector_state` (set) | — (a list) |
 | `mart.v_person` | `subject`, `name`, `name_key` (lower-cased name, `starts_with`), `department`, `directory_status` | — (a list) |
@@ -133,6 +135,10 @@ the catalogue) renders as `unknown`, never `unsanctioned`.
 **`mart.agg_user_period` requires a subject filter** (`subject eq` or `subject in`). Its row grain
 *is* a person, so a read without one would be a list of people, which the product never offers. The
 refusal is `unsupported_query_shape / subject_scope_required` and the fix is in `error.detail.fix`.
+
+**`mart.v_team_member_period` is never ordered by a measure.** It is each team member's usage under
+the team's current membership, named in `team_name` and `name` (the people list's name), so it is a
+roster: `order` names a dimension, and ordering by `submissions` is `unsupported_query_shape`.
 
 The window column is filterable under its own name (`received_at`, `detected_at`, `occurred_at`,
 `snapshot_day`) with the comparison operators below.
@@ -322,7 +328,7 @@ A rejection never carries `data`, `freshness` or `coverage` — there is no numb
 | Event/finding window | 31 days | `query_too_broad` |
 | Audit window | 366 days | `query_too_broad` |
 | Coverage window | 366 days | `query_too_broad` |
-| Subject-grouped window | 7 days unless narrowed by a tool or subject filter | `query_too_broad` naming the narrowing |
+| Subject-grouped window | 7 days unless narrowed by a tool, team or subject filter | `query_too_broad` naming the narrowing |
 | Time series | 400 points | auto-coarsened or refused (section 2.4) |
 | Response body | 8 MB | `query_too_broad` |
 

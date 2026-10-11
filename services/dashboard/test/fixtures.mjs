@@ -150,6 +150,15 @@ const TEAM_ROWS = Object.freeze([
   Object.freeze({ bucket: DAY, team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0003', team_name: 'Finance', submissions: 812, users: 96 }),
 ]);
 
+// The people behind the teams, in the API's order (team id, then reference). Volumes run against
+// the names, so a volume sort would be visible.
+const TEAM_MEMBER_ROWS = Object.freeze([
+  Object.freeze({ team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', team_name: 'Engineering', subject: 'u_9a02', name: 'Ada Lovelace', submissions: 3 }),
+  Object.freeze({ team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', team_name: 'Engineering', subject: 'u_1b77', name: 'u_1b77', submissions: 40 }),
+  Object.freeze({ team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', team_name: 'Engineering', subject: 'u_4f21', name: 'Grace Hopper', submissions: 12 }),
+  Object.freeze({ team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0003', team_name: 'Finance', subject: 'u_4f21', name: 'Grace Hopper', submissions: 12 }),
+]);
+
 // The people list, in the API's order: by name, never by usage.
 const PEOPLE_ROWS = Object.freeze([
   Object.freeze({ subject: 'u_9a02', name: 'Ada Lovelace', directory_name: 'Ada Lovelace', subject_name: null, department: 'Engineering', org_unit: 'OU=Eng,DC=contoso,DC=com', directory_status: 'active', last_active_day: DAY }),
@@ -295,6 +304,13 @@ const REALISTIC = Object.freeze({
       applied_bucket: 'day',
       extras: { team_coverage: [{ users_all: 4210, users_in_teams: 2680, teams: 3 }] },
     },
+  }),
+  'mart.v_team_member_period': ok({
+    data: TEAM_MEMBER_ROWS,
+    freshness: freshness({ aggregate: 'mart.agg_user_period' }),
+    coverage: coverage({ state: 'partial' }),
+    audit: { entry_id: '8131', written_at: '2026-10-01T11:05:03Z' },
+    meta: { source: 'mart.v_team_member_period', applied_bucket: 'day' },
   }),
   'mart.v_person': ok({
     data: PEOPLE_ROWS,
@@ -452,4 +468,4 @@ export function fixtureTransport(scenario = 'realistic') {
   });
 }
 
-export { TOOL_ROWS, DEVICE_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, TEAM_ROWS, PEOPLE_ROWS, CLASS_ROWS, PERSON_ROWS, WINDOW };
+export { TOOL_ROWS, DEVICE_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, TEAM_ROWS, TEAM_MEMBER_ROWS, PEOPLE_ROWS, CLASS_ROWS, PERSON_ROWS, WINDOW };

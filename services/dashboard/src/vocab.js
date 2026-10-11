@@ -104,6 +104,15 @@ export const SOURCES = Object.freeze({
     answers: 'Q3',
     note: 'a team counts its current members; a person in two teams counts in both',
   }),
+  'mart.v_team_member_period': Object.freeze({
+    kind: 'aggregate',
+    label: 'Usage per team member',
+    dimensions: Object.freeze(['bucket', 'team', 'subject']),
+    measures: Object.freeze(['submissions']),
+    answers: 'Q3',
+    subjectBearing: true,
+    note: 'subject-bearing: every read is audited; ordered by team and person, never by a measure',
+  }),
   'mart.v_person': Object.freeze({
     kind: 'list',
     label: 'People',

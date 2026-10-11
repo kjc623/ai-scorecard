@@ -1821,6 +1821,14 @@ SELECT coalesce(ud.tenant_id, a.tenant_id) AS tenant_id,
      ORDER BY d.last_seen_at DESC NULLS LAST
      LIMIT 1) dn ON true;
 
+-- Each team member's usage per bucket, under the team's current membership: the people behind a
+-- team's total. A person in two teams has a row in each.
+CREATE VIEW mart.v_team_member_period
+WITH (security_invoker = true) AS
+SELECT u.tenant_id, u.bucket_start, u.bucket_size, tm.team_id, u.user_ref, u.submissions
+  FROM mart.agg_user_period u
+  JOIN ops.v_team_member tm ON tm.tenant_id = u.tenant_id AND tm.user_ref = u.user_ref;
+
 
 -- =====================================================================================
 -- 8. Enforcement functions and triggers
@@ -2540,7 +2548,7 @@ GRANT SELECT ON ingest.submission, ingest.observation TO sac_query;
 GRANT SELECT ON mart.finding, mart.agg_tool_period, mart.agg_tool_user_period,
       mart.agg_class_period, mart.agg_org_period, mart.agg_user_period, mart.agg_device_period,
       mart.agg_team_period, mart.v_device_liveness, mart.v_tool_usage, mart.v_finding,
-      mart.v_tenant_suspension_impact, mart.v_person TO sac_query;
+      mart.v_tenant_suspension_impact, mart.v_person, mart.v_team_member_period TO sac_query;
 -- Team names and members, for the Teams page. Membership of a group-sourced team is read through
 -- the provisioned person's canonical ref and status, never their sealed resource.
 GRANT SELECT ON ops.team, ops.team_member, ops.v_team_member, ops.scim_group,

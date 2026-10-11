@@ -49,6 +49,7 @@ const SOURCE_CAPABILITY = Object.freeze({
   'mart.agg_tool_user_period': 'subject',
   'mart.agg_user_period': 'subject',
   'mart.v_person': 'subject',
+  'mart.v_team_member_period': 'subject',
   'mart.v_finding': 'subject',
   'ingest.submission': 'subject',
   'ops.audit': 'audit',

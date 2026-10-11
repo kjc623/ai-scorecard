@@ -51,6 +51,32 @@ test('the unsanctioned table is ordered by tool and person, never by volume', as
   assert.ok(view.notes.some((n) => /not a ranking/.test(n)));
 });
 
+test('the Teams page lists each team\'s people by team and name, never by volume, and says when a role cannot see them', async () => {
+  const sent = [];
+  const transport = fixtureTransport();
+  const dashboard = createDashboard({ api: createQueryApi({ transport: { send: (body) => { sent.push(body); return transport.send(body); } } }), now: () => new Date('2026-10-01T12:00:00Z') });
+  const { view } = await dashboard.load('teams', { preset: 'd30' });
+  const roster = sent.find((b) => b.source === 'mart.v_team_member_period');
+  assert.equal(roster.order, undefined, 'the roster read asks for no ordering by a measure');
+  assert.deepEqual(roster.filters, [{ field: 'team', op: 'in', value: ['7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0002', '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0003'] }], 'only the teams on the page are read');
+  const table = view.tables.find((t) => t.title === 'Submissions by person');
+  assert.deepEqual(table.rows.map((r) => `${r.row.team_name}/${r.row.name}`), ['Engineering/Ada Lovelace', 'Engineering/Grace Hopper', 'Engineering/u_1b77', 'Finance/Grace Hopper']);
+  const html = renderScreen(view, SHELL);
+  assert.ok(html.includes('href="#person?subject=u_9a02"'), 'a person opens their page');
+  assert.ok(view.notes.some((n) => /Audited read: entry 8131/.test(n)));
+
+  const viewer = createDashboard({
+    api: createQueryApi({ transport: { send: (body) => (body.source === 'mart.v_team_member_period'
+      ? { api_version: '1', query_version: '1', result_state: 'unauthorised_role', error: { code: 'unauthorised_role', message: 'This role may not read people.' } }
+      : transport.send(body)) } }),
+    now: () => new Date('2026-10-01T12:00:00Z'),
+  });
+  const limited = (await viewer.load('teams', {})).view;
+  assert.ok(!limited.tables.some((t) => t.title === 'Submissions by person'), 'no roster for a role that may not see people');
+  assert.ok(limited.notes.some((n) => /team totals only/.test(n)));
+  assert.ok(limited.tables.some((t) => t.title === 'Teams by submissions'), 'the team totals still show');
+});
+
 test('no screen exposes a "most active people" table', async () => {
   const dashboard = dashboardFor();
   for (const screen of SCREENS) {

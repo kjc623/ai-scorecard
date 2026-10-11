@@ -93,6 +93,26 @@ test('a subject-grouped window beyond seven days is refused, naming the narrowin
   assert.ok(JSON.stringify(error.detail.fix).includes('subject'));
 });
 
+test('a team narrows a team roster past seven days, and the roster is audited and never ranked', () => {
+  const doc = (over) => baseDoc({
+    source: 'mart.v_team_member_period',
+    bucket: undefined,
+    measures: ['submissions'],
+    dimensions: ['team', 'subject'],
+    window: { from: '2026-09-01T00:00:00Z', to: '2026-10-01T00:00:00Z' },
+    limit: 1000,
+    ...over,
+  });
+  const team = '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001';
+  const p = plan(doc({ filters: [{ field: 'team', op: 'in', value: [team] }] }), { now: NOW });
+  assert.equal(p.audit.decision.required, true, 'a roster names people, so reading it is audited');
+  assert.match(p.statements.find((s) => s.id === 'read').text, /AS "name"/);
+  assert.equal(rejection(() => plan(doc({ filters: [] }), { now: NOW })).resultState, 'query_too_broad');
+  const ranked = rejection(() => plan(doc({ filters: [{ field: 'team', op: 'eq', value: team }], order: [{ by: 'submissions', dir: 'desc' }] }), { now: NOW }));
+  assert.equal(ranked.resultState, 'unsupported_query_shape');
+  assert.match(ranked.message, /not ordered by a measure/);
+});
+
 test('a prefix predicate on the event table is refused: there is no index for it', () => {
   const error = rejection(() =>
     plan(

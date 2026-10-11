@@ -264,7 +264,7 @@ test('the tool display name resolves a catalogue entry and an unknown fingerprin
   );
 });
 
-test('teams read under their current name, and people list by name with a case-insensitive prefix', { skip: SKIP }, async () => {
+test('teams and their people read under their current names, and people list by name with a case-insensitive prefix', { skip: SKIP }, async () => {
   const ada = `u_${'a'.repeat(32)}`;
   const bob = `u_${'b'.repeat(32)}`;
   let team = null;
@@ -299,6 +299,13 @@ test('teams read under their current name, and people list by name with a case-i
       assert.equal(teams.data[0].team_name, 'Pilot');
       const coverage = teams.meta.extras.team_coverage[0];
       assert.deepEqual([Number(coverage.users_all), Number(coverage.users_in_teams), Number(coverage.teams)], [2, 1, 1]);
+
+      const roster = await executePlan(
+        plan({ query_version: '1', source: 'mart.v_team_member_period', dimensions: ['team', 'subject'], measures: ['submissions'], filters: [{ field: 'team', op: 'eq', value: team }], window: WINDOW, limit: 100 }, ctx),
+        { ...ctx, client: nested(client) },
+      );
+      assert.deepEqual(roster.data.map((r) => [r.team_name, r.name, Number(r.submissions)]), [['Pilot', 'Ada Lovelace', 3]], 'only the team\'s member, by name');
+      assert.ok(roster.audit?.entry_id, 'reading a team\'s people is audited');
 
       const people = await executePlan(plan({ query_version: '1', source: 'mart.v_person', filters: [], limit: 50 }, ctx), { ...ctx, client: nested(client) });
       assert.deepEqual(people.data.map((p) => p.name), ['Ada Lovelace', bob], 'by name; a person with no name is listed by reference');

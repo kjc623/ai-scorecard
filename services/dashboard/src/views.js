@@ -295,7 +295,39 @@ export function unsanctionedView(state) {
   });
 }
 
-export function teamsView(state, { manageHref = null } = {}) {
+/**
+ * The people behind the team totals, by team and then by name: a roster with numbers, not a
+ * ranking. Null when there was nothing to read; a refusal says why the people are missing.
+ */
+function teamMembersTable(members) {
+  const byName = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), undefined, { sensitivity: 'base' });
+  const rows = [...members.data].sort((a, b) => byName(a.team_name, b.team_name) || byName(a.name, b.name) || byName(a.subject, b.subject));
+  return Object.freeze({
+    title: 'Submissions by person',
+    columns: Object.freeze([
+      column('team_name', 'Team'),
+      column('name', 'Person', 'person'),
+      column('submissions', 'Submissions', 'measure'),
+    ]),
+    rows: Object.freeze(rows.map((row) => Object.freeze({ row, vocab: vocabOf(row) }))),
+    emptyText: 'Nobody in these teams sent a prompt in this window.',
+  });
+}
+
+function teamMembersNotes(members) {
+  if (!members) return [];
+  if (members.isRefusal) {
+    return [members.resultState === 'unauthorised_role'
+      ? 'Your role shows team totals only; an analyst or admin also sees each person\'s submissions.'
+      : `Each person's submissions could not be read: ${members.error?.message ?? members.resultState}.`];
+  }
+  const notes = ['Each person is listed under every team they are in, ordered by team and name. Reading this list is audited.'];
+  if (members.meta?.truncated) notes.push(`Only the first ${formatCount(members.data.length)} people are listed.`);
+  if (members.audit?.entry_id) notes.push(`Audited read: entry ${members.audit.entry_id} at ${formatInstant(members.audit.written_at)}.`);
+  return notes;
+}
+
+export function teamsView(state, { manageHref = null, members = null } = {}) {
   const cov = state.meta?.extras?.team_coverage?.[0] ?? null;
   const num = (v) => (v === null || v === undefined ? null : Number(v));
   const all = num(cov?.users_all);
@@ -333,9 +365,10 @@ export function teamsView(state, { manageHref = null } = {}) {
         ],
         emptyText: teams === 0 ? 'There are no teams yet.' : 'No team has usage in this window.',
       }),
+      ...(members && !members.isRefusal ? [teamMembersTable(members)] : []),
     ]),
     series: Object.freeze([seriesFrom(state, { measure: 'submissions', title: 'Submissions per bucket' })]),
-    ...shared(state, notes),
+    ...shared(state, [...notes, ...teamMembersNotes(members)]),
   });
 }
 

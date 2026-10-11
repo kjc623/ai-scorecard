@@ -51,6 +51,7 @@ const ACTION_BY_SOURCE = Object.freeze({
   'mart.v_device_liveness': AUDIT_ACTIONS.device_list,
   'ops.collector_state': AUDIT_ACTIONS.device_list,
   'mart.v_person': AUDIT_ACTIONS.person_list,
+  'mart.v_team_member_period': AUDIT_ACTIONS.aggregate_read,
   'ops.coverage_snapshot': AUDIT_ACTIONS.coverage_read,
   'ingest.submission': AUDIT_ACTIONS.event_list,
   'mart.v_finding': AUDIT_ACTIONS.finding_list,
