@@ -39,7 +39,7 @@ export function renderValue(value) {
   }
 }
 
-const MEASURE_KINDS = Object.freeze(['measure', 'measure-bytes', 'measure-score', 'count']);
+const MEASURE_KINDS = Object.freeze(['measure', 'measure-bytes', 'measure-score', 'count', 'share']);
 
 /** A data bar behind a number: the same value, drawn, scaled to the largest value in its column. */
 function dataBar(raw, max) {
@@ -77,6 +77,12 @@ function renderCell(row, column, max = 0) {
     if (kind === 'measure-bytes') return `${dataBar(raw, max)}<span class="v-number">${escapeHtml(formatBytes(Number(raw)))}</span>`;
     if (kind === 'measure-score') return `<span class="v-number">${escapeHtml(formatScore(Number(raw)))}</span>`;
     return `${dataBar(raw, max)}<span class="v-number">${escapeHtml(formatCount(Number(raw)))}</span>`;
+  }
+  // A part out of its whole, the bar drawn against the whole rather than the column.
+  if (kind === 'share') {
+    if (!raw || raw.count === null || raw.count === undefined) return renderValue({ kind: 'absent' });
+    const of = raw.of === null || raw.of === undefined ? '' : `<span class="cell-of"> of ${escapeHtml(formatCount(Number(raw.of)))}</span>`;
+    return `${dataBar(raw.count, Number(raw.of))}<span class="v-number">${escapeHtml(formatCount(Number(raw.count)))}</span>${of}`;
   }
   if (kind === 'count') {
     return raw === null || raw === undefined ? renderValue({ kind: 'absent' }) : `${dataBar(raw, max)}<span class="v-number">${escapeHtml(formatCount(Number(raw)))}</span>`;

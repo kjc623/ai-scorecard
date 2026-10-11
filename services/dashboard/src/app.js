@@ -11,12 +11,12 @@ import { createQueryApi, httpTransport, loadSession, createAdminApi, httpAdminTr
 import { readState } from './states.js';
 import { QUESTIONS, context } from './questions.js';
 import {
-  postureView, insightsView, adoptionView, discoveredView, toolsView, toolView, unsanctionedView, teamsView, teamView, classesView,
+  postureView, insightsView, adoptionView, discoveredView, demandView, toolsView, toolView, unsanctionedView, teamsView, teamView, classesView,
   personView, peopleView, devicesView, eventView, auditView, refusalView,
   needsInputView,
 } from './views.js';
 import {
-  buildDiscoveryDocument, buildFirstSeenDocument, buildListDocument, buildPeopleDocument, buildRuleMatchesDocument,
+  buildDemandDocument, buildDiscoveryDocument, buildFirstSeenDocument, buildListDocument, buildPeopleDocument, buildRuleMatchesDocument,
   buildSanctionShiftDocument, buildTeamMembersDocument, buildToolPromptsDocument,
 } from './dsl.js';
 import { renderScreen, renderNav } from './render.js';
@@ -276,8 +276,15 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
     return discoveredView({ found, prompts }, { preset: ctx.preset });
   }
 
+  /** Insights, Demand: teams crossed with tools, with the demand for each tool not sanctioned beside them. */
+  async function demandScreen(ctx) {
+    const state = readState(await api.run(buildDemandDocument({ window: ctx.window })));
+    remember(state);
+    return demandView(state, { preset: ctx.preset });
+  }
+
   /** The tabs of Insights other than Exposure, by the `view` that names them. */
-  const INSIGHTS_SCREENS = Object.freeze({ adoption: adoptionScreen, discovered: discoveredScreen });
+  const INSIGHTS_SCREENS = Object.freeze({ adoption: adoptionScreen, discovered: discoveredScreen, demand: demandScreen });
 
   /** The Teams screen: every team, or one team when the address names it. */
   async function teamsScreen(params, ctx) {
@@ -350,7 +357,7 @@ function presetsFor(screen, preset, filters) {
 }
 
 /** The tabs of Insights, each a question a customer asks; Exposure is the default. */
-const INSIGHTS_TABS = Object.freeze({ exposure: 'Exposure', adoption: 'Adoption', discovered: 'Discovered' });
+const INSIGHTS_TABS = Object.freeze({ exposure: 'Exposure', adoption: 'Adoption', discovered: 'Discovered', demand: 'Demand' });
 
 /** The switch a screen carries beside its window: what Usage shows, and which tab of Insights. */
 function switchFor(screen, preset, filters) {
