@@ -49,10 +49,14 @@ test('a question omits a parameter the analyst did not set rather than sending a
 });
 
 // The Unsanctioned screen is Q2's own question, so it asks for unsanctioned tools by default; the
-// state is still overridable, because `unknown` gets its own list.
-test('Q2 asks for unsanctioned tools by default and lets the state be overridden', () => {
-  const byDefault = QUESTIONS.q2_unsanctioned_users.request(ctx({ filters: { tool: 'tls_b6681b043244c43f' } }));
+// state is still overridable, because `unknown` gets its own list. Naming a tool asks who uses
+// that tool, whatever its state: a fingerprint outside the catalogue has none.
+test('Q2 asks for unsanctioned tools by default, lists a named tool\'s people whatever its state, and lets the state be overridden', () => {
+  const byDefault = QUESTIONS.q2_unsanctioned_users.request(ctx({ filters: {} }));
   assert.equal(byDefault.params.sanctioned_state, 'unsanctioned');
+  const named = QUESTIONS.q2_unsanctioned_users.request(ctx({ filters: { tool: 'tls_b6681b043244c43f' } }));
+  assert.equal(named.params.sanctioned_state, undefined);
+  assert.equal(named.params.tool, 'tls_b6681b043244c43f');
   const unknown = QUESTIONS.q2_unsanctioned_users.request(ctx({ filters: { tool: 'tls_b6681b043244c43f', sanctioned_state: 'unknown' } }));
   assert.equal(unknown.params.sanctioned_state, 'unknown');
 });

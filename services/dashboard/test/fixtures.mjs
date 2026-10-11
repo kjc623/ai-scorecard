@@ -49,13 +49,15 @@ function page(overrides = {}) {
   });
 }
 
+// The tool column carries the catalogue's display name beside the fingerprint, as the API joins it;
+// a fingerprint the catalogue does not list arrives as "Unrecognised tool".
 const TOOL_ROWS = Object.freeze([
-  Object.freeze({ bucket: DAY, tool: 'tls_b6681b043244c43f', sanctioned_state: 'unsanctioned', submissions: 812, users: 214, bytes_total: 41_000_000, blocked: 12, warned: 40, logged: 760 }),
+  Object.freeze({ bucket: DAY, tool: 'tls_b6681b043244c43f', tool_name: 'Claude Code', sanctioned_state: 'unsanctioned', submissions: 812, users: 214, bytes_total: 41_000_000, blocked: 12, warned: 40, logged: 760 }),
   // A small cell: two people. Its numbers are published like any other.
-  Object.freeze({ bucket: DAY, tool: 'shadow_llm_gateway', sanctioned_state: 'unknown', submissions: 3, users: 2, bytes_total: 120_000, blocked: 0, warned: 1, logged: 2 }),
+  Object.freeze({ bucket: DAY, tool: 'shadow_llm_gateway', tool_name: 'Unrecognised tool', sanctioned_state: 'unknown', submissions: 3, users: 2, bytes_total: 120_000, blocked: 0, warned: 1, logged: 2 }),
   // A genuine zero: we looked and there was none. This is an answer, not a secret.
-  Object.freeze({ bucket: DAY, tool: 'legacy_summariser', sanctioned_state: 'sanctioned', submissions: 0, users: 0, bytes_total: 0, blocked: 0, warned: 0, logged: 0 }),
-  Object.freeze({ bucket: DAY, tool: 'tls_f412811be7ac6539', sanctioned_state: 'sanctioned', submissions: 4021, users: 1877, bytes_total: 190_000_000, blocked: 3, warned: 210, logged: 3808 }),
+  Object.freeze({ bucket: DAY, tool: 'legacy_summariser', tool_name: 'Legacy summariser', sanctioned_state: 'sanctioned', submissions: 0, users: 0, bytes_total: 0, blocked: 0, warned: 0, logged: 0 }),
+  Object.freeze({ bucket: DAY, tool: 'tls_f412811be7ac6539', tool_name: 'ChatGPT', sanctioned_state: 'sanctioned', submissions: 4021, users: 1877, bytes_total: 190_000_000, blocked: 3, warned: 210, logged: 3808 }),
 ]);
 
 const DEVICE_ROWS = Object.freeze([
@@ -442,9 +444,23 @@ function cursorOf(body) {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
+/** A read narrowed to one tool or one team answers with that tool's or team's rows only, as the API does. */
+function narrowed(reply, body) {
+  if (!Array.isArray(reply?.data)) return reply;
+  const tool = body?.params?.tool;
+  const team = body?.params?.team;
+  const teams = (Array.isArray(body?.filters) ? body.filters : []).find((f) => f.field === 'team' && f.op === 'in')?.value;
+  if (!tool && !team && !teams) return reply;
+  return Object.freeze({
+    ...reply,
+    data: reply.data.filter((row) => (!tool || row.tool === tool) && (!team || row.team === team) && (!teams || teams.includes(row.team))),
+  });
+}
+
 /**
- * A query transport for a scenario. It answers by template name, and answers a request that
- * carries a cursor it issued with the second page; a cursor it never issued gets cursor_expired.
+ * A query transport for a scenario. It answers by template name, narrowed to the tool or team a
+ * request names, and answers a request that carries a cursor it issued with the second page; a
+ * cursor it never issued gets cursor_expired.
  *
  * @param {string} scenario
  */
@@ -461,7 +477,7 @@ export function fixtureTransport(scenario = 'realistic') {
         return spec.pageTwo?.[name] ?? spec.forced ?? STATE_ENVELOPES.cursor_expired;
       }
       if (spec.forced) return spec.forced;
-      const reply = spec.answers?.[name] ?? STATE_ENVELOPES.refused_shape;
+      const reply = narrowed(spec.answers?.[name] ?? STATE_ENVELOPES.refused_shape, body);
       if (reply?.page?.next_cursor) issued.add(reply.page.next_cursor);
       return reply;
     },

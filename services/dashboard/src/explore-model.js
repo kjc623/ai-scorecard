@@ -48,6 +48,13 @@ function exploreColumn(key, label, kind = 'text') {
   return Object.freeze({ key, label, kind });
 }
 
+/** A user reference as the API mints it; anything else typed into the User field is a name. */
+export const USER_REF = /^u_[A-Za-z0-9]+$/;
+export const isUserRef = (value) => USER_REF.test(String(value ?? '').trim());
+
+/** The User filter: a name is matched against the people list before the read, a reference is used as it is. */
+const USER_FIELD = exploreField('subject', 'User', { hint: 'A name as the directory spells it, or a user reference such as u_4f21' });
+
 /**
  * @typedef {object} ExploreDataset
  * @property {string} id
@@ -73,7 +80,7 @@ export const EXPLORE_DATASETS = Object.freeze({
     ordering: 'Newest received first',
     rowKey: (row) => String(row.submission_id),
     fields: Object.freeze([
-      exploreField('subject', 'Person', { hint: 'A user reference, such as u_4f21' }),
+      USER_FIELD,
       exploreField('tool', 'Tool', { hint: 'A tool fingerprint, such as tls_b6681b043244c43f' }),
       exploreField('action', 'Policy action', { values: ['blocked', 'warned', 'logged'] }),
       exploreField('class', 'Data class', { values: DATA_CLASSES, closed: false }),
@@ -86,7 +93,7 @@ export const EXPLORE_DATASETS = Object.freeze({
     columns: Object.freeze([
       exploreColumn('received_at', 'Received (server)', 'server-clock'),
       exploreColumn('first_occurred_at', 'Occurred (device)', 'device-clock'),
-      exploreColumn('subject', 'Person', 'mono'),
+      exploreColumn('subject', 'User', 'person'),
       exploreColumn('tool', 'Tool', 'mono'),
       exploreColumn('action', 'Action', 'vocab'),
       exploreColumn('labels', 'Classes', 'classes'),
@@ -112,7 +119,7 @@ export const EXPLORE_DATASETS = Object.freeze({
       exploreField('review_state', 'Review', { values: ['open', 'disputed', 'confirmed'] }),
       exploreField('class', 'Data class', { values: DATA_CLASSES, closed: false }),
       exploreField('rule', 'Rule', { hint: 'A rule code, such as PAYMENT_CARD_PAN' }),
-      exploreField('subject', 'Person', { hint: 'A user reference, such as u_4f21' }),
+      USER_FIELD,
       exploreField('tool', 'Tool', { hint: 'A tool fingerprint, such as tls_b6681b043244c43f' }),
     ]),
     columns: Object.freeze([
@@ -120,7 +127,7 @@ export const EXPLORE_DATASETS = Object.freeze({
       exploreColumn('severity', 'Severity', 'vocab'),
       exploreColumn('rule_title', 'Rule', 'rule'),
       exploreColumn('class', 'Class', 'vocab'),
-      exploreColumn('subject', 'Person', 'mono'),
+      exploreColumn('subject', 'User', 'person'),
       exploreColumn('tool', 'Tool', 'mono'),
       exploreColumn('review_state', 'Review', 'vocab'),
     ]),
@@ -190,7 +197,7 @@ export const EXPLORE_DATASETS = Object.freeze({
         closed: false,
       }),
       exploreField('object_type', 'Object type', { hint: 'Such as ingest.submission' }),
-      exploreField('subject', 'Person', { hint: 'A user reference, such as u_4f21' }),
+      USER_FIELD,
       exploreField('case', 'Case', { hint: 'A case reference' }),
     ]),
     columns: Object.freeze([
@@ -198,7 +205,7 @@ export const EXPLORE_DATASETS = Object.freeze({
       exploreColumn('actor', 'Actor', 'text'),
       exploreColumn('action', 'Action', 'mono'),
       exploreColumn('object_type', 'Object type', 'mono'),
-      exploreColumn('subject', 'Person', 'mono'),
+      exploreColumn('subject', 'User', 'mono'),
       exploreColumn('case', 'Case', 'mono'),
     ]),
     detailFields: Object.freeze([
@@ -209,7 +216,7 @@ export const EXPLORE_DATASETS = Object.freeze({
       exploreColumn('action', 'Action', 'mono'),
       exploreColumn('object_type', 'Object type', 'mono'),
       exploreColumn('object_id', 'Object', 'mono'),
-      exploreColumn('subject', 'Person', 'mono'),
+      exploreColumn('subject', 'User', 'mono'),
       exploreColumn('case', 'Case', 'mono'),
       exploreColumn('row_hash', 'Row hash', 'mono'),
       exploreColumn('prev_hash', 'Previous hash', 'mono'),
@@ -330,12 +337,15 @@ export function parseExploreQuery(text, dataset) {
   return Object.freeze({ filters: Object.freeze(filters), problems: Object.freeze(problems) });
 }
 
-/** The query bar text for a set of filters, in the dataset's field order. */
-export function formatExploreQuery(filters, dataset) {
+/**
+ * The query bar text for a set of filters, in the dataset's field order. A user reference whose
+ * name is known is written as the name, which parses back to the same person.
+ */
+export function formatExploreQuery(filters, dataset, names = {}) {
   return dataset.fields
     .filter((f) => typeof filters[f.name] === 'string' && filters[f.name] !== '')
     .map((f) => {
-      const value = filters[f.name];
+      const value = f.name === 'subject' && names[filters[f.name]] ? names[filters[f.name]] : filters[f.name];
       return /\s/.test(value) ? `${f.name}:"${value}"` : `${f.name}:${value}`;
     })
     .join(' ');

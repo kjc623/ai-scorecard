@@ -190,7 +190,16 @@ code {
 .screen-head .question + .subtitle { display: none; }
 .screen-tools { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
 .screen-switches { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
-.screen-head .source { margin: 0; font-size: 11.5px; color: var(--ink-faint); }
+.screen-badges { display: inline-flex; gap: 6px; margin-left: 6px; vertical-align: middle; }
+
+/* What every figure on the page stands on. Partial coverage is a fact about all of them, so it is
+   one quiet line under the title rather than a box above each panel. */
+.data-status { margin: 0; display: flex; flex-wrap: wrap; gap: 4px 18px; font-size: 12.5px; color: var(--ink-soft); }
+.data-status-item::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 8px; border-radius: 9999px; background: var(--warn); vertical-align: middle; }
+.data-status strong { font-weight: 600; color: var(--text); margin-right: 4px; }
+
+/* A read in flight: the page it replaces stays, dimmed, so nothing blanks and nothing jumps. */
+.app[aria-busy="true"] > .screen { opacity: .55; transition: opacity .25s var(--ease); }
 
 .banner {
   display: flex; gap: 4px 12px; align-items: baseline; flex-wrap: wrap;
@@ -217,7 +226,7 @@ code {
 .tile:first-child { grid-column: span 2; }
 .tile:first-child .tile-value { font-size: 52px; }
 a.tile { display: block; text-decoration: none; color: inherit; }
-.tile-link .tile-note { color: var(--accent); }
+.tile-link:hover .tile-more { text-decoration: underline; }
 .tile-split { margin-top: 10px; }
 .tile .dist-legend { margin-top: 8px; }
 .filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; }
@@ -227,6 +236,18 @@ a.tile { display: block; text-decoration: none; color: inherit; }
 .tile-value { font: 400 36px/1.1 var(--serif); letter-spacing: -0.02em; color: var(--ink); }
 .tile-value .v-vocab { font: 12px/1.7 var(--mono); letter-spacing: 0; vertical-align: middle; }
 .tile-note { font-size: 12.5px; color: var(--ink-soft); }
+.tile-figure { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px 16px; }
+.tile-spark { display: inline-flex; align-items: flex-end; margin-bottom: 6px; }
+.tile-more { margin-top: 2px; font-size: 12.5px; color: var(--accent); text-decoration: none; }
+.tile-more:hover { text-decoration: underline; }
+.dist-link { display: inline-flex; align-items: center; gap: 6px; color: inherit; text-decoration: none; }
+.dist-link:hover { color: var(--ink); text-decoration: underline; text-decoration-color: var(--accent); }
+
+/* A sparkline: a 2px line in the accent, a wash under it, the latest point ringed in the surface. */
+.spark { display: block; overflow: visible; }
+.spark-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.spark-area { fill: var(--accent); opacity: .1; }
+.spark-end { fill: var(--accent); stroke: var(--panel); stroke-width: 2; }
 
 .v-number { font-variant-numeric: tabular-nums; }
 .v-absent { color: var(--ink-faint); }
@@ -242,6 +263,12 @@ a.tile { display: block; text-decoration: none; color: inherit; }
 .v-vocab-degraded, .v-vocab-stale, .v-vocab-disputed, .v-vocab-low, .v-vocab-warned, .v-vocab-uploaded, .v-vocab-partial { background: var(--warn-bg); color: var(--warn); }
 .v-vocab-sanctioned, .v-vocab-healthy, .v-vocab-reporting, .v-vocab-confirmed, .v-vocab-high { background: var(--ok-bg); color: var(--ok); }
 .v-vocab-unknown, .v-vocab-not_captured, .v-vocab-local_only, .v-vocab-open { background: var(--hatch); color: var(--ink-soft); }
+/* A finding's severity is keyed apart from the other vocabularies: "high" is a serious state here, where elsewhere it is a strong signal. */
+.v-vocab-severity_critical { background: var(--bad-bg); color: var(--bad); }
+.v-vocab-severity_high { background: var(--warn-bg); color: var(--warn); }
+.v-vocab-severity_medium, .v-vocab-severity_low { background: var(--sunken); color: var(--ink-soft); }
+/* An identifier the catalogue does not name: a fingerprint, a device id, a user reference. */
+.v-mono { font-family: var(--mono); font-size: 12px; }
 
 /* ── tables ───────────────────────────────────────────────────────────────────────────────── */
 .block-head { display: flex; align-items: center; gap: 10px; padding: 18px 22px 12px; }
@@ -270,7 +297,7 @@ tbody tr:hover { background: var(--tray); }
 tr.row-link { cursor: pointer; }
 tr.row-link:hover td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
 tr.row-empty td { color: var(--ink-soft); font-style: italic; }
-.cell-link { text-decoration-color: var(--accent); font-family: var(--mono); font-size: 12.5px; }
+.cell-link { text-decoration-color: var(--accent); font-family: var(--mono); font-size: 12.5px; white-space: nowrap; }
 .table-note { display: inline-flex; align-items: center; gap: 7px; margin: 0 0 0 auto; font-size: 12px; color: var(--ink-soft); }
 
 /* How the rows split across a vocabulary column: one segmented bar and its legend. */
@@ -300,6 +327,57 @@ tr.row-empty td { color: var(--ink-soft); font-style: italic; }
 .dist-dot.v-vocab-degraded, .dist-dot.v-vocab-stale, .dist-dot.v-vocab-disputed, .dist-dot.v-vocab-low, .dist-dot.v-vocab-warned, .dist-dot.v-vocab-uploaded, .dist-dot.v-vocab-partial { background: var(--warn); }
 .dist-seg.v-vocab-sanctioned, .dist-seg.v-vocab-healthy, .dist-seg.v-vocab-reporting, .dist-seg.v-vocab-confirmed, .dist-seg.v-vocab-high,
 .dist-dot.v-vocab-sanctioned, .dist-dot.v-vocab-healthy, .dist-dot.v-vocab-reporting, .dist-dot.v-vocab-confirmed, .dist-dot.v-vocab-high { background: var(--ok); }
+.dist-seg.v-vocab-severity_critical, .dist-dot.v-vocab-severity_critical { background: var(--bad); }
+.dist-seg.v-vocab-severity_high, .dist-dot.v-vocab-severity_high { background: var(--warn); }
+.dist-seg.v-vocab-severity_medium, .dist-dot.v-vocab-severity_medium, .dist-seg.v-vocab-severity_low, .dist-dot.v-vocab-severity_low { background: var(--ink-faint); }
+/* People in a team against people in none: a part of the whole, not a state. */
+.dist-seg.v-vocab-in_team, .dist-dot.v-vocab-in_team { background: var(--accent); }
+.dist-seg.v-vocab-no_team, .dist-dot.v-vocab-no_team { background: var(--ink-faint); }
+
+/* Part-to-whole: one bar, a 2px surface gap between its parts, and a legend saying each part's share. */
+.share { padding: 4px 22px 20px; }
+.share-bar { height: 10px; }
+/* One part is the whole: a sentence, not a bar of one colour. */
+.share-one { margin: 0; padding: 4px 22px 20px; font-size: 14px; color: var(--ink); }
+.dist-pct { font: 11px/1 var(--mono); color: var(--ink-soft); }
+.block-empty { margin: 0; padding: 0 22px 20px; color: var(--ink-soft); font-style: italic; }
+
+/* A ranked list: one row per item, a thin bar with a rounded data end, the number beside it, the
+   facts, then the shape of its series. Every number is in the text; the bar only draws it. */
+.rank, .rank-head { --rank-cols: minmax(200px, 1.3fr) minmax(120px, 2fr) 104px minmax(220px, 1.4fr) 112px; }
+.rank-flat .rank, .rank-flat .rank-head { --rank-cols: minmax(200px, 1.3fr) minmax(120px, 2fr) 104px minmax(220px, 1.4fr); }
+.rank-head {
+  display: grid; grid-template-columns: var(--rank-cols); gap: 18px; padding: 2px 22px 8px;
+  font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-soft);
+}
+.rank-head .rank-num { text-align: right; }
+.rank { list-style: none; margin: 0; padding: 0 8px 8px; }
+.rank-item { border-top: 1px solid var(--line); }
+.rank-link {
+  display: grid; grid-template-columns: var(--rank-cols); align-items: center; gap: 18px;
+  padding: 12px 14px; border-radius: 12px; color: inherit; text-decoration: none; transition: background .3s var(--ease);
+}
+a.rank-link:hover { background: var(--tray); }
+a.rank-link:hover .rank-name { color: var(--accent); }
+.rank-who { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.rank-name { font-weight: 600; color: var(--ink); overflow-wrap: anywhere; }
+.rank-sub { flex-basis: 100%; font-size: 12px; color: var(--ink-soft); overflow-wrap: anywhere; }
+.rank-bar { display: block; height: 10px; }
+.rank-fill { display: block; height: 100%; width: calc(var(--w, 0) * 1%); min-width: 3px; border-radius: 0 6px 6px 0; background: var(--accent); transform-origin: left center; }
+.rank-bar-absent { width: 24px; border-radius: 0 6px 6px 0; background: var(--hatch); }
+.rank-value { display: flex; flex-direction: column; align-items: flex-end; line-height: 1.2; }
+.rank-value .v-number { font-size: 15px; font-weight: 600; color: var(--ink); }
+.rank-share { font: 11px/1.4 var(--mono); color: var(--ink-soft); }
+.rank-meta { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 12px; color: var(--ink-soft); }
+.rank-fact .v-number { color: var(--text); }
+.rank-trend { display: flex; justify-content: flex-end; }
+
+/* A cell of two lines: the thing, then the facts beside it. A state chip can be the first line. */
+.cell-stack { display: grid; justify-items: start; gap: 2px; min-width: 150px; line-height: 1.35; }
+.cell-primary { font-weight: 500; color: var(--ink); overflow-wrap: anywhere; }
+.cell-secondary { font-size: 12px; color: var(--ink-soft); overflow-wrap: anywhere; }
+tr.row-group th { padding: 16px 14px 6px; font-size: 12.5px; font-weight: 600; text-transform: none; letter-spacing: 0; color: var(--ink); border-top: 1px solid var(--line); }
+tr.row-group:first-child th { border-top: 0; padding-top: 4px; }
 
 /* ── a series: bars against a three-tick axis, with the value on hover or focus ───────────── */
 .chart { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 12px; padding: 6px 22px 34px; }
@@ -487,6 +565,7 @@ td.dp-action { text-align: right; white-space: nowrap; }
   .screen > :nth-child(n+6) { animation-delay: .25s; }
   .bar-fill { animation: grow-y .9s var(--ease) both; animation-delay: calc(var(--i, 0) * 28ms + .2s); }
   .cell-bar { animation: grow-x .9s var(--ease) both; animation-delay: .25s; }
+  .rank-fill { animation: grow-x .9s var(--ease) both; animation-delay: calc(var(--i, 0) * 28ms + .2s); }
 }
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 @keyframes grow-y { from { transform: scaleY(0); } to { transform: none; } }
@@ -520,6 +599,15 @@ td.dp-action { text-align: right; white-space: nowrap; }
   .tile:first-child { grid-column: auto; }
   .tile:first-child .tile-value { font-size: 40px; }
   .axis, .bars { height: 150px; }
+  /* A ranked row folds: the name and number first, the bar under them, the facts and trend last. */
+  .rank-head { display: none; }
+  .rank-link { grid-template-columns: minmax(0, 1fr) 96px; grid-template-areas: "who value" "bar bar" "meta trend"; gap: 8px 14px; }
+  .rank-flat .rank-link { grid-template-areas: "who value" "bar bar" "meta meta"; }
+  .rank-who { grid-area: who; }
+  .rank-bar { grid-area: bar; }
+  .rank-value { grid-area: value; }
+  .rank-meta { grid-area: meta; }
+  .rank-trend { grid-area: trend; }
 }
 
 /* Directory & teams */

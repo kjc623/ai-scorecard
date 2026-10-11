@@ -74,7 +74,8 @@ test('the Teams page lists each team\'s people by team and name, never by volume
   const limited = (await viewer.load('teams', {})).view;
   assert.ok(!limited.tables.some((t) => t.title === 'Submissions by person'), 'no roster for a role that may not see people');
   assert.ok(limited.notes.some((n) => /team totals only/.test(n)));
-  assert.ok(limited.tables.some((t) => t.title === 'Teams by submissions'), 'the team totals still show');
+  const totals = limited.blocks.find((b) => b.title === 'Teams by submissions');
+  assert.equal(totals.items.length, 3, 'the team totals still show');
 });
 
 test('no screen exposes a "most active people" table', async () => {
@@ -82,9 +83,9 @@ test('no screen exposes a "most active people" table', async () => {
   for (const screen of SCREENS) {
     const { view } = await dashboard.load(screen.id, {});
     if (!view) continue;
-    for (const table of view.tables ?? []) {
-      const titles = `${table.title}`.toLowerCase();
-      assert.ok(!/most active|leaderboard|top people|ranking/.test(titles), `${screen.id}: ${table.title}`);
+    for (const block of [...(view.tables ?? []), ...(view.blocks ?? [])]) {
+      const titles = `${block.title}`.toLowerCase();
+      assert.ok(!/most active|leaderboard|top people|ranking/.test(titles), `${screen.id}: ${block.title}`);
     }
   }
 });

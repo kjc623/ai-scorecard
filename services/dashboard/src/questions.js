@@ -63,14 +63,15 @@ export const QUESTIONS = Object.freeze({
     screen: 'unsanctioned',
     // A tool filter is not optional in practice: the API refuses a subject-grouped window beyond
     // seven days unless it is narrowed by a tool or a subject, and naming the tool is what makes
-    // the question "who is using THIS" rather than "list everyone".
+    // the question "who is using THIS" rather than "list everyone". Named, the tool's people are
+    // listed whatever its sanction; unnamed, the question is the unsanctioned list.
     request: (ctx) => buildTemplate('q2_unsanctioned_users', present({
       window: ctx.window,
       bucket: ctx.bucket,
       limit: ctx.limit ?? 500,
       tool: ctx.filters.tool,
       subject: ctx.filters.subject,
-      sanctioned_state: ctx.filters.sanctioned_state ?? 'unsanctioned',
+      sanctioned_state: ctx.filters.sanctioned_state ?? (ctx.filters.tool ? undefined : 'unsanctioned'),
     })),
   },
 

@@ -7,12 +7,13 @@
 
 import { escapeHtml } from './render.js';
 import { formatInstant } from './format.js';
+import { COLLECTION_MODE_LABELS } from './vocab.js';
 import {
   COLLECTION_MODES, SANCTION_STATES, ENDPOINT_COLLECTORS, ENDPOINT_TOOLS, effectiveMode, modeIncreaseNeedsConfirmation, searchTierAllowed,
   RULE_ACTIONS, RULE_CATEGORIES, RULE_SANCTIONS, RULE_ROUTES, RULE_MATCH_FIELDS, MAX_RULES, MAX_RULE_MESSAGE, KILL_SWITCH_ROUTES,
 } from './settings.js';
 
-const MODE_LABELS = Object.freeze({ m0: 'M0 · metadata', m1: 'M1 · digest & labels', m2: 'M2 · excerpt', m3: 'M3 · prompt' });
+const MODE_LABELS = COLLECTION_MODE_LABELS;
 
 function stInstant(iso, absent = 'not reported') {
   return iso ? `<span class="v-time" title="${escapeHtml(iso)}">${escapeHtml(formatInstant(iso))}</span>` : `<span class="v-absent">${escapeHtml(absent)}</span>`;

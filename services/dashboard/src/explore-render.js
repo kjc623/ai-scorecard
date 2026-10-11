@@ -83,6 +83,17 @@ export function renderExploreValue(row, column, { full = false } = {}) {
         : `<span class="x-mono" title="${escapeHtml(raw)}">${escapeHtml(String(raw).slice(0, 8))}</span>`;
     case 'rule':
       return `<span class="x-rule">${escapeHtml(raw)}</span>${row.rule ? ` <span class="x-mono x-sub">${escapeHtml(row.rule)}</span>` : ''}`;
+    case 'person': {
+      // The person by name, as the people list names them: the directory's display name, else the
+      // account name the device reported; the reference stays on hover, and is the whole label
+      // when the read carried no name. A directory name and a different account name show both.
+      const directory = typeof row.directory_name === 'string' && row.directory_name !== '' ? row.directory_name : null;
+      const account = typeof row.subject_name === 'string' && row.subject_name !== '' ? row.subject_name : null;
+      const name = directory ?? account;
+      if (!name) return `<span class="x-mono" title="User reference">${escapeHtml(raw)}</span>`;
+      const second = directory && account && account !== directory ? ` <span class="x-sub">${escapeHtml(account)}</span>` : '';
+      return `<span class="x-person" title="User reference ${escapeHtml(raw)}">${escapeHtml(name)}</span>${second}`;
+    }
     case 'mono':
       // The tool column shows the catalogue's name, with the fingerprint on hover; an unrecognised
       // tool also shows its fingerprint, the only thing that tells two of them apart. Other mono
@@ -115,8 +126,12 @@ export function renderExploreWindow(state) {
 
 export function renderExploreProblems(state) {
   if (state.problems.length === 0) return '';
+  // A name that matches several people is settled by choosing one; each choice is the filter it sets.
+  const choices = (p) => (Array.isArray(p.choices) && p.choices.length > 0
+    ? `<span class="x-choices">${p.choices.map((c) => `<button type="button" class="x-btn x-btn-quiet" data-act="filter" data-field="subject" data-value="${escapeHtml(c.subject)}" title="User reference ${escapeHtml(c.subject)}">${escapeHtml(c.name)}</button>`).join('')}</span>`
+    : '');
   const items = state.problems.map((p) => (
-    `<li><strong>${escapeHtml(p.message)}</strong> <span>${escapeHtml(p.fix)}</span></li>`
+    `<li><strong>${escapeHtml(p.message)}</strong> <span>${escapeHtml(p.fix)}</span>${choices(p)}</li>`
   )).join('');
   return `<div class="x-problems"><p class="x-problems-head">Not searched. Nothing is dropped from a query, so fix ${state.problems.length === 1 ? 'this' : 'these'} first:</p><ul>${items}</ul></div>`;
 }
@@ -126,7 +141,13 @@ export function renderExploreRail(state) {
   const dataset = EXPLORE_DATASETS[state.dataset];
   const active = dataset.fields.filter((f) => state.filters[f.name]).length;
   const fields = dataset.fields.map((field) => {
-    const value = state.filters[field.name] ?? '';
+    const held = state.filters[field.name] ?? '';
+    // The User field shows the person's name once the reference has been matched to one; the
+    // reference is the value behind it, on hover.
+    const named = field.name === 'subject' && held && state.names?.[held] ? state.names[held] : null;
+    // A typed name that matched nobody, or several people, stays in the field beside its problem.
+    const unsettled = field.name === 'subject' && !held ? state.problems.find((p) => typeof p.value === 'string' && p.token?.startsWith('subject:'))?.value ?? '' : '';
+    const value = named ?? (held || unsettled);
     const id = `x-f-${field.name}`;
     const on = value ? ' x-filter-on' : '';
     if (field.values) {
@@ -136,7 +157,8 @@ export function renderExploreRail(state) {
       )).join('');
       return `<select class="x-select x-filter${on}" id="${id}" data-field="${field.name}" aria-label="${escapeHtml(field.label)}"><option value="">${escapeHtml(field.label)}</option>${options}</select>`;
     }
-    return `<input class="x-input x-filter${on}" id="${id}" type="text" data-field="${field.name}" value="${escapeHtml(value)}" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(field.label)}" aria-label="${escapeHtml(field.label)}" title="${escapeHtml(field.hint ?? field.label)}">`;
+    const title = named ? `User reference ${held}` : field.hint ?? field.label;
+    return `<input class="x-input x-filter${on}" id="${id}" type="text" data-field="${field.name}" value="${escapeHtml(value)}" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(field.label)}" aria-label="${escapeHtml(field.label)}" title="${escapeHtml(title)}">`;
   }).join('');
   // The event list hides the requests a client made for itself unless this toggle is on. It is a
   // page setting, not a filter: it adds the `prompt_kind_not` predicate rather than a rail value.
@@ -318,7 +340,7 @@ function exploreTextPageSize(text) {
 function exploreTextIgnored(text) {
   const ignored = Array.isArray(text.ignored) ? text.ignored : [];
   if (ignored.length === 0) return '';
-  return `<p class="x-sub">Prompt search applies Person, Tool, Device, Collection mode and the window. `
+  return `<p class="x-sub">Prompt search applies User, Tool, Device, Collection mode and the window. `
     + `${ignored.map(escapeHtml).join(', ')} still filter the list only.</p>`;
 }
 
@@ -403,6 +425,9 @@ function exploreRecord(detail, dataset, state) {
   const head = {
     ...first,
     subject: first.user_ref ?? detail.row?.subject,
+    // The names come with the list row; the record read carries the reference only.
+    subject_name: first.subject_name ?? detail.row?.subject_name ?? null,
+    directory_name: first.directory_name ?? detail.row?.directory_name ?? state.names?.[first.user_ref ?? detail.row?.subject] ?? null,
     tool: first.tool_fingerprint ?? detail.row?.tool,
     tool_name: first.tool_name ?? detail.row?.tool_name,
     device: detail.row?.device,
@@ -431,7 +456,7 @@ function exploreRecord(detail, dataset, state) {
   return (detail.row && 'rule' in detail.row ? exploreFindingFacts(detail.row) : '')
     + exploreContent(state, String(contentTile.value.text), contentTile.note)
     + '<section><h3>Who and where</h3>' + exploreFacts([
-      ['Person', `${renderExploreValue(head, col('subject', 'mono'))}${exploreFilterButton(dataset, 'subject', head.subject)}`],
+      ['User', `${renderExploreValue(head, col('subject', 'person'))}${exploreFilterButton(dataset, 'subject', head.subject)}`],
       ['Tool', `${renderExploreValue(head, col('tool', 'mono'))}${exploreFilterButton(dataset, 'tool', head.tool)}`],
       ['Device', `${renderExploreValue(head, col('device', 'id'), { full: true })}${exploreFilterButton(dataset, 'device', head.device)}`],
       ...(head.department ? [['Department', `<span>${escapeHtml(head.department)}</span>${exploreFilterButton(dataset, 'department', head.department)}`]] : []),

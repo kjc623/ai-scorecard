@@ -8,10 +8,10 @@
 // as an absent marker, and a genuine zero renders as `0`. They are different CSS classes fed by
 // different value kinds, so a stylesheet change cannot merge them by accident either.
 
-import { formatBytes, formatCount, formatInstant, formatScore } from './format.js';
+import { formatBytes, formatCount, formatInstant, formatPercent, formatScore } from './format.js';
+import { UNRECOGNISED_TOOL } from './vocab.js';
 
-/** The name ops.tool_display_name gives a fingerprint the tool catalogue does not list. */
-export const UNRECOGNISED_TOOL = 'Unrecognised tool';
+export { UNRECOGNISED_TOOL };
 
 export function escapeHtml(value) {
   return String(value ?? '')
@@ -32,7 +32,7 @@ export function renderValue(value) {
     case 'number':
       return `<span class="v-number">${escapeHtml(value.text ?? formatCount(value.value))}</span>`;
     case 'vocab':
-      return `<span class="v-vocab v-vocab-${escapeHtml(String(value.text).replace(/[^a-z_]/gi, ''))}">${escapeHtml(value.text)}</span>`;
+      return `<span class="v-vocab ${vocabClass(value.key ?? value.text)}">${escapeHtml(value.text)}</span>`;
     case 'absent':
     default:
       return '<span class="v-absent" title="Not carried by this response">—</span>';
@@ -47,9 +47,31 @@ function dataBar(raw, max) {
   return `<span class="cell-bar" style="--w:${Math.max(2, Math.round((Number(raw) / max) * 100))}" aria-hidden="true"></span>`;
 }
 
+/** A vocabulary value as a chip, its key kept in the markup and its colour. */
+function chip(value) {
+  if (!value) return '';
+  const key = String(value.key ?? '');
+  return `<span class="v-vocab v-vocab-${escapeHtml(key.replace(/[^a-z_]/gi, ''))}" title="${escapeHtml(key)}">${escapeHtml(value.text ?? key)}</span>`;
+}
+
+/**
+ * Two lines in one cell: the thing, then the facts a reader checks next. The first line is a
+ * name, or a state chip when the state is the thing; an empty first line is an absence, not a blank.
+ */
+function renderStack(cell) {
+  if (!cell || typeof cell !== 'object') return renderValue({ kind: 'absent' });
+  const named = cell.primary !== null && cell.primary !== undefined && cell.primary !== '';
+  const primary = named
+    ? `<span class="cell-primary${cell.mono ? ' v-mono' : ''}">${escapeHtml(cell.primary)}</span>`
+    : (cell.chip ? '' : '<span class="v-absent">—</span>');
+  const secondary = cell.secondary ? `<span class="cell-secondary">${escapeHtml(cell.secondary)}</span>` : '';
+  return `<span class="cell-stack"${cell.title ? ` title="${escapeHtml(cell.title)}"` : ''}>${primary}${chip(cell.chip)}${secondary}</span>`;
+}
+
 function renderCell(row, column, max = 0) {
   const { key, kind } = column;
   const raw = row[key];
+  if (kind === 'stack') return renderStack(raw);
   if (kind === 'measure' || kind === 'measure-bytes' || kind === 'measure-score') {
     if (raw === null || raw === undefined) return renderValue({ kind: 'absent' });
     if (kind === 'measure-bytes') return `${dataBar(raw, max)}<span class="v-number">${escapeHtml(formatBytes(Number(raw)))}</span>`;
@@ -91,12 +113,14 @@ function renderCell(row, column, max = 0) {
     }
     return `<span class="v-text" title="${escapeHtml(uuid)}">${escapeHtml(String(raw))}</span>`;
   }
-  // A person's name opens their page; a person with no known name is listed by reference.
+  // A person's name opens their page; a person with no known name is listed by reference. A
+  // column keyed on the reference takes the row's names: the directory's, else the account's.
   if (kind === 'person') {
     const ref = row.subject ? String(row.subject) : '';
-    const label = raw === null || raw === undefined || raw === '' ? ref : String(raw);
+    const named = key === 'subject' ? (row.directory_name ?? row.subject_name ?? null) : raw;
+    const label = named === null || named === undefined || named === '' ? ref : String(named);
     if (!ref) return renderValue({ kind: 'absent' });
-    return `<a class="cell-link" href="#person?subject=${encodeURIComponent(ref)}" title="${escapeHtml(ref)}">${escapeHtml(label)}</a>`;
+    return `<a class="cell-link" href="#person?subject=${encodeURIComponent(ref)}" title="User reference ${escapeHtml(ref)}">${escapeHtml(label)}</a>`;
   }
   if (kind === 'link') {
     return raw ? `<a class="cell-link" href="${escapeHtml(String(raw))}">${escapeHtml(column.linkLabel ?? 'Open')}</a>` : '';
@@ -104,7 +128,7 @@ function renderCell(row, column, max = 0) {
   if (kind === 'vocab') {
     // A vocabulary value is rendered even when it is a value people forget: `unknown` and
     // `never_reported` are answers, and a blank would be indistinguishable from a missing field.
-    return raw === null || raw === undefined ? '<span class="v-vocab v-vocab-unknown">unknown</span>' : renderValue({ kind: 'vocab', text: raw });
+    return raw === null || raw === undefined ? '<span class="v-vocab v-vocab-unknown">unknown</span>' : renderValue({ kind: 'vocab', text: raw, key: vocabKey(key, raw) });
   }
   if (raw === null || raw === undefined) return renderValue({ kind: 'absent' });
   // The tool column shows the name the catalogue gives the fingerprint, with the fingerprint on
@@ -139,7 +163,7 @@ function renderBreakdowns(table) {
     }
     if (counts.size < 2 || counts.size > 6) continue;
     const parts = [...counts].sort((a, b) => b[1] - a[1]);
-    const cls = (value) => `v-vocab-${escapeHtml(value.replace(/[^a-z_]/gi, ''))}`;
+    const cls = (value) => vocabClass(vocabKey(column.key, value));
     blocks.push(
       `<div class="dist"><span class="dist-label">${escapeHtml(column.label)}</span>`
       + `<div class="dist-bar" role="img" aria-label="${escapeHtml(parts.map(([v, n]) => `${v}: ${n}`).join(', '))}">`
@@ -152,24 +176,41 @@ function renderBreakdowns(table) {
   return blocks.length > 0 ? `<div class="dists">${blocks.join('')}</div>` : '';
 }
 
+/**
+ * A table. `groupBy` names a column whose value heads a run of rows instead of repeating in each;
+ * `rowHref` names the column holding the address a whole row opens. A row that names a submission
+ * opens it regardless: the event screen is reached from a row, not typed.
+ */
 export function renderTable(table) {
   const numeric = (c) => MEASURE_KINDS.includes(c.kind);
-  const maxima = new Map(table.columns.filter(numeric).map((c) => [
+  const columns = table.columns.filter((c) => c.key !== table.groupBy);
+  const maxima = new Map(columns.filter(numeric).map((c) => [
     c.key,
     Math.max(0, ...table.rows.map(({ row }) => Number(row[c.key]) || 0)),
   ]));
-  const head = table.columns.map((c) => `<th scope="col"${numeric(c) ? ' class="num"' : ''}>${escapeHtml(c.label)}</th>`).join('');
+  const head = columns.map((c) => `<th scope="col"${numeric(c) ? ' class="num"' : ''}>${escapeHtml(c.label)}</th>`).join('');
+  let group = null;
   const body = table.rows.map(({ row }) => {
-    const cells = table.columns.map((c) => `<td${numeric(c) ? ' class="num"' : ''}>${renderCell(row, c, maxima.get(c.key))}</td>`).join('');
-    // A row that names a submission opens it: the event screen is reached from a row, not typed.
+    const cells = columns.map((c) => `<td${numeric(c) ? ' class="num"' : ''}>${renderCell(row, c, maxima.get(c.key))}</td>`).join('');
+    let heading = '';
+    if (table.groupBy) {
+      const value = row[table.groupBy] === null || row[table.groupBy] === undefined ? '' : String(row[table.groupBy]);
+      if (value !== group) {
+        group = value;
+        heading = `<tr class="row-group"><th scope="rowgroup" colspan="${columns.length}">${value === '' ? '<span class="v-absent">—</span>' : escapeHtml(value)}</th></tr>`;
+      }
+    }
+    let href = null;
     if (typeof row.submission_id === 'string' && row.submission_id !== '') {
       const hint = row.received_at ? `&received_at_hint=${encodeURIComponent(row.received_at)}` : '';
-      return `<tr class="row-link" tabindex="0" data-href="#event?submission_id=${encodeURIComponent(row.submission_id)}${hint}">${cells}</tr>`;
+      href = `#event?submission_id=${encodeURIComponent(row.submission_id)}${hint}`;
+    } else if (table.rowHref && typeof row[table.rowHref] === 'string' && row[table.rowHref] !== '') {
+      href = row[table.rowHref];
     }
-    return `<tr>${cells}</tr>`;
+    return heading + (href ? `<tr class="row-link" tabindex="0" data-href="${escapeHtml(href)}">${cells}</tr>` : `<tr>${cells}</tr>`);
   }).join('');
   const empty = table.rows.length === 0
-    ? `<tr class="row-empty"><td colspan="${table.columns.length}">${escapeHtml(table.emptyText ?? 'No rows.')}</td></tr>`
+    ? `<tr class="row-empty"><td colspan="${columns.length}">${escapeHtml(table.emptyText ?? 'No rows.')}</td></tr>`
     : '';
   const count = table.rows.length > 0 ? `<span class="block-count">${table.rows.length}</span>` : '';
   const more = table.href ? `<a class="block-link" href="${escapeHtml(table.href)}">${escapeHtml(table.moreLabel ?? 'View all')}</a>` : '';
@@ -195,27 +236,156 @@ export function renderSeries(series) {
   return open(`<div class="chart">${axis}<div class="bars${series.points.length <= 3 ? ' bars-few' : ''}">${bars}</div></div>`);
 }
 
+/**
+ * The shape of a series in a small space: one line, a wash under it, a dot on the latest point.
+ * The values are in its label for a reader who cannot see it; the chart below it carries them in full.
+ */
+export function renderSparkline(points, { width = 96, height = 28 } = {}) {
+  if (!Array.isArray(points) || points.length < 2) return '';
+  const values = points.map((p) => Math.max(0, Number(p.value) || 0));
+  const max = Math.max(1, ...values);
+  const pad = 3.5;
+  const x = (i) => (pad + (i / (values.length - 1)) * (width - pad * 2)).toFixed(1);
+  const y = (v) => (height - pad - (v / max) * (height - pad * 2)).toFixed(1);
+  const line = `M${values.map((v, i) => `${x(i)},${y(v)}`).join(' L')}`;
+  const floor = (height - pad).toFixed(1);
+  const area = `${line} L${x(values.length - 1)},${floor} L${x(0)},${floor} Z`;
+  const last = values.length - 1;
+  const label = points.map((p, i) => `${formatInstant(p.bucket).slice(0, 10)}: ${formatCount(values[i])}`).join(', ');
+  return `<svg class="spark" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="${escapeHtml(label)}">`
+    + `<path class="spark-area" d="${area}"/><path class="spark-line" d="${line}"/>`
+    + `<circle class="spark-end" cx="${x(last)}" cy="${y(values[last])}" r="3"/></svg>`;
+}
+
+const vocabClass = (key) => `v-vocab-${escapeHtml(String(key ?? '').replace(/[^a-z_]/gi, ''))}`;
+/** A finding's severity is keyed apart from the other vocabularies: "high" is a serious state here, where elsewhere it is a strong signal. */
+const vocabKey = (column, value) => (column === 'severity' ? `severity_${value}` : value);
+
+/** A block's frame: the same panel as a table, with its title, count and link to the whole. */
+function blockFrame(kind, block, inner, { count = 0, classes = '' } = {}) {
+  const n = count > 0 ? `<span class="block-count">${count}</span>` : '';
+  const note = block.note ? `<span class="table-note">${escapeHtml(block.note)}</span>` : '';
+  const more = block.href ? `<a class="block-link" href="${escapeHtml(block.href)}">${escapeHtml(block.moreLabel ?? 'View all')}</a>` : '';
+  return `<section class="${kind}-block card${classes}"><div class="card-core"><header class="block-head"><h3>${escapeHtml(block.title)}</h3>${n}${note}${more}</header>${inner}</div></section>`;
+}
+
+/** Part-to-whole: one bar, and a legend that carries every part's count and share in words. */
+export function renderShare(block) {
+  const parts = (block.parts ?? []).filter((p) => Number(p.count) > 0);
+  if (parts.length === 0) return blockFrame('share', block, `<p class="block-empty">${escapeHtml(block.emptyText ?? 'Nothing to show.')}</p>`);
+  // One part is the whole: a sentence says so, and a bar of one colour is not drawn.
+  if (parts.length === 1 && parts[0].phrase) {
+    return blockFrame('share', block, `<p class="share-one">All <span class="v-number">${escapeHtml(formatCount(parts[0].count))}</span> submissions went to ${escapeHtml(parts[0].phrase)}.</p>`);
+  }
+  const bar = parts.map((p) => `<span class="dist-seg ${vocabClass(p.key)}" style="flex-grow:${Math.max(0, Number(p.count) || 0)}" title="${escapeHtml(p.label)}: ${escapeHtml(formatCount(p.count))} (${escapeHtml(formatPercent(p.share))})"></span>`).join('');
+  const legend = parts.map((p) => `<li><span class="dist-dot ${vocabClass(p.key)}" aria-hidden="true"></span>${escapeHtml(p.label)}<span class="dist-n">${escapeHtml(formatCount(p.count))}</span><span class="dist-pct">${escapeHtml(formatPercent(p.share))}</span></li>`).join('');
+  const said = parts.map((p) => `${p.label} ${formatPercent(p.share)}`).join(', ');
+  return blockFrame('share', block, `<div class="share"><div class="dist-bar share-bar" role="img" aria-label="${escapeHtml(said)}">${bar}</div><ul class="dist-legend">${legend}</ul></div>`);
+}
+
+/** One fact beside a ranked item: the number first, then what it counts. */
+function renderFact(fact) {
+  const value = fact.value?.kind === 'number'
+    ? `<span class="v-number">${escapeHtml(fact.value.text ?? formatCount(fact.value.value))}</span>`
+    : renderValue({ kind: 'absent' });
+  return `<span class="rank-fact">${value} ${escapeHtml(fact.label)}</span>`;
+}
+
+/**
+ * A ranked list: each item a link to its own screen, its value drawn against the largest, its
+ * share said in words, the facts beside it and the shape of its series. The list is its own
+ * table view: every number is in the text.
+ */
+export function renderRanking(block) {
+  const items = block.items ?? [];
+  if (items.length === 0) return blockFrame('rank', block, `<p class="block-empty">${escapeHtml(block.emptyText ?? 'Nothing to rank.')}</p>`);
+  const max = Math.max(1, ...items.map((item) => (item.value?.kind === 'number' ? item.value.value : 0)));
+  // A window served in one bucket has no shape to draw, so the list has no trend column.
+  const trends = items.some((item) => Array.isArray(item.trend) && item.trend.length > 1);
+  const head = '<div class="rank-head" aria-hidden="true">'
+    + `<span>${escapeHtml(block.itemLabel ?? 'Name')}</span><span></span><span class="rank-num">${escapeHtml(block.valueLabel ?? 'Value')}</span>`
+    + `<span>${escapeHtml((block.metaLabels ?? []).join(' · '))}</span>${trends ? `<span>${escapeHtml(block.trendLabel ?? '')}</span>` : ''}</div>`;
+  const rows = items.map((item, i) => {
+    const value = item.value?.kind === 'number' ? item.value.value : null;
+    const bar = value === null
+      ? '<span class="rank-bar rank-bar-absent" aria-hidden="true"></span>'
+      : `<span class="rank-bar" aria-hidden="true"><span class="rank-fill" style="--w:${Math.max(2, Math.round((value / max) * 100))}"></span></span>`;
+    const number = value === null
+      ? renderValue({ kind: 'absent' })
+      : `<span class="v-number">${escapeHtml(item.value.text ?? formatCount(value))}</span>`
+        + (typeof item.share === 'number' ? `<span class="rank-share">${escapeHtml(formatPercent(item.share))}</span>` : '');
+    const name = `<span class="rank-name${item.mono ? ' v-mono' : ''}"${item.title ? ` title="${escapeHtml(item.title)}"` : ''}>${escapeHtml(item.label)}</span>`;
+    const sub = item.sublabel ? `<span class="rank-sub${item.subMono ? ' v-mono' : ''}">${escapeHtml(item.sublabel)}</span>` : '';
+    const tag = item.href ? 'a' : 'div';
+    return `<li class="rank-item" style="--i:${Math.min(i, 24)}"><${tag} class="rank-link"${item.href ? ` href="${escapeHtml(item.href)}"` : ''}>`
+      + `<span class="rank-who">${name}${chip(item.chip)}${sub}</span>${bar}<span class="rank-value">${number}</span>`
+      + `<span class="rank-meta">${(item.meta ?? []).map(renderFact).join('')}</span>`
+      + (trends ? `<span class="rank-trend">${renderSparkline(item.trend)}</span>` : '')
+      + `</${tag}></li>`;
+  }).join('');
+  return blockFrame('rank', block, `${head}<ol class="rank">${rows}</ol>`, { count: items.length, classes: trends ? '' : ' rank-flat' });
+}
+
+/** A block of a screen, by its kind. */
+function renderBlock(block) {
+  switch (block?.kind) {
+    case 'ranking': return renderRanking(block);
+    case 'share': return renderShare(block);
+    case 'series': return renderSeries(block);
+    case 'table': return renderTable(block);
+    default: return '';
+  }
+}
+
 export function renderBanner(banner) {
   return `<div class="banner banner-${escapeHtml(banner.level)}" role="status">`
     + `<strong>${escapeHtml(banner.title)}</strong><span>${escapeHtml(banner.text)}</span></div>`;
 }
 
-/** A tile's two-part split: one bar and its two counts, sized by the counts themselves. */
+/** Partial coverage is a fact about every figure on the page: said once, in one quiet line above them. */
+const quiet = (banner) => banner.level === 'warning' && banner.about === 'coverage';
+
+function renderStatusLine(banners) {
+  const lines = banners.filter(quiet);
+  if (lines.length === 0) return '';
+  return `<p class="data-status" role="status">${lines.map((b) => `<span class="data-status-item"><strong>${escapeHtml(b.title)}</strong> ${escapeHtml(b.text)}</span>`).join('')}</p>`;
+}
+
+/** A tile's split: one bar and its counts, sized by the counts themselves. A part with an address opens the rows it counts. */
 function renderSplit(split) {
   if (!Array.isArray(split) || split.length === 0) return '';
+  const legend = (part) => {
+    const text = `${escapeHtml(part.label)}<span class="dist-n">${escapeHtml(formatCount(part.count))}</span>`;
+    return part.href && (Number(part.count) || 0) > 0 ? `<a class="dist-link" href="${escapeHtml(part.href)}">${text}</a>` : text;
+  };
+  // A part that counts nothing draws nothing and opens nothing; it stays in the legend as a zero.
+  const drawn = split.filter((part) => (Number(part.count) || 0) > 0);
   return '<div class="dist-bar tile-split" aria-hidden="true">'
-    + split.map((part) => `<span class="dist-seg v-vocab-${escapeHtml(part.key)}" style="flex-grow:${Math.max(0, Number(part.count) || 0)}"></span>`).join('')
+    + drawn.map((part) => `<span class="dist-seg ${vocabClass(part.key)}" style="flex-grow:${Number(part.count)}"></span>`).join('')
     + '</div><ul class="dist-legend">'
-    + split.map((part) => `<li><span class="dist-dot v-vocab-${escapeHtml(part.key)}" aria-hidden="true"></span>${escapeHtml(part.label)}<span class="dist-n">${escapeHtml(formatCount(part.count))}</span></li>`).join('')
+    + split.map((part) => `<li><span class="dist-dot ${vocabClass(part.key)}" aria-hidden="true"></span>${legend(part)}</li>`).join('')
     + '</ul>';
 }
 
+/**
+ * A tile. One with an address is a link, unless its split already holds links: then the address
+ * is a line of its own, because a link inside a link is not a thing a browser can follow.
+ */
 export function renderTile(t) {
-  const tag = t.href ? 'a' : 'div';
-  return `<${tag} class="tile card${t.href ? ' tile-link' : ''}"${t.href ? ` href="${escapeHtml(t.href)}"` : ''}><div class="card-core"><span class="tile-label">${escapeHtml(t.label)}</span>`
-    + `<span class="tile-value">${renderValue(t.value)}</span>`
+  const nested = (t.split ?? []).some((part) => part.href && (Number(part.count) || 0) > 0);
+  const wraps = Boolean(t.href) && !nested;
+  const tag = wraps ? 'a' : 'div';
+  const trend = t.trend ? `<span class="tile-spark">${renderSparkline(t.trend, { width: 160, height: 36 })}</span>` : '';
+  // A tile that is itself the link says where it goes on its last line; one whose split holds the
+  // links gets a link of its own.
+  const more = !t.href ? ''
+    : wraps ? (t.moreLabel ? `<span class="tile-more">${escapeHtml(t.moreLabel)}</span>` : '')
+      : `<a class="tile-more" href="${escapeHtml(t.href)}">${escapeHtml(t.moreLabel ?? 'View all')}</a>`;
+  return `<${tag} class="tile card${wraps ? ' tile-link' : ''}"${wraps ? ` href="${escapeHtml(t.href)}"` : ''}><div class="card-core"><span class="tile-label">${escapeHtml(t.label)}</span>`
+    + `<span class="tile-figure"><span class="tile-value">${renderValue(t.value)}</span>${trend}</span>`
     + renderSplit(t.split)
     + (t.note ? `<span class="tile-note">${escapeHtml(t.note)}</span>` : '')
+    + more
     + `</div></${tag}>`;
 }
 
@@ -250,34 +420,40 @@ function renderPresets(presets, label = 'Window') {
   )).join('')}</div>`;
 }
 
-/** A whole screen. Degraded coverage and stale data are said by the banners under the title. */
+/**
+ * A whole screen: the summary first (tiles, then the ranked and shared blocks), the detail after
+ * (the chart, the filters, the tables). Partial coverage is one line under the title; a stale
+ * aggregate, a refusal or a state that cannot say keeps its banner.
+ */
 export function renderScreen(view, shell = {}) {
   if (view.needsInput && !view.search) return renderNeeds(view);
-  const banners = (view.banners ?? []).map(renderBanner).join('');
+  const status = renderStatusLine(view.banners ?? []);
+  const banners = (view.banners ?? []).filter((b) => !quiet(b)).map(renderBanner).join('');
   const tiles = (view.tiles ?? []).length > 0 ? `<div class="tiles">${view.tiles.map(renderTile).join('')}</div>` : '';
+  const blocks = (view.blocks ?? []).map(renderBlock).join('');
   const tables = (view.tables ?? []).map(renderTable).join('');
   const filters = renderFilters(view.filters);
   const series = (view.series ?? []).map(renderSeries).join('');
   // The reading notes are one click away rather than under every table: they matter, and they are
-  // the same on every visit.
-  const notes = (view.notes ?? []).length > 0
-    ? `<details class="notes"><summary>About this data<span class="notes-count">${view.notes.length}</span></summary><ul>${view.notes.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`
+  // the same on every visit. Where the screen reads from is one of them.
+  const noteList = [...(view.notes ?? []), ...(view.sourceLabel ? [`Reads from ${view.sourceLabel}.`] : [])];
+  const notes = noteList.length > 0
+    ? `<details class="notes"><summary>About this data<span class="notes-count">${noteList.length}</span></summary><ul>${noteList.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`
     : '';
+  const badges = (view.badges ?? []).length > 0 ? ` <span class="screen-badges">${view.badges.map(chip).join('')}</span>` : '';
   const header = '<header class="screen-head"><div class="screen-title">'
     + (shell.eyebrow ? `<span class="eyebrow">${escapeHtml(shell.eyebrow)}</span>` : '')
-    + `<h2>${escapeHtml(view.title)}</h2>`
+    + `<h2>${escapeHtml(view.title)}${badges}</h2>`
     + (view.question ? `<p class="question">${escapeHtml(view.question)}</p>` : '')
     + (view.subtitle ? `<p class="subtitle">${escapeHtml(view.subtitle)}</p>` : '')
     + '</div><div class="screen-tools"><div class="screen-switches">'
     + renderPresets(shell.switch)
     + renderPresets(shell.presets)
-    + '</div>'
-    + (view.sourceLabel ? `<p class="source" title="Where this screen reads from">Source <code>${escapeHtml(view.sourceLabel)}</code></p>` : '')
-    + '</div></header>';
+    + '</div></div></header>';
   const actions = (view.actions ?? []).length > 0
     ? `<nav class="screen-actions">${view.actions.map((a) => `<a class="btn btn-small" href="${escapeHtml(a.href)}">${escapeHtml(a.label)}</a>`).join('')}</nav>`
     : '';
-  return `<article class="screen">${header}${renderSearch(view.search)}${actions}${banners}${tiles}${series}${filters}${tables}${notes}</article>`;
+  return `<article class="screen">${header}${renderSearch(view.search)}${actions}${status}${banners}${tiles}${blocks}${series}${filters}${tables}${notes}</article>`;
 }
 
 /** Thin-line icons for the navigation: one stroke weight, no fills. */

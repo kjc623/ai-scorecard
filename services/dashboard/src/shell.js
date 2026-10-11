@@ -118,17 +118,23 @@ export function wireShell({ document, collapsed, session = null }) {
     // Choosing a destination closes the mobile menu.
     if (target.closest('.nav a')) document.body.classList.remove('menu-open');
     const row = target.closest('tr[data-href]');
-    if (row && !target.closest('a, button')) document.location.hash = row.dataset.href;
+    if (row && !target.closest('a, button')) follow(document, row.dataset.href);
   });
 
   document.addEventListener('keydown', (event) => {
     const row = event.target?.closest?.('tr[data-href]');
     if (row && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
-      document.location.hash = row.dataset.href;
+      follow(document, row.dataset.href);
     }
     if (event.key === 'Escape') document.body?.classList?.remove('menu-open');
   });
+}
+
+/** Open what a row names: a screen of this page by its hash, or a sibling page by its address. */
+function follow(document, href) {
+  if (String(href).startsWith('#')) document.location.hash = href;
+  else document.location.href = href;
 }
 
 /** The navigation groups the reader has folded; the rarely needed ones start folded. */

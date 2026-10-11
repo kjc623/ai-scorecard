@@ -111,6 +111,12 @@ input.x-filter { width: 124px; cursor: text; }
 }
 .x-problems-head { font-weight: 600; margin-bottom: 4px; }
 .x-problems li + li { margin-top: 2px; }
+/* The people a typed name matched: one button each, settling the User filter. */
+.x-choices { display: inline-flex; flex-wrap: wrap; gap: 6px; margin-left: 8px; vertical-align: middle; }
+.x-choices .x-btn { margin-top: 0; padding: 2px 8px; font-size: 12.5px; }
+/* A person by name; the reference is on hover and in the account name beside it. */
+.x-person { font-weight: 500; }
+.x-person + .x-sub { display: block; }
 
 /* ── body: rail, results, detail ──────────────────────────────────────────────────────────── */
 
