@@ -75,7 +75,7 @@ test('the matches per rule read the coarsest bucket the window allows, one row p
 });
 
 test('the vocabularies here are complete enough to describe every source and template', () => {
-  assert.equal(Object.keys(SOURCES).length, 18);
+  assert.equal(Object.keys(SOURCES).length, 19);
   assert.equal(TEMPLATE_NAMES.length, 10);
   for (const [name, spec] of Object.entries(SOURCES)) {
     assert.ok(spec.kind === 'aggregate' || spec.kind === 'list', `${name} has a kind`);

@@ -406,3 +406,87 @@ test('the rules list names the custom labels and tools each rule names, and the 
     },
   );
 });
+
+test('Q1 counts the people behind the usage once each, by the sanction of their tools, beside the people they are out of', { skip: SKIP }, async () => {
+  const [ada, bob, cara, dan] = ['a', 'b', 'c', 'd'].map((c) => `u_${c.repeat(32)}`);
+  let sanctioned = null;
+  let unsanctioned = null;
+  await scratch(
+    async (client) => {
+      sanctioned = (await client.query(
+        'SELECT app_key, array_agg(tool_fingerprint ORDER BY tool_fingerprint) AS fingerprints FROM ref.tool_catalogue GROUP BY app_key HAVING count(*) >= 2 ORDER BY app_key LIMIT 1',
+      )).rows[0];
+      unsanctioned = (await client.query(
+        'SELECT app_key, min(tool_fingerprint) AS fingerprint FROM ref.tool_catalogue WHERE app_key <> $1 GROUP BY app_key ORDER BY app_key LIMIT 1',
+        [sanctioned.app_key],
+      )).rows[0];
+      await client.query(
+        `INSERT INTO ops.tool_sanction (tenant_id, tool_key, sanctioned_state, decided_by, decided_at)
+         VALUES (ops.current_tenant(), $1, 'sanctioned', 'db-test', now()), (ops.current_tenant(), $2, 'unsanctioned', 'db-test', now())`,
+        [sanctioned.app_key, unsanctioned.app_key],
+      );
+      await client.query(
+        `INSERT INTO ops.user_dim (tenant_id, user_ref, status) VALUES
+           (ops.current_tenant(), $1, 'active'), (ops.current_tenant(), $2, 'active'),
+           (ops.current_tenant(), $3, 'active'), (ops.current_tenant(), $4, 'inactive')`,
+        [ada, bob, cara, dan],
+      );
+      await client.query(
+        `INSERT INTO ops.device (tenant_id, device_id, os, last_user_ref, revoked_at, revoked_by, revoked_reason) VALUES
+           (ops.current_tenant(), gen_random_uuid(), 'windows', $1, NULL, NULL, NULL),
+           (ops.current_tenant(), gen_random_uuid(), 'windows', $2, NULL, NULL, NULL),
+           (ops.current_tenant(), gen_random_uuid(), 'windows', $2, NULL, NULL, NULL),
+           (ops.current_tenant(), gen_random_uuid(), 'windows', $3, now(), 'db-test', 'lost')`,
+        [ada, bob, cara],
+      );
+      // ada uses only the sanctioned tool, under both its fingerprints; bob uses both tools; cara a
+      // tool with no decision; dan only before the window.
+      const [first, second] = sanctioned.fingerprints;
+      for (const [day, fingerprint, user] of [
+        ['2026-09-02', first, ada], ['2026-09-03', second, ada], ['2026-09-03', first, bob],
+        ['2026-09-03', unsanctioned.fingerprint, bob], ['2026-09-05', 'tls_never_seen_anywhere', cara],
+        ['2026-08-20', first, dan], ['2026-09-20', unsanctioned.fingerprint, dan],
+      ]) {
+        await client.query(
+          "INSERT INTO mart.agg_tool_user_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, user_ref, submissions, bytes_total) VALUES (ops.current_tenant(), $1, 'day', $2, $3, 1, 10)",
+          [day, fingerprint, user],
+        );
+      }
+      for (const [day, fingerprint, submissions] of [
+        ['2026-08-20', first, 1], ['2026-09-02', first, 1], ['2026-09-03', second, 1], ['2026-09-03', first, 1],
+        ['2026-09-03', unsanctioned.fingerprint, 1], ['2026-09-20', unsanctioned.fingerprint, 1],
+        ['2026-09-05', 'tls_never_seen_anywhere', 1], ['2026-09-04', 'tls_only_detected', 0],
+      ]) {
+        await client.query(
+          "INSERT INTO mart.agg_tool_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, submissions, users, bytes_total, detections) VALUES (ops.current_tenant(), $1, 'day', $2, $3, $3, 10, 1)",
+          [day, fingerprint, submissions],
+        );
+      }
+    },
+    async (client, tenant) => {
+      const ctx = { now: NOW, tenant, actorId: 'db-test', cursorKey: KEY };
+      const tools = await executePlan(plan({ query_version: '1', template: 'q1_tools_ranked', params: { window: WINDOW, limit: 100 } }, ctx), { ...ctx, client: nested(client) });
+      const people = tools.meta.extras.people[0];
+      assert.deepEqual(
+        ['people', 'people_sanctioned_only', 'people_both', 'people_unsanctioned_only', 'directory_people', 'device_people'].map((k) => Number(people[k])),
+        [3, 1, 1, 1, 3, 2],
+        'a tool with no decision is not sanctioned; an inactive person and a revoked device are not counted',
+      );
+      const one = await executePlan(
+        plan({ query_version: '1', template: 'q1_tools_ranked', params: { window: WINDOW, limit: 100, tool: unsanctioned.fingerprint } }, ctx),
+        { ...ctx, client: nested(client) },
+      );
+      assert.equal(one.meta.extras?.people, undefined, 'one tool\'s read does not count everyone');
+
+      const firstSeen = await executePlan(plan({ query_version: '1', source: 'mart.v_tool_first_seen', filters: [], window: WINDOW, limit: 50 }, ctx), { ...ctx, client: nested(client) });
+      assert.deepEqual(
+        firstSeen.data.map((r) => [r.first_seen.toISOString?.() ?? r.first_seen, r.tool, r.tool_key, r.sanctioned_state, Number(r.people)]),
+        [
+          ['2026-09-05T00:00:00.000Z', 'tls_never_seen_anywhere', null, null, 1],
+          ['2026-09-03T00:00:00.000Z', unsanctioned.fingerprint, unsanctioned.app_key, 'unsanctioned', 2],
+        ],
+        'a tool first seen before the window is not new however new its fingerprint; a detection is not a prompt; its people include those since the window',
+      );
+    },
+  );
+});

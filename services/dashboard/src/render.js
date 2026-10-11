@@ -223,7 +223,8 @@ export function renderTable(table) {
 /** A series: one column per bucket, with the axis scaled to the largest value. */
 export function renderSeries(series) {
   if (!series) return '';
-  const open = (inner) => `<section class="series-block card"><div class="card-core"><header class="block-head"><h3>${escapeHtml(series.title)}</h3></header>${inner}</div></section>`;
+  const open = (inner) => `<section class="series-block card"><div class="card-core"><header class="block-head"><h3>${escapeHtml(series.title)}</h3></header>`
+    + `${series.summary ? `<p class="block-summary">${escapeHtml(series.summary)}</p>` : ''}${inner}</div></section>`;
   if (series.unavailable) return open(`<p class="series-unavailable">No chart: ${escapeHtml(series.reason)}</p>`);
   if (series.points.length === 0) return open('<p class="series-unavailable">No points.</p>');
   const max = Math.max(1, ...series.points.map((p) => (p.value.kind === 'number' ? p.value.value : 0)));

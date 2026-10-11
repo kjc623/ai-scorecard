@@ -176,6 +176,41 @@ export function buildRuleMatchesDocument({ window }) {
 }
 
 /**
+ * The tools first seen in the window, newest first, for Insights. A tenant's first window can see
+ * every tool it has for the first time; the page says so when the list runs past this limit.
+ *
+ * @param {{window: {from: string, to: string}}} input
+ */
+export function buildFirstSeenDocument({ window }) {
+  return Object.freeze({
+    query_version: QUERY_VERSION,
+    source: 'mart.v_tool_first_seen',
+    filters: Object.freeze([]),
+    window: checkWindow(window),
+    limit: 200,
+  });
+}
+
+/**
+ * Prompts per bucket by the sanction of the tool they went to, for Insights: the hour for a window
+ * shorter than a day, the day up to two weeks, the week beyond.
+ *
+ * @param {{window: {from: string, to: string, bucket?: string}}} input
+ */
+export function buildSanctionShiftDocument({ window }) {
+  const checked = checkWindow(window);
+  const days = (Date.parse(checked.to) - Date.parse(checked.from)) / 86_400_000;
+  return Object.freeze({
+    query_version: QUERY_VERSION,
+    source: 'mart.v_tool_usage',
+    bucket: window.bucket === 'hour' ? 'hour' : days > 14 ? 'week' : 'day',
+    dimensions: Object.freeze(['sanctioned_state']),
+    measures: Object.freeze(['submissions']),
+    window: checked,
+  });
+}
+
+/**
  * Build a template request. A template parameter that the template does not declare is refused,
  * because a typo in a parameter name would otherwise answer a broader question than the one asked.
  *

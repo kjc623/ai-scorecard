@@ -351,6 +351,11 @@ tr.row-empty td { color: var(--ink-soft); font-style: italic; }
 .dist-seg.v-vocab-allowed, .dist-dot.v-vocab-allowed, .bar-seg.v-vocab-allowed { background: var(--accent); }
 .bar-seg.v-vocab-blocked { background: var(--bad); }
 .bar-seg.v-vocab-warned { background: var(--warn); }
+/* Prompts by the sanction of their tool, and people by the sanction of the tools they used. */
+.bar-seg.v-vocab-sanctioned { background: var(--ok); }
+.bar-seg.v-vocab-unsanctioned { background: var(--bad); }
+.bar-seg.v-vocab-unknown { background: var(--ink-faint); }
+.dist-seg.v-vocab-both, .dist-dot.v-vocab-both { background: var(--warn); }
 
 /* A funnel: its stages left to right, the last split into outcomes under one bar. */
 .funnel { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 14px 18px; padding: 4px 22px 22px; }

@@ -39,6 +39,7 @@ export const ROLE_CAPABILITIES = Object.freeze({
 const SOURCE_CAPABILITY = Object.freeze({
   'mart.v_tool_usage': 'aggregate',
   'mart.agg_tool_period': 'aggregate',
+  'mart.v_tool_first_seen': 'aggregate',
   'mart.agg_org_period': 'aggregate',
   'mart.agg_team_period': 'aggregate',
   'mart.agg_class_period': 'aggregate',

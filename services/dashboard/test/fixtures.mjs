@@ -195,6 +195,28 @@ const RULE_MATCH_ROWS = Object.freeze([
   Object.freeze({ bucket: '2026-09-21T00:00:00Z', rule: 'legacy.block', matches: 2, blocked: 2, warned: 0, logged: 0 }),
 ]);
 
+// The people a read of every tool counts once each, by the sanction of the tools they used, and
+// the people they are out of.
+const PEOPLE_ROW = Object.freeze({
+  people: 2050, people_sanctioned_only: 1820, people_both: 190, people_unsanctioned_only: 40, directory_people: 4210, device_people: 3980,
+});
+
+// Tools whose first prompt fell in the window, newest first.
+const FIRST_SEEN_ROWS = Object.freeze([
+  Object.freeze({ first_seen: '2026-09-29T00:00:00Z', tool: 'shadow_llm_gateway', tool_key: null, tool_name: 'Unrecognised tool', sanctioned_state: null, people: 2 }),
+  Object.freeze({ first_seen: '2026-09-26T00:00:00Z', tool: 'tls_b6681b043244c43f', tool_key: 'claude_code', tool_name: 'Claude Code', sanctioned_state: 'unsanctioned', people: 230 }),
+]);
+
+// Prompts per day by the sanction of their tool; a tool with no decision has no state.
+const SHIFT_ROWS = Object.freeze([
+  Object.freeze({ bucket: '2026-09-29T00:00:00Z', sanctioned_state: 'sanctioned', submissions: 2600 }),
+  Object.freeze({ bucket: '2026-09-29T00:00:00Z', sanctioned_state: 'unsanctioned', submissions: 300 }),
+  Object.freeze({ bucket: '2026-09-29T00:00:00Z', sanctioned_state: null, submissions: 100 }),
+  Object.freeze({ bucket: '2026-09-30T00:00:00Z', sanctioned_state: 'sanctioned', submissions: 1400 }),
+  Object.freeze({ bucket: '2026-09-30T00:00:00Z', sanctioned_state: 'unsanctioned', submissions: 500 }),
+  Object.freeze({ bucket: '2026-09-30T00:00:00Z', sanctioned_state: null, submissions: 100 }),
+]);
+
 const PERSON_ROWS = Object.freeze([
   Object.freeze({ bucket: '2026-09-24T00:00:00Z', subject: 'u_4f21', submissions: 41, bytes_total: 900_000, tools_used: 3, block_events: 1 }),
   Object.freeze({ bucket: '2026-09-25T00:00:00Z', subject: 'u_4f21', submissions: 44, bytes_total: 940_000, tools_used: 3, block_events: 0 }),
@@ -305,7 +327,22 @@ const REALISTIC = Object.freeze({
       applied_bucket: 'day',
       measure_semantics: { submissions: 'additive', users: 'exact' },
       warnings: ['mart.v_tool_usage exposes no detections/rollup_events/degraded_events: a detection-only or rollup-only tool cannot appear in this source. Use source mart.agg_tool_period for those measures.'],
+      extras: { people: [PEOPLE_ROW] },
     },
+  }),
+  // The tools first seen in the window, and the prompts per day by the sanction of their tool.
+  'mart.v_tool_first_seen': ok({
+    data: FIRST_SEEN_ROWS,
+    page: page({ returned: 2, next_cursor: null, newer_events_exist: false }),
+    freshness: freshness(),
+    coverage: coverage({ state: 'partial' }),
+    meta: { source: 'mart.v_tool_first_seen' },
+  }),
+  'mart.v_tool_usage': ok({
+    data: SHIFT_ROWS,
+    freshness: freshness(),
+    coverage: coverage({ state: 'partial' }),
+    meta: { source: 'mart.v_tool_usage', applied_bucket: 'day' },
   }),
   q2_unsanctioned_users: ok({
     data: [
@@ -517,4 +554,4 @@ export function fixtureTransport(scenario = 'realistic') {
   });
 }
 
-export { TOOL_ROWS, DEVICE_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, TEAM_ROWS, TEAM_MEMBER_ROWS, PEOPLE_ROWS, CLASS_ROWS, PERSON_ROWS, RULE_ROWS, RULE_MATCH_ROWS, WINDOW };
+export { TOOL_ROWS, DEVICE_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, TEAM_ROWS, TEAM_MEMBER_ROWS, PEOPLE_ROWS, CLASS_ROWS, PERSON_ROWS, RULE_ROWS, RULE_MATCH_ROWS, PEOPLE_ROW, FIRST_SEEN_ROWS, SHIFT_ROWS, WINDOW };
