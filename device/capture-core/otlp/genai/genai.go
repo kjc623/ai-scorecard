@@ -266,9 +266,9 @@ func eventName(lr *logspb.LogRecord) string {
 
 // enforce is a prompt's enforcement hook. Route tool.otel reports a prompt after the tool has sent
 // it, so it can never block or warn: the matching rule is recorded as logged.
-func (n *Normalizer) enforce(fp string) func(labels []string, known bool) protocol.Decision {
+func (n *Normalizer) enforce(fp string) func(labels []string, known bool, userRef string) protocol.Decision {
 	if n.cfg.Bundles == nil {
-		return func([]string, bool) protocol.Decision {
+		return func([]string, bool, string) protocol.Decision {
 			return enforce.RecordedAction(enforce.Decision{RuleID: enforce.DefaultRuleID, Action: policy.RuleAllow}, false)
 		}
 	}

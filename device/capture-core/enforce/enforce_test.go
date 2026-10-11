@@ -22,6 +22,7 @@ type evaluateCase struct {
 		ToolFingerprint string         `json:"tool_fingerprint"`
 		Labels          []string       `json:"labels"`
 		LabelsKnown     bool           `json:"labels_known"`
+		UserRef         string         `json:"user_ref"`
 	} `json:"input"`
 	Want struct {
 		RuleID  string            `json:"rule_id"`
@@ -59,7 +60,7 @@ func TestEvaluate(t *testing.T) {
 			if err := dec.Decode(&b); err != nil {
 				t.Fatalf("the case's bundle is not a policy bundle: %v", err)
 			}
-			in := Input{Route: tc.Input.Route, ToolFingerprint: tc.Input.ToolFingerprint, Labels: tc.Input.Labels, LabelsKnown: tc.Input.LabelsKnown}
+			in := Input{Route: tc.Input.Route, ToolFingerprint: tc.Input.ToolFingerprint, Labels: tc.Input.Labels, LabelsKnown: tc.Input.LabelsKnown, UserRef: tc.Input.UserRef}
 			want := Decision{RuleID: tc.Want.RuleID, Action: tc.Want.Action, Message: tc.Want.Message, Link: tc.Want.Link}
 			if got := Evaluate(&b, in); got != want {
 				t.Fatalf("decision = %+v, want %+v", got, want)
@@ -98,17 +99,17 @@ func TestHookReadsTheBundleInForceAtEachDecision(t *testing.T) {
 	var inForce *policy.Bundle
 	hook := Hook(func() *policy.Bundle { return inForce }, protocol.RouteProxyTLS, "chatgpt.com", false)
 
-	if got := hook([]string{"credential"}, true); got.RuleID != DefaultRuleID || got.Action != protocol.ActionLogged || !got.DecidedLocally {
+	if got := hook([]string{"credential"}, true, ""); got.RuleID != DefaultRuleID || got.Action != protocol.ActionLogged || !got.DecidedLocally {
 		t.Fatalf("no bundle recorded %+v", got)
 	}
 	inForce = &policy.Bundle{Rules: []policy.Rule{{RuleID: "block_credentials", Action: policy.RuleBlock, Match: policy.RuleMatch{Labels: []string{"credential"}}, Message: "msg block_credentials"}}}
-	if got := hook([]string{"credential"}, true); got != (protocol.Decision{RuleID: "block_credentials", Action: protocol.ActionLogged, DecidedLocally: true}) {
+	if got := hook([]string{"credential"}, true, ""); got != (protocol.Decision{RuleID: "block_credentials", Action: protocol.ActionLogged, DecidedLocally: true}) {
 		t.Fatalf("after the swap recorded %+v", got)
 	}
-	if got := hook([]string{"credential"}, false); got.RuleID != DefaultRuleID {
+	if got := hook([]string{"credential"}, false, ""); got.RuleID != DefaultRuleID {
 		t.Fatalf("unknown labels recorded %+v", got)
 	}
-	if got := Hook(nil, protocol.RouteProxyTLS, "t", false)(nil, false); got.RuleID != DefaultRuleID {
+	if got := Hook(nil, protocol.RouteProxyTLS, "t", false)(nil, false, ""); got.RuleID != DefaultRuleID {
 		t.Fatalf("a hook without bundles recorded %+v", got)
 	}
 }

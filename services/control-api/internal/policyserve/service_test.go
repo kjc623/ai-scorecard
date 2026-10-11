@@ -479,6 +479,52 @@ func TestComposeRulesAndSanctionedTools(t *testing.T) {
 	}
 }
 
+// TestComposeRuleUsers: a rule naming people carries the refs they reach; a rule whose people reach
+// nobody and a disabled rule are left out, and the rules after them keep their order; a change in
+// who a group holds mints a new version.
+func TestComposeRuleUsers(t *testing.T) {
+	r := newRig(t, nil)
+	ctx := context.Background()
+	audit := store.AuditEntry{TenantID: tenantA, ActorType: store.ActorUser, ActorID: "admin@contoso.example", Action: "test", ObjectType: "tenant", ObjectID: tenantA}
+	const group = "group:0b6f3c2e-1d4a-4c8b-9e7f-112233445566"
+	const empty = "team:0b6f3c2e-1d4a-4c8b-9e7f-112233445577"
+	const ana = "u_0123456789abcdef0123456789abcdef"
+	const alias = "u_ffffffffffffffffffffffffffffffff"
+	r.store.SetRuleUser(tenantA, group, "Finance", 1, ana, alias)
+	r.store.SetRuleUser(tenantA, empty, "Nobody", 0)
+	if err := r.store.ReplaceEnforcementRules(ctx, tenantA, []store.EnforcementRule{
+		{RuleID: "allow_finance", Action: "allow", Users: []string{group}},
+		{RuleID: "block_nobody", Action: "block", Message: "No.", Users: []string{empty}},
+		{RuleID: "block_off", Action: "block", Message: "No.", Disabled: true},
+		{RuleID: "warn_person", Action: "warn", Message: "Careful.", Users: []string{"user:u_22222222222222222222222222222222"}},
+		{RuleID: "block_rest", Action: "block", Message: "No."},
+	}, audit); err != nil {
+		t.Fatal(err)
+	}
+	v1, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	none := `"labels":[],"tools":[],"categories":[],"sanction":[],"routes":[]`
+	want := canonical(t, `[
+	  {"rule_id":"allow_finance","action":"allow","match":{`+none+`,"users":["`+ana+`","`+alias+`"]},"message":""},
+	  {"rule_id":"warn_person","action":"warn","match":{`+none+`,"users":["u_22222222222222222222222222222222"]},"message":"Careful."},
+	  {"rule_id":"block_rest","action":"block","match":{`+none+`},"message":"No."}]`)
+	if got := sectionOf(t, v1.Envelope, "rules"); got != want {
+		t.Fatalf("rules:\n got %s\nwant %s", got, want)
+	}
+
+	r.store.SetRuleUser(tenantA, empty, "Nobody", 1, ana)
+	v2, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, _ := payloadOf(t, v2.Envelope)
+	if !newer(v2.Version, v1.Version) || len(p["rules"].([]any)) != 4 {
+		t.Fatalf("a member added: version %s after %s, rules %v", v2.Version, v1.Version, p["rules"])
+	}
+}
+
 // TestComposeKillSwitches: a tenant with no switch tripped is served no kill_switches; a tripped
 // switch is served with mode disable, its route, reason and the time it was tripped, in route
 // order, and mints a new version; clearing it takes it out again.
@@ -992,10 +1038,12 @@ func TestServedBundleVerifiesWithTheDevicesVerifier(t *testing.T) {
 		{RuleID: "block_credentials", Action: "block", Match: store.RuleMatch{Labels: []string{"credential", "custom_project_falcon"}, Tools: []string{"cursor"},
 			Categories: []string{"ide"}, Sanction: []string{"unsanctioned"}, Routes: []string{"proxy.tls", "tool.hook"}},
 			Message: "Remove the credential and try again.", Link: "https://intranet.example/ai"},
+		{RuleID: "allow.finance", Action: "allow", Users: []string{"group:0b6f3c2e-1d4a-4c8b-9e7f-112233445566"}},
 		{RuleID: "allow.rest", Action: "allow"},
 	}, audit); err != nil {
 		t.Fatal(err)
 	}
+	r.store.SetRuleUser(tenantA, "group:0b6f3c2e-1d4a-4c8b-9e7f-112233445566", "Finance", 1, "u_0123456789abcdef0123456789abcdef")
 	for _, key := range []string{"claude_code", "cursor"} {
 		if err := r.store.SetToolSanction(context.Background(), tenantA, key, "sanctioned", audit); err != nil {
 			t.Fatal(err)

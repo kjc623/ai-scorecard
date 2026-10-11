@@ -31,6 +31,7 @@ export const PRODUCT_ROLES = Object.freeze(Object.keys(ROLE_CAPABILITIES));
 const PAGE_CAPABILITY = Object.freeze({
   posture: 'aggregate',
   insights: 'aggregate',
+  rules: 'settings',
   tools: 'aggregate',
   teams: 'aggregate',
   person: 'subject',

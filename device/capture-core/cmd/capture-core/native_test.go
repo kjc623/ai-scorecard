@@ -73,7 +73,7 @@ func TestToCoreObservationKeepsContentBehindAReader(t *testing.T) {
 	if len(obs.Attachments) != 1 || obs.Attachments[0].Name != "a.pdf" {
 		t.Fatalf("attachments = %+v", obs.Attachments)
 	}
-	if obs.Enforce == nil || obs.Enforce(nil, false) != (protocol.Decision{RuleID: "policy.default", Action: protocol.ActionLogged, DecidedLocally: true}) {
+	if obs.Enforce == nil || obs.Enforce(nil, false, "") != (protocol.Decision{RuleID: "policy.default", Action: protocol.ActionLogged, DecidedLocally: true}) {
 		t.Fatal("an observation without a decision is not recorded as logged under the default rule")
 	}
 }
@@ -86,17 +86,17 @@ func TestToCoreObservationDecision(t *testing.T) {
 
 	// Without the extension's decision the rules decide, and a block is recorded as logged.
 	obs := toCoreObservation(protocol.ObservationMessage{Route: protocol.RouteExtDOM, ToolFingerprint: "t"}, bundles)
-	if got := obs.Enforce([]string{"credential"}, true); got != (protocol.Decision{RuleID: "block_credentials", Action: protocol.ActionLogged, DecidedLocally: true}) {
+	if got := obs.Enforce([]string{"credential"}, true, ""); got != (protocol.Decision{RuleID: "block_credentials", Action: protocol.ActionLogged, DecidedLocally: true}) {
 		t.Fatalf("recorded %+v", got)
 	}
-	if got := obs.Enforce([]string{"credential"}, false); got.RuleID != "policy.default" {
+	if got := obs.Enforce([]string{"credential"}, false, ""); got.RuleID != "policy.default" {
 		t.Fatalf("with unknown labels recorded %+v", got)
 	}
 
 	// The extension's own decision is kept whatever the rules say.
 	own := protocol.Decision{RuleID: "ext.warn", Action: protocol.ActionWarned, DecidedLocally: true}
 	obs = toCoreObservation(protocol.ObservationMessage{Route: protocol.RouteExtDOM, ToolFingerprint: "t", Decision: &own}, bundles)
-	if got := obs.Enforce([]string{"credential"}, true); got != own {
+	if got := obs.Enforce([]string{"credential"}, true, ""); got != own {
 		t.Fatalf("recorded %+v, want the extension's decision", got)
 	}
 }
@@ -495,5 +495,62 @@ func TestRelayRefusesAnUntrustedServer(t *testing.T) {
 	if conn, err := dialNative(ctx); err == nil {
 		conn.Close()
 		t.Fatal("the relay connected to an endpoint not served by the service account")
+	}
+}
+
+// The extension does not know who it runs as, so the payload it is handed names no one: a rule for
+// other people is left out, a rule for the browser's person no longer names anyone, and the other
+// rules and fields stay as signed. A bundle with no rule naming people is handed over byte for byte.
+func TestForPersonNarrowsTheRulesThatNamePeople(t *testing.T) {
+	const ana, bo = "u_0123456789abcdef0123456789abcdef", "u_22222222222222222222222222222222"
+	payload := json.RawMessage(`{"version":"v1","rules":[` +
+		`{"rule_id":"allow_ana","action":"allow","match":{"labels":[],"tools":[],"categories":[],"sanction":[],"routes":[],"users":["` + ana + `"]},"message":""},` +
+		`{"rule_id":"warn_bo","action":"warn","match":{"labels":[],"tools":[],"categories":[],"sanction":[],"routes":[],"users":["` + bo + `"]},"message":"m"},` +
+		`{"rule_id":"block_rest","action":"block","match":{"labels":["credential"],"tools":[],"categories":[],"sanction":[],"routes":[]},"message":"m"}],"sanctioned_tools":[]}`)
+	var b policy.Bundle
+	if err := json.Unmarshal(payload, &b); err != nil {
+		t.Fatal(err)
+	}
+	ids := func(raw json.RawMessage) string {
+		var doc struct {
+			Version string `json:"version"`
+			Rules   []struct {
+				RuleID string                     `json:"rule_id"`
+				Match  map[string]json.RawMessage `json:"match"`
+			} `json:"rules"`
+		}
+		if err := json.Unmarshal(raw, &doc); err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, r := range doc.Rules {
+			if _, ok := r.Match["users"]; ok {
+				t.Fatalf("rule %s still names people: %s", r.RuleID, raw)
+			}
+			out = append(out, r.RuleID)
+		}
+		return doc.Version + ":" + strings.Join(out, ",")
+	}
+	for _, tc := range []struct{ ref, want string }{
+		{ana, "v1:allow_ana,block_rest"},
+		{bo, "v1:warn_bo,block_rest"},
+		{"", "v1:block_rest"},
+	} {
+		got, err := forPerson(payload, &b, tc.ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ids(got) != tc.want {
+			t.Errorf("for %q: %s, want %s", tc.ref, ids(got), tc.want)
+		}
+	}
+
+	plain := json.RawMessage(`{"version":"v2","rules":[{"rule_id":"block_rest","action":"block","match":{},"message":"m"}]}`)
+	var pb policy.Bundle
+	if err := json.Unmarshal(plain, &pb); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := forPerson(plain, &pb, ana); err != nil || string(got) != string(plain) {
+		t.Fatalf("a bundle naming no one was changed: %s %v", got, err)
 	}
 }

@@ -102,11 +102,11 @@ func extract(payload []byte, _ string) (string, []dedup.Attachment, error) {
 }
 
 // hookDecision is the hook's decision, told apart from the OTel side's by its rule id.
-func hookDecision([]string, bool) protocol.Decision {
+func hookDecision([]string, bool, string) protocol.Decision {
 	return protocol.Decision{Action: protocol.ActionBlocked, RuleID: "hook.rule"}
 }
 
-func otelDecision([]string, bool) protocol.Decision {
+func otelDecision([]string, bool, string) protocol.Decision {
 	return protocol.Decision{Action: protocol.ActionLogged, RuleID: "otel.rule"}
 }
 
@@ -151,7 +151,7 @@ func checkMerged(t *testing.T, s submitted, at time.Time, text string) {
 	if s.obs.Route != protocol.RouteToolHook {
 		t.Errorf("route %s, want tool.hook", s.obs.Route)
 	}
-	if s.obs.Enforce == nil || s.obs.Enforce(nil, false).RuleID != "hook.rule" {
+	if s.obs.Enforce == nil || s.obs.Enforce(nil, false, "").RuleID != "hook.rule" {
 		t.Error("the merged record does not carry the hook's decision")
 	}
 	if s.obs.Person != hookPerson {
@@ -236,7 +236,7 @@ func TestOnePathOnlyIsReleasedAloneAfterTheHold(t *testing.T) {
 				if s.obs.Route != tc.obs.Route || s.obs.Person != tc.obs.Person || !s.obs.OccurredAt.Equal(t0) || s.text != canary {
 					t.Fatalf("released %+v with %q, want the record unchanged", s.obs, s.text)
 				}
-				if s.obs.Enforce(nil, false).RuleID != tc.obs.Enforce(nil, false).RuleID {
+				if s.obs.Enforce(nil, false, "").RuleID != tc.obs.Enforce(nil, false, "").RuleID {
 					t.Fatal("the released record lost its own decision")
 				}
 				if b.Held() != 0 {

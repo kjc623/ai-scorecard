@@ -84,9 +84,11 @@ export function createBudget({ budgetMs = DECISION_BUDGET_MS, now = nowMs } = {}
  * The first rule in `bundle` that matches `input`, or the default allow. A null bundle has no rules.
  *
  * @param {{rules?: object[], sanctioned_tools?: string[], catalog?: {app_key: string, category: string}[]}|null} bundle
- * @param {{route?: string, tool_fingerprint?: string, labels?: string[], labels_known?: boolean}} input
+ * @param {{route?: string, tool_fingerprint?: string, labels?: string[], labels_known?: boolean, user_ref?: string}} input
  *   `labels_known` is false when no classification completed: the absence of a label then says
- *   nothing, so a rule that lists labels does not match.
+ *   nothing, so a rule that lists labels does not match. `user_ref` is the person the prompt is
+ *   attributed to; the extension never knows it, and capture-core hands it a bundle whose rules no
+ *   longer name people, narrowed to the person the browser runs as.
  * @returns {{rule_id: string, action: string, message: string, link: string}}
  */
 export function evaluate(bundle, input) {
@@ -107,8 +109,9 @@ function matches(bundle, match, input) {
   const categories = list(match.categories);
   const sanction = list(match.sanction);
   const routes = list(match.routes);
+  const users = list(match.users);
   // A list that is present but not a list makes the rule not match, never match everything.
-  if ([labels, tools, categories, sanction, routes].includes(null)) return false;
+  if ([labels, tools, categories, sanction, routes, users].includes(null)) return false;
 
   if (labels.length > 0) {
     const found = Array.isArray(input.labels) ? input.labels : [];
@@ -124,6 +127,7 @@ function matches(bundle, match, input) {
     if (!sanction.includes(sanctioned ? SANCTION.SANCTIONED : SANCTION.UNSANCTIONED)) return false;
   }
   if (routes.length > 0 && !routes.includes(input.route)) return false;
+  if (users.length > 0 && !(typeof input.user_ref === 'string' && input.user_ref !== '' && users.includes(input.user_ref))) return false;
   return true;
 }
 

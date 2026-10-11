@@ -722,3 +722,134 @@ td.dp-action { text-align: right; white-space: nowrap; }
   .dialog-body { padding: 12px 18px 14px; }
   .dialog-foot { padding: 12px 18px 16px; }
 }
+
+/* ── Rules: the rulebase, read top to bottom, and the side panel a rule is edited in ──────── */
+.rl-tabs .seg-item { text-decoration: none; }
+.rl-unsaved {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px;
+  padding: 10px 12px 10px 16px; border-radius: 14px; background: var(--accent-soft); color: var(--ink); font-size: 13px;
+}
+.rl-unsaved strong { font-weight: 600; }
+.rl-unsaved-actions { display: inline-flex; gap: 8px; }
+.rl-toolbar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.rl-filter { display: flex; gap: 8px; margin: 0; flex: 1 1 320px; max-width: 520px; }
+.rl-filter .dp-input { flex: 1 1 auto; min-width: 0; height: 32px; }
+/* Positioned, so the hidden heading of the last column scrolls with the table rather than widening the page. */
+.rl-table { position: relative; }
+.rl-table th, .rl-table td { padding-left: 10px; padding-right: 10px; }
+.rl-table td { vertical-align: top; }
+.rl-table td.num { vertical-align: top; }
+.rl-num { width: 28px; font: 12px/1.9 var(--mono); color: var(--ink-soft); }
+.rl-name-cell { min-width: 200px; }
+.rl-name { font: 500 12.5px/1.9 var(--mono); color: var(--ink); overflow-wrap: anywhere; }
+.rl-open { padding: 0; border: 0; background: none; text-align: left; cursor: pointer; text-decoration: underline transparent; text-underline-offset: 3px; transition: text-decoration-color .3s var(--ease); }
+.rl-open:hover:not([disabled]) { text-decoration-color: currentColor; }
+.rl-open[disabled] { cursor: default; }
+.rl-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.rl-message { max-width: 42ch; }
+.rl-mark {
+  display: inline-block; margin-left: 8px; padding: 0 7px; border-radius: 9999px; vertical-align: 1px;
+  font: 600 10px/1.7 var(--sans); letter-spacing: .06em; text-transform: uppercase; background: var(--warn-bg); color: var(--warn);
+}
+.rl-mark-new { background: var(--accent-soft); color: var(--accent); }
+.rl-mark-off { background: var(--sunken); color: var(--ink-soft); }
+.rl-changed td:first-child { box-shadow: inset 2px 0 0 var(--accent); }
+.rl-off td:not(.rl-controls):not(:nth-child(2)) { opacity: .5; }
+.rl-default td { background: var(--tray); color: var(--ink-soft); }
+.rl-default .rl-name { color: var(--ink-soft); }
+.rl-shadow { display: block; margin-top: 4px; font-size: 11.5px; color: var(--warn); }
+.rl-any { font-size: 12.5px; color: var(--ink-faint); }
+/* A tag keeps to one line; a name too long for it ends in an ellipsis, and its title has it whole. */
+.rl-tag {
+  display: inline-block; max-width: 260px; margin: 0 4px 4px 0; padding: 1px 9px; vertical-align: top;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border-radius: 9999px; background: var(--sunken); color: var(--text); font-size: 12px; line-height: 1.7;
+}
+.rl-tag.v-mono { font-size: 11px; }
+.rl-kind { margin-left: 6px; font: 600 9.5px/1 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--ink-soft); }
+.rl-tag-gone { padding: 0 8px; border: 1px dashed var(--line-strong); background: transparent; color: var(--ink-soft); }
+.rl-action {
+  display: inline-block; padding: 0 10px; border-radius: 9999px; font: 600 11.5px/1.9 var(--sans);
+  background: var(--sunken); color: var(--text);
+}
+.rl-action-allow { background: var(--ok-bg); color: var(--ok); }
+.rl-action-warn { background: var(--warn-bg); color: var(--warn); }
+.rl-action-block { background: var(--bad-bg); color: var(--bad); }
+.rl-switch {
+  position: relative; width: 34px; height: 20px; margin-top: 2px; padding: 0; cursor: pointer; border-radius: 9999px;
+  border: 1px solid var(--line-strong); background: var(--sunken); transition: background .3s var(--ease), border-color .3s var(--ease);
+}
+.rl-switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 9999px;
+  background: var(--panel); box-shadow: 0 1px 2px rgb(0 0 0 / .2); transition: transform .3s var(--ease);
+}
+.rl-switch[aria-checked="true"] { background: var(--accent); border-color: transparent; }
+.rl-switch[aria-checked="true"]::after { transform: translateX(14px); }
+.rl-switch[disabled] { cursor: default; opacity: .55; }
+.rl-switch:focus-visible, .rl-icon:focus-visible, .rl-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.rl-controls { white-space: nowrap; text-align: right; }
+.rl-icon {
+  width: 26px; height: 26px; padding: 0; cursor: pointer; border-radius: 9999px; border: 1px solid transparent;
+  background: transparent; color: var(--ink-soft); font: 13px/1 var(--sans);
+}
+.rl-icon:hover:not([disabled]) { color: var(--ink); border-color: var(--line-strong); }
+.rl-icon[disabled] { cursor: default; opacity: .35; }
+.rl-menu { position: relative; display: inline-block; }
+.rl-menu summary { list-style: none; }
+.rl-menu summary::-webkit-details-marker { display: none; }
+.rl-menu-items {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; min-width: 168px; display: grid; padding: 5px;
+  border-radius: 14px; border: 1px solid var(--line); background: var(--panel); box-shadow: var(--shadow), 0 12px 30px -12px rgb(0 0 0 / .3);
+}
+.rl-menu-item {
+  padding: 7px 10px; border: 0; border-radius: 9px; cursor: pointer; text-align: left; background: transparent;
+  font: 500 12.5px var(--sans); color: var(--text);
+}
+.rl-menu-item:hover:not([disabled]) { background: var(--tray); color: var(--ink); }
+.rl-menu-item[disabled] { cursor: default; opacity: .4; }
+.rl-menu-danger { color: var(--bad); }
+
+/* The panel slides in from the right and runs the height of the window, as a rule editor does; its
+   body scrolls between the heading and the actions. */
+.dialog-side {
+  width: min(640px, 100vw); height: 100dvh; max-height: 100dvh; margin: 0 0 0 auto;
+  border-radius: var(--r-shell) 0 0 var(--r-shell); border-right: 0;
+}
+.dialog-side .dialog-head { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.dialog-side .dialog-body { overflow-y: auto; overscroll-behavior: contain; }
+.dialog-side .dialog-body > * { flex-shrink: 0; }
+.rl-sentence { font-size: 14px; color: var(--text); }
+.rl-sec { display: grid; gap: 8px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.rl-sec:last-child { border-bottom: 0; }
+.rl-sec-title { margin: 0; font-size: 13.5px; font-weight: 600; color: var(--ink); }
+.rl-sec .dp-note { max-width: 62ch; }
+.rl-field { display: grid; gap: 6px; }
+.rl-chips { display: flex; flex-wrap: wrap; gap: 6px; max-height: 184px; overflow-y: auto; padding: 2px; }
+.rl-chip {
+  padding: 4px 11px; cursor: pointer; border-radius: 9999px; border: 1px solid var(--line); background: var(--panel);
+  font: 500 12px var(--sans); color: var(--text); transition: background .3s var(--ease), border-color .3s var(--ease);
+}
+.rl-chip:hover { border-color: var(--line-strong); }
+.rl-chip[aria-pressed="true"] { background: var(--accent-soft); border-color: transparent; color: var(--ink); }
+.rl-chosen { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin: 0; }
+.rl-chosen-list { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.rl-chosen-list li { display: inline-flex; align-items: center; }
+.rl-chosen-list .rl-tag { margin: 0; border-radius: 9999px 0 0 9999px; }
+.rl-remove {
+  height: 22px; padding: 0 8px 0 6px; cursor: pointer; border: 0; border-radius: 0 9999px 9999px 0;
+  background: var(--sunken); color: var(--ink-soft); font: 14px/1 var(--sans);
+}
+.rl-remove:hover { color: var(--bad); }
+.rl-pick { gap: 8px; }
+.rl-pick .pick-list { max-height: 34dvh; }
+.rl-advanced { border-radius: 12px; border: 1px solid var(--line); background: var(--tray); padding: 0 12px; }
+.rl-advanced summary { padding: 10px 2px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text); }
+.rl-advanced[open] { padding-bottom: 12px; }
+@media (prefers-reduced-motion: no-preference) {
+  .dialog-side[open] { animation: slide-in .45s var(--ease) both; }
+}
+@keyframes slide-in { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }
+@media (max-width: 900px) {
+  .dialog-side { border-radius: 0; }
+  .rl-name-cell { min-width: 140px; }
+}

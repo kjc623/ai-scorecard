@@ -109,13 +109,15 @@ type Rule struct {
 }
 
 // RuleMatch is a rule's conditions: every non-empty list must match, with OR inside a list. Every
-// list is sent, empty when it matches anything.
+// list is sent, empty when it matches anything, except Users, the refs of the people the rule
+// applies to, which only a rule naming people carries.
 type RuleMatch struct {
 	Labels     []string `json:"labels"`
 	Tools      []string `json:"tools"`
 	Categories []string `json:"categories"`
 	Sanction   []string `json:"sanction"`
 	Routes     []string `json:"routes"`
+	Users      []string `json:"users,omitempty"`
 }
 
 // CustomLabel is one custom label: the device labels a prompt with Label when its text holds one of

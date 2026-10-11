@@ -138,6 +138,8 @@ var Statements = []Statement{
 	{"lock_enforcement_rules", SQLLockEnforcementRules},
 	{"delete_enforcement_rules", SQLDeleteEnforcementRules},
 	{"insert_enforcement_rule", SQLInsertEnforcementRule},
+	{"rule_user_refs", SQLRuleUserRefs},
+	{"rule_users", SQLRuleUsers},
 	{"custom_labels", SQLCustomLabels},
 	{"upsert_custom_label", SQLUpsertCustomLabel},
 	{"delete_custom_label", SQLDeleteCustomLabel},

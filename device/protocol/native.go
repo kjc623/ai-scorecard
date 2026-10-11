@@ -207,8 +207,9 @@ type PolicySyncRequest struct {
 }
 
 // PolicyBundleMessage carries the bundle in force to the extension. capture-core verifies the
-// signed envelope; Bundle is its decoded payload, exactly the JSON object the signature covered,
-// never the envelope. The extension trusts capture-core and does not verify it again.
+// signed envelope; Bundle is its decoded payload, the JSON object the signature covered with the
+// rules that name people narrowed to the person the browser runs as, never the envelope. The
+// extension trusts capture-core and does not verify it again.
 type PolicyBundleMessage struct {
 	PolicyVersion string          `json:"policy_version"`
 	Bundle        json.RawMessage `json:"bundle"`

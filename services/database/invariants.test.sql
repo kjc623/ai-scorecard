@@ -2881,7 +2881,24 @@ BEGIN
     RAISE EXCEPTION 'FAIL T79 two rules took the id allow_rest';
   EXCEPTION WHEN unique_violation THEN NULL;
   END;
-  RAISE NOTICE 'PASS T79 enforcement rules take the three actions and the five match lists, and refuse every malformed value';
+  -- Who a rule applies to: people, groups, departments, units and teams, or nobody named.
+  INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, users, enabled, updated_by)
+  VALUES (t, 9, 'for_people', 'allow',
+          '["user:u_0123456789abcdef0123456789abcdef", "group:0b6f3c2e-1d4a-4c8b-9e7f-112233445566", "team:0b6f3c2e-1d4a-4c8b-9e7f-112233445567", "department:Finance", "org_unit:OU=Sales,DC=contoso,DC=com"]',
+          false, 'admin-a');
+  DELETE FROM ops.enforcement_rule WHERE tenant_id = t AND rule_id = 'for_people';
+  FOREACH m IN ARRAY ARRAY[
+    '{}', '"user:u_0123456789abcdef0123456789abcdef"', '[1]', '["someone"]', '["user:alice@example.com"]',
+    '["group:not-a-uuid"]', '["department:"]', '["role:admin"]'
+  ]::jsonb[] LOOP
+    BEGIN
+      INSERT INTO ops.enforcement_rule (tenant_id, position, rule_id, action, users, updated_by)
+      VALUES (t, 9, 'refused', 'allow', m, 'admin-a');
+      RAISE EXCEPTION 'FAIL T79 the users % were accepted', m;
+    EXCEPTION WHEN check_violation THEN NULL;
+    END;
+  END LOOP;
+  RAISE NOTICE 'PASS T79 enforcement rules take the three actions, the five match lists and who they apply to, and refuse every malformed value';
 END $$;
 
 DO $$

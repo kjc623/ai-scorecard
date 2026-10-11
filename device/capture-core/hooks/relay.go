@@ -242,7 +242,7 @@ func (r *Relay) decide(ev protocol.HookEvaluate, peer hostinfo.User, received ti
 	if known {
 		labels = classes(classified.Response.Labels)
 	}
-	d := enforce.Evaluate(b, enforce.Input{Route: protocol.RouteToolHook, ToolFingerprint: fp, Labels: labels, LabelsKnown: known})
+	d := enforce.Evaluate(b, enforce.Input{Route: protocol.RouteToolHook, ToolFingerprint: fp, Labels: labels, LabelsKnown: known, UserRef: q.UserRef})
 
 	recorded := enforce.RecordedAction(d, canEnforce(ev.Tool, ev.Event))
 	obs := &core.Observation{
@@ -252,7 +252,7 @@ func (r *Relay) decide(ev protocol.HookEvaluate, peer hostinfo.User, received ti
 		MediaType:       promptMediaType,
 		OccurredAt:      received,
 		SizeBytes:       ev.PromptBytes,
-		Enforce:         func([]string, bool) protocol.Decision { return recorded },
+		Enforce:         func([]string, bool, string) protocol.Decision { return recorded },
 		Content:         promptReader(ev.PromptText),
 		Extract:         core.ExtractorFunc(extractPrompt),
 		OverCap:         ev.OverCap,
