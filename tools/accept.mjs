@@ -40,12 +40,29 @@ const tracked = (pattern) => run('git', ['ls-files', '--cached', '--others', '--
   .split(/\r?\n/).filter((p) => p && existsSync(join(ROOT, p)));
 const has = (cmd) => run(cmd, ['--version']).code === 0;
 
+/**
+ * What a failed step reports: the last 40 lines of its output, after the tests a Go test timeout
+ * found still running. The goroutine dump that follows a timeout would otherwise push their names
+ * out of view.
+ */
+function failureDetail(output) {
+  const lines = output.trim().split(/\r?\n/);
+  const tail = lines.slice(-40);
+  const running = [];
+  for (let i = 0; i < lines.length - tail.length; i++) {
+    if (!lines[i].startsWith('panic: test timed out')) continue;
+    // The panic's message ends at the blank line before the dump.
+    for (let j = i; j < lines.length && lines[j].trim() !== ''; j++) running.push(lines[j]);
+  }
+  return [...running, ...(running.length ? ['…'] : []), ...tail].join('\n');
+}
+
 /** Runs steps in order; the first failure fails the gate, a SKIPPED exit skips it. */
 function steps(list) {
   for (const [label, cmd, cmdArgs, cwd] of list) {
     const r = run(cmd, cmdArgs, cwd);
     if (r.code === SKIPPED) return { status: 'SKIPPED', detail: `${label}: ${r.output.trim().split('\n').pop()}` };
-    if (r.code !== 0) return { status: 'FAIL', detail: `${label}\n${r.output.trim().split('\n').slice(-40).join('\n')}` };
+    if (r.code !== 0) return { status: 'FAIL', detail: `${label}\n${failureDetail(r.output)}` };
   }
   return { status: 'PASS', detail: `${list.length} step(s)` };
 }
