@@ -4,7 +4,8 @@
 // The text read is the request's turn: the trailing user messages, after any trailing assistant
 // message that prefills the reply. Earlier user messages were sent, and recorded, with the
 // requests that first carried them. Within the turn it reads text blocks, the text of tool_result
-// and mcp_tool_result blocks, plain-text and content documents, and search results.
+// and mcp_tool_result blocks, plain-text and content documents, and search results, and names the
+// documents the turn attaches by their `title`.
 package anthropic
 
 import (
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/shadow-ai-capture/device/capture-core/dedup"
 	"github.com/shadow-ai-capture/device/capture-core/parsers"
 )
 
@@ -41,6 +43,8 @@ type block struct {
 	Text    *string         `json:"text"`
 	Content json.RawMessage `json:"content"`
 	Source  json.RawMessage `json:"source"`
+	// Title is a document's name, which clients usually set to the file's.
+	Title string `json:"title"`
 }
 
 // blocksWithoutText are the documented content block types that carry no text a person or a
@@ -106,62 +110,69 @@ func (Parser) Parse(body []byte, _ string) (parsers.Result, error) {
 	}
 
 	var texts []string
+	var files []dedup.Attachment
 	for i := start; i < end; i++ {
-		got, err := contentText(msgs[i].Content, fmt.Sprintf("message %d", i))
+		got, named, err := contentText(msgs[i].Content, fmt.Sprintf("message %d", i))
 		if err != nil {
 			return parsers.Result{}, err
 		}
 		texts = append(texts, got...)
+		files = append(files, named...)
 	}
 	if len(texts) == 0 {
-		return parsers.Result{}, parsers.ErrNoText
+		return parsers.Result{Attachments: files}, parsers.ErrNoText
 	}
-	return parsers.Result{Text: strings.Join(texts, "\n"), Shape: "messages"}, nil
+	return parsers.Result{Text: strings.Join(texts, "\n"), Attachments: files, Shape: "messages"}, nil
 }
 
-// contentText reads a message's content: a string, or an array of content blocks.
-func contentText(raw json.RawMessage, at string) ([]string, error) {
+// contentText reads a message's content: a string, or an array of content blocks. It names the
+// documents the message attaches; a tool's output is not an attachment.
+func contentText(raw json.RawMessage, at string) ([]string, []dedup.Attachment, error) {
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
-		return []string{s}, nil
+		return []string{s}, nil, nil
 	}
 	var blocks []block
 	if err := json.Unmarshal(raw, &blocks); err != nil {
-		return nil, parsers.UnknownShape(name, at+": content is neither a string nor an array of blocks")
+		return nil, nil, parsers.UnknownShape(name, at+": content is neither a string nor an array of blocks")
 	}
 	var texts []string
+	var files []dedup.Attachment
 	for j, b := range blocks {
 		at := fmt.Sprintf("%s block %d", at, j)
 		switch {
 		case b.Type == "text":
 			if b.Text == nil {
-				return nil, parsers.UnknownShape(name, at+": a text block has no text")
+				return nil, nil, parsers.UnknownShape(name, at+": a text block has no text")
 			}
 			texts = append(texts, *b.Text)
 		case b.Type == "tool_result" || b.Type == "mcp_tool_result":
 			got, err := toolResultText(b.Content, at)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			texts = append(texts, got...)
 		case b.Type == "document":
 			got, err := documentText(b.Source, at)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			texts = append(texts, got...)
+			if n := documentName(b); n != "" {
+				files = append(files, dedup.Attachment{Name: n})
+			}
 		case b.Type == "search_result":
 			got, err := textBlocks(b.Content, at)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			texts = append(texts, got...)
 		case blocksWithoutText[b.Type]:
 		default:
-			return nil, parsers.UnknownShape(name, at+" has an undocumented type")
+			return nil, nil, parsers.UnknownShape(name, at+" has an undocumented type")
 		}
 	}
-	return texts, nil
+	return texts, files, nil
 }
 
 // toolResultText reads a tool result's content: absent, a string, or an array of blocks.
@@ -251,6 +262,21 @@ func documentText(raw json.RawMessage, at string) ([]string, error) {
 	default:
 		return nil, parsers.UnknownShape(name, at+": a document source has an undocumented type")
 	}
+}
+
+// documentName is a document's title or, without one, the file name its URL ends in.
+func documentName(b block) string {
+	if b.Title != "" {
+		return b.Title
+	}
+	var src struct {
+		Type string `json:"type"`
+		URL  string `json:"url"`
+	}
+	if json.Unmarshal(b.Source, &src) != nil || src.Type != "url" {
+		return ""
+	}
+	return parsers.URLFileName(src.URL)
 }
 
 // textBlocks reads an array of text blocks (a search result's content).

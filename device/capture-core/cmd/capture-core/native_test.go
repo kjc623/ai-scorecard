@@ -239,8 +239,9 @@ func transferAttachment(t *testing.T, s *nativeSession, transfer, observation, n
 }
 
 // The bytes transferred for an observation are classified under its mode with their media type,
-// the labels join the event's classification, the descriptor travels in the envelope, and the
-// bytes themselves are neither in the spool nor still held.
+// the labels join the event's classification, the descriptor travels in the envelope with the path
+// the browser uploaded the file from, and the bytes themselves are neither in the spool nor still
+// held.
 func TestNativeSessionClassifiesAttachmentsAndDropsTheBytes(t *testing.T) {
 	svc, _ := enrolledService(t, protocol.ModeM1)
 	cl := &cardClassifier{}
@@ -250,11 +251,13 @@ func TestNativeSessionClassifiesAttachmentsAndDropsTheBytes(t *testing.T) {
 	doc := []byte("Invoice 7. Please charge card 4111 1111 1111 1111 for the balance.")
 	d := transferAttachment(t, s, "t1", "obs-att", "invoice.txt", doc)
 	stray := transferAttachment(t, s, "t2", "obs-other", "other.txt", []byte("not for this observation"))
+	placed := d
+	placed.Path = "/home/ana/Documents/invoice.txt"
 
 	body, _ := json.Marshal(protocol.ObservationMessage{
 		ClientID: "obs-att", Route: protocol.RouteExtWebRequest, ToolFingerprint: "tool-a",
 		OccurredAt: time.Now().UTC(), SizeBytes: 40, HasContent: true, Content: []byte("summarise the attached invoice"),
-		Attachments: []protocol.AttachmentDescriptor{d},
+		Attachments: []protocol.AttachmentDescriptor{placed},
 	})
 	frame, _ := json.Marshal(protocol.NativeMessage{Type: protocol.TypeObservation, Version: protocol.Version, ID: "obs-att", Body: body})
 	if answer := s.Handle(context.Background(), frame); frameType(t, answer) != protocol.TypeAck {
@@ -286,7 +289,7 @@ func TestNativeSessionClassifiesAttachmentsAndDropsTheBytes(t *testing.T) {
 	if len(env.Labels) != 1 || env.Labels[0].Class != "payment_card" {
 		t.Fatalf("labels = %+v, want the attachment's payment_card", env.Labels)
 	}
-	want := protocol.AttachmentDescriptor{Name: d.Name, SizeBytes: d.SizeBytes, ContentDigest: d.ContentDigest}
+	want := protocol.AttachmentDescriptor{Name: d.Name, Path: placed.Path, SizeBytes: d.SizeBytes, ContentDigest: d.ContentDigest}
 	if len(env.Attachments) != 1 || env.Attachments[0] != want {
 		t.Fatalf("attachments = %+v, want the descriptor %+v", env.Attachments, want)
 	}

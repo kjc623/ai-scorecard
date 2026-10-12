@@ -42,6 +42,7 @@ func (claudeCode) Parse(event string, stdin []byte) (protocol.HookEvaluate, erro
 			return protocol.HookEvaluate{}, errors.New("claude code hook: UserPromptSubmit carries no prompt")
 		}
 		ev.PromptText = *in.Prompt
+		ev.Attachments = promptFiles(*in.Prompt, in.Cwd)
 	case ClaudeCodePreToolUse:
 		if in.ToolName == "" || len(in.ToolInput) == 0 {
 			return protocol.HookEvaluate{}, errors.New("claude code hook: PreToolUse carries no tool call")

@@ -30,7 +30,8 @@ func TestHookEvaluateCapsThePrompt(t *testing.T) {
 }
 
 func TestHookEvaluateValidate(t *testing.T) {
-	ok := HookEvaluate{Tool: "claude_code", Event: "UserPromptSubmit", SessionID: "s", PromptText: "canary-text", PromptBytes: 11}
+	ok := HookEvaluate{Tool: "claude_code", Event: "UserPromptSubmit", SessionID: "s", PromptText: "canary-text", PromptBytes: 11,
+		Attachments: []AttachmentDescriptor{{Name: "plan.md", Path: "/home/u/plan.md", SizeBytes: 12}}}
 	if err := ok.Validate(); err != nil {
 		t.Fatal(err)
 	}
@@ -44,6 +45,18 @@ func TestHookEvaluateValidate(t *testing.T) {
 		"over the cap":        func(h *HookEvaluate) { h.PromptText = strings.Repeat("a", MaxHookPromptBytes+1) },
 		"over cap with text":  func(h *HookEvaluate) { h.OverCap = true },
 		"over cap, no length": func(h *HookEvaluate) { h.OverCap, h.PromptText, h.PromptBytes = true, "", 0 },
+		"too many attachments": func(h *HookEvaluate) {
+			h.Attachments = make([]AttachmentDescriptor, MaxAttachments+1)
+			for i := range h.Attachments {
+				h.Attachments[i].Name = "a"
+			}
+		},
+		"unnamed attachment":   func(h *HookEvaluate) { h.Attachments = []AttachmentDescriptor{{Path: "/x"}} },
+		"long attachment name": func(h *HookEvaluate) { h.Attachments = []AttachmentDescriptor{{Name: strings.Repeat("n", 256)}} },
+		"long attachment path": func(h *HookEvaluate) {
+			h.Attachments = []AttachmentDescriptor{{Name: "n", Path: strings.Repeat("p", 4097)}}
+		},
+		"negative size": func(h *HookEvaluate) { h.Attachments = []AttachmentDescriptor{{Name: "n", SizeBytes: -1}} },
 	} {
 		h := ok
 		mutate(&h)

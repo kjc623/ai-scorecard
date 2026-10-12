@@ -430,11 +430,22 @@ const (
 // descriptor forwarded unchanged never becomes a record ingest rejects. A file name alone is a
 // valid descriptor.
 type AttachmentDescriptor struct {
-	Name          string `json:"name"`
+	Name string `json:"name"`
+	// Path is the file's full path on the device, present only where the collector saw it: a
+	// browser form upload of a file on disk, or a file a coding tool's prompt attaches or names.
+	Path          string `json:"path,omitempty"`
 	MediaType     string `json:"media_type,omitempty"`
 	SizeBytes     int64  `json:"size_bytes,omitempty"`
 	ContentDigest string `json:"content_digest,omitempty"` // sha256:<hex>, present only when bytes were read
 }
+
+// The envelope's limits on attachments: how many one record describes, and the longest name and
+// path, in characters.
+const (
+	MaxAttachments         = 32
+	MaxAttachmentNameRunes = 255
+	MaxAttachmentPathRunes = 4096
+)
 
 // AttachmentManifest opens a chunked attachment transfer. TransferID correlates the
 // manifest, its chunks and the completion message.

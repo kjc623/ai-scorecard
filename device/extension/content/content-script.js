@@ -2,9 +2,10 @@
  * content-script.js — the isolated-world wiring, and the only code that touches a `File`.
  * `content-boot.js` loads it in a browser; the Node suite imports it directly.
  *
- *   1. a drop listener, so a dragged-and-dropped file is resolvable;
- *   2. `capture_upload_check`: resolves the page's file input or drop target to `File` objects and
- *      returns metadata only (no byte is read until a transfer is opened);
+ *   1. listeners that note each file the user hands to the page: chosen in a file input, dropped
+ *      or pasted;
+ *   2. `capture_upload_check`: returns the noted files, and any an input still holds, as metadata
+ *      only (no byte is read until a transfer is opened);
  *   3. `capture_upload_send`: runs the chunked transfer;
  *   4. `capture_warn`: the warn confirmation, rendered in the page and answered explicitly;
  *   5. `capture_block`: the notice that a request was blocked.
@@ -27,20 +28,26 @@ export function bootstrapContentScript(adapter, { document = adapter.document } 
     newIds: () => adapter.randomUUIDs(1),
   });
 
-  // 1. Files that arrive by drop never appear in an `<input type=file>`.
+  // 1. Each file as the user hands it over. The listeners run in the capture phase, before the
+  // page's own handlers can clear the input. `input` crosses shadow roots and `change` does not;
+  // both fire for one choice, and a file is noted once.
   if (document && typeof document.addEventListener === 'function') {
-    document.addEventListener(
-      'drop',
+    const listen = (type, source, filesOf) => document.addEventListener(
+      type,
       (event) => {
         try {
-          const dt = event.dataTransfer;
-          if (dt && dt.files && dt.files.length) registry.noteDrop(dt.files);
+          const files = filesOf(event);
+          if (files && files.length) registry.note(files, source);
         } catch (e) {
           /* a page that blocks the read leaves no reachable file, which is reported as such */
         }
       },
       true,
     );
+    listen('input', 'input', chosenFiles);
+    listen('change', 'input', chosenFiles);
+    listen('drop', 'drop', (event) => event.dataTransfer && event.dataTransfer.files);
+    listen('paste', 'paste', (event) => event.clipboardData && event.clipboardData.files);
   }
 
   function resolveUpload() {
@@ -87,6 +94,12 @@ export function bootstrapContentScript(adapter, { document = adapter.document } 
   });
 
   return { registry, sender, resolveUpload };
+}
+
+/** The files of the file input an event came from, or null. */
+function chosenFiles(event) {
+  const target = typeof event.composedPath === 'function' ? event.composedPath()[0] : event.target;
+  return target && target.localName === 'input' && target.type === 'file' ? target.files : null;
 }
 
 /**

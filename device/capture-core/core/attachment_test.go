@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/shadow-ai-capture/device/capture-core/dedup"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
@@ -201,5 +203,154 @@ func TestMergeLabelsStopsAtTheEnvelopeCap(t *testing.T) {
 	}
 	if got := mergeLabels(nil, many); len(got) != maxLabels {
 		t.Fatalf("merged %d labels, want the cap %d", len(got), maxLabels)
+	}
+}
+
+// A file a hook found beside the prompt, or one the prompt's text names, is recorded, and the
+// record's digest and key are the ones a route that saw only the text computes, so the two records
+// of one prompt agree.
+func TestPipelineRecordsReferencedFilesOutsideTheDigest(t *testing.T) {
+	text := []byte("explain @docs/plan.md")
+	observe := func(set func(*Observation)) map[string]json.RawMessage {
+		sink := &recordingSink{}
+		b := m1Bundle()
+		b.CustomLabels = []policy.CustomLabel{{Label: "custom_plans", FileNames: []string{"plan*"}}}
+		p := newTestPipeline(t, sink, b)
+		obs := Observation{
+			Route:           protocol.RouteToolHook,
+			Kind:            protocol.KindPrompt,
+			ToolFingerprint: "tool",
+			OccurredAt:      time.Unix(1_700_000_000, 0),
+			SizeBytes:       int64(len(text)),
+			MediaType:       "text/plain",
+			Content:         &countingReader{body: text},
+			Enforce:         decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
+			Extract: ExtractorFunc(func(b []byte, _ string) (string, []dedup.Attachment, error) {
+				return string(b), nil, nil
+			}),
+		}
+		set(&obs)
+		if _, err := p.Process(context.Background(), obs); err != nil {
+			t.Fatalf("Process: %v", err)
+		}
+		var env map[string]json.RawMessage
+		if err := json.Unmarshal(sink.last().Payload, &env); err != nil {
+			t.Fatal(err)
+		}
+		return env
+	}
+	alone := observe(func(*Observation) {})
+	for name, c := range map[string]struct {
+		set  func(*Observation)
+		want protocol.AttachmentDescriptor
+	}{
+		"found by the hook": {
+			func(o *Observation) {
+				o.Referenced = []dedup.Attachment{{Name: "plan.md", Path: "/home/u/docs/plan.md", SizeBytes: 12}}
+			},
+			protocol.AttachmentDescriptor{Name: "plan.md", Path: "/home/u/docs/plan.md", SizeBytes: 12},
+		},
+		"named by the text": {
+			func(o *Observation) {
+				o.References = func(got string) []dedup.Attachment {
+					if got != string(text) {
+						t.Errorf("References was given %q, want the extracted text", got)
+					}
+					return []dedup.Attachment{{Name: "plan.md"}}
+				}
+			},
+			protocol.AttachmentDescriptor{Name: "plan.md"},
+		},
+	} {
+		env := observe(c.set)
+		for _, f := range []string{"content_digest", "dedup_key"} {
+			if len(alone[f]) == 0 || string(alone[f]) != string(env[f]) {
+				t.Errorf("%s: %s differs: %s without the file, %s with it", name, f, alone[f], env[f])
+			}
+		}
+		var atts []protocol.AttachmentDescriptor
+		if err := json.Unmarshal(env["attachments"], &atts); err != nil {
+			t.Fatal(err)
+		}
+		if len(atts) != 1 || atts[0] != c.want {
+			t.Fatalf("%s: attachments = %+v, want %+v", name, atts, c.want)
+		}
+		if !bytes.Contains(env["labels"], []byte("custom_plans")) {
+			t.Fatalf("%s: labels = %s, want the file's custom label", name, env["labels"])
+		}
+	}
+}
+
+// At M0 the text is never read, so nothing is asked of it.
+func TestPipelineAsksNothingOfTheTextAtM0(t *testing.T) {
+	sink := &recordingSink{}
+	p := newTestPipeline(t, sink, m0Bundle())
+	_, err := p.Process(context.Background(), Observation{
+		Route: protocol.RouteToolOTel, Kind: protocol.KindPrompt, ToolFingerprint: "tool",
+		OccurredAt: time.Unix(1_700_000_000, 0), SizeBytes: 3, MediaType: "text/plain",
+		Content: &countingReader{body: []byte("@a.md")},
+		Enforce: decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
+		Extract: ExtractorFunc(func(b []byte, _ string) (string, []dedup.Attachment, error) { return string(b), nil, nil }),
+		References: func(string) []dedup.Attachment {
+			t.Fatal("References was called at M0")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A request whose text could not be read may still name its files, and the record keeps them.
+func TestPipelineKeepsTheNamesOfABodyWithoutText(t *testing.T) {
+	sink := &recordingSink{}
+	p := newTestPipeline(t, sink, m1Bundle())
+	obs := attachmentObservation(&countingReader{body: invoice})
+	obs.Attachments, obs.AttachmentContent = nil, nil
+	obs.Extract = ExtractorFunc(func([]byte, string) (string, []dedup.Attachment, error) {
+		return "", []dedup.Attachment{{Name: "q3.xlsx", SizeBytes: 9}}, errors.New("no text in this body")
+	})
+	out, err := p.Process(context.Background(), obs)
+	if err != nil {
+		t.Fatalf("Process: %v", err)
+	}
+	if !out.Degraded {
+		t.Fatal("a body without text was not recorded as degraded")
+	}
+	var env struct {
+		Attachments []protocol.AttachmentDescriptor `json:"attachments"`
+	}
+	if err := json.Unmarshal(sink.last().Payload, &env); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.Attachments) != 1 || env.Attachments[0].Name != "q3.xlsx" {
+		t.Fatalf("attachments = %+v, want the file the body named", env.Attachments)
+	}
+}
+
+func TestWireAttachmentsKeepsTheRecordValid(t *testing.T) {
+	long := strings.Repeat("é", protocol.MaxAttachmentNameRunes+10)
+	var many []dedup.Attachment
+	for range protocol.MaxAttachments + 3 {
+		many = append(many, dedup.Attachment{Name: "a.txt", Path: "/" + strings.Repeat("p", 2000)})
+	}
+	many[0] = dedup.Attachment{Name: long, Path: "/" + strings.Repeat("p", protocol.MaxAttachmentPathRunes), SizeBytes: -4}
+	many[1] = dedup.Attachment{Name: ""}
+	got := wireAttachments(many)
+	if len(got) != protocol.MaxAttachments {
+		t.Fatalf("%d attachments, want the cap %d", len(got), protocol.MaxAttachments)
+	}
+	if first := got[0]; utf8.RuneCountInString(first.Name) != protocol.MaxAttachmentNameRunes || !strings.HasPrefix(long, first.Name) || first.Path != "" || first.SizeBytes != 0 {
+		t.Fatalf("first = %d-character name, path %q, size %d; want the name cut to the limit, no path, size 0", utf8.RuneCountInString(first.Name), first.Path, first.SizeBytes)
+	}
+	total := 0
+	for _, a := range got {
+		if a.Name == "" {
+			t.Fatal("an unnamed attachment was recorded")
+		}
+		total += len(a.Path)
+	}
+	if total == 0 || total > maxPathBytes {
+		t.Fatalf("the record carries %d bytes of paths, want some and at most %d", total, maxPathBytes)
 	}
 }

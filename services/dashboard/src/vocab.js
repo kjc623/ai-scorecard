@@ -185,7 +185,7 @@ export const SOURCES = Object.freeze({
     kind: 'aggregate',
     label: 'One person over time',
     dimensions: Object.freeze(['bucket', 'subject']),
-    measures: Object.freeze(['submissions', 'bytes_total', 'tools_used', 'block_events']),
+    measures: Object.freeze(['submissions', 'bytes_total', 'tools_used', 'block_events', 'attachments', 'content_prompts']),
     answers: 'Q6',
     subjectBearing: true,
     requiresSubjectFilter: true,

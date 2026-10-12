@@ -133,3 +133,49 @@ func TestBlockResponseIsTheAPIErrorShape(t *testing.T) {
 		t.Fatalf("body = %s\nwant   %s", body, want)
 	}
 }
+
+// The turn names the files it attaches by display name or by the file a URI ends in; a Files API
+// URI ends in an id, which names nothing.
+func TestTheTurnNamesItsFiles(t *testing.T) {
+	for path, body := range fixtures(t) {
+		res, err := Parser{}.Parse(body, "application/json")
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		if len(res.Attachments) != 0 {
+			t.Errorf("%s: files %+v, want none: no part is named", path, res.Attachments)
+		}
+	}
+	body := `{"contents":[{"role":"user","parts":[{"text":"compare"},` +
+		`{"inline_data":{"mime_type":"application/pdf","data":"JVBERi0xLjQK","display_name":"q3.pdf"}},` +
+		`{"fileData":{"mimeType":"application/pdf","fileUri":"gs://bucket/reports/q4.pdf"}},` +
+		`{"fileData":{"mimeType":"application/pdf","fileUri":"https://generativelanguage.googleapis.com/v1beta/files/abc123"}}]}]}`
+	res, err := Parser{}.Parse([]byte(body), "application/json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []dedup.Attachment{{Name: "q3.pdf"}, {Name: "q4.pdf"}}
+	if !reflect.DeepEqual(res.Attachments, want) {
+		t.Fatalf("files %+v, want %+v", res.Attachments, want)
+	}
+}
+
+func TestUploadNamesTheFileItsMetadataNames(t *testing.T) {
+	for _, c := range []struct {
+		body string
+		want []dedup.Attachment
+	}{
+		{`{"file":{"display_name":"board deck.pptx"}}`, []dedup.Attachment{{Name: "board deck.pptx"}}},
+		{`{"file":{"displayName":"notes.txt","mimeType":"text/plain"}}`, []dedup.Attachment{{Name: "notes.txt"}}},
+		{`{"file":{}}`, nil},
+		{"%PDF-1.4 the file's bytes", nil},
+	} {
+		res, err := Upload{}.Parse([]byte(c.body), "application/json")
+		if !errors.Is(err, parsers.ErrNoText) || !reflect.DeepEqual(res.Attachments, c.want) {
+			t.Errorf("%s: %+v, %v; want %+v and ErrNoText", c.body, res.Attachments, err, c.want)
+		}
+	}
+	if !(Upload{}).Match(host, "/upload/v1beta/files") || (Upload{}).Match(host, "/v1beta/files") {
+		t.Fatal("Upload matches other than the upload method")
+	}
+}

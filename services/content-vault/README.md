@@ -19,7 +19,12 @@ can decrypt it. It has **internal ingress only**: no device, browser or edge rou
   forwards from the browser. Redeeming it claims the grant, decrypts and audits in one transaction.
 - **Search.** query-api forwards `POST /v1/content-search` (role `analyst`, `content_reader` or `admin`).
   The
-  tier comes from `ops.tenant.content_search`; the audit row commits with the results.
+  tier comes from `ops.tenant.content_search`; the audit row commits with the results. The terms
+  form matches prompt text by word and an attachment name by containing every term, since a
+  filename is one token to full-text search. The attachment names a device reports with a prompt
+  event are indexed by `ingest.record_event()` as the event is recorded, each by its path where the
+  device saw one. A prompt hit's snippet is a fragment around the match; an attachment hit's is
+  the whole name or path, cut from its start when it is long so the file's name stays.
 - **Subject export.** query-api forwards `POST /v1/content/subject-export` (role `admin`). The vault
   decrypts every stored prompt of one subject and returns them, so the archive query-api assembles
   can hold the prompts a data-subject request is entitled to.

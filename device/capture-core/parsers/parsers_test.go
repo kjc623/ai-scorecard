@@ -1,7 +1,11 @@
 package parsers
 
 import (
+	"bytes"
 	"errors"
+	"mime/multipart"
+	"net/textproto"
+	"reflect"
 	"testing"
 
 	"github.com/shadow-ai-capture/device/capture-core/dedup"
@@ -125,5 +129,104 @@ func TestGenericBlockResponseIsPlainText(t *testing.T) {
 	}
 	if _, _, body := (Generic{}).BlockResponse("Not here.", ""); string(body) != "Not here." {
 		t.Fatalf("body without a link = %q", body)
+	}
+}
+
+func TestGenericNamesTheFilesAMessageAttaches(t *testing.T) {
+	body := `{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"summarise"},` +
+		`{"type":"file","file":{"filename":"q3.pdf","file_data":"data:application/pdf;base64,JVBERi0xLjQK"}},` +
+		`{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}]}`
+	res, err := Generic{}.Parse([]byte(body), "application/json")
+	if err != nil || res.Text != "summarise" || len(res.Attachments) != 1 || res.Attachments[0].Name != "q3.pdf" {
+		t.Fatalf("got %+v, %v; want the text and q3.pdf", res, err)
+	}
+	only := `{"messages":[{"role":"user","content":[{"type":"document","title":"msa.pdf","source":{"type":"base64","data":"JVBERi0xLjQK"}}]}]}`
+	res, err = Generic{}.Parse([]byte(only), "application/json")
+	if !errors.Is(err, ErrNoText) || len(res.Attachments) != 1 || res.Attachments[0].Name != "msa.pdf" {
+		t.Fatalf("a message of one document gave %+v, %v; want its name and ErrNoText", res, err)
+	}
+}
+
+// A body that registers a file for upload by name, as ChatGPT's apps do before sending its bytes,
+// names the file.
+func TestGenericNamesTheFileABodyRegisters(t *testing.T) {
+	res, err := Generic{}.Parse([]byte(`{"file_name":"Q3 forecast.xlsx","file_size":2048,"use_case":"my_files"}`), "application/json")
+	if want := (dedup.Attachment{Name: "Q3 forecast.xlsx", SizeBytes: 2048}); !errors.Is(err, ErrNoText) ||
+		len(res.Attachments) != 1 || res.Attachments[0] != want {
+		t.Fatalf("got %+v, %v; want %+v and ErrNoText", res, err, want)
+	}
+}
+
+func TestGenericNamesTheFilesAPromptLists(t *testing.T) {
+	body := `{"prompt":"summarise these","attachments":[` +
+		`{"file_name":"notes.txt","file_type":"text/plain","file_size":120,"extracted_content":"ACME-CANARY"},` +
+		`{"file_name":"","file_size":4000,"extracted_content":"pasted"}],"files":["0b6c2f9e"]}`
+	res, err := Generic{}.Parse([]byte(body), "application/json")
+	want := []dedup.Attachment{{Name: "notes.txt", MediaType: "text/plain", SizeBytes: 120}}
+	if err != nil || res.Text != "summarise these" || !reflect.DeepEqual(res.Attachments, want) {
+		t.Fatalf("got %+v, %v; want the prompt with %+v", res, err, want)
+	}
+}
+
+func TestGenericNamesTheFilesAFormUploads(t *testing.T) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	_ = w.WriteField("purpose", "assistants")
+	h := textproto.MIMEHeader{}
+	h.Set("Content-Disposition", `form-data; name="file"; filename="C:\\Users\\u\\Q3 forecast.xlsx"`)
+	h.Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	part, _ := w.CreatePart(h)
+	_, _ = part.Write([]byte("0123456789"))
+	_ = w.Close()
+
+	res, err := Generic{}.Parse(buf.Bytes(), w.FormDataContentType())
+	if !errors.Is(err, ErrNoText) {
+		t.Fatalf("err = %v, want ErrNoText: a form's text is not read", err)
+	}
+	want := dedup.Attachment{Name: "Q3 forecast.xlsx", MediaType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", SizeBytes: 10}
+	if len(res.Attachments) != 1 || res.Attachments[0] != want {
+		t.Fatalf("files %+v, want %+v", res.Attachments, want)
+	}
+	cut := buf.Bytes()[:bytes.Index(buf.Bytes(), []byte("0123"))+2]
+	if res, _ := (Generic{}).Parse(cut, w.FormDataContentType()); len(res.Attachments) != 1 || res.Attachments[0].Name != "Q3 forecast.xlsx" || res.Attachments[0].SizeBytes != 0 {
+		t.Fatalf("a form cut at the cap gave %+v, want the file named without a size", res.Attachments)
+	}
+}
+
+// A prompt's @-mentions name files from the text alone: a relative mention by its name, an absolute
+// one with its path. A folder, an agent, an MCP resource, an address and a mention repeated name
+// nothing more.
+func TestMentionedFilesNamesTheFilesAPromptMentions(t *testing.T) {
+	prompt := `Compare @src/app.go#L3 with @/home/ana/q3.xlsx, @"C:\Users\ana\deck one.pptx" and @'notes.md'. ` +
+		`Skip @docs, @agent-reviewer, @github:repos/o/r/issues/1, ana@example.com and @src/app.go.`
+	want := []dedup.Attachment{
+		{Name: "app.go"},
+		{Name: "q3.xlsx", Path: "/home/ana/q3.xlsx"},
+		{Name: "deck one.pptx", Path: `C:\Users\ana\deck one.pptx`},
+		{Name: "notes.md"},
+	}
+	if got := MentionedFiles(prompt); !reflect.DeepEqual(got, want) {
+		t.Fatalf("MentionedFiles\n%+v\nwant\n%+v", got, want)
+	}
+	if got := MentionedFiles("no mentions here"); got != nil {
+		t.Fatalf("MentionedFiles = %+v, want none", got)
+	}
+}
+
+// A path names its last segment, on either separator, and keeps the path when it is absolute.
+func TestFileAt(t *testing.T) {
+	for path, want := range map[string]dedup.Attachment{
+		"/home/ana/q3.csv":             {Name: "q3.csv", Path: "/home/ana/q3.csv"},
+		`C:\Users\ana\q3.csv`:          {Name: "q3.csv", Path: `C:\Users\ana\q3.csv`},
+		`\\server\share\q3.csv`:        {Name: "q3.csv", Path: `\\server\share\q3.csv`},
+		"src/q3.csv":                   {Name: "q3.csv"},
+		"vscode-remote://wsl/a/q3.csv": {Name: "q3.csv"},
+	} {
+		if got, ok := FileAt(path); !ok || got != want {
+			t.Errorf("FileAt(%q) = %+v, %v; want %+v", path, got, ok, want)
+		}
+	}
+	if _, ok := FileAt("/home/ana/"); ok {
+		t.Error("a folder named a file")
 	}
 }

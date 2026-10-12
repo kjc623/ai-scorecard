@@ -483,3 +483,42 @@ func TestABlockTheToolCannotEnforceIsRecordedLogged(t *testing.T) {
 		t.Fatalf("record = %s", entries[0].Payload)
 	}
 }
+
+// The files a prompt attaches are recorded with their paths, and a rule on the custom label their
+// names carry decides the prompt.
+func TestThePromptsFilesAreRecordedAndDecideRules(t *testing.T) {
+	b := testBundle(protocol.ModeM1, policy.Rule{
+		RuleID: "block_forecasts", Action: policy.RuleBlock,
+		Match: policy.RuleMatch{Labels: []string{"custom_forecasts"}},
+	})
+	b.CustomLabels = []policy.CustomLabel{{Label: "custom_forecasts", FileNames: []string{"*forecast*"}}}
+	sink := &memSink{}
+	r := newRelay(t, newPipeline(t, sink, b), &stubClassifier{})
+
+	ev := protocol.HookEvaluate{Tool: "claude_code", Event: "prompt", SessionID: "session-1", PromptText: "summarise @q3-forecast.xlsx",
+		Attachments: []protocol.AttachmentDescriptor{{Name: "q3-forecast.xlsx", Path: "/home/u/q3-forecast.xlsx", SizeBytes: 9}}}
+	ev.CapPrompt()
+	body, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer, served := ask(t, r, protocol.NativeMessage{Type: protocol.TypeHookEvaluate, Version: protocol.Version, ID: "1", Body: body})
+	if d := decision(t, answer); d.Action != protocol.HookBlock || d.RuleID != "block_forecasts" {
+		t.Fatalf("decision = %+v, want the file's rule to block", d)
+	}
+	waitServed(t, served)
+
+	var env struct {
+		Attachments []protocol.AttachmentDescriptor `json:"attachments"`
+		Labels      []protocol.Label                `json:"labels"`
+	}
+	if err := json.Unmarshal(sink.all()[0].Payload, &env); err != nil {
+		t.Fatal(err)
+	}
+	if len(env.Attachments) != 1 || env.Attachments[0] != ev.Attachments[0] {
+		t.Fatalf("attachments = %+v, want %+v", env.Attachments, ev.Attachments)
+	}
+	if !slices.ContainsFunc(env.Labels, func(l protocol.Label) bool { return l.Class == "custom_forecasts" }) {
+		t.Fatalf("labels = %+v, want the file's custom label", env.Labels)
+	}
+}

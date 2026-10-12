@@ -321,6 +321,26 @@ function exploreHitMeta(hit) {
   return `<span class="x-hit-meta x-mono">${parts.map((part) => `<span>${escapeHtml(part)}</span>`).join('<span class="x-hit-sep" aria-hidden="true">|</span>')}</span>`;
 }
 
+/**
+ * An attached file's hit as the file's name and the folder it was attached from: the index holds a
+ * file's path where the device saw one. A highlight across the last separator is closed in the
+ * folder and opened again in the name.
+ */
+function fileHitParts(snippet) {
+  const marked = snippet.replaceAll('</em>', '\u0000');
+  const at = Math.max(marked.lastIndexOf('/'), marked.lastIndexOf('\\'));
+  if (at < 0) return { name: snippet, folder: '' };
+  // The folder is shown without its trailing separator, except a root's (`/`, `C:\`).
+  const root = at === 0 || marked[at - 1] === ':';
+  let folder = marked.slice(0, root ? at + 1 : at).replaceAll('\u0000', '</em>');
+  let name = marked.slice(at + 1).replaceAll('\u0000', '</em>');
+  if (folder.split('<em>').length > folder.split('</em>').length) {
+    folder += '</em>';
+    name = `<em>${name}`;
+  }
+  return { name, folder };
+}
+
 /** The number of hits one page asks for. */
 function exploreTextPageSize(text) {
   const size = text.pageSize ?? TEXT_PAGE_SIZES[TEXT_PAGE_SIZES.length - 1];
@@ -345,12 +365,13 @@ function exploreTextIgnored(text) {
 
 /**
  * The prompt-text search: its hits, or why there are none. It sits apart from the list because it
- * is a different read. A hit is a fragment and a reference; opening it reads the event.
+ * is a different read. A hit is a fragment of a prompt or the name of a file attached to one, and a
+ * reference; opening it reads the event.
  */
 export function renderExploreText(state) {
   const text = state.text;
   if (text.status === 'idle') return '';
-  const head = `<div class="x-text-head"><h2>Prompts containing <span class="x-mono">${escapeHtml(text.query)}</span></h2>`
+  const head = `<div class="x-text-head"><h2>Prompts and files containing <span class="x-mono">${escapeHtml(text.query)}</span></h2>`
     + `<div class="x-text-tools">${exploreTextPageSize(text)}`
     + '<button type="button" class="x-btn x-btn-quiet" data-act="text-clear">Back to the list</button></div></div>';
   const ignored = exploreTextIgnored(text);
@@ -361,15 +382,22 @@ export function renderExploreText(state) {
   }
   if (text.status === 'refused') return `<div class="x-text-panel">${head}${ignored}${exploreContentProblem(text.problem)}</div>`;
   if (text.hits.length === 0) {
-    return `<div class="x-text-panel">${head}${ignored}<p class="x-sub">No uploaded prompt contains every one of those words.</p></div>`;
+    return `<div class="x-text-panel">${head}${ignored}<p class="x-sub">No uploaded prompt, and no attached file's name, contains every one of those words.</p></div>`;
   }
   const rows = text.hits.map((hit) => {
     // The fragment is escaped whole; only the search's own highlight marks are put back.
-    const snippet = escapeHtml(hit.snippet).replaceAll('&lt;em&gt;', '<em>').replaceAll('&lt;/em&gt;', '</em>');
+    const marked = (fragment) => escapeHtml(fragment).replaceAll('&lt;em&gt;', '<em>').replaceAll('&lt;/em&gt;', '</em>');
+    let body = `<span class="x-hit-snippet">${marked(hit.snippet)}</span>`;
+    if (hit.fileName) {
+      const { name, folder } = fileHitParts(hit.snippet);
+      body = '<span class="x-hit-kind">Attached file</span>'
+        + `<span class="x-hit-snippet">${marked(name)}</span>`
+        + (folder ? `<span class="x-hit-folder">From <span class="x-mono">${marked(folder)}</span></span>` : '');
+    }
     return `<li><button type="button" class="x-hit" data-act="hit" data-submission="${escapeHtml(hit.submissionId)}" aria-pressed="${hit.submissionId === state.detail.submissionId}">`
-      + `<span class="x-hit-snippet">${snippet}</span>${exploreHitMeta(hit)}</button></li>`;
+      + `${body}${exploreHitMeta(hit)}</button></li>`;
   }).join('');
-  const count = `<p class="x-text-count x-sub">Showing ${escapeHtml(formatCount(text.hits.length))} matching prompt${text.hits.length === 1 ? '' : 's'}${text.nextCursor ? ', more available' : ''}.</p>`;
+  const count = `<p class="x-text-count x-sub">Showing ${escapeHtml(formatCount(text.hits.length))} match${text.hits.length === 1 ? '' : 'es'}${text.nextCursor ? ', more available' : ''}.</p>`;
   const foot = text.moreProblem
     ? exploreContentProblem(text.moreProblem)
     : (text.nextCursor

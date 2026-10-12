@@ -72,7 +72,9 @@ The device resolves the mode before it reads anything.
    key; the MSI pins the public half, so a device accepts only its own environment's policy.
 4. **Capture.** A provider observes a submission, the policy engine resolves its mode, classifier-host
    labels the prompt and any attached documents, and the event envelope goes into the spool.
-   Attachment bytes stay on the device; their name, size, digest and labels travel in the envelope.
+   Attachment bytes stay on the device; their name, size, digest and labels travel in the envelope,
+   with the file's path where the collector saw one (a browser form upload, a file a coding tool's
+   prompt names).
 5. **Deliver.** The drainer sends batches to `/v1/events` over mutual TLS. Application Gateway
    terminates TLS and forwards the certificate; ingest-api verifies it against the device CA, checks
    the credential and the tenant's region, validates each envelope, and writes it idempotently.
@@ -113,7 +115,8 @@ entry first and serves the content once, through a short-lived single-use URL th
 server forwards; an optional case reference and justification are recorded with it. Search over
 content is a per-tenant setting
 (`disabled`, `attachment_names`, `full_text`); with `full_text` content-vault indexes prompt text in
-`ingest.search_text` as it stores it.
+`ingest.search_text` as it stores it, and from `attachment_names` up `ingest.record_event()` indexes
+the attachment filenames a prompt event carries, each by its path where the device saw one.
 
 ## Product rules
 

@@ -129,6 +129,8 @@ export function createPipeline({
     counters.inc(COUNTER.OBSERVED);
     const url = detail.url;
     const host = hostOf(url);
+    // A file upload is not itself a submission, but it is where the browser names the file's path.
+    if (attachments) attachments.noteUploads(detail);
 
     // Shape classification comes before the mode is consulted for content.
     const request = shapeInput(detail, body, tab_context);
@@ -219,7 +221,7 @@ export function createPipeline({
     // for the files: `emitted` settles once the observation is queued.
     const emitted =
       attachments && modeReadsContent(mode) && Number.isInteger(detail.tabId) && detail.tabId >= 0
-        ? attachThenEmit(observation, detail.tabId)
+        ? attachThenEmit(observation, detail.tabId, detail.frameId)
         : Promise.resolve(emit(observation));
 
     return {
@@ -517,12 +519,12 @@ export function createPipeline({
   }
 
   /**
-   * Transfer the sending tab's files to capture-core, then emit the observation with their
+   * Transfer the sending frame's files to capture-core, then emit the observation with their
    * descriptors. The observation is emitted whatever happens to the files.
    */
-  async function attachThenEmit(observation, tabId) {
+  async function attachThenEmit(observation, tabId, frameId) {
     try {
-      const found = await attachments.collect({ tabId, observationId: observation.client_id });
+      const found = await attachments.collect({ tabId, frameId, observationId: observation.client_id });
       if (found.attachments.length) observation.attachments = found.attachments;
       if (found.reachable) observation.page_context_attachments = true;
       if (validateObservation(observation)) {

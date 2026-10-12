@@ -232,7 +232,8 @@ func (r *Relay) decide(ev protocol.HookEvaluate, peer hostinfo.User, received ti
 	}
 	res := r.cfg.Pipeline.ResolveMode(q)
 
-	// At m0 nothing is classified, so a rule that lists labels cannot match.
+	// At m0 nothing is classified, so a rule that lists labels cannot match. Above it, the files
+	// the prompt attaches carry the custom labels their names match, as they do on the record.
 	var labels []string
 	var classified *core.Classified
 	if res.ReadsContent() && !ev.OverCap && ev.PromptText != "" {
@@ -241,6 +242,18 @@ func (r *Relay) decide(ev protocol.HookEvaluate, peer hostinfo.User, received ti
 	known := classified != nil
 	if known {
 		labels = classes(classified.Response.Labels)
+	}
+	files := referenced(ev.Attachments)
+	if res.ReadsContent() && len(files) > 0 {
+		names := make([]string, 0, len(files))
+		for _, f := range files {
+			names = append(names, f.Name)
+		}
+		for _, l := range b.FileLabels(names) {
+			if !slices.Contains(labels, l) {
+				labels = append(labels, l)
+			}
+		}
 	}
 	d := enforce.Evaluate(b, enforce.Input{Route: protocol.RouteToolHook, ToolFingerprint: fp, Labels: labels, LabelsKnown: known, UserRef: q.UserRef})
 
@@ -256,6 +269,7 @@ func (r *Relay) decide(ev protocol.HookEvaluate, peer hostinfo.User, received ti
 		Content:         promptReader(ev.PromptText),
 		Extract:         core.ExtractorFunc(extractPrompt),
 		OverCap:         ev.OverCap,
+		Referenced:      files,
 		Person:          person,
 		// The record takes the decision's classification: classifying the prompt again would
 		// queue in front of the next hook's classification on the one classifier host.
@@ -263,6 +277,18 @@ func (r *Relay) decide(ev protocol.HookEvaluate, peer hostinfo.User, received ti
 		ClientID:   ev.SessionID,
 	}
 	return protocol.HookDecision{Action: hookAction(d.Action), Message: d.Message, Link: d.Link, RuleID: d.RuleID}, obs
+}
+
+// referenced is the files a hook found beside the prompt, as the pipeline records them.
+func referenced(atts []protocol.AttachmentDescriptor) []dedup.Attachment {
+	if len(atts) == 0 {
+		return nil
+	}
+	out := make([]dedup.Attachment, 0, len(atts))
+	for _, a := range atts {
+		out = append(out, dedup.Attachment{Name: a.Name, Path: a.Path, SizeBytes: a.SizeBytes})
+	}
+	return out
 }
 
 // canEnforce reports whether the tool stops the action when the event's hook blocks it. A tool with

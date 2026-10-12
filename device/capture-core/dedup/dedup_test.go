@@ -205,3 +205,14 @@ func TestContentDigestAttachmentReadabilityIsPartOfTheDigest(t *testing.T) {
 		t.Fatal("readable and unreadable attachment bytes produced the same digest; the server could not tell a read attachment from an unread one")
 	}
 }
+
+func TestContentDigestLeavesThePathOut(t *testing.T) {
+	named := []Attachment{{Name: "msa.pdf", MediaType: "application/pdf", SizeBytes: 10}}
+	located := []Attachment{{Name: "msa.pdf", Path: `C:\Users\u\Contracts\msa.pdf`, MediaType: "application/pdf", SizeBytes: 10}}
+	if ContentDigest("hello", named) != ContentDigest("hello", located) {
+		t.Fatal("a route that saw where the file came from computed another digest than one that did not")
+	}
+	if NamesDigest(named) != NamesDigest(located) {
+		t.Fatal("the path changed the names digest")
+	}
+}

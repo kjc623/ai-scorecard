@@ -25,12 +25,15 @@ export function createChromeAdapter(scope = globalThis) {
     return out;
   }
 
-  /** Chrome hands `bytes` as an ArrayBuffer; copy it, because a detached buffer is silent data loss. */
+  /**
+   * Chrome hands `bytes` as an ArrayBuffer; copy it, because a detached buffer is silent data loss.
+   * A file the request uploads from disk is a part with its path in `file` and no bytes.
+   */
   function rawParts(raw) {
     if (!Array.isArray(raw)) return null;
     return raw.map((p) => {
       const src = p && p.bytes;
-      if (!src) return { bytes: null };
+      if (!src) return p && typeof p.file === 'string' && p.file !== '' ? { bytes: null, file: p.file } : { bytes: null };
       if (src instanceof ArrayBuffer) return { bytes: src.slice(0) };
       if (ArrayBuffer.isView(src)) {
         return { bytes: new Uint8Array(src.buffer.slice(src.byteOffset, src.byteOffset + src.byteLength)) };

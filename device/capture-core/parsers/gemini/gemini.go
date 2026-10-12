@@ -1,15 +1,18 @@
 // Package gemini parses requests to the Gemini API's generateContent and streamGenerateContent
-// methods on generativelanguage.googleapis.com, v1 and v1beta.
+// methods on generativelanguage.googleapis.com, v1 and v1beta, and (Upload) the uploads of its Files
+// API.
 //
 // The text read is the request's turn: the trailing user contents (role `user`, or unset), after
 // any trailing `model` content. Earlier contents were sent, and recorded, with the requests that
 // first carried them. Within the turn it reads text parts and the string values of function
-// responses. Field names are accepted in both of the API's JSON spellings (`inlineData` and
-// `inline_data`).
+// responses, and names the files the turn attaches by their `displayName` or the file their URI
+// ends in. An upload carries no text; it is named by the `displayName` its metadata gives. Field
+// names are accepted in both of the API's JSON spellings (`inlineData` and `inline_data`).
 package gemini
 
 import (
 	"bytes"
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,6 +21,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/shadow-ai-capture/device/capture-core/dedup"
 	"github.com/shadow-ai-capture/device/capture-core/parsers"
 )
 
@@ -107,6 +111,7 @@ func (Parser) Parse(body []byte, _ string) (parsers.Result, error) {
 	}
 
 	var texts []string
+	var files []dedup.Attachment
 	for i := start; i < end; i++ {
 		for j, p := range *contents[i].Parts {
 			got, err := partText(p, fmt.Sprintf("content %d part %d", i, j))
@@ -114,12 +119,47 @@ func (Parser) Parse(body []byte, _ string) (parsers.Result, error) {
 				return parsers.Result{}, err
 			}
 			texts = append(texts, got...)
+			if n := partName(p); n != "" {
+				files = append(files, dedup.Attachment{Name: n})
+			}
 		}
 	}
 	if len(texts) == 0 {
-		return parsers.Result{}, parsers.ErrNoText
+		return parsers.Result{Attachments: files}, parsers.ErrNoText
 	}
-	return parsers.Result{Text: strings.Join(texts, "\n"), Shape: shape}, nil
+	return parsers.Result{Text: strings.Join(texts, "\n"), Attachments: files, Shape: shape}, nil
+}
+
+// fileData is the part of a Blob, a FileData or an uploaded File that can name the file.
+type fileData struct {
+	DisplayName      string `json:"displayName"`
+	DisplayNameSnake string `json:"display_name"`
+	FileURI          string `json:"fileUri"`
+	FileURISnake     string `json:"file_uri"`
+}
+
+// name is the display name or, without one, the file name the URI ends in. A Files API URI ends
+// in the file's id, which names nothing.
+func (f fileData) name() string {
+	for _, n := range []string{f.DisplayName, f.DisplayNameSnake} {
+		if n != "" {
+			return n
+		}
+	}
+	return parsers.URLFileName(cmp.Or(f.FileURI, f.FileURISnake))
+}
+
+// partName is the name of the file an inline-data or file-data part attaches, "" for any other.
+func partName(p map[string]json.RawMessage) string {
+	for _, keys := range [][2]string{{"inlineData", "inline_data"}, {"fileData", "file_data"}} {
+		if raw, ok := field(p, keys[0], keys[1]); ok {
+			var f fileData
+			if json.Unmarshal(raw, &f) == nil {
+				return f.name()
+			}
+		}
+	}
+	return ""
 }
 
 // partText reads one part by the data field it carries.

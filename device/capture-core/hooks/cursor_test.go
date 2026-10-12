@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -57,7 +59,12 @@ func TestCursorParsesTheDocumentedInput(t *testing.T) {
 				Tool: "cursor", Event: c.event, SessionID: cursorConversation,
 				ToolName: c.toolName, PromptText: c.prompt, PromptBytes: int64(len(c.prompt)),
 			}
-			if ev != want {
+			// The attached file is named and placed even where it is not on disk; the attached rule is
+			// Cursor's own. Its Windows path is a path only on Windows.
+			if c.event == "beforeSubmitPrompt" && runtime.GOOS == "windows" {
+				want.Attachments = []protocol.AttachmentDescriptor{{Name: "deploy.ps1", Path: `C:\work\app\deploy.ps1`}}
+			}
+			if !reflect.DeepEqual(ev, want) {
 				t.Fatalf("parsed\n%+v\nwant\n%+v", ev, want)
 			}
 			if err := ev.Validate(); err != nil {

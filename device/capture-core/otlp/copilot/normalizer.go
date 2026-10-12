@@ -13,6 +13,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"html"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -21,9 +23,11 @@ import (
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
+	"github.com/shadow-ai-capture/device/capture-core/dedup"
 	"github.com/shadow-ai-capture/device/capture-core/enforce"
 	"github.com/shadow-ai-capture/device/capture-core/otlp"
 	"github.com/shadow-ai-capture/device/capture-core/otlp/genai"
+	"github.com/shadow-ai-capture/device/capture-core/parsers"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -189,6 +193,7 @@ func (n *Normalizer) prompt(ctx context.Context, from otlp.Sender, fp string, at
 		Enforce:         n.enforce(fp),
 		Content:         content,
 		Extract:         genai.ExtractText,
+		References:      attachedFiles,
 		Person:          from.Person,
 	})
 	switch {
@@ -215,6 +220,25 @@ func (n *Normalizer) promptText(a attrs) (core.ContentReader, int64) {
 	}
 	s := a.str(attrUserRequest)
 	return text(s), int64(len(s))
+}
+
+// attachmentPath is the filePath of an <attachment> tag: Copilot Chat sends the model each file
+// attached to a message inside one.
+var attachmentPath = regexp.MustCompile(`<attachment\s[^>]*?\bfilePath="([^"]+)"`)
+
+// attachedFiles names the files the prompt's <attachment> tags carry, with their paths, and those
+// it @-mentions, as the Copilot CLI attaches a file.
+func attachedFiles(text string) []dedup.Attachment {
+	var out []dedup.Attachment
+	for _, m := range attachmentPath.FindAllStringSubmatch(text, -1) {
+		if f, ok := parsers.FileAt(html.UnescapeString(m[1])); ok {
+			out = parsers.AppendFile(out, f)
+		}
+	}
+	for _, f := range parsers.MentionedFiles(text) {
+		out = parsers.AppendFile(out, f)
+	}
+	return out
 }
 
 // text is prompt text behind a reader; empty means the span carries none.

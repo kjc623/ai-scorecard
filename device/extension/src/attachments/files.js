@@ -2,6 +2,10 @@
  * attachments/files.js — the page-side file registry. Runs in the content script's isolated world,
  * the only place a `File` object exists.
  *
+ *   - Noted as handed over: a file is noted when the user chooses it in a file input, drops it or
+ *     pastes it, because a chat page usually uploads a chosen file at once and then clears its
+ *     input (so the same file can be chosen again): by the time the prompt is sent, the input
+ *     holds nothing. A file still held by an input is offered too.
  *   - Snapshot on send, never read-through: `collectCandidates()` reads metadata only and keeps the
  *     page's `File` reference; no byte is read until a transfer is opened.
  *   - `File` references are held, not copied, and `forget()` drops one when its transfer ends. A
@@ -18,8 +22,11 @@
  * @property {string} media_type
  * @property {number} size_bytes
  * @property {number} last_modified
- * @property {string} source           'input' | 'drop' | 'clipboard'
+ * @property {string} source           'input' | 'drop' | 'paste'
  */
+
+/** The order sources are named in a check's reason. */
+const SOURCES = Object.freeze(['drop', 'paste', 'input']);
 
 /**
  * Build the page-side file registry.
@@ -30,16 +37,17 @@
 export function createFileRegistry({ document = globalThis.document, maxFiles = 32, onReadError = null } = {}) {
   /** @type {Map<string, {file: any, candidate: FileCandidate, reads: number}>} */
   const handles = new Map();
-  /** Files seen on drop events, which never appear in an `<input type=file>`. */
-  const dropped = [];
+  /** Files handed to the page and not yet attached to a submission, oldest first. */
+  let noted = [];
   /** Files already attached to a submission; an input keeps its files after the page sends them. */
   const attached = new WeakSet();
   let counter = 0;
 
+  function isFile(file) {
+    return Boolean(file) && typeof file === 'object' && typeof file.name === 'string' && file.name !== '';
+  }
+
   function snapshot(file, source) {
-    if (!file || typeof file !== 'object') return null;
-    if (typeof file.name !== 'string' || file.name === '') return null;
-    if (attached.has(file)) return null;
     const refId = `f${++counter}`;
     const candidate = {
       ref_id: refId,
@@ -53,53 +61,43 @@ export function createFileRegistry({ document = globalThis.document, maxFiles = 
     return candidate;
   }
 
-  /** Register the files on a drop event. The drop target is a page element the user chose. */
-  function noteDrop(fileList) {
-    const files = Array.from(fileList || []);
-    for (const f of files) {
-      if (dropped.length >= maxFiles) break;
-      dropped.push(f);
+  /**
+   * Note the files the user handed to the page: chosen in an input, dropped or pasted. A file
+   * already noted or attached is not noted again; past `maxFiles` the oldest is let go.
+   */
+  function note(fileList, source) {
+    for (const file of Array.from(fileList || [])) {
+      if (!isFile(file) || attached.has(file) || noted.some((n) => n.file === file)) continue;
+      noted.push({ file, source });
     }
-    return dropped.length;
+    if (noted.length > maxFiles) noted = noted.slice(-maxFiles);
+    return noted.length;
   }
 
   /**
-   * Resolve the page's file input or drop target to the `File` objects the user selected.
-   * Metadata only: the order is newest-first for drops, then inputs.
+   * The files to offer a submission: those noted, newest first, then any an input still holds.
+   * Metadata only.
    * @returns {{candidates: FileCandidate[], reachable: boolean, reason: string}}
    */
   function collectCandidates() {
+    noted = noted.filter((n) => !attached.has(n.file));
+    const offered = new Set();
     const out = [];
-    // A drop target that already received files is the strongest signal: it is the element the
-    // user actually used. Drops are reported first and inputs only top the list up afterwards.
-    let sawDrop = false;
-    for (const f of dropped.slice(-maxFiles).reverse()) {
-      const c = snapshot(f, 'drop');
-      if (c) {
-        out.push(c);
-        sawDrop = true;
-      }
-      if (out.length >= maxFiles) break;
-    }
-    let sawInput = false;
-    if (out.length < maxFiles && document && typeof document.querySelectorAll === 'function') {
+    const offer = (file, source) => {
+      if (out.length >= maxFiles || !isFile(file) || attached.has(file) || offered.has(file)) return;
+      offered.add(file);
+      out.push(snapshot(file, source));
+    };
+    for (const n of [...noted].reverse()) offer(n.file, n.source);
+    if (document && typeof document.querySelectorAll === 'function') {
       for (const input of document.querySelectorAll('input[type="file"]')) {
-        const files = input && input.files;
-        if (!files || !files.length) continue;
-        for (const f of Array.from(files).slice(0, maxFiles - out.length)) {
-          const c = snapshot(f, 'input');
-          if (c) {
-            out.push(c);
-            sawInput = true;
-          }
-        }
-        if (out.length >= maxFiles) break;
+        for (const file of Array.from((input && input.files) || [])) offer(file, 'input');
       }
     }
     if (out.length > 0) {
-      // The reason names which path produced the candidates (a drop target, a file input, or
-      // both), because the caller records it.
-      return { candidates: out, reachable: true, reason: sawDrop ? (sawInput ? 'drop_and_input' : 'drop') : 'input' };
+      // The reason names the paths that produced the candidates, because the caller records it.
+      const used = new Set(out.map((c) => c.source));
+      return { candidates: out, reachable: true, reason: SOURCES.filter((s) => used.has(s)).join('_and_') };
     }
     // The composer built the upload in a worker or canvas and no File handle is reachable. The
     // caller records `content_no_attachments` and counts it.
@@ -147,7 +145,10 @@ export function createFileRegistry({ document = globalThis.document, maxFiles = 
   /** Drop the reference once its transfer has ended; the file is not offered again. */
   function forget(refId) {
     const h = handles.get(refId);
-    if (h) attached.add(h.file);
+    if (h) {
+      attached.add(h.file);
+      noted = noted.filter((n) => n.file !== h.file);
+    }
     return handles.delete(refId);
   }
 
@@ -155,5 +156,5 @@ export function createFileRegistry({ document = globalThis.document, maxFiles = 
     return handles.size;
   }
 
-  return { collectCandidates, noteDrop, get, readSlice, forget, heldCount };
+  return { collectCandidates, note, get, readSlice, forget, heldCount };
 }

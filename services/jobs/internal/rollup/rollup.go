@@ -506,7 +506,9 @@ WITH per_tool AS (
   SELECT date_trunc(%[1]s, s.received_at) AS bucket_start, s.user_ref, s.tool_fingerprint,
          count(*) AS submissions,
          coalesce(sum(s.size_bytes), 0)::bigint AS bytes_total,
-         count(*) FILTER (WHERE s.policy_action = 'blocked') AS block_events
+         count(*) FILTER (WHERE s.policy_action = 'blocked') AS block_events,
+         coalesce(sum(s.attachment_count), 0)::bigint AS attachments,
+         count(*) FILTER (WHERE s.collection_mode <> 'm0') AS content_prompts
     FROM ingest.submission s
    WHERE s.tenant_id = $1 AND s.received_at >= $2 AND s.received_at < $3 AND s.kind = 'prompt'
    GROUP BY 1, 2, 3
@@ -521,7 +523,9 @@ src AS (
          sum(p.submissions)::bigint AS submissions,
          sum(p.bytes_total)::bigint AS bytes_total,
          count(DISTINCT t.tool_id) AS tools_used,
-         sum(p.block_events)::bigint AS block_events
+         sum(p.block_events)::bigint AS block_events,
+         sum(p.attachments)::bigint AS attachments,
+         sum(p.content_prompts)::bigint AS content_prompts
     FROM per_tool p
     JOIN tool t ON t.tool_fingerprint = p.tool_fingerprint
    GROUP BY 1, 2
@@ -534,12 +538,14 @@ gone AS (
                       WHERE src.bucket_start = m.bucket_start AND src.user_ref = m.user_ref)
 )
 INSERT INTO mart.agg_user_period (tenant_id, bucket_start, bucket_size, user_ref,
-  submissions, bytes_total, tools_used, block_events)
-SELECT $1, src.bucket_start, %[1]s, src.user_ref, src.submissions, src.bytes_total, src.tools_used, src.block_events
+  submissions, bytes_total, tools_used, block_events, attachments, content_prompts)
+SELECT $1, src.bucket_start, %[1]s, src.user_ref, src.submissions, src.bytes_total, src.tools_used, src.block_events,
+       src.attachments, src.content_prompts
   FROM src
 ON CONFLICT (tenant_id, bucket_start, bucket_size, user_ref) DO UPDATE
   SET submissions = EXCLUDED.submissions, bytes_total = EXCLUDED.bytes_total,
-      tools_used = EXCLUDED.tools_used, block_events = EXCLUDED.block_events`
+      tools_used = EXCLUDED.tools_used, block_events = EXCLUDED.block_events,
+      attachments = EXCLUDED.attachments, content_prompts = EXCLUDED.content_prompts`
 
 // FindingName is the table the findings statement writes. A finding is not a bucket aggregate: it
 // has no bucket and no watermark, so it is kept out of Aggregates and written once per pass.

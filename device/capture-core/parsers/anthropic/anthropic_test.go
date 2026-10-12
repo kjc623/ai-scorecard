@@ -146,3 +146,30 @@ func TestBlockResponseIsTheAPIErrorShape(t *testing.T) {
 		t.Fatalf("body = %s\nwant   %s", body, want)
 	}
 }
+
+// The turn names the documents it attaches, by title or by the file a URL ends in; a document a
+// tool returned is not an attachment.
+func TestTheTurnNamesItsDocuments(t *testing.T) {
+	for path, body := range fixtures(t) {
+		res, err := Parser{}.Parse(body, "application/json")
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		var want []string
+		if strings.HasSuffix(path, "messages-document.json") {
+			want = []string{"SAC-PLACEHOLDER-10", "SAC-PLACEHOLDER-11.pdf"}
+		}
+		var got []string
+		for _, a := range res.Attachments {
+			got = append(got, a.Name)
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s: documents %q, want %q", path, got, want)
+		}
+	}
+	only := `{"messages":[{"role":"user","content":[{"type":"document","title":"msa.pdf","source":{"type":"base64","media_type":"application/pdf","data":"JVBERi0xLjQK"}}]}]}`
+	res, err := Parser{}.Parse([]byte(only), "application/json")
+	if !errors.Is(err, parsers.ErrNoText) || len(res.Attachments) != 1 || res.Attachments[0].Name != "msa.pdf" {
+		t.Fatalf("a turn of one PDF gave %+v, %v; want its name and ErrNoText", res.Attachments, err)
+	}
+}

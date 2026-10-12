@@ -20,7 +20,8 @@ import (
 var ErrUnknownShape = errors.New("parsers: the body is in no shape this parser knows")
 
 // ErrNoText is returned for a body that carries no text to read: a known shape whose turn holds
-// only images or files, or a body the generic parser cannot interpret.
+// only images or files, or a body the generic parser cannot interpret. The Result returned with it
+// may still name the files the body carries.
 var ErrNoText = errors.New("parsers: no user-authored segment identifiable in this body")
 
 // Result is what a parser read from one request body. Requests only: a response is never parsed.
@@ -120,7 +121,8 @@ func (e *Extraction) Extract(body []byte, mediaType string) (string, []dedup.Att
 		e.unknownShape = true
 	}
 	if err != nil {
-		return "", nil, err
+		// A body without text may still name the files it carries.
+		return "", res.Attachments, err
 	}
 	return res.Text, res.Attachments, nil
 }

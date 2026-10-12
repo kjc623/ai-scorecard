@@ -108,11 +108,39 @@ test('a snippet is escaped: only the search highlight is markup', async () => {
   assert.match(html, /<em>x<\/em>/);
 });
 
+test('a hit on an attached file\'s name says so', async () => {
+  const { explorer } = explorerFor();
+  const state = { ...explorer.state, text: { status: 'ready', query: 'forecast', truncated: false, problem: null, hits: [
+    { submissionId: 's1', snippet: 'Q3 forecast.xlsx', fileName: true },
+    { submissionId: 's2', snippet: 'the <em>forecast</em> for Q3', fileName: false },
+  ] } };
+  const html = renderExploreText(state);
+  assert.match(html, /<h2>Prompts and files containing/);
+  assert.match(html, /data-submission="s1"[^>]*><span class="x-hit-kind">Attached file<\/span><span class="x-hit-snippet">Q3 forecast\.xlsx/);
+  assert.match(html, /data-submission="s2"[^>]*><span class="x-hit-snippet">/, 'a prompt hit carries no file label');
+  assert.ok(!html.includes('x-hit-folder'), 'a file known by its name alone names no folder');
+});
+
+test('a hit on a file the device saw on disk names the file and the folder it came from', async () => {
+  const { explorer } = explorerFor();
+  const state = { ...explorer.state, text: { status: 'ready', query: 'forecast', truncated: false, problem: null, hits: [
+    { submissionId: 's1', snippet: 'C:\\Users\\ana\\<em>Finance</em>\\Q3 <em>forecast</em>.xlsx', fileName: true },
+    { submissionId: 's2', snippet: '<em>/home/ana/q3.csv</em>', fileName: true },
+    { submissionId: 's3', snippet: 'a/b <em>forecast</em>', fileName: false },
+    { submissionId: 's4', snippet: 'C:\\<em>forecast</em>.xlsx', fileName: true },
+  ] } };
+  const html = renderExploreText(state);
+  assert.match(html, /data-submission="s1"[^>]*><span class="x-hit-kind">Attached file<\/span><span class="x-hit-snippet">Q3 <em>forecast<\/em>\.xlsx<\/span><span class="x-hit-folder">From <span class="x-mono">C:\\Users\\ana\\<em>Finance<\/em><\/span><\/span>/);
+  assert.match(html, /data-submission="s2"[^>]*><span class="x-hit-kind">Attached file<\/span><span class="x-hit-snippet"><em>q3\.csv<\/em><\/span><span class="x-hit-folder">From <span class="x-mono"><em>\/home\/ana<\/em><\/span>/, 'a highlight across the folder is closed and opened again');
+  assert.match(html, /data-submission="s4"[^>]*>.*?<span class="x-hit-folder">From <span class="x-mono">C:\\<\/span>/, 'a root keeps its separator');
+  assert.match(html, /data-submission="s3"[^>]*><span class="x-hit-snippet">a\/b <em>forecast<\/em><\/span><span class="x-mono/, 'a prompt is not split as a path');
+});
+
 test('a search with no match says so, and a refused search shows its reason', async () => {
   const none = explorerFor();
   await none.explorer.searchText('zzzznotaword');
   assert.equal(none.explorer.state.text.status, 'ready');
-  assert.match(renderExploreText(none.explorer.state), /No uploaded prompt contains/);
+  assert.match(renderExploreText(none.explorer.state), /No uploaded prompt, and no attached file's name, contains/);
 
   const busy = explorerFor('busy');
   await busy.explorer.searchText('capital');
@@ -215,7 +243,7 @@ test('a rail filter the search cannot apply is named rather than silently ignore
   assert.match(html, /still filter the list only/);
   assert.match(html, /action/);
   assert.match(html, /id="x-text-page"/, 'the page-size control is offered');
-  assert.match(html, /Showing \d+ matching prompt/);
+  assert.match(html, /Showing \d+ match/);
 });
 
 // ── approved retrieval ───────────────────────────────────────────────────────────────────────

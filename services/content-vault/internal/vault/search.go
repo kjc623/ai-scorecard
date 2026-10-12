@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/shadow-ai-capture/content-vault/internal/store"
 )
@@ -47,8 +49,9 @@ type SearchResult struct {
 // terms and filters, is written in the transaction that serves the results.
 //
 // The tier decides what can be searched: full_text searches prompt text and attachment names,
-// attachment_names searches attachment names only, and disabled refuses. The substring and fuzzy
-// forms match attachment names only.
+// attachment_names searches attachment names only, and disabled refuses. The terms form matches an
+// attachment name that contains every term; the substring and fuzzy forms match attachment names
+// only.
 func (s *Service) Search(ctx context.Context, req SearchRequest) (SearchResult, error) {
 	if req.Form == "" {
 		req.Form = store.FormTerms
@@ -99,9 +102,13 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (SearchResult, 
 		}); err != nil {
 			return err
 		}
+		var names []string
+		if req.Form == store.FormTerms {
+			names = namePatterns(req.Query)
+		}
 		// One row more than the page, so whether another page exists is known without a second query.
 		hits, err := tx.Search(ctx, store.SearchQuery{
-			Form: req.Form, Text: text, UnitKind: unitKind, Limit: limit + 1, MinSimilar: fuzzyThreshold,
+			Form: req.Form, Text: text, Names: names, UnitKind: unitKind, Limit: limit + 1, MinSimilar: fuzzyThreshold,
 			Filters: req.Filters, Cursor: cursor, Now: now,
 		})
 		if err != nil {
@@ -116,7 +123,11 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (SearchResult, 
 			})
 		}
 		for i := range hits {
-			hits[i].Snippet = bound(hits[i].Snippet)
+			if hits[i].UnitKind == store.UnitAttachmentName {
+				hits[i].Snippet = boundName(hits[i].Snippet)
+			} else {
+				hits[i].Snippet = bound(hits[i].Snippet)
+			}
 		}
 		res.Hits = hits
 		return nil
@@ -167,7 +178,7 @@ func searchText(form store.SearchForm, query string) (string, error) {
 	}
 	switch form {
 	case store.FormSubstring:
-		return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(raw), nil
+		return likeEscaper.Replace(raw), nil
 	case store.FormFuzzy:
 		return raw, nil
 	case store.FormTerms:
@@ -190,6 +201,20 @@ func searchText(form store.SearchForm, query string) (string, error) {
 		return "", deny(ReasonInvalidRequest, "the search text has no searchable term")
 	}
 	return strings.Join(parts, " & "), nil
+}
+
+// likeEscaper escapes LIKE's metacharacters, so the analyst's text matches only itself.
+var likeEscaper = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+
+// namePatterns is one LIKE pattern per term of the terms form, longest first. A filename is one
+// token to full-text search ("forecast.xlsx"), so a name is matched by containing every term.
+func namePatterns(query string) []string {
+	var out []string
+	for _, term := range splitTerms(strings.TrimSpace(query)) {
+		out = append(out, "%"+likeEscaper.Replace(term)+"%")
+	}
+	slices.SortStableFunc(out, func(a, b string) int { return len(b) - len(a) })
+	return out
 }
 
 func sanitiseTerm(w string) string {
@@ -238,6 +263,19 @@ func bound(s string) string {
 		return s
 	}
 	return string(r[:maxSnippetRunes]) + "…"
+}
+
+// boundName bounds an attachment's snippet from its start, because a path ends with the file's
+// name. A path cut short loses its highlights rather than keep half a mark.
+func boundName(s string) string {
+	if utf8.RuneCountInString(s) <= maxSnippetRunes {
+		return s
+	}
+	r := []rune(strings.NewReplacer("<em>", "", "</em>", "").Replace(s))
+	if len(r) <= maxSnippetRunes {
+		return string(r)
+	}
+	return "…" + string(r[len(r)-maxSnippetRunes:])
 }
 
 func filterDetail(f store.SearchFilters) map[string]any {

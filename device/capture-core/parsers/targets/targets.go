@@ -13,7 +13,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/parsers/openai"
 )
 
-var registry = parsers.NewRegistry(anthropic.Parser{}, openai.Parser{}, gemini.Parser{})
+var registry = parsers.NewRegistry(anthropic.Parser{}, openai.Parser{}, gemini.Parser{}, gemini.Upload{})
 
 // Registry returns the registry the proxies read request bodies through. It holds no state, so
 // one is shared.

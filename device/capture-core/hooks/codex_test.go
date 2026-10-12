@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -53,7 +54,7 @@ func TestCodexParsesTheDocumentedInput(t *testing.T) {
 				Tool: "codex", Event: "UserPromptSubmit", SessionID: codexSession, Cwd: `C:\work\app`,
 				PromptText: c.prompt, PromptBytes: int64(len(c.prompt)),
 			}
-			if ev != want {
+			if !reflect.DeepEqual(ev, want) {
 				t.Fatalf("parsed\n%+v\nwant\n%+v", ev, want)
 			}
 			if err := ev.Validate(); err != nil {

@@ -2901,3 +2901,20 @@ dashboard.
   one row per device with its status from the worst collector state and a "1 degraded · 12 healthy"
   cell; a device's collectors themselves are still listed in full from `ops.collector_state`.
   Migration `0020-device-list-grain.sql` replaces the view, appending the new columns.
+
+## 2026-10-12, owner: file names from every route, paths where the device has them
+
+- **The API parsers name files.** The OpenAI, Anthropic and Gemini parsers name the files a turn's
+  user message attaches when the request names them (`filename`, a document's `title`, a Gemini
+  `displayName`, the last segment of a file URL), the Gemini Files API upload names its file, and
+  the generic parser names a multipart form's files. A body with files and no text keeps the names.
+  This replaces "No attachment descriptors from the API parsers". A file sent by id alone is still
+  unnamed.
+- **Attachments carry a path.** The envelope's attachment gains an optional `path`: a browser form
+  upload's, read from the body Chrome hands the extension, and the files a Claude Code, Codex or
+  Cursor prompt names. It is indexed for search in place of the name and never enters the content
+  digest. A prompt recorded only from telemetry names the files its text refers to: Claude Code's
+  and Copilot's `@` mentions, Copilot Chat's `<attachment filePath>` tags, and the parts of a
+  GenAI-conventions message that name a file. The generic parser names the file a body registers by
+  `file_name`, as ChatGPT's apps do before uploading it, and the files a `prompt` body lists in
+  `attachments`, as Claude's apps send a file whose text they extracted.

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -28,6 +29,28 @@ type cursorInput struct {
 	Prompt         *string         `json:"prompt"`
 	ToolName       string          `json:"tool_name"`
 	ToolInput      json.RawMessage `json:"tool_input"`
+	WorkspaceRoots []string        `json:"workspace_roots"`
+	// Attachments are the files and rules attached to the prompt; a rule is Cursor's own
+	// instructions, not a file the user attached.
+	Attachments []struct {
+		Type     string `json:"type"`
+		FilePath string `json:"file_path"`
+	} `json:"attachments"`
+}
+
+// files is the files attached to the prompt, then those its text names that are not attached.
+func (in cursorInput) files() []protocol.AttachmentDescriptor {
+	var attached []string
+	for _, a := range in.Attachments {
+		if a.Type == "file" && filepath.IsAbs(a.FilePath) {
+			attached = append(attached, filepath.Clean(a.FilePath))
+		}
+	}
+	var root string
+	if len(in.WorkspaceRoots) > 0 {
+		root = in.WorkspaceRoots[0]
+	}
+	return mergeFiles(statFiles(attached, statBudget, true), promptFiles(*in.Prompt, root))
 }
 
 func (cursor) Parse(event string, stdin []byte) (protocol.HookEvaluate, error) {
@@ -45,6 +68,7 @@ func (cursor) Parse(event string, stdin []byte) (protocol.HookEvaluate, error) {
 			return protocol.HookEvaluate{}, errors.New("cursor hook: beforeSubmitPrompt carries no prompt")
 		}
 		ev.PromptText = *in.Prompt
+		ev.Attachments = in.files()
 	case CursorBeforeMCPExecution:
 		if in.ToolName == "" || len(in.ToolInput) == 0 {
 			return protocol.HookEvaluate{}, errors.New("cursor hook: beforeMCPExecution carries no tool call")

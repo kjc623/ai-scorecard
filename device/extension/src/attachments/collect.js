@@ -7,11 +7,19 @@
  * that names them is sent, so the agent can classify the bytes on the device when the observation
  * arrives. The observation itself carries only each file's name, media type, size and digest.
  *
+ * Only the frame that sent the request is asked: every frame of the tab runs the content script,
+ * and an unrelated frame (an embedded widget or challenge) holding no file would otherwise answer
+ * first.
+ *
  * Every step is bounded and none can fail the submission: a tab that does not answer, a refused or
  * failed transfer, or a timeout leaves a descriptor without a digest (or none at all) and is counted.
+ *
+ * A descriptor also carries the path the file was uploaded from when the tab uploaded it in a form
+ * whose body the browser showed (see paths.js).
  */
 
 import { MAX_ATTACHMENT_BYTES } from '../messages.js';
+import { createUploadPaths } from './paths.js';
 
 export const CHECK_TIMEOUT_MS = 2_000;
 export const TRANSFER_TIMEOUT_MS = 120_000;
@@ -21,13 +29,19 @@ export const TRANSFER_TIMEOUT_MS = 120_000;
  * @param {import('../adapter.js').Adapter} opts.adapter
  * @param {{countError: (code: string) => void}} opts.counters
  */
-export function createAttachmentCollector({ adapter, counters, checkTimeoutMs = CHECK_TIMEOUT_MS, transferTimeoutMs = TRANSFER_TIMEOUT_MS }) {
-  /** One message to the tab's content script; null when it does not answer in time. */
-  async function ask(tabId, message, timeoutMs) {
+export function createAttachmentCollector({
+  adapter,
+  counters,
+  paths = createUploadPaths(),
+  checkTimeoutMs = CHECK_TIMEOUT_MS,
+  transferTimeoutMs = TRANSFER_TIMEOUT_MS,
+}) {
+  /** One message to the frame's content script; null when it does not answer in time. */
+  async function ask(tabId, frameId, message, timeoutMs) {
     let timer;
     try {
       return await Promise.race([
-        Promise.resolve(adapter.tabs.sendMessage(tabId, message)),
+        Promise.resolve(adapter.tabs.sendMessage(tabId, message, Number.isInteger(frameId) && frameId >= 0 ? { frameId } : undefined)),
         new Promise((resolve) => {
           timer = setTimeout(() => resolve(null), timeoutMs);
         }),
@@ -40,19 +54,20 @@ export function createAttachmentCollector({ adapter, counters, checkTimeoutMs = 
   }
 
   /**
-   * Transfer the reachable files of tab `tabId` for the observation `observationId`.
+   * Transfer the reachable files of frame `frameId` of tab `tabId` for the observation
+   * `observationId`. Without a frame id every frame is asked.
    * @returns {Promise<{attachments: object[], reachable: boolean}>}
    */
-  async function collect({ tabId, observationId }) {
+  async function collect({ tabId, frameId, observationId }) {
     if (!Number.isInteger(tabId) || tabId < 0) return { attachments: [], reachable: false };
-    const check = await ask(tabId, { type: 'capture_upload_check' }, checkTimeoutMs);
+    const check = await ask(tabId, frameId, { type: 'capture_upload_check' }, checkTimeoutMs);
     if (!check || check.ok !== true || !Array.isArray(check.candidates) || check.candidates.length === 0) {
       return { attachments: [], reachable: false };
     }
 
     const attachments = [];
     for (const candidate of check.candidates) {
-      const answer = await ask(tabId, { type: 'capture_upload_send', observation_id: observationId, descriptor: candidate }, transferTimeoutMs);
+      const answer = await ask(tabId, frameId, { type: 'capture_upload_send', observation_id: observationId, descriptor: candidate }, transferTimeoutMs);
       const result = answer && answer.ok === true ? answer.result : null;
       if (result && result.status === 'sent' && result.descriptor && result.descriptor.content_digest) {
         attachments.push(result.descriptor);
@@ -61,10 +76,15 @@ export function createAttachmentCollector({ adapter, counters, checkTimeoutMs = 
       counters.countError(!result ? 'native_timeout' : result.status === 'refused' ? 'core_refused' : result.reason || 'attachment_read_failed');
       attachments.push(describe(candidate));
     }
-    return { attachments, reachable: true };
+    return { attachments: paths.place(tabId, attachments), reachable: true };
   }
 
-  return { collect };
+  /** Note the paths of the files a request on the body lane uploads. */
+  function noteUploads(detail) {
+    paths.note(detail);
+  }
+
+  return { collect, noteUploads };
 }
 
 /** A descriptor for a file whose bytes were not transferred: what the page knows, and no digest. */

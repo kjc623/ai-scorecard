@@ -509,15 +509,16 @@ function searchEventsLink(filters, preset) {
 const METADATA_ONLY = 'metadata-only collection (M0)';
 
 /**
- * Every file attached to a prompt in the window, opening the prompts that carried one. A prompt
- * sent at metadata-only collection cannot describe an attachment, so its count is unknown rather
- * than zero: the tile says how many prompts it counted on, and a window with none says so.
+ * Every file attached to a prompt in the window, opening the prompts that carried one, narrowed by
+ * the filters the page is read under. A prompt sent at metadata-only collection cannot describe an
+ * attachment, so its count is unknown rather than zero: the tile says how many prompts it counted
+ * on, and a window with none says so.
  */
-function attachmentsTile(usage, { preset }) {
+function attachmentsTile(usage, { preset, filters = {} }) {
   const attachments = sumMeasure(usage, 'attachments');
   const described = sumMeasure(usage, 'content_prompts');
   const prompts = sumMeasure(usage, 'submissions');
-  const link = searchEventsLink({ attachments: 'yes' }, preset);
+  const link = searchEventsLink({ ...filters, attachments: 'yes' }, preset);
   if (attachments.kind !== 'number' || described.kind !== 'number') return tile('Attachments', { kind: 'absent', text: '—' }, absentNote(usage), link);
   if (described.value === 0 && prompts.kind === 'number' && prompts.value > 0) {
     return tile('Attachments', { kind: 'absent', text: '—' }, `Not collected: every prompt in this window was sent at ${METADATA_ONLY}, which does not describe attachments.`);
@@ -1782,6 +1783,7 @@ export function toolsView(state, { link = toolHref, preset = null, sanction = nu
       measureTile('Prompts', shown, 'submissions', formatCount, { trend: trendOf(shown) }),
       measureTile('Blocked', shown, 'blocked'),
       measureTile('Data sent', shown, 'bytes_total', formatBytes),
+      attachmentsTile(shown, { preset }),
     ]),
     filters: Object.freeze([Object.freeze({
       label: 'Sanction',
@@ -1849,6 +1851,7 @@ export function toolView({ usage, people = null, findings = null, names = {} }, 
       foldedTile('People (lower bound)', group, 'users'),
       foldedTile('Blocked', group, 'blocked'),
       foldedTile('Data sent', group, 'bytes_total', formatBytes),
+      attachmentsTile(usage, { preset, filters: { tool: String(tool) } }),
     ]),
     tables: Object.freeze([
       ...(roster ? [tableFrom({ data: roster }, {
@@ -2069,7 +2072,7 @@ export function teamView(state, { team, members = null, teams = null, preset = n
   });
 }
 
-export function personView(state, { subject, person = null, exploreHref = 'explore.html' }) {
+export function personView(state, { subject, person = null, preset = null, exploreHref = 'explore.html' }) {
   const series = seriesFrom(state, { measure: 'submissions', title: 'Prompts per day' });
   const flush = state.meta?.extras?.flush_check?.[0] ?? null;
   // Each tool once across the window: the per-day counts cannot be added up into it.
@@ -2094,6 +2097,7 @@ export function personView(state, { subject, person = null, exploreHref = 'explo
         : tile('Tools used', { kind: 'number', text: formatCount(Number(tools)) }),
       measureTile('Block events', state, 'block_events'),
       measureTile('Bytes', state, 'bytes_total', formatBytes),
+      attachmentsTile(state, { preset, filters: { subject } }),
     ]),
     tables: Object.freeze([
       tableFrom(state, {
@@ -2103,6 +2107,7 @@ export function personView(state, { subject, person = null, exploreHref = 'explo
           column('submissions', 'Prompts', 'measure'),
           column('tools_used', 'Tools', 'measure'),
           column('block_events', 'Blocked', 'measure'),
+          column('attachments', 'Attachments', 'measure'),
         ],
         emptyText: 'No usage recorded for this person in this window.',
       }),

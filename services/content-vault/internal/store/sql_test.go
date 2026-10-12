@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -221,6 +222,42 @@ func TestLiveUploadRetrieveRedeem(t *testing.T) {
 	}
 }
 
+// An attached file indexed by its path is found by its name or a folder, and its snippet is the
+// whole path, its end kept when it is long.
+func TestLiveSearchFindsAFileByItsPath(t *testing.T) {
+	l := newLive(t)
+	w := l.seedTenant("attachment_names")
+	deep := `C:\Users\ana\OneDrive - Contoso\` + strings.Repeat(`Archive\`, 30) + `board deck.pptx`
+	sub := l.seedSubmission(w, "user", `[]`, time.Now().Add(-time.Hour).Truncate(time.Second))
+	event := newID()
+	object, _ := json.Marshal(map[string]any{"prompt": "summarise", "attachments": []map[string]string{
+		{"name": "Q3 forecast with region detail.xlsx", "path": `C:\Users\ana\Documents\Finance\Q3 forecast with region detail.xlsx`},
+		{"name": "board deck.pptx", "path": deep},
+	}})
+	if _, err := l.upload(w, event, l.seedGrant(w, event, sub), object); err != nil {
+		t.Fatal(err)
+	}
+	search := func(form store.SearchForm, q string) []store.SearchHit {
+		t.Helper()
+		res, err := l.svc.Search(context.Background(), vault.SearchRequest{TenantID: w.tenant, Principal: "alice", Form: form, Query: q})
+		if err != nil {
+			t.Fatalf("search %s %q: %v", form, q, err)
+		}
+		return res.Hits
+	}
+	if hits := search(store.FormTerms, "region"); len(hits) != 1 ||
+		hits[0].Snippet != `C:\Users\ana\Documents\Finance\Q3 forecast with <em>region</em> detail.xlsx` {
+		t.Fatalf("terms hits = %+v, want the whole path with the term marked", hits)
+	}
+	if hits := search(store.FormSubstring, `Finance\Q3`); len(hits) != 1 {
+		t.Fatalf("a folder and the name do not find the file: %+v", hits)
+	}
+	if hits := search(store.FormTerms, "board deck"); len(hits) != 1 || !strings.HasSuffix(hits[0].Snippet, `\board deck.pptx`) ||
+		!strings.HasPrefix(hits[0].Snippet, "…") {
+		t.Fatalf("a long path's snippet = %+v, want its end", hits)
+	}
+}
+
 func TestLiveSearch(t *testing.T) {
 	l := newLive(t)
 	ctx := context.Background()
@@ -248,15 +285,32 @@ func TestLiveSearch(t *testing.T) {
 		return res
 	}
 
-	// The text-search parser reads a filename as one token, so the terms form finds the two prompts
-	// and not "Contoso-Q3_report.pdf"; the substring and fuzzy forms are the way to match names.
+	// The text-search parser reads a filename as one token, so the terms form matches a name by
+	// containing every term: "contoso" finds the two prompts and "Contoso-Q3_report.pdf".
+	hitKeys := func(hits []store.SearchHit) string {
+		var keys []string
+		for _, h := range hits {
+			keys = append(keys, h.SubmissionID+"/"+h.UnitKind)
+		}
+		return strings.Join(keys, ",")
+	}
 	terms := search(store.FormTerms, "contoso", "", 10)
-	if len(terms.Hits) != 2 || terms.Hits[0].SubmissionID != subs[1] || terms.Hits[1].SubmissionID != subs[0] ||
+	if want := subs[1] + "/prompt_body," + subs[0] + "/prompt_body," + subs[0] + "/attachment_name"; hitKeys(terms.Hits) != want ||
 		!strings.Contains(terms.Hits[0].Snippet, "<em>") {
-		t.Fatalf("terms hits = %+v, want the two prompts, newest first, highlighted", terms.Hits)
+		t.Fatalf("terms hits = %+v, want the two prompts and the name, newest first, highlighted", terms.Hits)
 	}
 	if phrase := search(store.FormTerms, `"contract renewal"`, "", 10); len(phrase.Hits) != 1 || phrase.Hits[0].SubmissionID != subs[0] {
 		t.Fatalf("phrase hits = %+v", phrase.Hits)
+	}
+	for q, want := range map[string]string{
+		"report Q3":    subs[0] + "/attachment_name",
+		"pricing.xlsx": subs[1] + "/attachment_name",
+		"q3_report":    subs[0] + "/attachment_name",
+		"Q3 pricing":   "",
+	} {
+		if got := hitKeys(search(store.FormTerms, q, "", 10).Hits); got != want {
+			t.Errorf("terms %q hits %s, want %q", q, got, want)
+		}
 	}
 	if sub := search(store.FormSubstring, "Q3_rep", "", 10); len(sub.Hits) != 1 || sub.Hits[0].UnitKind != store.UnitAttachmentName {
 		t.Fatalf("substring hits = %+v", sub.Hits)
@@ -279,7 +333,7 @@ func TestLiveSearch(t *testing.T) {
 			break
 		}
 	}
-	if strings.Join(seen, ",") != subs[1]+","+subs[0] {
+	if strings.Join(seen, ",") != subs[1]+","+subs[0]+","+subs[0] {
 		t.Fatalf("paging returned %v, want each hit once, newest first", seen)
 	}
 
@@ -306,8 +360,8 @@ func TestLiveSearch(t *testing.T) {
 	for _, tool := range []string{"app:chatgpt_web", "host:new.chatgpt.com"} {
 		byTool, err := l.svc.Search(ctx, vault.SearchRequest{TenantID: w.tenant, Principal: "alice", Query: "contoso",
 			Filters: store.SearchFilters{Tool: tool}})
-		if err != nil || len(byTool.Hits) != 2 {
-			t.Fatalf("tool filter %q = %+v, %v; want both prompts", tool, byTool.Hits, err)
+		if err != nil || len(byTool.Hits) != 3 {
+			t.Fatalf("tool filter %q = %+v, %v; want both prompts and the name", tool, byTool.Hits, err)
 		}
 	}
 	if other, err := l.svc.Search(ctx, vault.SearchRequest{TenantID: w.tenant, Principal: "alice", Query: "contoso",

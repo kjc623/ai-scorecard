@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"cmp"
 	"encoding/json"
 	"regexp"
 	"strings"
@@ -11,10 +12,11 @@ import (
 //
 // A content object is the bytes the device captured for one request: the prompt text where the
 // device could identify what the person typed, the request body as observed where it could not,
-// or a JSON object with a "prompt" string and an "attachments" list whose entries carry a "name".
+// or a JSON object with a "prompt" string and an "attachments" list whose entries carry a "name"
+// and, where the device saw it, a "path".
 //
 // Search is for finding what a person typed, so the index holds the typed text (prompt_body) and
-// the attachment names (attachment_name). A client wraps typed text in context of its own (Claude
+// the attachment names (attachment_name), each by its path where it has one. A client wraps typed text in context of its own (Claude
 // Code prepends <system-reminder> blocks), resends the whole conversation on every turn, and makes
 // requests nobody typed (telemetry). In a request body, the latest user message that carries text
 // is this turn's input; injected blocks are removed; a body with no user text yields nothing.
@@ -124,13 +126,14 @@ func stripInjected(text string) string {
 func attachmentNames(raw json.RawMessage) []string {
 	var list []struct {
 		Name string `json:"name"`
+		Path string `json:"path"`
 	}
 	if len(raw) == 0 || json.Unmarshal(raw, &list) != nil {
 		return nil
 	}
 	var names []string
 	for _, a := range list {
-		if name := indexable(a.Name); name != "" && len(names) < maxAttachmentNames {
+		if name := cmp.Or(indexable(a.Path), indexable(a.Name)); name != "" && len(names) < maxAttachmentNames {
 			names = append(names, name)
 		}
 	}

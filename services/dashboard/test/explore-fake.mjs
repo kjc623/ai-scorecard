@@ -470,7 +470,7 @@ export function createExploreFake({ now = () => new Date(), scenario = 'realisti
       const lower = typed.toLowerCase();
       if (!words.every((word) => lower.includes(word))) continue;
       const snippet = typed.replace(new RegExp(`\\b(${words.join('|')})\\b`, 'gi'), '<em>$1</em>');
-      hits.push(Object.freeze({ submission_id: event.submission_id, snippet, rank: 1, subject: event.subject ?? null, device: event.device ?? null, tool: event.tool ?? null, received_at: event.received_at }));
+      hits.push(Object.freeze({ submission_id: event.submission_id, snippet, rank: 1, unit_kind: 'prompt_body', subject: event.subject ?? null, device: event.device ?? null, tool: event.tool ?? null, received_at: event.received_at }));
     }
     // Newest first, the order the vault returns. The cursor is a plain offset here; the real one is
     // the vault's opaque keyset.

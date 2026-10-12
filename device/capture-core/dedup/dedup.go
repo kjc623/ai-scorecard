@@ -52,8 +52,12 @@ const (
 
 // Attachment is the canonicalisation input for one attachment. ContentDigest is
 // "sha256:"+hex over the raw attached octets, or Unreadable when the route cannot read them.
+// Path, where the route saw the file on the device, is recorded and never canonicalised: the
+// digest and the key leave it out, because another route seeing the same file may not see where it
+// came from.
 type Attachment struct {
 	Name          string
+	Path          string
 	MediaType     string
 	SizeBytes     int64
 	ContentDigest string

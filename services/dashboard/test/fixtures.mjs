@@ -284,13 +284,13 @@ const AGENT_ROWS = Object.freeze([
 const INVENTORY_SCAN = Object.freeze({ devices_enrolled: 4620, scanned: 4400, not_scanned: 200, switched_off: 20 });
 
 const PERSON_ROWS = Object.freeze([
-  Object.freeze({ bucket: '2026-09-24T00:00:00Z', subject: 'u_4f21', submissions: 41, bytes_total: 900_000, tools_used: 3, block_events: 1 }),
-  Object.freeze({ bucket: '2026-09-25T00:00:00Z', subject: 'u_4f21', submissions: 44, bytes_total: 940_000, tools_used: 3, block_events: 0 }),
-  Object.freeze({ bucket: '2026-09-26T00:00:00Z', subject: 'u_4f21', submissions: 39, bytes_total: 800_000, tools_used: 2, block_events: 0 }),
-  Object.freeze({ bucket: '2026-09-27T00:00:00Z', subject: 'u_4f21', submissions: 42, bytes_total: 910_000, tools_used: 3, block_events: 2 }),
-  Object.freeze({ bucket: '2026-09-28T00:00:00Z', subject: 'u_4f21', submissions: 44, bytes_total: 950_000, tools_used: 3, block_events: 0 }),
-  Object.freeze({ bucket: '2026-09-29T00:00:00Z', subject: 'u_4f21', submissions: 41, bytes_total: 880_000, tools_used: 2, block_events: 1 }),
-  Object.freeze({ bucket: '2026-09-30T00:00:00Z', subject: 'u_4f21', submissions: 260, bytes_total: 5_100_000, tools_used: 4, block_events: 9 }),
+  Object.freeze({ bucket: '2026-09-24T00:00:00Z', subject: 'u_4f21', submissions: 41, bytes_total: 900_000, tools_used: 3, block_events: 1, attachments: 2, content_prompts: 41 }),
+  Object.freeze({ bucket: '2026-09-25T00:00:00Z', subject: 'u_4f21', submissions: 44, bytes_total: 940_000, tools_used: 3, block_events: 0, attachments: 0, content_prompts: 44 }),
+  Object.freeze({ bucket: '2026-09-26T00:00:00Z', subject: 'u_4f21', submissions: 39, bytes_total: 800_000, tools_used: 2, block_events: 0, attachments: 1, content_prompts: 39 }),
+  Object.freeze({ bucket: '2026-09-27T00:00:00Z', subject: 'u_4f21', submissions: 42, bytes_total: 910_000, tools_used: 3, block_events: 2, attachments: 0, content_prompts: 42 }),
+  Object.freeze({ bucket: '2026-09-28T00:00:00Z', subject: 'u_4f21', submissions: 44, bytes_total: 950_000, tools_used: 3, block_events: 0, attachments: 3, content_prompts: 44 }),
+  Object.freeze({ bucket: '2026-09-29T00:00:00Z', subject: 'u_4f21', submissions: 41, bytes_total: 880_000, tools_used: 2, block_events: 1, attachments: 0, content_prompts: 41 }),
+  Object.freeze({ bucket: '2026-09-30T00:00:00Z', subject: 'u_4f21', submissions: 260, bytes_total: 5_100_000, tools_used: 4, block_events: 9, attachments: 4, content_prompts: 260 }),
 ]);
 
 function envelope(resultState, body) {

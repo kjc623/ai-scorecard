@@ -127,6 +127,50 @@ func TestTurnWithoutTextIsNoText(t *testing.T) {
 	}
 }
 
+// The turn's user messages name the files they attach; images, audio and files sent by id alone
+// carry no name, and a tool's output is not an attachment.
+func TestTheTurnNamesItsFiles(t *testing.T) {
+	for path, f := range fixtures(t) {
+		res, err := Parser{}.Parse(f.body, "application/json")
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		var want []string
+		if strings.Contains(path, "chat-parts") || strings.Contains(path, "responses-messages") {
+			want = []string{"SAC-PLACEHOLDER-4.pdf"}
+		}
+		if got := names(res.Attachments); strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s: files %q, want %q", path, got, want)
+		}
+	}
+	cases := map[string]struct {
+		body string
+		want []string
+	}{
+		"chat, file by id":        {`{"messages":[{"role":"user","content":[{"type":"text","text":"x"},{"type":"file","file":{"file_id":"file-abc"}}]}]}`, nil},
+		"responses, file by url":  {`{"input":[{"role":"user","content":[{"type":"input_text","text":"x"},{"type":"input_file","file_url":"https://example.com/docs/Q3%20plan.pdf"}]}]}`, []string{"Q3 plan.pdf"}},
+		"responses, earlier turn": {`{"input":[{"role":"user","content":[{"type":"input_file","filename":"old.pdf","file_id":"f"}]},{"role":"assistant","content":"ok"},{"role":"user","content":"now"}]}`, nil},
+		"responses, only a file":  {`{"input":[{"role":"user","content":[{"type":"input_file","filename":"only.csv","file_data":"data:text/csv;base64,YQ=="}]}]}`, []string{"only.csv"}},
+	}
+	for name, c := range cases {
+		res, err := Parser{}.Parse([]byte(c.body), "application/json")
+		if err != nil && !errors.Is(err, parsers.ErrNoText) {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got := names(res.Attachments); strings.Join(got, ",") != strings.Join(c.want, ",") {
+			t.Errorf("%s: files %q, want %q", name, got, c.want)
+		}
+	}
+}
+
+func names(atts []dedup.Attachment) []string {
+	var out []string
+	for _, a := range atts {
+		out = append(out, a.Name)
+	}
+	return out
+}
+
 func TestMatch(t *testing.T) {
 	cases := []struct {
 		host, path string
