@@ -1,20 +1,20 @@
 // directory-render.js — Settings → Identity Providers, state to HTML. Pure: no DOM, no I/O, no state.
 //
-// The same rules as Deployment: a count the server did not send is "not reported", never 0, a
-// failed read says which failure it was and who can fix it, and every string from an API is
-// escaped.
+// The same rules as the deployment settings: a count the server did not send is "not reported",
+// never 0, a failed read says which failure it was and who can fix it, and every string from an API
+// is escaped.
 
-import { escapeHtml, renderTile } from './render.js';
+import { escapeHtml, renderPageHead, renderTile } from './render.js';
 import { formatCount, formatInstant } from './format.js';
-import { depButton, depCard, depChip, depInstant, depProblem } from './deployment-render.js';
+import { depButton, depCard, depChip, depInstant, depProblem, renderIdentitySetup } from './deployment-render.js';
 import { SYNC_ERRORS } from './directory.js';
 
-function dirHeader(eyebrow) {
-  return '<header class="screen-head"><div class="screen-title">'
-    + (eyebrow ? `<span class="eyebrow">${escapeHtml(eyebrow)}</span>` : '')
-    + '<h2>Identity Providers</h2>'
-    + '<p class="question">Where Sundial learns who your people are and which groups they are in. Teams are added from them on the Teams page.</p>'
-    + '</div></header>';
+function dirHeader(head) {
+  return renderPageHead({
+    title: 'Identity Providers',
+    ...head,
+    subtitle: 'How your people sign in, and where Sundial learns who they are and which groups they are in. Teams are added from them on the Teams page.',
+  });
 }
 
 function dirRefused(problem) {
@@ -52,7 +52,7 @@ function dirSync(state) {
   const pending = state.sync.pending;
   let body;
   if (!data.graph_available) {
-    body = '<p class="dp-empty">This deployment has no Microsoft Entra application, so it cannot read a directory. People and groups arrive only over SCIM (Settings → Deployment).</p>';
+    body = '<p class="dp-empty">This deployment has no Microsoft Entra application, so it cannot read a directory. People and groups arrive only over SCIM, below.</p>';
   } else if (!data.entra_connected) {
     body = '<p class="dp-empty">Reading the directory needs an active Microsoft Entra ID connection for your organisation. Sign-in is linked from the onboarding link your vendor sent.</p>';
   } else if (!sync) {
@@ -82,12 +82,6 @@ function dirSync(state) {
   return depCard('Read people and groups from Microsoft Entra ID', body + depProblem(state.sync.problem, 'Not changed.'), { wide: true });
 }
 
-function dirScim() {
-  const body = '<p>An identity provider such as Microsoft Entra ID or Okta can instead push people and groups to Sundial over SCIM 2.0. Sundial keeps one directory either way: a person who arrives both ways is one person.</p>'
-    + '<p class="dp-note">The SCIM base URL and its tokens are under <a href="#deployment">Settings → Deployment</a>.</p>';
-  return depCard('Provision people and groups over SCIM', body, { wide: true });
-}
-
 const DIR_NOTES = Object.freeze([
   'Every change on this page is written to the audit trail under your name.',
   'Teams are added and edited on Usage → Teams, from the people, groups, departments and units held here.',
@@ -98,21 +92,19 @@ const DIR_NOTES = Object.freeze([
  *
  * @param {object} state  createDirectory().state
  * @param {object} [options]
- * @param {string|null} [options.eyebrow]
+ * @param {object} [options.head]   the page's title, eyebrow and tabs
+ * @param {object|null} [options.setup]  createDeployment().state, for sign-in and SCIM
  */
-export function renderDirectory(state, { eyebrow = 'Settings' } = {}) {
-  const head = dirHeader(eyebrow);
+export function renderDirectory(state, { head = {}, setup = null } = {}) {
+  const top = dirHeader(head);
+  const identity = setup ? renderIdentitySetup(setup) : '';
   if (state.status === 'idle' || state.status === 'loading') {
-    return `<article class="screen dp" aria-busy="true">${head}<p class="sr" role="status">Loading the identity provider settings…</p></article>`;
+    return `<article class="screen dp" aria-busy="true">${top}<p class="sr" role="status">Loading the identity provider settings…</p>${identity}</article>`;
   }
-  if (state.status === 'refused' || !state.data) return `<article class="screen dp">${head}${dirRefused(state.problem)}</article>`;
   const refresh = state.refreshProblem
     ? `<div class="banner banner-warning" role="status"><strong>Not refreshed</strong><span>${escapeHtml(state.refreshProblem.message ?? '')} What is shown is from the last read.</span></div>`
     : '';
   const notes = `<details class="notes"><summary>About these settings<span class="notes-count">${DIR_NOTES.length}</span></summary><ul>${DIR_NOTES.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`;
-  return `<article class="screen dp">${head}${refresh}${dirTiles(state.data)}`
-    + dirSync(state)
-    + dirScim()
-    + notes
-    + '</article>';
+  const directory = state.status === 'refused' || !state.data ? dirRefused(state.problem) : `${refresh}${dirTiles(state.data)}${dirSync(state)}`;
+  return `<article class="screen dp">${top}${directory}${identity}${notes}</article>`;
 }

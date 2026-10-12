@@ -6,7 +6,7 @@
 // list that could not be read says so rather than showing as empty, and a tool is listed once, by
 // its catalogue tool, however many fingerprints it has.
 
-import { escapeHtml } from './render.js';
+import { escapeHtml, renderPageHead } from './render.js';
 import { formatCount, plural } from './format.js';
 import { depButton, depProblem } from './deployment-render.js';
 import {
@@ -209,13 +209,13 @@ function unsavedBar(state) {
     + '</span></div>';
 }
 
-function hitsNote(state, { insights }) {
+function hitsNote(state, { activity }) {
   const hits = state.hits;
   if (hits.problem) return `<p class="dp-note">The hits could not be read: ${escapeHtml(hits.problem.message ?? hits.problem.code ?? '')}</p>`;
   if (!hits.counts) return '';
   return '<p class="dp-note">Hits counts the prompts each rule decided in the last 30 days.'
     + (hits.truncated ? ' Not every rule\'s hits could be read, so some are lower than they are.' : '')
-    + (insights ? ' <a href="#insights">Insights</a> splits them by what happened.' : '')
+    + (activity ? ' <a href="#activity">Activity</a> splits them by what happened.' : '')
     + '</p>';
 }
 
@@ -357,19 +357,11 @@ function labelsCard(state) {
 // The page
 // ---------------------------------------------------------------------------------------------
 
-/** The page's two tabs, as links: the address says which is open, so Back and a shared link work. */
-export const RULES_TABS = Object.freeze({ rules: 'Rules', labels: 'Labels' });
-
-function header(eyebrow, tab) {
-  const tabs = '<nav class="seg rl-tabs" aria-label="Rules or labels">'
-    + Object.entries(RULES_TABS).map(([id, label]) => `<a class="seg-item" href="${id === 'rules' ? '#rules' : `#rules?view=${id}`}"${id === tab ? ' aria-current="true"' : ''}>${escapeHtml(label)}</a>`).join('')
-    + '</nav>';
-  return '<header class="screen-head"><div class="screen-title">'
-    + (eyebrow ? `<span class="eyebrow">${escapeHtml(eyebrow)}</span>` : '')
-    + '<h2>Rules</h2>'
-    + '<p class="question">What happens to a prompt, by who sends it, the tool it goes to and what it holds. The first rule that matches decides.</p>'
-    + `</div><div class="screen-tools">${tabs}</div></header>`;
-}
+/** What each page says under its tabs. */
+const LEDES = Object.freeze({
+  rules: 'What happens to a prompt, by who sends it, the tool it goes to and what it holds. The first rule that matches decides.',
+  labels: 'The labels of your own that a rule can match on, beside the built-in data classes.',
+});
 
 function skeleton() {
   const lines = (widths) => widths.map((w) => `<span class="dp-skel" style="width:${w}%"></span>`).join('');
@@ -400,20 +392,20 @@ function refused(problem) {
  * @param {object} state  createRules().state
  * @param {object} [options]
  * @param {'rules'|'labels'} [options.tab]
- * @param {string|null} [options.eyebrow]
- * @param {boolean} [options.insights]  whether Insights is offered, for the link that breaks the hits down
+ * @param {object} [options.head]       the page's title, eyebrow and tabs
+ * @param {boolean} [options.activity]  whether Activity is offered, for the link that breaks the hits down
  */
-export function renderRules(state, { tab = 'rules', eyebrow = null, insights = false } = {}) {
-  const shown = RULES_TABS[tab] ? tab : 'rules';
-  const head = header(eyebrow, shown);
-  if (state.status === 'idle' || state.status === 'loading') return `<article class="screen dp rl" aria-busy="true">${head}${skeleton()}</article>`;
-  if (state.status === 'refused' || !state.data) return `<article class="screen dp rl">${head}${refused(state.problem)}</article>`;
+export function renderRules(state, { tab = 'rules', head = {}, activity = false } = {}) {
+  const shown = LEDES[tab] ? tab : 'rules';
+  const top = renderPageHead({ title: 'Policy', ...head, subtitle: LEDES[shown] });
+  if (state.status === 'idle' || state.status === 'loading') return `<article class="screen dp rl" aria-busy="true">${top}${skeleton()}</article>`;
+  if (state.status === 'refused' || !state.data) return `<article class="screen dp rl">${top}${refused(state.problem)}</article>`;
   const refresh = state.refreshProblem
     ? `<div class="banner banner-warning" role="status"><strong>Not refreshed</strong><span>${escapeHtml(state.refreshProblem.message ?? '')} What is shown is from the last read.</span></div>`
     : '';
-  if (shown === 'labels') return `<article class="screen dp rl">${head}${refresh}${unsavedBar(state)}${labelsCard(state)}</article>`;
+  if (shown === 'labels') return `<article class="screen dp rl">${top}${refresh}${unsavedBar(state)}${labelsCard(state)}</article>`;
   const notes = `<details class="notes"><summary>How rules work<span class="notes-count">${RULE_NOTES.length}</span></summary><ul>${RULE_NOTES.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`;
-  return `<article class="screen dp rl">${head}${refresh}${unsavedBar(state)}${rulesCard(state, { insights })}${notes}</article>`;
+  return `<article class="screen dp rl">${top}${refresh}${unsavedBar(state)}${rulesCard(state, { activity })}${notes}</article>`;
 }
 
 // ---------------------------------------------------------------------------------------------

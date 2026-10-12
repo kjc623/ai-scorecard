@@ -115,8 +115,6 @@ func TestEveryRouteRefusesANonAdmin(t *testing.T) {
 
 func TestGet(t *testing.T) {
 	r := newRig(t)
-	r.store.AddDevice(store.Device{TenantID: tenantA, DeviceID: "22222222-2222-4222-8222-222222222222", OS: "windows", Hostname: "LAPTOP-1", EnrolledAt: r.now.Add(-2 * time.Hour)})
-	r.store.SetDeviceMode(tenantA, "22222222-2222-4222-8222-222222222222", "m2")
 	r.store.SeedCollectionMode(tenantA, "m2")
 	r.store.SeedScopeOverride(tenantA, "claude_code", "m1")
 	r.store.SeedRetention(tenantA, "event", 120)
@@ -144,10 +142,6 @@ func TestGet(t *testing.T) {
 			SanctionedState string   `json:"sanctioned_state"`
 			Fingerprints    []string `json:"fingerprints"`
 		} `json:"tools"`
-		Devices []struct {
-			DeviceID       string `json:"device_id"`
-			CollectionMode string `json:"collection_mode"`
-		} `json:"devices"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
@@ -170,9 +164,6 @@ func TestGet(t *testing.T) {
 	if len(got.Tools) != 2 || got.Tools[1].ToolKey != "openai_api" || got.Tools[1].SanctionedState != "unsanctioned" ||
 		len(got.Tools[1].Fingerprints) != 2 || got.Tools[1].Fingerprints[1] != "tls_f32477ff734d70d1" {
 		t.Fatalf("tools = %+v", got.Tools)
-	}
-	if len(got.Devices) != 1 || got.Devices[0].CollectionMode != "m2" {
-		t.Fatalf("devices = %+v", got.Devices)
 	}
 }
 

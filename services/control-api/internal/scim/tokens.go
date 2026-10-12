@@ -11,8 +11,8 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/session"
 )
 
-// Tokens administers a tenant's SCIM tokens for the admin API (Settings → Deployment,
-// internal/deploy). It owns the rows; the admin routes own the actor's authentication and the audit
+// Tokens administers a tenant's SCIM tokens for the admin API (Settings → Identity
+// Providers, internal/deploy). It owns the rows; the admin routes own the actor's authentication and the audit
 // row, so a token write is audited once, by the component that knows who asked.
 type Tokens struct {
 	store Store

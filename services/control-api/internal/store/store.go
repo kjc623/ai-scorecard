@@ -360,14 +360,6 @@ type ToolDecision struct {
 	Fingerprints    []string
 }
 
-// DeviceMode is the collection mode a device reported it has actually applied, from ops.device.
-type DeviceMode struct {
-	DeviceID       string
-	Hostname       string
-	CollectionMode string
-	LastSeenAt     *time.Time
-}
-
 // Settings is everything the Settings page reads in one round trip.
 type Settings struct {
 	CeilingMode          string
@@ -379,7 +371,6 @@ type Settings struct {
 	TLSInspection        bool
 	RetentionDefaults    RetentionDefaults
 	Tools                []ToolDecision
-	Devices              []DeviceMode
 	Endpoint             EndpointSettings
 	// DataClasses is ref.data_class's codes, sorted: with CustomLabels, the labels an enforcement
 	// rule may name.

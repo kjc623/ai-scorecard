@@ -51,7 +51,6 @@ type Memory struct {
 	tlsInspection   map[string]bool
 	toolState       map[string]map[string]string
 	catalogueTools  []store.ToolDecision
-	deviceModes     map[string]string
 	endpoint        map[string]*store.EndpointCollectors
 	endpointTools   map[string]map[string]store.EndpointTool
 	rules           map[string][]store.EnforcementRule
@@ -91,7 +90,6 @@ func New() *Memory {
 		contentSearch:     map[string]string{},
 		tlsInspection:     map[string]bool{},
 		toolState:         map[string]map[string]string{},
-		deviceModes:       map[string]string{},
 		endpoint:          map[string]*store.EndpointCollectors{},
 		endpointTools:     map[string]map[string]store.EndpointTool{},
 		rules:             map[string][]store.EnforcementRule{},
@@ -306,13 +304,6 @@ func (m *Memory) SetCatalogueTools(tools ...store.ToolDecision) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.catalogueTools = append([]store.ToolDecision(nil), tools...)
-}
-
-// SetDeviceMode seeds a device's applied collection mode.
-func (m *Memory) SetDeviceMode(tenantID, deviceID, mode string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.deviceModes[key(tenantID, deviceID)] = mode
 }
 
 // SetCatalog replaces the app catalog, which starts empty. The policy read serves it in the order
@@ -533,9 +524,6 @@ func (m *Memory) RecordHealth(_ context.Context, tenantID, deviceID string, at t
 			d.ManagedState = dev.ManagedState
 		}
 		m.devices[dk] = d
-	}
-	if dev.CollectionMode != "" {
-		m.deviceModes[dk] = dev.CollectionMode
 	}
 	return nil
 }
@@ -859,15 +847,6 @@ func (m *Memory) Settings(_ context.Context, tenantID string) (store.Settings, e
 			state = s
 		}
 		out.Tools = append(out.Tools, store.ToolDecision{ToolKey: c.ToolKey, DisplayName: c.DisplayName, SanctionedState: state, Fingerprints: append([]string{}, c.Fingerprints...)})
-	}
-	for _, d := range m.devices {
-		if d.TenantID != tenantID || d.RevokedAt != nil {
-			continue
-		}
-		out.Devices = append(out.Devices, store.DeviceMode{
-			DeviceID: d.DeviceID, Hostname: d.Hostname,
-			CollectionMode: m.deviceModes[key(tenantID, d.DeviceID)],
-		})
 	}
 	out.Endpoint = m.endpointLocked(tenantID)
 	out.DataClasses = append([]string(nil), m.dataClasses...)

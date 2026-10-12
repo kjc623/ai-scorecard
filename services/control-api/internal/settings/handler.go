@@ -132,13 +132,6 @@ type toolJSON struct {
 	Fingerprints    []string `json:"fingerprints"`
 }
 
-type deviceJSON struct {
-	DeviceID       string     `json:"device_id"`
-	Hostname       string     `json:"hostname"`
-	CollectionMode string     `json:"collection_mode"`
-	LastSeenAt     *time.Time `json:"last_seen_at"`
-}
-
 type settingsJSON struct {
 	CeilingMode          string            `json:"ceiling_mode"`
 	CollectionMode       string            `json:"collection_mode"`
@@ -149,7 +142,6 @@ type settingsJSON struct {
 	ContentSearch        string            `json:"content_search"`
 	TLSInspection        bool              `json:"tls_inspection"`
 	Tools                []toolJSON        `json:"tools"`
-	Devices              []deviceJSON      `json:"devices"`
 	Endpoint             endpointJSON      `json:"endpoint"`
 	// DataClasses is the classifier's labels, which an enforcement rule may name.
 	DataClasses []string `json:"data_classes"`
@@ -221,11 +213,11 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 		RetentionDefaults:    retentionJSON{EventDays: s.RetentionDefaults.EventDays, ContentDays: s.RetentionDefaults.ContentDays},
 		ContentSearch:        s.ContentSearch,
 		TLSInspection:        s.TLSInspection,
-		Tools:                []toolJSON{}, Devices: []deviceJSON{},
-		DataClasses:   append([]string{}, s.DataClasses...),
-		CustomLabels:  customLabelsJSON(s.CustomLabels),
-		AppCategories: append([]string{}, s.AppCategories...),
-		KillSwitches:  []killSwitchJSON{},
+		Tools:                []toolJSON{},
+		DataClasses:          append([]string{}, s.DataClasses...),
+		CustomLabels:         customLabelsJSON(s.CustomLabels),
+		AppCategories:        append([]string{}, s.AppCategories...),
+		KillSwitches:         []killSwitchJSON{},
 	}
 	for _, k := range s.KillSwitches {
 		out.KillSwitches = append(out.KillSwitches, killSwitchJSON{Route: k.Route, ReasonCode: k.ReasonCode, EffectiveAt: k.EffectiveAt.UTC(), SetBy: k.SetBy})
@@ -235,9 +227,6 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, t := range s.Tools {
 		out.Tools = append(out.Tools, toolJSON{ToolKey: t.ToolKey, DisplayName: t.DisplayName, SanctionedState: t.SanctionedState, Fingerprints: append([]string{}, t.Fingerprints...)})
-	}
-	for _, d := range s.Devices {
-		out.Devices = append(out.Devices, deviceJSON{DeviceID: d.DeviceID, Hostname: d.Hostname, CollectionMode: d.CollectionMode, LastSeenAt: d.LastSeenAt})
 	}
 	c := s.Endpoint.Collectors
 	out.Endpoint = endpointJSON{Inventory: c.Inventory, Processes: c.Processes, Flows: c.Flows, OTel: c.OTel,

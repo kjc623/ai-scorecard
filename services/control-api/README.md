@@ -31,9 +31,9 @@ both through the SCIM service (`internal/scim`), so a person has one record and 
 whichever way they arrived:
 
 - **SCIM**: the customer's identity provider pushes them to `/scim/v2/*` with a token created on
-  Settings → Deployment.
-- **Microsoft Graph** (`internal/graphsync`): once an admin turns it on (Settings → Directory &
-  teams), control-api reads the tenant's Entra directory with the vendor application's own token,
+  Settings → Identity Providers.
+- **Microsoft Graph** (`internal/graphsync`): once an admin turns it on (Settings → Identity
+  Providers), control-api reads the tenant's Entra directory with the vendor application's own token,
   an hour apart and on demand, and writes it through the same service. It needs the application
   permissions `User.Read.All` and `GroupMember.Read.All`, granted in the customer's tenant. It reads
   each member's name, UPN, object id, department, enabled flag and the parent of their on-premises
