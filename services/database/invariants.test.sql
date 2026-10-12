@@ -3039,8 +3039,8 @@ DECLARE
   missing text;
 BEGIN
   SELECT count(*) INTO n FROM ref.app;
-  IF n <> 33 THEN
-    RAISE EXCEPTION 'FAIL T82 ref.app holds % apps, want the 33 seed apps', n;
+  IF n <> 34 THEN
+    RAISE EXCEPTION 'FAIL T82 ref.app holds % apps, want the 34 seed apps', n;
   END IF;
   SELECT string_agg(a.app_key, ', ') INTO missing
     FROM ref.app a
@@ -3336,8 +3336,11 @@ END $$;
 SET ROLE sac_query;
 DO $$
 BEGIN
-  IF ops.tool_display_name('host:claude.ai') IS DISTINCT FROM 'claude.ai' THEN
+  IF ops.tool_display_name('host:chat.example-ai.invalid') IS DISTINCT FROM 'chat.example-ai.invalid' THEN
     RAISE EXCEPTION 'FAIL T86 a destination no app claims is not shown as its host';
+  END IF;
+  IF ops.tool_display_name('host:claude.ai') IS DISTINCT FROM 'Claude (web)' THEN
+    RAISE EXCEPTION 'FAIL T86 prompts stored under host:claude.ai are not Claude (web)';
   END IF;
   IF ops.tool_display_name('host:') IS DISTINCT FROM 'Unrecognised tool' THEN
     RAISE EXCEPTION 'FAIL T86 a destination with no host has a name';

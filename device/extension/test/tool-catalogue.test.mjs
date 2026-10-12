@@ -51,8 +51,8 @@ test('a browser request is named after the web service, never an installed app t
   assert.equal(toolFingerprint(catalog, 'https://chatgpt.com/backend-api/f/conversation'), 'app:chatgpt_web', 'ChatGPT Desktop also lists chatgpt.com');
   assert.equal(toolFingerprint(catalog, 'https://api.anthropic.com/v1/messages'), 'app:anthropic_api', 'Claude Code also lists api.anthropic.com');
   assert.equal(toolFingerprint(catalog, 'https://api.perplexity.ai/chat/completions'), 'app:perplexity_api', 'an exact host beats a domain');
-  assert.equal(toolFingerprint(catalog, 'https://claude.ai/api/organizations/o/chat_conversations/c/completion'), 'host:claude.ai',
-    'only Claude Desktop lists claude.ai, and a browser is not Claude Desktop');
+  assert.equal(toolFingerprint(catalog, 'https://claude.ai/api/organizations/o/chat_conversations/c/completion'), 'app:claude_web',
+    'Claude Desktop also lists claude.ai');
 });
 
 test('a host no app claims is named by itself', () => {

@@ -77,16 +77,22 @@ export function toolCatalogue(source = schemaSource()) {
   return rows;
 }
 
-/** The web tools: the apps the catalogue names browser prompts for, app_key -> display name. */
-export function webTools(catalogue = toolCatalogue()) {
+/**
+ * The web tools: the chat assistants known by their inference domains alone, the apps a person uses
+ * in the browser itself, app_key -> display name.
+ */
+export function webTools(catalog = bundleCatalog(), catalogue = toolCatalogue()) {
   const out = new Map();
-  for (const row of catalogue.values()) if (row.signal_kind === 'extension') out.set(row.app_key, row.display_name);
+  for (const app of catalog) {
+    if (app.category === 'chat_assistant' && app.signals.length && app.signals.every((s) => s.kind === 'inference_domain')) out.set(app.app_key, catalogue.get(`app:${app.app_key}`).display_name);
+  }
   return out;
 }
 
 /** The `requestBody` Chrome hands over: a form parsed, anything else as raw bytes. */
 function requestBodyOf(request) {
   if (request.form) return { formData: request.form };
+  if (request.base64 !== undefined) return { raw: [{ bytes: toArrayBuffer(Buffer.from(request.base64, 'base64')) }] };
   const text = request.json !== undefined ? JSON.stringify(request.json) : request.text;
   if (text === undefined) return null;
   return { raw: [{ bytes: toArrayBuffer(new TextEncoder().encode(text)) }] };

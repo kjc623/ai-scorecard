@@ -20,7 +20,7 @@ const fixtures = loadFixtures();
 
 test('every web tool in the app catalogue has a capture fixture', () => {
   const covered = new Set(fixtures.map((f) => f.app_key));
-  for (const [app_key, display_name] of webTools(catalogue)) {
+  for (const [app_key, display_name] of webTools(catalog, catalogue)) {
     assert.ok(covered.has(app_key), `${display_name} (${app_key}) has no fixture in test/tools/`);
   }
 });

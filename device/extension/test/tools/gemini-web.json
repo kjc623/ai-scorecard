@@ -26,10 +26,9 @@
     }
   },
   "expect": {
-    "events": 0,
-    "observed": false,
-    "attributed": false,
-    "prompt": false,
-    "why": "the form has no prompt field and only two fields, so the request scores 0.5 against a 0.8 threshold; the response would have to corroborate it, and the response lane is registered without responseHeaders, so it never can"
+    "events": 1,
+    "observed": true,
+    "attributed": true,
+    "prompt": true
   }
 }

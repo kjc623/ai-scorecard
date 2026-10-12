@@ -36,10 +36,9 @@
     }
   },
   "expect": {
-    "events": 0,
-    "observed": false,
-    "attributed": false,
-    "prompt": false,
-    "why": "the typed text is in query_str and the model in model_preference, neither a name the predicate knows, and the path has no conversational word, so the request scores 0.15; the response cannot corroborate it because the response lane gets no headers"
+    "events": 1,
+    "observed": true,
+    "attributed": true,
+    "prompt": true
   }
 }

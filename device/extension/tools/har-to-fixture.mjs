@@ -13,7 +13,7 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { FIXTURES, extensionCatalogue, replay } from '../test-support/tool-replay.mjs';
+import { FIXTURES, replay } from '../test-support/tool-replay.mjs';
 
 const [harPath, name, typed] = process.argv.slice(2);
 if (!harPath || !name || !typed) {
@@ -44,7 +44,7 @@ const fixture = {
 };
 writeFileSync(path, `${JSON.stringify(fixture, null, 2)}\n`);
 
-const got = await replay(fixture, { catalogue: extensionCatalogue() });
+const got = await replay(fixture);
 console.log(`wrote ${path}`);
 console.log(`replay: score ${got.score} [${got.signals.join(', ')}]`);
 for (const e of got.events) console.log(`  ${e.route} -> ${e.named || 'not catalogued'}: ${JSON.stringify((e.content || '').slice(0, 120))}`);
@@ -57,7 +57,11 @@ function bodyText(request) {
   return (post.params || []).map((p) => decodeURIComponent(p.value || '')).join('');
 }
 
-/** The body as Chrome hands it to the extension: a parsed form, JSON, or text. */
+/**
+ * The body as Chrome hands it to the extension: a parsed form, JSON, text, or the bytes of a binary
+ * body. DevTools writes a binary body one character per byte, so a body with control characters and
+ * no character above U+00FF is those bytes.
+ */
 function requestBody(request) {
   const post = request.postData || {};
   const mime = String(post.mimeType || '').toLowerCase();
@@ -71,10 +75,12 @@ function requestBody(request) {
     for (const p of post.params || []) (form[p.name] ||= []).push(p.fileName || p.value || '');
     return { form };
   }
+  const text = post.text || '';
   try {
-    return { json: JSON.parse(post.text) };
+    return { json: JSON.parse(text) };
   } catch {
-    return { text: post.text || '' };
+    const binary = /[\x00-\x08\x0e-\x1f]/.test(text) && [...text].every((c) => c.charCodeAt(0) <= 0xff);
+    return binary ? { base64: Buffer.from(text, 'latin1').toString('base64') } : { text };
   }
 }
 

@@ -3,7 +3,10 @@
 The Shadow AI Capture browser extension: Manifest V3, Chrome and Edge, force-installed by policy. It
 observes requests, decides locally whether one is a submission to a generative-AI service, and hands
 matched observations (and the files attached to them) to `capture-core` over native messaging; the
-agent builds, spools and sends the records. At M0 no request body is read: the body listener is not
+agent builds, spools and sends the records. A request to a web app the catalog names whose own
+prompt request is known (Claude, Gemini and Perplexity, `src/submission.js`; ChatGPT's form sends a
+`prompt` field) is a submission whatever its shape, and only the typed text is taken from it; any
+other request is judged by its shape (`src/predicate.js`). At M0 no request body is read: the body listener is not
 registered for a destination whose mode does not read content. At a mode that reads content, the
 files the user chose, dropped or pasted in the frame that sent the request, and has not sent with
 an earlier prompt, are transferred to `capture-core` (manifest, chunks, completion) before the
