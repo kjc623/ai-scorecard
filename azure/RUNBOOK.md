@@ -36,7 +36,7 @@ refers to. Steps marked **(once)** are done once per environment.
    - App roles (value = name, for users/groups): `viewer`, `analyst`, `content_reader`, `admin`.
    - API permissions: delegated `openid`, `profile`, `email`, `offline_access`; application
      `DeviceManagementManagedDevices.Read.All` (the Intune check), `User.Read.All` and
-     `GroupMember.Read.All` (reading the directory, Settings → Deployment), granted by each customer at
+     `GroupMember.Read.All` (reading the directory, Settings → Identity Providers), granted by each customer at
      consent. A customer that consented before the last two were added grants them again (Entra admin
      center → Enterprise applications → the app → Permissions → Grant admin consent).
    - No client secret: control-api authenticates as the app with its managed identity (step 5).
@@ -91,14 +91,14 @@ Each prints the command's output: the new tenant id, then the invite link. A Glo
 the link, consents, and signs in once, becoming that tenant's admin. In the customer's Entra
 *Enterprise applications*, set *Assignment required* and assign people to the four roles.
 
-Directory sync: in the dashboard, **Settings → Deployment → SCIM → Create token**; in the customer's
+Directory sync: in the dashboard, **Settings → Identity Providers → User provisioning (SCIM) → Create token**; in the customer's
 Entra create a non-gallery enterprise application for provisioning with Tenant URL
 `https://<analyst-fqdn>/scim/v2` and the token, map `objectId → externalId`, scope it to assigned
 users and groups, and start provisioning.
 
 ## 7. Devices (Intune)
 
-1. Dashboard → **Settings → Deployment → Download Intune package** (the generic MSI wrapped with the
+1. Dashboard → **Settings → Devices → Install the agent → Download Intune package** (the generic MSI wrapped with the
    tenant's deployment key).
 2. Intune → Apps → Windows → *Windows app (Win32)*: install `msiexec /i "ShadowAICapture.msi" /qn`,
    uninstall `msiexec /x {product-code} /qn`, detection by MSI product code and version, x64,

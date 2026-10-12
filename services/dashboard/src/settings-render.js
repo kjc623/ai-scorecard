@@ -1,11 +1,11 @@
-// settings-render.js — Settings → Settings, state to HTML. Pure: no DOM, no I/O, no state.
+// settings-render.js — Settings → Collection, and the sanction decisions on Policy → Tools, state to
+// HTML. Pure: no DOM, no I/O, no state.
 //
 // The same honesty rules as every other screen: a value the server did not send is "not reported",
-// never a zero; every string from the API is escaped; a device's applied mode is shown as it
-// reported it, not as the tenant requested it. The one confirmation on the page is a mode increase
-// that starts capturing content.
+// never a zero, and every string from the API is escaped. The one confirmation on the page is a
+// mode increase that starts capturing content.
 
-import { escapeHtml } from './render.js';
+import { escapeHtml, renderPageHead } from './render.js';
 import { formatInstant } from './format.js';
 import { COLLECTION_MODE_LABELS } from './vocab.js';
 import {
@@ -42,12 +42,12 @@ function stCard(title, body, { extra = '', wide = false } = {}) {
     + `<div class="dp-body">${body}</div></div></section>`;
 }
 
-function stHeader(eyebrow) {
-  return '<header class="screen-head"><div class="screen-title">'
-    + (eyebrow ? `<span class="eyebrow">${escapeHtml(eyebrow)}</span>` : '')
-    + '<h2>Settings</h2>'
-    + '<p class="question">What your organisation collects and keeps, and what search can reach. Every change is written to the audit trail.</p>'
-    + '</div></header>';
+function stHeader(head) {
+  return renderPageHead({
+    title: 'Settings',
+    ...head,
+    subtitle: 'What your organisation collects and keeps, and what search can reach. Every change is written to the audit trail.',
+  });
 }
 
 function stSkeleton() {
@@ -155,8 +155,15 @@ function toolCell(tool) {
   return `<span class="v-text">${escapeHtml(tool.display_name ?? tool.tool_key)}</span> <span class="dp-sub">${n} ${n === 1 ? 'fingerprint' : 'fingerprints'}</span>`;
 }
 
-/** One row per tool: the decision covers every fingerprint the catalogue knows for it. */
-function stTools(state) {
+/**
+ * The sanction decisions, above the tools Policy lists: one row per catalogued tool, and the
+ * decision covers every fingerprint the catalogue knows for it.
+ *
+ * @param {object} state  createSettings().state
+ */
+export function renderSanctionDecisions(state) {
+  if (state.status === 'idle' || state.status === 'loading') return `<div class="dp" aria-busy="true">${stSkeleton()}</div>`;
+  if (state.status === 'refused' || !state.data) return `<div class="dp">${stRefused(state.problem)}</div>`;
   const tools = state.data.tools;
   const rows = tools.map((tool) => {
     const current = tool.sanctioned_state;
@@ -167,11 +174,11 @@ function stTools(state) {
       + `<td class="dp-action"><div class="seg dp-seg" role="group" aria-label="Sanction for ${escapeHtml(name)}">${seg}</div></td></tr>`;
   }).join('');
   const empty = tools.length === 0 ? '<tr class="row-empty"><td colspan="2">No tools are catalogued yet.</td></tr>' : '';
-  const body = '<p>Mark a tool sanctioned or unsanctioned. A decision covers every fingerprint of the tool: each way a device recognises it. A tool with no decision is <em>unknown</em>, never unsanctioned.</p>'
+  const body = '<p>Mark a tool sanctioned or unsanctioned. A decision covers every fingerprint of the tool: each way a device recognises it. A tool with no decision is <em>unknown</em>, never unsanctioned. Every change is written to the audit trail.</p>'
     + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Tool</th><th scope="col">Decision</th></tr></thead>'
     + `<tbody>${rows}${empty}</tbody></table></div>`
     + stProblem(state.sanction.problem);
-  return stCard('Tool sanction', body, { wide: true });
+  return `<div class="dp">${stCard('Sanction decisions', body, { wide: true })}</div>`;
 }
 
 /**
@@ -293,19 +300,6 @@ function stKillSwitch(state) {
   return stCard('Kill switch', body);
 }
 
-function stDevices(state) {
-  const devices = state.data.devices;
-  const rows = devices.map((d) => '<tr>'
-    + `<td>${d.hostname ? `<span class="v-text">${escapeHtml(d.hostname)}</span>` : '<span class="v-absent">not reported</span>'}</td>`
-    + `<td>${d.collection_mode ? stChip(d.collection_mode) : '<span class="v-absent">not reported</span>'}</td>`
-    + `<td>${stInstant(d.last_seen_at)}</td></tr>`).join('');
-  const empty = devices.length === 0 ? '<tr class="row-empty"><td colspan="3">No devices have enrolled.</td></tr>' : '';
-  const body = '<p>The mode each device has actually applied, as it reported it — not only the mode requested above.</p>'
-    + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Device</th><th scope="col">Applied mode</th><th scope="col">Last seen</th></tr></thead>'
-    + `<tbody>${rows}${empty}</tbody></table></div>`;
-  return stCard('Devices', body, { wide: true });
-}
-
 const ST_NOTES = Object.freeze([
   'Every change on this page is written to the audit trail under your name, with the old and the new value.',
   'A change reaches devices through the signed policy bundle, without reinstalling the agent.',
@@ -313,28 +307,26 @@ const ST_NOTES = Object.freeze([
 ]);
 
 /**
- * The whole page for one state.
+ * Settings → Collection for one state.
  *
  * @param {object} state  createSettings().state
  * @param {object} [options]
- * @param {string|null} [options.eyebrow]
+ * @param {object} [options.head]  the page's title, eyebrow and tabs
  */
-export function renderSettings(state, { eyebrow = 'Settings' } = {}) {
-  const head = stHeader(eyebrow);
-  if (state.status === 'idle' || state.status === 'loading') return `<article class="screen dp" aria-busy="true">${head}${stSkeleton()}</article>`;
-  if (state.status === 'refused' || !state.data) return `<article class="screen dp">${head}${stRefused(state.problem)}</article>`;
+export function renderSettings(state, { head = {} } = {}) {
+  const top = stHeader(head);
+  if (state.status === 'idle' || state.status === 'loading') return `<article class="screen dp" aria-busy="true">${top}${stSkeleton()}</article>`;
+  if (state.status === 'refused' || !state.data) return `<article class="screen dp">${top}${stRefused(state.problem)}</article>`;
   const refresh = state.refreshProblem
     ? `<div class="banner banner-warning" role="status"><strong>Not refreshed</strong><span>${escapeHtml(state.refreshProblem.message ?? '')} What is shown is from the last read.</span></div>`
     : '';
   const notes = `<details class="notes"><summary>About these settings<span class="notes-count">${ST_NOTES.length}</span></summary><ul>${ST_NOTES.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`;
-  return `<article class="screen dp">${head}${refresh}`
+  return `<article class="screen dp">${top}${refresh}`
     + `<div class="dp-grid">${stCollectionMode(state)}${stSearch(state)}</div>`
     + stRetention(state)
     + stOverrides(state)
-    + stTools(state)
     + `<div class="dp-grid">${stTLSInspection(state)}${stKillSwitch(state)}</div>`
     + stEndpoint(state)
-    + stDevices(state)
     + notes
     + '</article>';
 }

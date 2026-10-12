@@ -1,25 +1,39 @@
 # dashboard
 
-The analyst-facing web application: Overview, Rules (the enforcement rules, read top to bottom like
-a firewall's rulebase: each rule for the people, groups, departments, units or teams it names, the
-tools and the labels it checks, its action and the prompts it decided over 30 days, edited as a
-draft that is saved whole; and the custom labels rules can name), Usage (tools, data classes, teams,
-and users: the people list and each person's page), Devices, Audit trail, Settings (Settings,
-Deployment, Identity Providers), Archive (pre-production only: Insights, with Exposure, the prompts
-that matched an enforcement rule on one of their labels, what happened to them, the tools they went
-to and the labels involved, each against the period before, and every enforcement rule with the
-prompts it matched; Adoption, how many people use AI out of the directory, split by the sanction of
-their tools, the applications that sent their first prompt in the window, and each day's or week's
-prompts by sanction; Discovered, every AI application, CLI, IDE extension, local model and
-inference endpoint the devices' inventory scan found, with the prompts each sent, and the devices
-whose scan is not reporting; Demand, the tools not sanctioned by team, each team's people using
-each out of its size, and the people each tool would need a seat for; and Coding agents, each
-coding agent's people, actions and tokens against the period before, and the models that received
-its code and context), and the Search page, where an analyst lists events, findings, devices and
-audit entries, opens a device to see each of its collectors with its state and cause, searches
-prompt text, and reads an event's stored prompt. An admin adds, edits and deletes teams on Teams,
-from any mix of the people they tick and the groups, departments and units the identity provider
-synced and other teams.
+The analyst-facing web application. The navigation holds four destinations, each with its pages as
+tabs under its title, and Archive and Settings at its foot; every other screen is opened from a row,
+a tile or a card. A role is offered only the pages it may open, and an address from an earlier
+layout lands on the page that holds it now.
+
+- **Overview**: the window's prompts, attachments, sensitive prompts, people and devices reporting,
+  the tools by sanction, the rules at work and the tools in use. Each tile and card opens the page
+  that holds the rest.
+- **Usage**: Tools (every tool by prompts, narrowed by sanction decision, and each tool's people and
+  findings), Teams (an admin adds, edits and deletes teams from any mix of the people they tick, the
+  groups, departments and units the identity provider synced, and other teams) and Users (everyone
+  the directory or a device has named, with their teams and prompts, and each person's page).
+- **Search** (`explore.html`): an analyst lists events and findings, searches prompt text, and
+  reads an event's stored prompt.
+- **Policy**: Rules (the enforcement rules, read top to bottom like a firewall's rulebase: each rule
+  for the people, groups, departments, units or teams it names, the tools and the labels it checks,
+  its action and the prompts it decided over 30 days; everyone reads them, and an admin edits them
+  as a draft that is saved whole), Labels (the custom labels rules can name), Tools (each tool's
+  sanction decision, made there by an admin) and Activity (pre-production only: the prompts that
+  matched an enforcement rule on one of their labels, what happened to them, the tools they went to
+  and the labels involved, each against the period before).
+- **Archive** (pre-production only): Insights, with Adoption (how many people use AI out of the
+  directory, split by the sanction of their tools, the applications that sent their first prompt in
+  the window, and each day's or week's prompts by sanction), Discovered (every AI application, CLI,
+  IDE extension, local model and inference endpoint the devices' inventory scan found, with the
+  prompts each sent, and the devices whose scan is not reporting), Demand (the tools not sanctioned
+  by team, each team's people using each out of its size, and the people each tool would need a seat
+  for) and Coding agents (each coding agent's people, actions and tokens against the period before,
+  and the models that received its code and context).
+- **Settings**: Collection (the collection mode, prompt storage, retention, per-tool overrides, TLS
+  inspection, the kill switch and the endpoint collectors), Devices (each device with the mode it
+  applied, and each of its collectors with its state and cause; an admin installs the agent below
+  the list), Identity Providers (the directory read, sign-in and SCIM provisioning) and Audit trail
+  (filtered by actor, action, object type and case). A viewer's Settings is Devices alone.
 
 It has two halves and no dependencies:
 
@@ -53,7 +67,7 @@ The server refuses to start unless every required variable is set.
 | `SAC_QUERY_API_URL` | yes | query-api, for `/v1/*` |
 | `SAC_CONTENT_VAULT_URL` | yes | content-vault, for minted retrieval URLs only |
 | `SAC_HTTP_ADDR` | no | Listen address, `host:port` or `:port`; default `0.0.0.0:8080` |
-| `SAC_ENVIRONMENT` | no | `preprod` or `prod` (the default). Pre-production also offers the pages still being built, under Archive in the navigation; production offers neither, and its Overview's Sensitive prompts tile opens nothing |
+| `SAC_ENVIRONMENT` | no | `preprod` or `prod` (the default). Pre-production also offers the pages still being built, Policy → Activity and Archive; production offers neither, and its Overview's Sensitive prompts tile opens Policy → Rules |
 
 Routes: `/signin`, `/signin/start`, `/callback`, `/signout`, `/login` (control-api's onboarding
 hand-off), `/session` (who is signed in and which pages the roles may open), `/healthz` and

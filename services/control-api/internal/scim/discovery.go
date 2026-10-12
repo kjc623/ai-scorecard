@@ -19,7 +19,7 @@ func (s *Service) serviceProviderConfig() map[string]any {
 		"authenticationSchemes": []any{map[string]any{
 			"type":        "oauthbearertoken",
 			"name":        "OAuth Bearer Token",
-			"description": "A per-tenant SCIM token created in Settings > Deployment, sent as Authorization: Bearer.",
+			"description": "A per-tenant SCIM token created in Settings > Identity Providers, sent as Authorization: Bearer.",
 			"primary":     true,
 		}},
 		"meta": map[string]any{"resourceType": "ServiceProviderConfig"},

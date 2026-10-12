@@ -1,16 +1,16 @@
-// insights.test.mjs — Insights' Exposure tab and the Overview tiles that open it and Search: the
+// insights.test.mjs — Policy → Activity and the Overview tiles that open it and Search: the
 // sensitive prompts out of every prompt, what happened to them, where they went and which labels,
 // each compared with the period before; the attachments, with the prompts they were counted on; and
-// Archive, the navigation group that holds Insights where the server offers it.
+// the navigation: four destinations, then Archive and Settings at its foot.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readState } from '../src/states.js';
 import { renderFunnel, renderNav, renderScreen, renderSeries } from '../src/render.js';
-import { insightsView, postureView } from '../src/views.js';
+import { activityView, postureView } from '../src/views.js';
 import { boot, createDashboard } from '../src/app.js';
 import { createQueryApi } from '../src/transport.js';
-import { groupOf, shellNavItems } from '../src/shell.js';
+import { SECTIONS, sectionOf, shellNavItems } from '../src/shell.js';
 import { RULE_MATCH_ROWS, RULE_ROWS, TOOL_ROWS, fixtureTransport } from './fixtures.mjs';
 import { COMPLETE, FRESH, PARTIAL, envelope, fakeDocument } from './helpers.mjs';
 
@@ -51,27 +51,25 @@ test('Overview counts prompts, then the attachments and the sensitive prompts am
   assert.equal(attachments.value.text, '240');
   assert.equal(attachments.note, 'Counted on 3,803 of 4,836 prompts: metadata-only collection (M0) does not describe attachments.');
   assert.equal(attachments.href, 'explore.html#events?attachments=yes', 'Search opens on the prompts that carried an attachment, in its own default window');
-  assert.equal(attachments.moreLabel, 'Search');
+  assert.equal(attachments.moreLabel, undefined, 'the whole tile is the link, with no path written under it');
 
   const sensitive = view.tiles[2];
   assert.equal(sensitive.value.text, '161');
   assert.equal(sensitive.note, 'of 4,836 prompts matched a rule on their labels');
   assert.deepEqual(sensitive.split.map((p) => [p.key, p.count]), [['allowed', 68], ['blocked', 15], ['warned', 78]]);
-  assert.equal(sensitive.href, '#insights');
+  assert.equal(sensitive.href, '#activity');
 
   const html = renderScreen(view, {});
   assert.match(html, /<a class="tile card tile-link" href="explore.html#events\?attachments=yes">/);
-  assert.match(html, /<a class="tile card tile-link" href="#insights">/, 'the split draws its parts without links, so the whole tile opens Insights');
+  assert.match(html, /<a class="tile card tile-link" href="#activity">/, 'the split draws its parts without links, so the whole tile opens Activity');
 });
 
 test('the attachments link keeps the window where Search offers it, and takes Search\'s widest where it does not', async () => {
   const { dashboard } = dashboardWith();
   const day = (await dashboard.load('posture', { preset: 'h24' })).view.tiles[1];
   assert.equal(day.href, 'explore.html#events?window=h24&attachments=yes');
-  assert.equal(day.moreLabel, 'Search');
   const quarter = (await dashboard.load('posture', { preset: 'd90' })).view.tiles[1];
   assert.equal(quarter.href, 'explore.html#events?window=d30&attachments=yes');
-  assert.equal(quarter.moreLabel, 'Search, last 30 days', 'the link says it lists a shorter window than the tile counts');
 });
 
 test('an attachment count is unknown, not zero, when no prompt was sent in a mode that describes attachments', () => {
@@ -90,21 +88,21 @@ test('an attachment count is unknown, not zero, when no prompt was sent in a mod
   assert.equal(older[2].split, undefined);
 });
 
-test('Insights reads the window, the period of the same length before it, and the class mix', async () => {
+test('Activity reads the window, the period of the same length before it, and the class mix', async () => {
   const { dashboard, sent } = dashboardWith();
-  const { view } = await dashboard.load('insights', {});
+  const { view } = await dashboard.load('activity', {});
   const usage = sent.filter((b) => b.template === 'q1_tools_ranked').map((b) => b.params.window);
   assert.deepEqual(usage, [
     { from: '2026-09-17T12:00:00.000Z', to: '2026-09-24T12:00:00.000Z' },
     { from: '2026-09-24T12:00:00.000Z', to: '2026-10-01T12:00:00.000Z' },
   ]);
   assert.ok(sent.some((b) => b.template === 'q4_class_mix'));
-  assert.equal(view.id, 'insights');
-  assert.equal(view.title, 'Insights');
+  assert.equal(view.id, 'activity');
+  assert.equal(view.title, 'Activity');
 });
 
 test('the funnel narrows prompts to sensitive prompts and splits them by outcome, each against the previous period', async () => {
-  const { view } = await dashboardWith().dashboard.load('insights', {});
+  const { view } = await dashboardWith().dashboard.load('activity', {});
   const funnel = view.lead[0];
   assert.equal(funnel.kind, 'funnel');
   const said = (stage) => [stage.label, stage.value.text, stage.detail, stage.change?.text ?? null];
@@ -124,7 +122,7 @@ test('the funnel narrows prompts to sensitive prompts and splits them by outcome
 });
 
 test('sensitive prompts are ranked by tool, with what was allowed to unsanctioned tools said first', async () => {
-  const { view } = await dashboardWith().dashboard.load('insights', { preset: 'd30' });
+  const { view } = await dashboardWith().dashboard.load('activity', { preset: 'd30' });
   const ranking = view.blocks[0];
   assert.equal(ranking.title, 'Where sensitive prompts went');
   assert.equal(ranking.summary, '20 sensitive prompts were allowed to unsanctioned tools, and 1 to tools with no decision yet.');
@@ -137,7 +135,7 @@ test('sensitive prompts are ranked by tool, with what was allowed to unsanctione
 });
 
 test('each tool\'s change is against its own previous period, and a tool new to it says so', async () => {
-  const { view } = await dashboardWith().dashboard.load('insights', {});
+  const { view } = await dashboardWith().dashboard.load('activity', {});
   assert.deepEqual(view.blocks[0].items.map((i) => i.sublabel), [
     '−20% on the previous 7 days',
     '+100% on the previous 7 days',
@@ -146,7 +144,7 @@ test('each tool\'s change is against its own previous period, and a tool new to 
 });
 
 test('what was exposed lists the labels a rule matched, by sensitive prompts and outcome', async () => {
-  const { view } = await dashboardWith().dashboard.load('insights', {});
+  const { view } = await dashboardWith().dashboard.load('activity', {});
   const table = view.blocks[1];
   assert.equal(table.kind, 'table');
   assert.equal(table.title, 'What was exposed');
@@ -167,18 +165,18 @@ const ruleRow = ({ row }) => [row.rule.primary, row.rule.secondary, row.action, 
 
 test('Rules reads the rules as they stand and the prompts each matched in the window, a week at a time', async () => {
   const { dashboard, sent } = dashboardWith();
-  await dashboard.load('insights', {});
+  await dashboard.load('activity', {});
   assert.deepEqual(sent.find((b) => b.source === 'ops.enforcement_rule'), { query_version: '1', source: 'ops.enforcement_rule', filters: [], limit: 100 });
   const matches = sent.find((b) => b.source === 'mart.agg_rule_period');
   assert.deepEqual([matches.bucket, matches.dimensions, matches.window], ['week', ['rule'], { from: '2026-09-24T12:00:00.000Z', to: '2026-10-01T12:00:00.000Z' }]);
 
   sent.length = 0;
-  await dashboard.load('insights', { preset: 'h24' });
+  await dashboard.load('activity', { preset: 'h24' });
   assert.equal(sent.find((b) => b.source === 'mart.agg_rule_period').bucket, 'hour');
 });
 
 test('Rules lists every rule in the order a device applies it, what it matches, and the prompts it matched by outcome', async () => {
-  const { view } = await dashboardWith().dashboard.load('insights', {});
+  const { view } = await dashboardWith().dashboard.load('activity', {});
   const table = rulesBlock(view);
   assert.equal(table.kind, 'table');
   assert.deepEqual(table.columns.map((c) => c.label), ['Rule', 'Action', 'Matched', 'Allowed', 'Blocked', 'Warned']);
@@ -202,21 +200,21 @@ test('Rules lists every rule in the order a device applies it, what it matches, 
 test('the Rules summary says when every rule matched, or none did', () => {
   const usage = usageOf(TOOL_ROWS);
   const twoRules = rulesOf(RULE_ROWS.slice(0, 2));
-  const every = insightsView({ usage, rules: twoRules, ruleMatches: matchesOf() });
+  const every = activityView({ usage, rules: twoRules, ruleMatches: matchesOf() });
   assert.equal(rulesBlock(every).summary, 'Every rule matched at least one prompt in this window.');
-  const none = insightsView({ usage, rules: twoRules, ruleMatches: matchesOf([]) });
+  const none = activityView({ usage, rules: twoRules, ruleMatches: matchesOf([]) });
   assert.equal(rulesBlock(none).summary, 'No rule matched a prompt in this window.');
   assert.deepEqual(rulesBlock(none).rows.map(({ row }) => row.matches), [0, 0]);
 });
 
 test('a rule with no condition matches any prompt, and says so', () => {
   const anyPrompt = rulesOf([{ position: 1, rule: 'everything.warn', action: 'warn', match: {}, label_names: null, tool_names: null }]);
-  const view = insightsView({ usage: usageOf(TOOL_ROWS), rules: anyPrompt, ruleMatches: matchesOf([]) });
+  const view = activityView({ usage: usageOf(TOOL_ROWS), rules: anyPrompt, ruleMatches: matchesOf([]) });
   assert.equal(rulesBlock(view).rows[0].row.rule.secondary, 'Rule 1 · Any prompt');
 });
 
 test('without the matches the rules are still listed, with their counts absent and the reason given', () => {
-  const view = insightsView({ usage: usageOf(TOOL_ROWS), rules: rulesOf(), ruleMatches: refusedRead() });
+  const view = activityView({ usage: usageOf(TOOL_ROWS), rules: rulesOf(), ruleMatches: refusedRead() });
   const table = rulesBlock(view);
   assert.equal(table.rows.length, 5);
   assert.ok(table.rows.every(({ row }) => row.matches === null && row.blocked === null));
@@ -224,31 +222,31 @@ test('without the matches the rules are still listed, with their counts absent a
 });
 
 test('without the rules the matches are listed by rule id, and no rule is called removed', () => {
-  const table = rulesBlock(insightsView({ usage: usageOf(TOOL_ROWS), rules: refusedRead(), ruleMatches: matchesOf() }));
+  const table = rulesBlock(activityView({ usage: usageOf(TOOL_ROWS), rules: refusedRead(), ruleMatches: matchesOf() }));
   assert.deepEqual(table.rows.map(ruleRow).slice(0, 2), [
     ['claude-code.warn', null, 'unknown', 'Not read', 310, 270, 0, 40],
     ['pii.warn', null, 'unknown', 'Not read', 80, 2, 0, 78],
   ], 'the busiest rule first');
   assert.equal(table.summary, undefined);
-  assert.equal(rulesBlock(insightsView({ usage: usageOf(TOOL_ROWS), rules: refusedRead(), ruleMatches: matchesOf([]) })).emptyText, 'The rules could not be read: The window is too broad for this read.');
+  assert.equal(rulesBlock(activityView({ usage: usageOf(TOOL_ROWS), rules: refusedRead(), ruleMatches: matchesOf([]) })).emptyText, 'The rules could not be read: The window is too broad for this read.');
 });
 
 test('a tenant with no rule is told that every prompt is logged, and where rules are set', () => {
-  const table = rulesBlock(insightsView({ usage: usageOf(TOOL_ROWS), rules: rulesOf([]), ruleMatches: matchesOf([]) }));
+  const table = rulesBlock(activityView({ usage: usageOf(TOOL_ROWS), rules: rulesOf([]), ruleMatches: matchesOf([]) }));
   assert.deepEqual(table.rows, []);
-  assert.equal(table.emptyText, 'No enforcement rule is set, so every prompt is logged. Rules are set on the Rules page.');
+  assert.equal(table.emptyText, 'No enforcement rule is set, so every prompt is logged. Rules are set on Policy → Rules.');
   assert.equal(table.summary, undefined);
 });
 
 test('a matches read cut short says Rules undercounts', () => {
-  const view = insightsView({ usage: usageOf(TOOL_ROWS), rules: rulesOf(), ruleMatches: matchesOf(RULE_MATCH_ROWS, { truncated: true }) });
+  const view = activityView({ usage: usageOf(TOOL_ROWS), rules: rulesOf(), ruleMatches: matchesOf(RULE_MATCH_ROWS, { truncated: true }) });
   assert.ok(view.notes.includes('Not every rule\'s matches could be read for this window, so Rules undercounts; a shorter window reads them all.'));
-  const whole = insightsView({ usage: usageOf(TOOL_ROWS), rules: rulesOf(), ruleMatches: matchesOf() });
+  const whole = activityView({ usage: usageOf(TOOL_ROWS), rules: rulesOf(), ruleMatches: matchesOf() });
   assert.ok(!whole.notes.some((note) => /undercounts/.test(note)));
 });
 
 test('the trend stacks each bucket\'s sensitive prompts by outcome', async () => {
-  const { view } = await dashboardWith().dashboard.load('insights', {});
+  const { view } = await dashboardWith().dashboard.load('activity', {});
   assert.equal(view.series.length, 1);
   const series = view.series[0];
   assert.equal(series.title, 'Sensitive prompts per day');
@@ -260,7 +258,7 @@ test('the trend stacks each bucket\'s sensitive prompts by outcome', async () =>
 });
 
 test('without the previous period no change is shown, and the page says why', async () => {
-  const { view } = await dashboardWith({ previous: 'refused' }).dashboard.load('insights', {});
+  const { view } = await dashboardWith({ previous: 'refused' }).dashboard.load('activity', {});
   assert.ok(view.lead[0].stages.every((stage) => stage.change === null));
   assert.ok(view.blocks[0].items.every((item) => !/previous/.test(item.sublabel ?? '')));
   assert.ok(view.notes.includes('The previous 7 days could not be read, so no change is shown.'));
@@ -268,8 +266,8 @@ test('without the previous period no change is shown, and the page says why', as
 
 test('a window with prompts and no sensitive one says how a prompt becomes sensitive', () => {
   const quiet = usageOf(TOOL_ROWS.map((row) => ({ ...row, sensitive: 0, sensitive_blocked: 0, sensitive_warned: 0, sensitive_logged: 0 })));
-  const view = insightsView({ usage: quiet });
-  assert.match(view.notes[0], /Nothing counts as sensitive until an enforcement rule names a label; rules are set on the Rules page\./);
+  const view = activityView({ usage: quiet });
+  assert.match(view.notes[0], /Nothing counts as sensitive until an enforcement rule names a label; rules are set on Policy → Rules\./);
   assert.deepEqual(view.blocks[0].items, []);
   assert.equal(view.blocks[0].summary, null);
   assert.equal(view.blocks[0].emptyText, 'No sensitive prompt in this window.');
@@ -278,36 +276,62 @@ test('a window with prompts and no sensitive one says how a prompt becomes sensi
 });
 
 test('a window with nothing recorded shows the funnel\'s empty line, not a row of dashes', () => {
-  const view = insightsView({ usage: usageOf([]) });
+  const view = activityView({ usage: usageOf([]) });
   assert.equal(view.lead[0].emptyText, 'No prompts in this window.');
   assert.match(renderFunnel(view.lead[0]), /<p class="block-empty">No prompts in this window\.<\/p>/);
 });
 
-test('Insights sits under Archive, last in the navigation, and Search follows Overview and Rules', () => {
+test('the navigation is four destinations, then Archive and Settings at its foot, each opening its first page', () => {
   const items = shellNavItems();
-  assert.deepEqual(items.slice(0, 4).map((i) => i.id), ['posture', 'rules', 'explore', 'tools']);
-  assert.deepEqual(items.at(-1), { id: 'insights', label: 'Insights', question: null, group: 'Archive', icon: 'archive', groupIcon: 'archive', href: '#insights' });
-  const nav = renderNav(items, 'insights', { collapsed: ['Archive'] });
-  assert.match(nav, /<details class="nav-group" data-group="Archive" open><summary><svg class="nav-icon"[^>]*>.*?<\/svg><span>Archive<\/span>/, 'the group holding the current page is open');
-  assert.match(nav, /<div class="nav-items"><a href="#insights" class="active" aria-current="page"><span>Insights<\/span><\/a><\/div><\/details>$/);
-  assert.equal(groupOf('insights'), 'Archive');
+  assert.deepEqual(items.map((i) => [i.id, i.label, i.href, i.foot]), [
+    ['overview', 'Overview', '#posture', false],
+    ['usage', 'Usage', '#tools', false],
+    ['search', 'Search', 'explore.html', false],
+    ['policy', 'Policy', '#rules', false],
+    ['archive', 'Archive', '#insights', true],
+    ['settings', 'Settings', '#settings', true],
+  ]);
+  assert.deepEqual(SECTIONS.find((s) => s.id === 'policy').pages.map((p) => p.label), ['Rules', 'Labels', 'Tools', 'Activity']);
+  assert.equal(sectionOf('activity').id, 'policy');
+  assert.equal(sectionOf('insights').id, 'archive');
+  assert.equal(sectionOf('event').id, 'search', 'an event is a record Search opens');
+
+  const nav = renderNav(items, 'policy');
+  assert.match(nav, /<a href="#rules" class="active" aria-current="page"><svg class="nav-icon"[^>]*>.*?<\/svg><span>Policy<\/span><\/a>/);
+  assert.match(nav, /<span class="nav-spacer" aria-hidden="true"><\/span><a href="#insights">/, 'the foot starts at Archive');
+  assert.equal(nav.split('nav-spacer').length - 1, 1);
+  assert.match(nav, /<span>Settings<\/span><\/a>$/);
 });
 
-test('where the server does not offer Insights, Archive leaves the navigation and the page is not opened', async () => {
+test('a destination opens the first of its pages the session may open, and leaves when it may open none', () => {
+  const viewer = shellNavItems({ allowed: new Set(['posture', 'tools', 'teams', 'rules', 'sanction', 'devices']) });
+  assert.deepEqual(viewer.map((i) => [i.id, i.href]), [['overview', '#posture'], ['usage', '#tools'], ['policy', '#rules'], ['settings', '#devices']]);
+  const search = shellNavItems({ page: 'index.html', allowed: new Set(['posture', 'explore']) });
+  assert.deepEqual(search.map((i) => [i.id, i.href]), [['overview', 'index.html#posture'], ['search', 'explore.html']]);
+});
+
+test('where the server does not offer Activity or Insights, Archive leaves the navigation and the Sensitive prompts tile opens Rules', async () => {
   const doc = fakeDocument();
   const sent = [];
-  await boot({ document: doc, api: createQueryApi({ transport: { send: (body) => { sent.push(body); return fixtureTransport().send(body); } } }), session: { actor: 'v@lab.test', roles: ['viewer'], pages: ['posture', 'tools', 'teams', 'devices'] } });
+  await boot({ document: doc, api: createQueryApi({ transport: { send: (body) => { sent.push(body); return fixtureTransport().send(body); } } }), session: { actor: 'v@lab.test', roles: ['viewer'], pages: ['posture', 'tools', 'teams', 'rules', 'sanction', 'devices'] } });
   assert.doesNotMatch(doc.html('nav'), /Archive|Insights/);
-  assert.doesNotMatch(doc.html('app'), /#insights/, 'the Sensitive prompts tile opens nothing');
+  assert.doesNotMatch(doc.html('app'), /#insights|#activity/);
+  assert.match(doc.html('app'), /<a class="tile card tile-link" href="#rules"><div class="card-core"><span class="tile-label">Sensitive prompts</, 'the rules are what make a prompt sensitive');
   const before = sent.length;
   await doc.navigate('#insights');
   assert.match(doc.html('app'), /This page is not offered to you here/);
-  assert.equal(sent.length, before, 'nothing was read for it');
+  await doc.navigate('#activity');
+  assert.match(doc.html('app'), /This page is not offered to you here/);
+  assert.equal(sent.length, before, 'nothing was read for either');
 });
 
-test('in pre-production Archive holds Insights, and the Sensitive prompts tile opens it', async () => {
+test('in pre-production Archive holds Insights, Policy offers Activity, and the Sensitive prompts tile opens it', async () => {
   const doc = fakeDocument();
-  await boot({ document: doc, api: createQueryApi({ transport: fixtureTransport() }), session: { actor: 'v@lab.test', roles: ['viewer'], pages: ['posture', 'insights', 'tools', 'teams', 'devices'] } });
-  assert.match(doc.html('nav'), /data-group="Archive"[^>]*><summary>.*?<span>Archive<\/span>.*?<a href="#insights"><span>Insights<\/span><\/a>/);
-  assert.match(doc.html('app'), /<a class="tile card tile-link" href="#insights"><div class="card-core"><span class="tile-label">Sensitive prompts</);
+  await boot({ document: doc, api: createQueryApi({ transport: fixtureTransport() }), session: { actor: 'v@lab.test', roles: ['viewer'], pages: ['posture', 'tools', 'teams', 'rules', 'sanction', 'activity', 'insights', 'devices'] } });
+  assert.match(doc.html('nav'), /<span class="nav-spacer" aria-hidden="true"><\/span><a href="#insights"><svg[^>]*>.*?<\/svg><span>Archive<\/span><\/a>/);
+  assert.match(doc.html('app'), /<a class="tile card tile-link" href="#activity"><div class="card-core"><span class="tile-label">Sensitive prompts</);
+  await doc.navigate('#activity');
+  assert.match(doc.html('app'), /<h2>Policy<\/h2>/);
+  assert.match(doc.html('app'), /<a class="page-tab" href="#activity" aria-current="page">Activity<\/a>/);
+  assert.match(doc.html('nav'), /<a href="#rules" class="active" aria-current="page">/, 'Policy is the current destination');
 });

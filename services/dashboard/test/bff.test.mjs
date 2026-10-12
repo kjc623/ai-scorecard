@@ -521,13 +521,14 @@ test('GET /session names the pages each role may open; Search is not served to a
   const viewerSession = (await send(port, '/session', { headers: { cookie: `sac_session=${viewer}` } })).json();
   assert.deepEqual(viewerSession.roles, ['viewer']);
   assert.equal(viewerSession.pages.includes('explore'), false);
-  assert.equal(viewerSession.pages.includes('deployment'), false);
+  assert.equal(viewerSession.pages.includes('settings'), false);
+  assert.ok(viewerSession.pages.includes('devices'), 'a viewer\'s Settings is Devices');
   assert.equal(viewerSession.actor, 'viewer@lab.test');
   assert.equal('dev' in viewerSession, false);
   assert.equal(JSON.stringify(viewerSession).includes('at-viewer'), false, 'the page is never given a token');
   const adminSession = (await send(port, '/session', { headers: { cookie: `sac_session=${admin}` } })).json();
-  assert.ok(adminSession.pages.includes('deployment'));
-  assert.equal(adminSession.pages.includes('insights'), false, 'production does not offer the pages still being built');
+  for (const id of ['settings', 'directory', 'labels']) assert.ok(adminSession.pages.includes(id), id);
+  for (const id of ['activity', 'insights']) assert.equal(adminSession.pages.includes(id), false, `production does not offer ${id}, still being built`);
   const refused = await send(port, '/explore.html', { headers: { cookie: `sac_session=${viewer}` } });
   assert.equal(refused.status, 403);
   assert.match(refused.text, /Your role cannot open this page/);

@@ -1,8 +1,9 @@
-// settings.test.mjs — Settings → Settings, driven without a browser.
+// settings.test.mjs — Settings → Collection, and the sanction decisions an admin makes on Policy →
+// Tools, driven without a browser.
 //
 // The controller (src/settings.js) runs against a fake admin API built on the real createAdminApi,
-// so the requests asserted are the ones a browser would send. The renderer
-// (src/settings-render.js) is asserted for each state. The one confirmation the page has — a mode
+// so the requests asserted are the ones a browser would send. The renderers
+// (src/settings-render.js) are asserted for each state. The one confirmation the page has — a mode
 // increase that starts capturing content — is asserted not to send until confirmed.
 
 import test from 'node:test';
@@ -10,7 +11,7 @@ import assert from 'node:assert/strict';
 
 import { createAdminApi, createQueryApi, normaliseSettings } from '../src/transport.js';
 import { createSettings, modeIncreaseNeedsConfirmation, searchTierAllowed, effectiveMode } from '../src/settings.js';
-import { renderSettings } from '../src/settings-render.js';
+import { renderSanctionDecisions, renderSettings } from '../src/settings-render.js';
 import { boot } from '../src/app.js';
 import { fakeDocument } from './helpers.mjs';
 import { fixtureTransport } from './fixtures.mjs';
@@ -30,7 +31,6 @@ function populated(overrides = {}) {
       { tool_key: 'claude_code', display_name: 'Claude Code', sanctioned_state: 'unsanctioned', fingerprints: ['app:claude_code', 'tls_b6681b043244c43f'] },
       { tool_key: 'openai_api', display_name: 'OpenAI API', sanctioned_state: 'unknown', fingerprints: ['app:openai_api', 'tls_f32477ff734d70d1'] },
     ],
-    devices: [{ device_id: 'd-1', hostname: 'LAPTOP-1', collection_mode: 'm2', last_seen_at: '2026-10-01T09:00:00Z' }],
     endpoint: endpointDefaults(),
     tls_inspection: false,
     kill_switches: [],
@@ -75,7 +75,7 @@ async function loaded(answers) {
   const changes = [];
   const controller = createSettings({ admin, onChange: (s) => changes.push(s.status) });
   await controller.load();
-  const html = () => renderSettings(controller.state, { eyebrow: 'Settings' });
+  const html = () => renderSettings(controller.state) + renderSanctionDecisions(controller.state);
   return { controller, requests, changes, html };
 }
 
@@ -89,7 +89,7 @@ test('loading: the page shows its frame and placeholders, and says it is loading
   const controller = createSettings({ admin });
   const pending = controller.load();
   assert.equal(controller.state.status, 'loading');
-  const html = renderSettings(controller.state, { eyebrow: 'Settings' });
+  const html = renderSettings(controller.state);
   assert.match(html, /<h2>Settings<\/h2>/);
   assert.match(html, /aria-busy="true"/);
   assert.match(html, /dp-skel/);
@@ -105,18 +105,20 @@ test('refused: a 403 says only an admin can open it', async () => {
   assert.match(down.html(), /The admin API could not be reached/);
 });
 
-test('populated: requested mode, the applied device mode, retention and sanction are all shown', async () => {
-  const { html } = await loaded({ [GET]: () => ({ status: 200, body: populated() }) });
-  const page = html();
+test('populated: Collection shows the requested mode and retention; the sanction decisions list every tool', async () => {
+  const { controller } = await loaded({ [GET]: () => ({ status: 200, body: populated() }) });
+  const page = renderSettings(controller.state);
   assert.match(page, /Collection mode/);
   assert.match(page, /M3 · prompt/);
   assert.match(page, /Claude Code/);
-  assert.match(page, /LAPTOP-1/);
-  assert.match(page, /Applied mode/, 'the devices table shows the mode each device actually applied');
-  assert.match(page, /<span class="v-vocab v-vocab-m">m2<\/span>/, 'the device\'s applied mode (m2) is shown, not only the requested mode (m3)');
   assert.match(page, /Store and search prompts/, 'prompt storage is one switch');
   assert.doesNotMatch(page, /Attachment names|Full text|bytes|MB/, 'no search tiers and no byte allowance are offered');
-  assert.match(page, /unsanctioned/);
+  assert.doesNotMatch(page, /Sanction decisions/, 'sanction is decided on Policy → Tools');
+  const decisions = renderSanctionDecisions(controller.state);
+  assert.match(decisions, /<h3>Sanction decisions<\/h3>/);
+  assert.match(decisions, /aria-label="Sanction for Claude Code"/);
+  assert.match(decisions, /unsanctioned/);
+  assert.match(decisions, /A tool with no decision is <em>unknown<\/em>, never unsanctioned\./);
 });
 
 test('the prompt switch turns storage and search on as one setting, and says what off means', async () => {
@@ -552,30 +554,38 @@ function session(roles, pages) {
   return { actor: `${roles[0]}@lab.test`, tenant: '5a3c0de0-7e57-4a11-9000-0000000d3a01', roles, role: roles[0], pages };
 }
 
-test('a viewer is shown no Settings; reaching it directly is refused in the page', async () => {
+test('a viewer\'s Settings is Devices alone; Collection is refused in the page and asks nothing', async () => {
   const { admin, requests } = fakeAdmin({ [GET]: () => ({ status: 200, body: populated() }) });
   const doc = fakeDocument('#posture');
-  await boot({ document: doc, api: queryApi(), admin, session: session(['viewer'], ['posture', 'tools', 'teams', 'devices']) });
-  assert.doesNotMatch(doc.html('nav'), />Settings</);
+  await boot({ document: doc, api: queryApi(), admin, session: session(['viewer'], ['posture', 'tools', 'teams', 'rules', 'sanction', 'devices']) });
+  assert.match(doc.html('nav'), /<a href="#devices"><svg[^>]*>.*?<\/svg><span>Settings<\/span><\/a>/);
   await doc.navigate('#settings');
   assert.match(doc.html('app'), /This page is not offered to you here/);
+  await doc.navigate('#sanction');
+  assert.doesNotMatch(doc.html('app'), /Sanction decisions/, 'a viewer reads the decisions and changes none');
   assert.equal(requests.length, 0, 'the admin API was not asked');
 });
 
-test('an admin is shown Settings → Settings and the page renders over the admin API', async () => {
+test('an admin opens Settings on Collection over the admin API, and decides sanction on Policy → Tools', async () => {
   const { admin, requests } = fakeAdmin({ [GET]: () => ({ status: 200, body: populated() }) });
   const doc = fakeDocument('#settings');
-  await boot({ document: doc, api: queryApi(), admin, session: session(['admin'], ['posture', 'tools', 'teams', 'audit', 'settings', 'deployment']) });
-  const nav = doc.html('nav');
-  assert.match(nav, />Settings</);
-  assert.match(nav, />Deployment</);
-  assert.match(doc.html('app'), /Collection mode/);
-  assert.match(doc.html('app'), /Tool sanction/);
+  await boot({ document: doc, api: queryApi(), admin, session: session(['admin'], ['posture', 'tools', 'teams', 'rules', 'labels', 'sanction', 'settings', 'devices', 'directory', 'audit']) });
+  assert.match(doc.html('nav'), /<a href="#settings" class="active" aria-current="page"><svg[^>]*>.*?<\/svg><span>Settings<\/span><\/a>/);
+  const page = doc.html('app');
+  assert.match(page, /<h2>Settings<\/h2>/);
+  assert.match(page, /<nav class="page-tabs" aria-label="Settings"><a class="page-tab" href="#settings" aria-current="page">Collection<\/a><a class="page-tab" href="#devices">Devices<\/a><a class="page-tab" href="#directory">Identity Providers<\/a><a class="page-tab" href="#audit">Audit trail<\/a><\/nav>/);
+  assert.match(page, /Collection mode/);
   assert.equal(requests[0].path, '/admin/v1/settings');
+
+  await doc.navigate('#sanction');
+  const policy = doc.html('app');
+  assert.match(policy, /<h2>Policy<\/h2>/);
+  assert.match(policy, /<h3>Sanction decisions<\/h3>/);
+  assert.ok(policy.indexOf('Sanction decisions') < policy.indexOf('Tools by decision'), 'the decisions sit above the tools in use');
 });
 
 test('an absent count is null after normalising, never 0', () => {
-  const data = normaliseSettings({ tools: [], devices: [], scope_overrides: {}, retention_defaults: {} });
+  const data = normaliseSettings({ tools: [], scope_overrides: {}, retention_defaults: {} });
   assert.equal(data.event_retention_days, null);
   assert.equal(data.content_retention_days, null);
   assert.equal(data.collection_mode, null);

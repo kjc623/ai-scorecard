@@ -56,7 +56,7 @@ tenant file. `--release device/installer/dist/release` also checks a built relea
 
 ## Deploying with Intune
 
-**The agent.** In the dashboard, Settings → Deployment → download the Intune package (`.intunewin`
+**The agent.** In the dashboard, Settings → Devices → Install the agent → download the Intune package (`.intunewin`
 holding the signed MSI and this tenant's `ShadowAICapture.tenant.env`, with a deployment key minted
 for the download; treat it as a secret). Intune admin center → Apps → Windows → Add → Windows app
 (Win32): install command `msiexec /i ShadowAICapture.msi /qn`, install behaviour System, requirement

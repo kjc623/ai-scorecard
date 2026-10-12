@@ -14,12 +14,12 @@ import {
   buildExploreRequest, encodeExploreHash, decodeExploreHash,
 } from '../src/explore-model.js';
 import { createExploreFake, buildExploreSample } from './explore-fake.mjs';
-import { createExplorer } from '../src/explore-app.js';
+import { bootExplore, createExplorer } from '../src/explore-app.js';
 import {
   renderExploreResults, renderExploreDetail, renderExploreRail, renderExploreProblems, renderExploreSummary, renderExploreValue,
 } from '../src/explore-render.js';
 import { createQueryApi } from '../src/transport.js';
-import { COLLECTOR_DETAILS, TEMPLATES } from '../src/vocab.js';
+import { TEMPLATES } from '../src/vocab.js';
 import { ROOT } from './helpers.mjs';
 
 const NOW = new Date('2026-10-01T12:00:00Z');
@@ -52,7 +52,7 @@ test('every filter a dataset offers is a parameter its template admits', () => {
 
 test('only list templates are searchable: no dataset reads an aggregate or a per-person series', () => {
   const used = EXPLORE_DATASET_IDS.map((id) => EXPLORE_DATASETS[id].questionId).sort();
-  assert.deepEqual(used, ['q10_audit_trail', 'q5_findings', 'q7_devices', 'q8_activity']);
+  assert.deepEqual(used, ['q5_findings', 'q8_activity'], 'Search lists events and findings; devices and the audit trail are in Settings');
 });
 
 // ── the query bar ────────────────────────────────────────────────────────────────────────────
@@ -109,13 +109,18 @@ test('every request is a template of the closed DSL, with no tenant and no text 
   }
 });
 
-test('the devices read carries no window, and the others carry the one that was chosen', () => {
+test('every read carries the window that was chosen', () => {
   const window = { from: '2026-09-24T12:00:00.000Z', to: '2026-10-01T12:00:00.000Z' };
-  const devices = buildExploreRequest({ dataset: EXPLORE_DATASETS.devices, filters: { liveness: 'stale' }, window: null });
-  assert.ok(!('window' in devices.params));
-  assert.equal(devices.params.liveness, 'stale');
-  const events = buildExploreRequest({ dataset: EXPLORE_DATASETS.events, filters: {}, window });
-  assert.deepEqual(events.params.window, window);
+  for (const id of EXPLORE_DATASET_IDS) assert.deepEqual(buildExploreRequest({ dataset: EXPLORE_DATASETS[id], filters: {}, window }).params.window, window, id);
+});
+
+test('an address from when Search listed devices or the audit trail opens that page in Settings', async () => {
+  for (const [hash, to] of [['#devices?liveness=stale', 'index.html#devices'], ['#audit?window=d30', 'index.html#audit']]) {
+    const replaced = [];
+    const document = { location: { hash, replace: (url) => replaced.push(url) }, getElementById: () => null };
+    assert.equal(await bootExplore({ document }), null);
+    assert.deepEqual(replaced, [to]);
+  }
 });
 
 test('the default events request hides client-generated requests, and the toggle drops the predicate', () => {
@@ -245,21 +250,6 @@ test('both clocks are shown and the device clock is marked', async () => {
   assert.match(html, /before receipt/, 'a late flush is named as one');
 });
 
-test('device states render as themselves, and silence is not health', async () => {
-  const { explorer } = explorerFor();
-  await explorer.restore('#devices');
-  const html = renderExploreResults(explorer.state);
-  for (const value of ['reporting', 'stale', 'never_reported', 'revoked']) {
-    assert.ok(html.includes(`>${value}<`), `${value} must appear`);
-  }
-  assert.equal(explorer.state.rows.length, new Set(explorer.state.rows.map((r) => r.device)).size, 'one row per device');
-  await explorer.setFilter('liveness', 'never_reported');
-  const silent = renderExploreResults(explorer.state);
-  assert.ok(!/healthy/.test(silent));
-  assert.equal(explorer.state.rows.length, 1);
-  assert.equal(explorer.state.rows[0].collectors_reporting, 0, 'a silent device has no collector to count');
-});
-
 // ── detail ───────────────────────────────────────────────────────────────────────────────────
 
 test('opening an event re-reads the one record and shows what its content state permits', async () => {
@@ -313,58 +303,6 @@ test('a destroyed record is "no longer available" with its receipt, not a blank 
   const html = renderExploreDetail(explorer.state);
   assert.match(html, /No longer available/);
   assert.match(html, /r_88/);
-});
-
-test('a device row lists every collector the device reported, with its state, cause and last report', async () => {
-  const { explorer, sent, stub } = explorerFor();
-  const tampered = stub.sample.collectors.find((r) => r.error_code === 'config_tampered');
-  await explorer.restore('#devices');
-  const row = explorer.state.rows.find((r) => r.device === tampered.device);
-  await explorer.open(row.device);
-
-  const last = sent[sent.length - 1];
-  assert.deepEqual(last, {
-    query_version: '1',
-    source: 'ops.collector_state',
-    filters: [{ field: 'device', op: 'eq', value: tampered.device }],
-    limit: 100,
-  });
-  assert.equal(explorer.state.detail.collectors.status, 'ready');
-  const html = renderExploreDetail(explorer.state);
-  const table = html.slice(html.indexOf('<h3>Collectors</h3>'));
-  for (const r of stub.sample.collectors.filter((c) => c.device === tampered.device)) {
-    assert.ok(table.includes(`>${r.collector}<`), `${r.collector} has a row`);
-  }
-  assert.match(table, /<th scope="col">State<\/th><th scope="col">Cause<\/th><th scope="col">Last report<\/th>/);
-  assert.ok(table.includes(COLLECTOR_DETAILS.config_tampered.replace(/'/g, '&#39;')), 'the cause is in words');
-  assert.ok(table.includes('title="config_tampered"'), 'the detail code stays beside its words');
-  assert.match(table, /<span class="x-chip x-chip-warn">degraded<\/span>/);
-  // Switched off by policy is not a fault: it says so, untinted, and gives no cause.
-  const off = table.slice(table.indexOf('>tool_config_cursor<'));
-  assert.match(off, /^>tool_config_cursor<\/span><\/td><td><span class="x-chip">Off in policy<\/span><\/td><td><span class="x-absent">none<\/span>/);
-  assert.ok(!/x-chip-bad">absent/.test(off.slice(0, off.indexOf('</tr>'))), 'a collector off in policy is not shown as absent');
-  assert.ok(!/audited read/.test(html), 'the collectors read is not audited');
-});
-
-test('a device whose collectors cannot be read says so beside the row it opened', async () => {
-  const { explorer, stub } = explorerFor();
-  await explorer.restore('#devices');
-  const row = explorer.state.rows[0];
-  stub.setScenario('busy');
-  await explorer.open(row.device);
-  assert.equal(explorer.state.detail.collectors.status, 'refused');
-  const html = renderExploreDetail(explorer.state);
-  assert.match(html, /<h3>Collectors<\/h3><div class="x-state x-state-refusal" role="alert">/);
-  assert.ok(html.includes(row.device), 'the row itself is still shown');
-});
-
-test('an audit row opens without a second read', async () => {
-  const { explorer, sent } = explorerFor();
-  await explorer.restore('#audit?window=d30');
-  const before = sent.length;
-  await explorer.open(String(explorer.state.rows[0].audit_seq));
-  assert.equal(sent.length, before);
-  assert.match(renderExploreDetail(explorer.state), /Row hash/);
 });
 
 test('a newer search discards an older answer that arrives late', async () => {
@@ -447,7 +385,7 @@ test('switching dataset carries the filters both have and drops the rest by name
   assert.match(renderExploreSummary(explorer.state), /Audited read, entry/);
 });
 
-test('the page offers the export only for events and findings, and no external link', async () => {
+test('the page offers the export for events and findings, and no external link', async () => {
   const template = readFileSync(join(ROOT, 'explore.html'), 'utf8');
   const sources = ['explore-render.js', 'explore-app.js', 'explore-model.js'].map((f) => readFileSync(join(ROOT, 'src', f), 'utf8')).join('\n');
   // The download is a server-minted link: the client names no .csv file and no download attribute,
@@ -458,8 +396,6 @@ test('the page offers the export only for events and findings, and no external l
   const ready = { dataset: 'events', status: 'ready', rows: [], result: { page: {} }, filters: {}, includeClientGenerated: false, windowPreset: 'd7', export: { status: 'idle' } };
   assert.match(renderExploreSummary(ready), /Export CSV/, 'events offer the export');
   assert.match(renderExploreSummary({ ...ready, dataset: 'findings' }), /Export CSV/, 'findings offer the export');
-  assert.ok(!/Export CSV/.test(renderExploreSummary({ ...ready, dataset: 'devices' })), 'devices do not export');
-  assert.ok(!/Export CSV/.test(renderExploreSummary({ ...ready, dataset: 'audit' })), 'the audit trail does not export');
 });
 
 test('exporting the list follows the server link and reports the refusal otherwise', async () => {

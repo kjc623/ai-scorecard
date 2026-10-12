@@ -237,15 +237,16 @@ test('the Teams screen ranks the teams and lists the admin\'s quiet teams with a
   assert.match(ranking.items[3].sublabel, /No usage recorded in this window/);
 });
 
-test('the Users page heads the directory with each team member once, their teams beside their name', async () => {
+test('the Users page is one list under the search bar, each person once with their teams beside their name', async () => {
   const { view } = await dashboardFor().load('person', { filters: {} });
-  assert.deepEqual(view.tables.map((t) => t.title), ['Users', 'People']);
+  assert.deepEqual(view.tables.map((t) => t.title), ['People']);
   assert.equal(view.tables[0].groupBy, undefined);
   const html = renderScreen(view, SHELL);
-  assert.ok(html.indexOf('search-form') < html.indexOf('<h3>Users</h3>'), 'the roster sits under the search bar');
-  const roster = html.slice(html.indexOf('<h3>Users</h3>'), html.indexOf('<h3>People</h3>'));
-  assert.equal((roster.match(/>Grace Hopper</g) ?? []).length, 1, 'a person in two teams, on two days, is listed once');
-  assert.match(roster, /<span class="block-count">3<\/span>/, 'the count is people, not rows');
+  assert.ok(html.indexOf('search-form') < html.indexOf('<h3>People</h3>'), 'the list sits under the search bar');
+  const list = html.slice(html.indexOf('<h3>People</h3>'));
+  assert.equal((list.match(/>Grace Hopper</g) ?? []).length, 1, 'a person in two teams, on two days, is listed once');
+  assert.match(list, /Engineering, Finance/);
+  assert.match(list, /<span class="block-count">3<\/span>/, 'the count is people, not rows');
 });
 
 test('without the admin list the Teams screen still ranks the teams that have usage', async () => {
@@ -289,11 +290,12 @@ test('teams the totals do not know are not invented when the read could not say'
   assert.match(view.blocks[0].emptyText, /^Not yet covered\./);
 });
 
-test('a device row is three cells: the device and what it runs, the person on it, and its state with when it was last seen', () => {
+test('a device row is the device and what it runs, its state with when it was last seen, the person on it, and the mode it applied', () => {
   const state = readState(envelope('ok', { data: DEVICE_ROWS, freshness: FRESH, coverage: PARTIAL, meta: { source: 'mart.v_device_liveness' } }));
   const view = devicesView(state, { now: NOW() });
   const [fin, mac, silent, ops] = view.tables[0].rows.map((r) => r.row);
-  assert.deepEqual(fin.device_cell, { primary: 'FIN-LAPTOP-07', mono: false, title: '9f1c0b6e-0000-4000-8000-000000000001', secondary: 'Windows 11 · Managed · Agent 1.4.2 · M3 · prompt' });
+  assert.deepEqual(fin.device_cell, { primary: 'FIN-LAPTOP-07', mono: false, title: '9f1c0b6e-0000-4000-8000-000000000001', secondary: 'Windows 11 · Managed · Agent 1.4.2' });
+  assert.deepEqual(view.tables[0].rows.map((r) => r.row.mode), ['M3 · prompt', 'M2 · excerpt', 'M1 · digest & labels', 'M0 · metadata'], 'the mode the device applied has a column of its own');
   assert.deepEqual(fin.user_cell, { primary: 'Alice Smith', secondary: 'alice@contoso.example', title: 'u_4f21' });
   assert.deepEqual(fin.status_cell, { chip: { key: 'reporting', text: 'Reporting' }, secondary: 'Last seen 3 min ago · Collectors 2 healthy' });
   assert.deepEqual(mac.status_cell, { chip: { key: 'degraded', text: 'Degraded' }, secondary: 'Last seen 2 days ago · Collectors 1 degraded · 1 healthy' }.chip ? { chip: { key: mac.status, text: mac.status_text }, secondary: 'Last seen 2 days ago · Collectors 1 degraded · 1 healthy' } : null);
@@ -302,10 +304,10 @@ test('a device row is three cells: the device and what it runs, the person on it
   assert.equal(silent.user_cell.primary, null, 'nobody has used it');
   assert.deepEqual(silent.status_cell, { chip: { key: 'never_reported', text: 'Never checked in' }, secondary: null });
   assert.equal(ops.status_cell.chip.key, 'revoked');
-  assert.equal(view.tables[0].rowHref, 'activity');
+  assert.equal(view.tables[0].rowHref, 'href');
   const html = renderScreen(view, SHELL);
-  assert.match(html, /<tr class="row-link" tabindex="0" data-href="explore\.html#events\?device=9f1c0b6e-0000-4000-8000-000000000001">/, 'the row opens the device\'s activity');
-  assert.match(html, /<span class="cell-stack" title="9f1c0b6e-0000-4000-8000-000000000001"><span class="cell-primary">FIN-LAPTOP-07<\/span><span class="cell-secondary">Windows 11 · Managed · Agent 1\.4\.2 · M3 · prompt<\/span><\/span>/);
+  assert.match(html, /<tr class="row-link" tabindex="0" data-href="#devices\?device=9f1c0b6e-0000-4000-8000-000000000001">/, 'the row opens the device');
+  assert.match(html, /<span class="cell-stack" title="9f1c0b6e-0000-4000-8000-000000000001"><span class="cell-primary">FIN-LAPTOP-07<\/span><span class="cell-secondary">Windows 11 · Managed · Agent 1\.4\.2<\/span><\/span>/);
   assert.match(html, /<span class="cell-stack"><span class="v-vocab v-vocab-never_reported" title="never_reported">Never checked in<\/span><\/span>/, 'a state chip can be the first line');
   assert.match(html, /<span class="cell-stack"><span class="v-absent">—<\/span><\/span>/, 'no user is an absence, not a blank');
 });
@@ -481,32 +483,31 @@ test('a tool\'s screen marks a tool with no recorded decision as unknown, names 
   const read = sent.find((b) => b.template === 'q2_unsanctioned_users' && b.params.tool === 'tls_zzzz');
   assert.ok(read, 'the people read is made for a tool with cells');
   assert.equal(read.params.sanctioned_state, undefined, 'a fingerprint outside the catalogue has no state to scope by');
-  const unsanctionedList = (await quiet.load('tools', { filters: { view: 'unsanctioned' } })).view;
-  assert.equal(unsanctionedList.id, 'unsanctioned');
-  assert.equal(sent.filter((b) => b.template === 'q2_unsanctioned_users' && !b.params.tool).pop()?.params.sanctioned_state, 'unsanctioned', 'the list without a tool is still the unsanctioned question');
+  assert.ok(sent.filter((b) => b.template === 'q2_unsanctioned_users').every((b) => b.params.tool), 'people are read for one tool at a time, never listed across tools');
 });
 
 test('the Overview tiles open the screens they summarise', async () => {
   const { view } = await dashboardFor().load('posture', { preset: 'd30' });
   assert.deepEqual(view.tiles.map((t) => [t.label, t.href ?? null]), [
     ['Prompts', '#tools?preset=d30'], ['Attachments', 'explore.html#events?window=d30&attachments=yes'],
-    ['Sensitive prompts', '#insights?preset=d30'], ['Users', '#person'], ['Devices reporting', '#devices'],
+    ['Sensitive prompts', '#activity?preset=d30'], ['Users', '#person?preset=d30'], ['Devices reporting', '#devices'],
   ]);
-  assert.equal(view.blocks[1].href, '#tools?preset=d30');
-  assert.ok(view.blocks[1].items.every((i) => i.href === null || i.href.endsWith('&preset=d30')));
+  assert.deepEqual(view.blocks.map((b) => [b.title, b.cardHref ?? null, b.href ?? null]), [
+    ['Applications', '#sanction', null], ['Policy at work', '#rules', null], ['Tools in use', null, '#tools?preset=d30'],
+  ], 'a card with nothing to open inside it is one link; Tools in use links each tool');
+  assert.ok(view.blocks[2].items.every((i) => i.href === null || i.href.endsWith('&preset=d30')));
   assert.deepEqual(view.tables, []);
 });
 
-test('where Insights is not offered, the Sensitive prompts tile still counts and opens nothing', async () => {
-  const { view } = await dashboardFor().load('posture', { preset: 'd30', insights: false });
+test('where Activity is not offered, the Sensitive prompts tile still counts and opens the rules that decide it', async () => {
+  const { view } = await dashboardFor().load('posture', { preset: 'd30', activity: false });
   const sensitive = view.tiles.find((t) => t.label === 'Sensitive prompts');
-  assert.equal(sensitive.href, undefined);
-  assert.equal(sensitive.moreLabel, undefined);
+  assert.equal(sensitive.href, '#rules');
   assert.equal(sensitive.value.kind, 'number');
-  assert.doesNotMatch(renderScreen(view, SHELL), /#insights/);
+  assert.doesNotMatch(renderScreen(view, SHELL), /#activity|#insights/);
 });
 
-test('a share of one part is the figure and a whole bar, with the other parts kept as zeros, and a split draws and links only the parts that count something', () => {
+test('a share of one part is the figure and a whole bar, with the other parts kept as zeros, and a split draws only the parts that count something', () => {
   const all = readState(envelope('ok', {
     data: [{ bucket: '2026-09-30T00:00:00Z', tool: 'app:chatgpt_web', tool_name: 'ChatGPT (web)', sanctioned_state: 'sanctioned', submissions: 40, users: 3 }],
     freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' },
@@ -520,7 +521,7 @@ test('a share of one part is the figure and a whole bar, with the other parts ke
     freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' },
   }));
   const share = sanctionShare(undecided);
-  assert.equal(share.href, '#settings');
+  assert.equal(share.href, '#sanction');
   assert.equal(share.moreLabel, 'Decide which tools are sanctioned');
   assert.match(share.note, /No tool has a sanction decision yet/);
   const page = renderScreen(postureView({ devices: null, coverage: { devices_reporting: 5, devices_enrolled: 5 } }), SHELL);
@@ -537,5 +538,5 @@ test('the Devices filters are offered only where they can change the list', () =
   assert.deepEqual(devicesView(uniform, { now: NOW(), filters: { device_os: 'macos' } }).filters.map((f) => f.label), ['OS'], 'a filter already chosen stays, so it can be cleared');
   const mixed = readState(envelope('ok', { data: DEVICE_ROWS, freshness: FRESH, coverage: PARTIAL, meta: { source: 'mart.v_device_liveness' } }));
   assert.deepEqual(devicesView(mixed, { now: NOW() }).filters.map((f) => f.label), ['Status', 'OS', 'Management']);
-  assert.deepEqual(devicesView(mixed, { now: NOW() }).tables[0].columns.map((c) => c.label), ['Device', 'Status', 'User', '']);
+  assert.deepEqual(devicesView(mixed, { now: NOW() }).tables[0].columns.map((c) => c.label), ['Device', 'Status', 'User', 'Applied mode']);
 });

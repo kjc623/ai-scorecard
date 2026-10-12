@@ -221,7 +221,7 @@ func Readme(r Release) []byte {
 		"",
 		"The tenant file holds a deployment key. Anyone with this package can try to enrol a device into",
 		"your organisation, so treat the package as you would an installer credential. If it leaks,",
-		"revoke the key in Settings > Deployment and download a new package.",
+		"revoke the key in Settings > Devices and download a new package.",
 	}
 	return []byte(strings.Join(lines, "\r\n") + "\r\n")
 }

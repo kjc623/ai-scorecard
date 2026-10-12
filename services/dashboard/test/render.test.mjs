@@ -4,11 +4,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderScreen, renderValue, renderTable, renderSeries, escapeHtml } from '../src/render.js';
 import { readState } from '../src/states.js';
-import { devicesView, classesView, postureView, teamsView, toolsView, eventView } from '../src/views.js';
-import { STATE_ENVELOPES, SCENARIO_NAMES, RECORD_ROWS, fixtureTransport } from './fixtures.mjs';
+import { devicesView, deviceView, postureView, rulesView, sanctionView, teamsView, toolsView, eventView } from '../src/views.js';
+import { STATE_ENVELOPES, SCENARIO_NAMES, RECORD_ROWS, RULE_ROWS, TOOL_ROWS, fixtureTransport } from './fixtures.mjs';
 import { createDashboard, SCREENS, refusalFrom } from '../src/app.js';
 import { createQueryApi } from '../src/transport.js';
 import { COMPLETE, FRESH, PARTIAL, envelope } from './helpers.mjs';
+import { validate } from '../../query-api/src/validate.js';
 
 const SHELL = { coverage: PARTIAL, freshness: FRESH };
 
@@ -120,9 +121,11 @@ test('the overview summarises usage beside the enrolled denominator', async () =
   assert.equal(view.title, 'Overview');
   assert.deepEqual(view.tiles.map((t) => t.label), ['Prompts', 'Attachments', 'Sensitive prompts', 'Users', 'Devices reporting']);
   assert.match(view.tiles[4].note, /of 4,620 enrolled devices/);
-  assert.deepEqual(view.tiles[4].split.map((p) => [p.label, p.count, p.href]), [['Reporting', 4180, '#devices?status=reporting'], ['Not reporting', 440, '#devices?status=attention']]);
-  assert.deepEqual(view.blocks.map((b) => [b.kind, b.title]), [['share', 'Applications'], ['ranking', 'Tools in use']]);
-  assert.equal(view.blocks[1].href, '#tools');
+  assert.deepEqual(view.tiles[4].split.map((p) => [p.label, p.count, p.href]), [['Reporting', 4180, undefined], ['Not reporting', 440, undefined]], 'the whole tile opens Devices');
+  assert.equal(view.tiles[4].href, '#devices');
+  assert.deepEqual(view.blocks.map((b) => [b.kind, b.title]), [['share', 'Applications'], ['ranking', 'Policy at work'], ['ranking', 'Tools in use']]);
+  assert.deepEqual(view.blocks.map((b) => b.cardHref ?? null), ['#sanction', '#rules', null], 'a card with no link inside it is one link');
+  assert.equal(view.blocks[2].href, '#tools');
   assert.deepEqual(view.tables, []);
   const titles = view.banners.map((b) => b.title);
   assert.equal(new Set(titles).size, titles.length, 'a warning every read carries is said once');
@@ -132,18 +135,23 @@ test('the overview summarises usage beside the enrolled denominator', async () =
 test('an overview panel whose read is not yet covered says so instead of "none"', () => {
   const blind = { resultState: 'not_yet_covered', data: [], banners: [], meta: {} };
   const view = postureView({ devices: null, tools: blind });
-  assert.match(view.blocks[1].emptyText, /^Not yet covered\./);
-  assert.equal(postureView({ devices: null, tools: null }).blocks[1].emptyText, 'No tool was in use in this window.');
+  assert.match(view.blocks[2].emptyText, /^Not yet covered\./);
+  assert.equal(postureView({ devices: null, tools: null }).blocks[2].emptyText, 'No tool was in use in this window.');
 });
 
-test('Usage switches between tools, data classes and unsanctioned use, and Devices narrows to what needs attention', async () => {
+test('Usage → Tools narrows to one sanction decision, and Devices narrows to what needs attention', async () => {
   const dashboard = dashboardFor();
-  assert.equal((await dashboard.load('tools', { filters: { view: 'classes' } })).view.id, 'classes');
-  assert.equal((await dashboard.load('tools', { filters: { view: 'unsanctioned' } })).view.id, 'unsanctioned');
-  assert.equal((await dashboard.load('tools', {})).view.id, 'tools');
-  const all = (await dashboard.load('devices', {})).view;
+  const all = (await dashboard.load('tools', {})).view;
+  const unsanctioned = (await dashboard.load('tools', { filters: { sanction: 'unsanctioned' } })).view;
+  assert.equal(unsanctioned.id, 'tools');
+  assert.ok(unsanctioned.blocks[0].items.length > 0 && unsanctioned.blocks[0].items.length < all.blocks[0].items.length);
+  assert.ok(unsanctioned.blocks[0].items.every((i) => i.chip.key === 'unsanctioned'));
+  assert.deepEqual(all.filters[0].items.map((i) => [i.label, i.href]), [
+    ['All', '#tools'], ['Sanctioned', '#tools?sanction=sanctioned'], ['Unsanctioned', '#tools?sanction=unsanctioned'], ['No decision yet', '#tools?sanction=unknown'],
+  ]);
+  const devices = (await dashboard.load('devices', {})).view;
   const attention = (await dashboard.load('devices', { filters: { status: 'attention' } })).view;
-  assert.ok(attention.tables[0].rows.length < all.tables[0].rows.length);
+  assert.ok(attention.tables[0].rows.length < devices.tables[0].rows.length);
   assert.ok(attention.tables[0].rows.every(({ row }) => row.status !== 'reporting'));
 });
 
@@ -155,14 +163,14 @@ test('the devices screen says the fleet, what needs attention, and each device i
   assert.deepEqual(view.tiles[0].split.map((p) => [p.label, p.count]), [['Reporting', 4180], ['Not reporting', 440]]);
   assert.equal(view.tiles[1].href, '#devices?status=attention');
   assert.deepEqual(view.tables.map((x) => x.title), ['Devices']);
-  assert.deepEqual(view.tables[0].columns.map((c) => c.label), ['Device', 'Status', 'User', '']);
+  assert.deepEqual(view.tables[0].columns.map((c) => c.label), ['Device', 'Status', 'User', 'Applied mode']);
   assert.equal(view.tables[0].rows.length, 4, 'one row per device');
   assert.deepEqual(view.filters.map((f) => f.label), ['Status', 'OS', 'Management']);
   const html = renderScreen(view, SHELL);
   assert.match(html, /Never checked in/);
   assert.match(html, /Quiet since 2026-09-29/);
   assert.match(html, /days ago/);
-  assert.match(html, /href="explore\.html#events\?device=/);
+  assert.match(html, /data-href="#devices\?device=9f1c0b6e-0000-4000-8000-000000000001"/, 'a row opens its device');
   // The device is named by hostname, the UUID stays on hover, and the user, version and mode are shown.
   assert.match(html, /FIN-LAPTOP-07/);
   assert.match(html, /title="9f1c0b6e-0000-4000-8000-000000000001"/);
@@ -247,8 +255,8 @@ test('the acceptance run: every scenario renders every screen without throwing',
     const dashboard = dashboardFor(scenario);
     for (const screen of SCREENS) {
       const { view, shell, admin } = await dashboard.load(screen.id, { filters: { submission_id: '11111111-2222-4333-8444-555555555551', subject: 'u_1' } });
-      // Settings → Deployment is not a query screen: it reads the admin API through its own
-      // controller (test/deployment.test.mjs).
+      // An admin page is not a query screen: it reads the admin API through its own controller
+      // (test/settings.test.mjs, test/directory.test.mjs).
       if (admin) continue;
       const html = renderScreen(view, shell);
       assert.ok(typeof html === 'string' && html.length > 0, `${scenario}/${screen.id} rendered`);
@@ -260,15 +268,7 @@ test('the acceptance run: every scenario renders every screen without throwing',
   assert.ok(rendered.length >= 70, `expected a broad matrix, got ${rendered.length}`);
 });
 
-test('classes and teams screens carry their two-measure honesty note', () => {
-  const classes = readState(envelope('ok', {
-    data: [{ class: 'customer_pii', severity: 'high', submissions: 10, users: 9, max_score: 0.9, degraded_events: 3 }],
-    freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.agg_class_period', extras: { class_total: [{ submissions_total: 4210 }] } },
-  }));
-  const classHtml = renderScreen(classesView(classes), SHELL);
-  assert.ok(/non-additive total/.test(classHtml));
-  assert.ok(/could not be classified/.test(classHtml));
-
+test('the teams screen carries its two-measure honesty note', () => {
   const teams = readState(envelope('ok', {
     data: [{ team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', team_name: 'Engineering', submissions: 10, users: 9 }],
     freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.agg_team_period', extras: { team_coverage: [{ users_all: 4210, users_in_teams: 2680, teams: 4 }] } },
@@ -303,4 +303,71 @@ test('the event detail screen reads the record as query-api answers it: one row 
 
   const none = eventView(readState({ ...STATE_ENVELOPES.stale, data: [{ ...RECORD_ROWS[0], observation_event_id: null, observation_source: null }], meta: { source: 'ingest.submission' } }));
   assert.equal(none.tables[1].rows.length, 0, 'a submission with no observation has no routes');
+});
+
+const listOf = (data, source, meta = {}) => readState(envelope('ok', { data, freshness: FRESH, coverage: COMPLETE, meta: { source, ...meta } }));
+
+test('Policy → Tools lists the tools waiting for a decision first, then the unsanctioned and the sanctioned, each opening its last 30 days', () => {
+  const view = sanctionView(listOf(TOOL_ROWS, 'mart.v_tool_usage', { applied_bucket: 'day' }));
+  const table = view.tables[0];
+  assert.equal(table.groupBy, 'decision');
+  assert.deepEqual(table.rows.map(({ row }) => [row.decision, row.tool_cell.primary]), [
+    ['No decision yet', 'Unrecognised tool'], ['Unsanctioned', 'Claude Code'], ['Sanctioned', 'ChatGPT'], ['Sanctioned', 'Legacy summariser'],
+  ]);
+  assert.equal(table.rows[1].row.href, '#tools?tool=tls_b6681b043244c43f&preset=d30');
+  assert.equal(view.lead[0].title, 'Applications');
+  assert.equal(view.lead[0].href, undefined, 'the page itself is where a decision is made, so the share links nowhere');
+  assert.match(view.subtitle, /A tool with no decision is unknown, never unsanctioned\./);
+});
+
+test('Policy → Rules as a viewer reads it: every rule with what it decided over the last 30 days', () => {
+  const view = rulesView({ rules: listOf(RULE_ROWS, 'ops.enforcement_rule'), ruleMatches: listOf([], 'mart.agg_rule_period', { applied_bucket: 'week' }) });
+  assert.equal(view.id, 'rules');
+  assert.equal(view.tables[0].summary, 'No rule matched a prompt in the last 30 days.');
+  assert.ok(view.notes.includes('Only an admin can change the rules.'));
+  const unread = rulesView({ rules: listOf(RULE_ROWS, 'ops.enforcement_rule'), ruleMatches: null });
+  assert.equal(unread.tables[0].summary, 'The prompts each rule matched could not be read for the last 30 days.');
+});
+
+test('a device lists every collector it reported, with its state, the cause in words and the code on hover', () => {
+  const DEVICE = '9f1c0b6e-0000-4000-8000-000000000002';
+  const row = listOf([{ device: DEVICE, hostname: 'MAC-DESIGN-2', device_os: 'macos', os_version: '15', agent_version: '1.4.2', collection_mode: 'm2', managed_state: 'managed', user_ref: 'u_9a02', subject_name: 'bob@contoso.example', liveness: 'reporting', collectors_reporting: 3, collectors_healthy: 1, collectors_degraded: 1, collectors_absent: 1, collectors_tampered: 0, last_seen_at: '2026-10-01T11:57:00Z' }], 'mart.v_device_liveness');
+  const collectors = listOf([
+    { device: DEVICE, collector: 'capture_core', collector_state: 'healthy', error_code: null, last_report_at: '2026-10-01T11:57:00Z' },
+    { device: DEVICE, collector: 'egress_proxy', collector_state: 'degraded', error_code: 'client_pinned', last_report_at: '2026-10-01T11:56:00Z' },
+    { device: DEVICE, collector: 'tool_config_cursor', collector_state: 'absent', error_code: 'disabled_by_policy', last_report_at: '2026-10-01T11:56:00Z' },
+  ], 'ops.collector_state');
+  const view = deviceView({ device: DEVICE, row, collectors }, { now: new Date('2026-10-01T12:00:00Z') });
+  assert.equal(view.title, 'MAC-DESIGN-2');
+  assert.equal(view.subtitle, `macOS 15 · Managed · Agent 1.4.2 · Last used by bob@contoso.example · ${DEVICE}`);
+  assert.deepEqual(view.tiles.map((t) => [t.label, t.value.text]), [['Status', 'Degraded'], ['Applied mode', 'M2 · excerpt'], ['Collectors', '3']]);
+  assert.deepEqual(view.actions.map((a) => a.href), [`explore.html#events?device=${DEVICE}`, '#devices']);
+  const html = renderScreen(view, SHELL);
+  assert.match(html, /<td><span class="v-text">egress_proxy<\/span><\/td><td><span class="v-vocab v-vocab-degraded" title="degraded">degraded<\/span><\/td><td><span class="cell-stack" title="client_pinned"><span class="cell-primary">An app pins its certificates, so its traffic cannot be inspected<\/span><\/span><\/td>/);
+  assert.match(html, /tool_config_cursor<\/span><\/td><td><span class="v-vocab v-vocab-disabled" title="disabled">Off in policy<\/span><\/td><td><span class="cell-stack"><span class="cell-primary">None<\/span><\/span><\/td>/, 'switched off by policy is not a fault and gives no cause');
+
+  const busy = readState(envelope('busy', { error: { code: 'rate_limited', message: 'Busy, try again shortly' } }));
+  const unread = deviceView({ device: DEVICE, row, collectors: busy }, { now: new Date('2026-10-01T12:00:00Z') });
+  assert.deepEqual(unread.tables, []);
+  assert.ok(unread.notes.includes('The collectors could not be read: Busy, try again shortly.'));
+  assert.equal(unread.tiles[2].value.text, '3', 'the row\'s own count stands in');
+
+  const unknown = deviceView({ device: DEVICE, row: listOf([], 'mart.v_device_liveness') });
+  assert.ok(unknown.notes.includes('No enrolled device has this id.'));
+  const refused = deviceView({ device: DEVICE, row: busy });
+  assert.ok(!refused.notes.includes('No enrolled device has this id.'), 'a read that was refused does not say the device is unknown');
+});
+
+test('a device\'s reads are list documents query-api accepts, and neither carries a window', async () => {
+  const sent = [];
+  const transport = fixtureTransport();
+  const dashboard = createDashboard({ api: createQueryApi({ transport: { send: (body) => { sent.push(body); return transport.send(body); } } }), now: () => new Date('2026-10-01T12:00:00Z') });
+  const DEVICE = '9f1c0b6e-0000-4000-8000-000000000001';
+  const { view } = await dashboard.load('devices', { filters: { device: DEVICE } });
+  assert.equal(view.title, 'FIN-LAPTOP-07');
+  assert.deepEqual(sent.map((b) => [b.source, b.filters, b.limit, 'window' in b]), [
+    ['ops.collector_state', [{ field: 'device', op: 'eq', value: DEVICE }], 100, false],
+    ['mart.v_device_liveness', [{ field: 'device', op: 'eq', value: DEVICE }], 1, false],
+  ]);
+  for (const body of sent) assert.doesNotThrow(() => validate(body), JSON.stringify(body));
 });

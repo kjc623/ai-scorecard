@@ -36,24 +36,24 @@ test('no per-person ranking: without a subject the Users page lists people by na
   assert.equal(list.order, undefined, 'the list keeps the API\'s order, by name');
   const table = view.tables.find((t) => t.title === 'People');
   assert.deepEqual(table.rows.map((r) => r.row.name), ['Ada Lovelace', 'Grace Hopper', 'u_1b77']);
-  assert.ok(table.columns.every((c) => !['submissions', 'bytes_total', 'tools_used'].includes(c.key)), 'no usage column to rank by');
+  assert.deepEqual(table.rows.map((r) => r.row.submissions), [3, 17, 40], 'the prompts sit beside each name, in the directory\'s order, not ranked by them');
+  assert.ok(table.columns.every((c) => !['bytes_total', 'tools_used'].includes(c.key)));
+  assert.equal((view.blocks ?? []).length, 0, 'and nothing on the page ranks people');
   const html = renderScreen(view, SHELL);
   assert.ok(html.includes('href="#person?subject=u_9a02"'), 'a name opens the person');
 });
 
-test('the unsanctioned table is ordered by tool and person, never by volume', async () => {
-  // The fixture's volumes run *against* the row order, so a volume sort would be visible.
-  const dashboard = dashboardFor();
-  const { view } = await dashboard.load('tools', { filters: { view: 'unsanctioned' } });
-  const table = view.tables[0];
-  const subjects = table.rows.map((r) => r.row.subject).filter(Boolean);
-  assert.deepEqual(subjects, ['u_9a02', 'u_4f21', 'u_1b77'], 'rows keep the API order rather than a volume ranking');
-  const volumes = table.rows.filter((r) => typeof r.row.submissions === 'number').map((r) => r.row.submissions);
-  assert.ok(volumes[0] > volumes[1], 'the fixture is ordered against volume on purpose, so a volume sort would be visible');
-  assert.ok(view.notes.some((n) => /not a ranking/.test(n)));
+test('Usage → Tools lists tools, never people: the unsanctioned ones name no person, and who uses a tool is on its own screen', async () => {
+  const sent = [];
+  const transport = fixtureTransport();
+  const dashboard = createDashboard({ api: createQueryApi({ transport: { send: (body) => { sent.push(body); return transport.send(body); } } }), now: () => new Date('2026-10-01T12:00:00Z') });
+  const { view } = await dashboard.load('tools', { filters: { sanction: 'unsanctioned' } });
+  assert.ok(!sent.some((b) => b.template === 'q2_unsanctioned_users'), 'the list reads no person');
+  assert.deepEqual(view.tables, []);
+  assert.ok(view.blocks[0].items.every((i) => !/^u_/.test(i.label)));
 });
 
-test('the Users page lists each team member once, by name, never by volume, and says when a role cannot see them', async () => {
+test('the Users page lists each person once, by name, with their teams and prompts, and says when a role cannot see them', async () => {
   const sent = [];
   const transport = fixtureTransport();
   const dashboard = createDashboard({ api: createQueryApi({ transport: { send: (body) => { sent.push(body); return transport.send(body); } } }), now: () => new Date('2026-10-01T12:00:00Z') });
@@ -61,15 +61,16 @@ test('the Users page lists each team member once, by name, never by volume, and 
   const roster = sent.find((b) => b.source === 'mart.v_team_member_period');
   assert.equal(roster.order, undefined, 'the roster read asks for no ordering by a measure');
   assert.deepEqual(roster.filters, [{ field: 'team', op: 'in', value: ['7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0002', '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0003'] }], 'only the teams on the page are read');
-  assert.equal(view.tables[0].title, 'Users', 'the roster sits first, under the search bar');
+  assert.deepEqual(view.tables.map((t) => t.title), ['People'], 'one list');
   const table = view.tables[0];
-  assert.deepEqual(table.columns.map((c) => c.label), ['User', 'Teams', 'Prompts']);
+  assert.deepEqual(table.columns.map((c) => c.label), ['Name', 'Teams', 'Department', 'Directory', 'Last active', 'Prompts']);
   assert.deepEqual(
     table.rows.map((r) => [r.row.name, r.row.team_names, r.row.submissions]),
     [['Ada Lovelace', 'Engineering', 3], ['Grace Hopper', 'Engineering, Finance', 17], ['u_1b77', 'Engineering', 40]],
     'a person in two teams who sent prompts on two days is one row, with both teams and the prompts of both days',
   );
   const html = renderScreen(view, SHELL);
+  assert.equal((html.match(/>Grace Hopper</g) ?? []).length, 1, 'listed once');
   assert.ok(html.includes('href="#person?subject=u_9a02"'), 'a person opens their page');
   assert.ok(view.notes.some((n) => /Audited read: entry 8131/.test(n)));
 
@@ -80,14 +81,10 @@ test('the Users page lists each team member once, by name, never by volume, and 
     now: () => new Date('2026-10-01T12:00:00Z'),
   });
   const limited = (await viewer.load('person', { filters: {} })).view;
-  assert.ok(!limited.tables.some((t) => t.title === 'Users'), 'no roster for a role that may not see people');
+  assert.deepEqual(limited.tables[0].rows.map((r) => [r.row.team_names, r.row.submissions]), [[null, null], [null, null], [null, null]], 'not read is absent, never zero');
   assert.ok(limited.notes.some((n) => /does not show each person's prompts/.test(n)));
-  assert.ok(limited.tables.some((t) => t.title === 'People'), 'the directory still shows');
-  const searched = [];
-  const searching = createDashboard({ api: createQueryApi({ transport: { send: (body) => { searched.push(body); return transport.send(body); } } }), now: () => new Date('2026-10-01T12:00:00Z') });
-  const found = (await searching.load('person', { filters: { q: 'Ada' } })).view;
-  assert.ok(!searched.some((b) => b.source === 'mart.v_team_member_period'), 'a search reads the directory alone');
-  assert.ok(!found.tables.some((t) => t.title === 'Users'));
+  const found = (await dashboard.load('person', { filters: { q: 'Ada' } })).view;
+  assert.equal(found.tables[0].title, 'People whose name starts with "Ada"');
 });
 
 test('no screen exposes a "most active people" table', async () => {
@@ -284,9 +281,9 @@ test('the query path performs no write of any kind', async () => {
 });
 
 test('every write this client can make goes to control-api\'s admin API, which audits it', async () => {
-  // Settings → Deployment and Settings → Settings are the two places the dashboard changes
-  // anything. Each write is one of the admin endpoints vocab.js names; control-api checks the admin
-  // role and writes the audit row with the real actor. Nothing else in the client sends a write.
+  // The Settings pages, Policy and Teams are where the dashboard changes anything. Each write is
+  // one of the admin endpoints vocab.js names; control-api checks the admin role and writes the
+  // audit row with the real actor. Nothing else in the client sends a write.
   const sent = [];
   const admin = createAdminApi({ transport: { async request(spec) { sent.push(spec); return { status: 204, body: null }; } } });
   await admin.setVerification('none');
@@ -365,10 +362,9 @@ test('no file in this package contains a statement or a database driver', () => 
 
 test('the only endpoints the pages call are the query endpoint, the two content reads and the admin API', () => {
   // The query endpoint takes a closed query document and never returns content. The two content
-  // reads are forwarded to content-vault, which decides and audits. The admin endpoints are
-  // Settings → Deployment's, Settings → Settings' and Settings → Identity Providers' and Teams', control-api's,
-  // admin-only and audited; they read configuration and never data. Anything else named here would
-  // be another way in.
+  // reads are forwarded to content-vault, which decides and audits. The admin endpoints are the
+  // Settings pages', Policy's and Teams', control-api's, admin-only and audited; they read
+  // configuration and never data. Anything else named here would be another way in.
   const files = sourceFiles().filter((rel) => rel.startsWith('src/'));
   const allowed = [
     ['/v1/', 'query'], ['/v1/', 'content-search'], ['/v1/', 'content/retrieval'], ['/v1/', 'list-export'],

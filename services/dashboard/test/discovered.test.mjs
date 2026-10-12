@@ -131,6 +131,6 @@ test('Insights switches to Discovered beside its window', async () => {
   const doc = fakeDocument('#insights?view=discovered&preset=d30');
   await boot({ document: doc, api: createQueryApi({ transport: transportWith() }), admin: null, session: null });
   const html = doc.html('app');
-  assert.match(html, /<a class="seg-item" href="#insights\?preset=d30&amp;view=discovered" aria-current="true">Discovered<\/a>/);
+  assert.match(html, /<a class="page-tab" href="#insights\?preset=d30&amp;view=discovered" aria-current="page">Discovered<\/a>/);
   assert.match(html, /Not scanned/);
 });

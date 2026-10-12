@@ -30,23 +30,27 @@ export const PRODUCT_ROLES = Object.freeze(Object.keys(ROLE_CAPABILITIES));
  */
 const PAGE_CAPABILITY = Object.freeze({
   posture: 'aggregate',
-  insights: 'aggregate',
-  rules: 'settings',
   tools: 'aggregate',
   teams: 'aggregate',
   person: 'subject',
-  devices: 'device',
-  audit: 'audit',
   explore: 'search',
-  deployment: 'settings',
-  directory: 'settings',
+  // Policy: everyone reads the rules and the tools' sanction; only an admin edits them, and the
+  // custom labels are an admin's alone.
+  rules: 'aggregate',
+  labels: 'settings',
+  sanction: 'aggregate',
+  activity: 'aggregate',
+  insights: 'aggregate',
   settings: 'settings',
+  devices: 'device',
+  directory: 'settings',
+  audit: 'audit',
 });
 
-const ALWAYS_VISIBLE = Object.freeze(['posture', 'insights', 'tools', 'teams']);
+const ALWAYS_VISIBLE = Object.freeze(['posture', 'tools', 'teams', 'rules', 'sanction', 'activity', 'insights']);
 
-/** Pages still being built: pre-production offers them under Archive, and production does not offer them. */
-const PREPRODUCTION_ONLY = Object.freeze(['insights']);
+/** Pages still being built: pre-production offers them, and production does not. */
+const PREPRODUCTION_ONLY = Object.freeze(['activity', 'insights']);
 
 /** The capabilities of one role. An unknown role carries none. */
 export function capabilitiesFor(role) {

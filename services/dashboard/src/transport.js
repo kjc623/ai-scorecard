@@ -5,7 +5,7 @@
 // test/guarantees.test.mjs asserts that no other file in this package calls `fetch` or names an
 // endpoint other than the ones in vocab.js: the browser reaches data through a closed query
 // document, reaches content only through the two reads content-vault decides, and changes
-// configuration only through control-api's admin API (`createAdminApi`, Settings → Deployment),
+// configuration only through control-api's admin API (`createAdminApi`, the admin pages),
 // which checks the admin role and audits each write.
 
 import {
@@ -270,7 +270,7 @@ export function httpExportTransport({ fetchImpl } = {}) {
 }
 
 /**
- * The admin API behind Settings → Deployment (vocab.js names its endpoints). Not a read path: it
+ * The admin API behind the admin pages (vocab.js names its endpoints). Not a read path: it
  * is control-api's, reached through the dashboard server with the session's product token, and its
  * writes are the only ones this client makes. Every answer is a value, as with the content reads:
  * `{state: 'available', …}` or `{state: 'done'}` on success, `{state: 'refused', status, error}`
@@ -539,12 +539,6 @@ export function normaliseSettings(body) {
     sanctioned_state: ['sanctioned', 'unsanctioned', 'unknown'].includes(t.sanctioned_state) ? t.sanctioned_state : 'unknown',
     fingerprints: Object.freeze((Array.isArray(t.fingerprints) ? t.fingerprints : []).filter((f) => typeof f === 'string')),
   }));
-  const devices = (Array.isArray(body.devices) ? body.devices : []).filter((d) => d && typeof d === 'object').map((d) => Object.freeze({
-    device_id: String(d.device_id ?? ''),
-    hostname: nullableText(d.hostname),
-    collection_mode: nullableText(d.collection_mode),
-    last_seen_at: nullableText(d.last_seen_at),
-  }));
   const overrides = body.scope_overrides && typeof body.scope_overrides === 'object' ? body.scope_overrides : {};
   const scoped = {};
   for (const [key, mode] of Object.entries(overrides)) scoped[key] = nullableText(mode);
@@ -564,7 +558,6 @@ export function normaliseSettings(body) {
     custom_labels: normaliseCustomLabels(body.custom_labels),
     app_categories: Array.isArray(body.app_categories) ? Object.freeze(body.app_categories.filter((c) => typeof c === 'string' && c !== '')) : null,
     tools: Object.freeze(tools),
-    devices: Object.freeze(devices),
     endpoint: normaliseEndpoint(body.endpoint),
     kill_switches: normaliseKillSwitches(body.kill_switches),
   });

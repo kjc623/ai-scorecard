@@ -1,4 +1,4 @@
-// deployment.js — Settings → Deployment: the state of the page and every action on it.
+// deployment.js — the deployment settings: their state and every action on them.
 //
 // The page an admin uses to get the capture agent onto their devices: which identity
 // provider is linked, whether a device must also be managed by Intune, a tenant package to download

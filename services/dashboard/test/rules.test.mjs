@@ -1,4 +1,5 @@
-// rules.test.mjs — Rules: the rulebase and the custom labels its rules name, driven without a browser.
+// rules.test.mjs — Policy → Rules and Policy → Labels: the rulebase and the custom labels its rules
+// name, driven without a browser.
 //
 // The controller (src/rules.js) runs against a fake admin API built on the real createAdminApi, so
 // the requests asserted are the ones a browser would send, and a fake query API whose documents
@@ -16,7 +17,7 @@ import { renderRuleDialog, renderRules, ruleSentence } from '../src/rules-render
 import { createSettings } from '../src/settings.js';
 import { renderSettings } from '../src/settings-render.js';
 import { boot } from '../src/app.js';
-import { groupOf, shellNavItems } from '../src/shell.js';
+import { tabsFor } from '../src/shell.js';
 import { pagesForRoles } from '../server/session.mjs';
 import { validate } from '../../query-api/src/validate.js';
 import { fakeDocument } from './helpers.mjs';
@@ -176,7 +177,7 @@ test('loading: the page shows its frame and placeholders, and says it is loading
   const pending = page.load();
   assert.equal(page.state.status, 'loading');
   const html = renderRules(page.state);
-  assert.match(html, /<h2>Rules<\/h2>/);
+  assert.match(html, /<h2>Policy<\/h2>/);
   assert.match(html, /aria-busy="true"/);
   assert.match(html, /dp-skel/);
   release({ status: 200, body: settingsBody() });
@@ -612,8 +613,8 @@ function labelsCard(page) {
 
 test('the Labels tab lists each label with its terms and the rules that name it', async () => {
   const { html } = await loaded();
-  const page = html({ tab: 'labels' });
-  assert.match(page, /<a class="seg-item" href="#rules">Rules<\/a><a class="seg-item" href="#rules\?view=labels" aria-current="true">Labels<\/a>/);
+  const page = html({ tab: 'labels', head: { tabs: tabsFor('labels') } });
+  assert.match(page, /<a class="page-tab" href="#rules">Rules<\/a><a class="page-tab" href="#labels" aria-current="page">Labels<\/a>/);
   assert.doesNotMatch(page, /<h3>Rules<\/h3>/, 'the rules are on the other tab');
   const card = labelsCard(page);
   assert.match(card, /Project Falcon/);
@@ -737,7 +738,7 @@ function session(roles, pages) {
   return { actor: `${roles[0]}@lab.test`, tenant: '5a3c0de0-7e57-4a11-9000-0000000d3a01', roles, role: roles[0], pages };
 }
 
-const ADMIN_PAGES = ['posture', 'insights', 'rules', 'tools', 'teams', 'audit', 'settings', 'deployment'];
+const ADMIN_PAGES = ['posture', 'tools', 'teams', 'rules', 'labels', 'sanction', 'activity', 'insights', 'settings', 'devices', 'directory', 'audit'];
 
 /** A booted page with a way to fire the events a browser would. */
 async function booted(hash, { rules = servedRules(), query = fakeQuery() } = {}) {
@@ -767,31 +768,42 @@ const click = (dataset, tagName = 'BUTTON') => ({
   preventDefault() {},
 });
 
-test('Rules sits directly under Overview in the navigation, with Search after it, for a role that may change settings', () => {
-  assert.deepEqual(shellNavItems().slice(0, 4).map((i) => i.id), ['posture', 'rules', 'explore', 'tools']);
-  assert.deepEqual(shellNavItems().find((i) => i.id === 'rules'), { id: 'rules', label: 'Rules', question: null, group: null, icon: 'rules', groupIcon: 'rules', href: '#rules' });
-  assert.equal(groupOf('rules'), null, 'a page of its own, under no group');
-  for (const environment of ['prod', 'preprod']) assert.ok(pagesForRoles(['admin'], { environment }).includes('rules'), environment);
-  for (const role of ['viewer', 'analyst', 'content_reader']) assert.equal(pagesForRoles([role], { environment: 'preprod' }).includes('rules'), false, role);
+test('everyone reads Policy → Rules; only a role that may change settings edits the rules or opens Labels', () => {
+  for (const environment of ['prod', 'preprod']) {
+    for (const role of ['viewer', 'analyst', 'content_reader', 'admin']) assert.ok(pagesForRoles([role], { environment }).includes('rules'), `${role} in ${environment}`);
+    assert.ok(pagesForRoles(['admin'], { environment }).includes('labels'), environment);
+    for (const role of ['viewer', 'analyst', 'content_reader']) assert.equal(pagesForRoles([role], { environment }).includes('labels'), false, role);
+  }
+  assert.deepEqual(tabsFor('rules').items.map((t) => [t.label, t.href]), [['Rules', '#rules'], ['Labels', '#labels'], ['Tools', '#sanction'], ['Activity', '#activity']]);
 });
 
-test('an admin opens Rules from the navigation; the page renders over the admin API and the Labels tab is in the address', async () => {
+test('an admin opens Policy from the navigation; Rules renders over the admin API, and Labels is a tab of its own address', async () => {
   const { doc, requests } = await booted('#rules');
-  assert.match(doc.html('nav'), /<a href="#rules" class="active" aria-current="page"><svg class="nav-icon"[^>]*>.*?<\/svg><span>Rules<\/span><\/a>/);
-  assert.match(doc.html('app'), /<h2>Rules<\/h2>/);
+  assert.match(doc.html('nav'), /<a href="#rules" class="active" aria-current="page"><svg class="nav-icon"[^>]*>.*?<\/svg><span>Policy<\/span><\/a>/);
+  assert.match(doc.html('app'), /<h2>Policy<\/h2>/);
+  assert.match(doc.html('app'), /<a class="page-tab" href="#rules" aria-current="page">Rules<\/a><a class="page-tab" href="#labels">Labels<\/a>/);
   assert.match(doc.html('app'), /allow_finance_falcon/);
   assert.deepEqual(requests.map((r) => r.path).sort(), ['/admin/v1/settings', '/admin/v1/settings/rules']);
-  await doc.navigate('#rules?view=labels');
+  await doc.navigate('#labels');
   assert.match(doc.html('app'), /<h3>Custom labels<\/h3>/);
   assert.equal(requests.length, 2, 'switching tabs reads nothing again');
+  await doc.navigate('#rules?view=labels');
+  assert.equal(doc.location.hash, '#labels', 'the old Labels address lands on its tab');
 });
 
-test('a viewer is shown no Rules; reaching it directly is refused in the page and asks nothing', async () => {
+test('a viewer reads the rules over the query API, with no control to change them and no Labels tab', async () => {
   const { admin, requests } = fakeAdmin({});
   const doc = fakeDocument('#posture');
-  await boot({ document: doc, api: createQueryApi({ transport: fixtureTransport() }), admin, session: session(['viewer'], ['posture', 'insights', 'tools', 'teams', 'devices']) });
-  assert.doesNotMatch(doc.html('nav'), />Rules</);
+  await boot({ document: doc, api: createQueryApi({ transport: fixtureTransport() }), admin, session: session(['viewer'], ['posture', 'tools', 'teams', 'rules', 'sanction', 'devices']) });
+  assert.match(doc.html('nav'), /<a href="#rules"><svg[^>]*>.*?<\/svg><span>Policy<\/span><\/a>/);
   await doc.navigate('#rules');
+  const page = doc.html('app');
+  assert.match(page, /<h2>Policy<\/h2>/);
+  assert.match(page, /<a class="page-tab" href="#rules" aria-current="page">Rules<\/a><a class="page-tab" href="#sanction">Tools<\/a>/);
+  assert.doesNotMatch(page, /href="#labels"/);
+  assert.match(page, /secrets\.block/);
+  assert.doesNotMatch(page, /data-rl=/, 'nothing to edit');
+  await doc.navigate('#labels');
   assert.match(doc.html('app'), /This page is not offered to you here\./);
   assert.equal(requests.length, 0, 'the admin API was not asked');
 });

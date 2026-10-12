@@ -15,7 +15,6 @@ import { formatBytes, formatCount, formatDuration, formatInstant, formatScore } 
 import { coverageText, freshnessText, emptyStateFor, fixSentence } from './states.js';
 import { eventView, eventObservations } from './views.js';
 import { EXPLORE_DATASETS, EXPLORE_DATASET_IDS, exploreWindows, TEXT_PAGE_SIZES } from './explore-model.js';
-import { COLLECTOR_DETAILS } from './vocab.js';
 
 /** Which values of which field get a tint. Only real warning and fault states are tinted. */
 const EXPLORE_TONES = Object.freeze({
@@ -108,17 +107,17 @@ export function renderExploreValue(row, column, { full = false } = {}) {
   }
 }
 
+/** What Search lists, as the page's tabs. */
 export function renderExploreDatasets(state) {
-  return EXPLORE_DATASET_IDS.filter((id) => id !== 'audit').map((id) => {
+  return EXPLORE_DATASET_IDS.map((id) => {
     const on = id === state.dataset;
-    return `<button type="button" class="x-seg-item" data-act="dataset" data-dataset="${id}" aria-pressed="${on}">${escapeHtml(EXPLORE_DATASETS[id].label)}</button>`;
+    return `<button type="button" class="page-tab" data-act="dataset" data-dataset="${id}" aria-pressed="${on}">${escapeHtml(EXPLORE_DATASETS[id].label)}</button>`;
   }).join('');
 }
 
 export function renderExploreWindow(state) {
   const dataset = EXPLORE_DATASETS[state.dataset];
   const windows = exploreWindows(dataset);
-  if (windows.length === 0) return '<span class="x-window-none">Current state, so no time window</span>';
   return windows.map((w) => (
     `<button type="button" class="x-seg-item" data-act="window" data-window="${w.id}" aria-pressed="${w.id === state.windowPreset}">${escapeHtml(w.label)}</button>`
   )).join('');
@@ -190,9 +189,9 @@ export function renderExploreSummary(state) {
 }
 
 /**
- * The export action, offered only for the two lists that export as per-person rows (events and
- * findings). Devices and the audit trail are not exportable here, so no export can become a ranking
- * of people. The button shows the export's state: sending, saved, or refused with the reason.
+ * The export action, offered for a list that exports as per-person rows in the server's order, so
+ * no export can become a ranking of people. The button shows the export's state: sending, saved,
+ * or refused with the reason.
  */
 function exploreExportNote(state, dataset) {
   if (!dataset.exportable) return '';
@@ -482,64 +481,10 @@ function exploreRecord(detail, dataset, state) {
     + (record.audit?.entry_id ? `<p class="x-audit">Opening this record was an audited read: entry ${escapeHtml(record.audit.entry_id)} at ${escapeHtml(formatInstant(record.audit.written_at))}.</p>` : '');
 }
 
-/** A device or audit row: the row already held, laid out in full; a device's also lists its collectors. */
-function exploreRowDetail(detail, dataset) {
-  const row = detail.row;
-  const facts = dataset.detailFields.map((c) => [
-    c.label,
-    `${renderExploreValue(row, c, { full: true })}${exploreFilterButton(dataset, c.key, typeof row[c.key] === 'string' ? row[c.key] : null)}`,
-  ]);
-  const extra = row.detail && typeof row.detail === 'object' && Object.keys(row.detail).length > 0
-    ? `<section><h3>Recorded detail</h3><pre class="x-pre">${escapeHtml(JSON.stringify(row.detail, null, 2))}</pre></section>`
-    : '';
-  return `<section>${exploreFacts(facts)}</section>${exploreCollectors(detail.collectors)}${extra}`;
-}
-
-/**
- * Every collector the device reported, in the order the server returned them: its state, the cause
- * it gave in words, and when it last reported. A collector switched off by policy is off, not a
- * fault, so it is said so and not tinted.
- */
-function exploreCollectors(collectors) {
-  if (!collectors) return '';
-  if (collectors.status === 'loading') {
-    return '<section aria-busy="true"><h3>Collectors</h3>'
-      + '<div class="x-detail-skel" aria-hidden="true"><span class="x-skel" style="width:76%"></span><span class="x-skel" style="width:54%"></span></div>'
-      + '<p class="x-sr" role="status">Reading the collectors</p></section>';
-  }
-  const result = collectors.result;
-  if (collectors.status === 'refused') {
-    const banner = result.banners?.[0] ?? { title: 'The collectors were not served', text: result.error?.message ?? result.resultState };
-    return `<section><h3>Collectors</h3><div class="x-state x-state-refusal" role="alert"><p><strong>${escapeHtml(banner.title)}</strong> ${escapeHtml(banner.text)}</p>`
-      + `<p class="x-state-code">${escapeHtml(result.resultState)}${result.error?.code ? `, ${escapeHtml(result.error.code)}` : ''}</p></div></section>`;
-  }
-  const rows = result.data ?? [];
-  if (rows.length === 0) return '<section><h3>Collectors</h3><p class="x-absent">This device has not reported any collector.</p></section>';
-  const body = rows.map((r) => {
-    const off = r.error_code === 'disabled_by_policy';
-    const state = off
-      ? '<span class="x-chip">Off in policy</span>'
-      : renderExploreValue(r, { key: 'collector_state', kind: 'vocab' });
-    const cause = off || !r.error_code
-      ? '<span class="x-absent">none</span>'
-      : `<span title="${escapeHtml(r.error_code)}">${escapeHtml(COLLECTOR_DETAILS[r.error_code] ?? r.error_code)}</span>`;
-    return `<tr><td>${renderExploreValue(r, { key: 'collector', kind: 'mono' })}</td><td>${state}</td><td>${cause}</td>`
-      + `<td>${renderExploreValue(r, { key: 'last_report_at', kind: 'server-clock' })}</td></tr>`;
-  }).join('');
-  return '<section><h3>Collectors</h3><table class="x-table x-table-plain"><thead><tr>'
-    + '<th scope="col">Collector</th><th scope="col">State</th><th scope="col">Cause</th><th scope="col">Last report</th>'
-    + `</tr></thead><tbody>${body}</tbody></table></section>`;
-}
-
 export function renderExploreDetail(state) {
   const detail = state.detail;
   if (detail.status === 'closed') return '';
   const dataset = EXPLORE_DATASETS[state.dataset];
-  const title = dataset.noun.charAt(0).toUpperCase() + dataset.noun.slice(1);
-
-  if (dataset.detail === 'row') {
-    return exploreDetailHead(title, null) + exploreRowDetail(detail, dataset);
-  }
   const id = detail.submissionId;
   if (detail.status === 'loading') {
     return exploreDetailHead('Event', id)

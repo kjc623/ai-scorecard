@@ -279,10 +279,16 @@ const vocabClass = (key) => `v-vocab-${escapeHtml(String(key ?? '').replace(/[^a
 /** A finding's severity is keyed apart from the other vocabularies: "high" is a serious state here, where elsewhere it is a strong signal. */
 const vocabKey = (column, value) => (column === 'severity' ? `severity_${value}` : value);
 
-/** A block's frame: the same panel as a table, with its title, count and link to the whole. */
+/**
+ * A block's frame: the same panel as a table, with its title, count and link to the whole. A block
+ * with a `cardHref` is itself the link, so it holds no other.
+ */
 function blockFrame(kind, block, inner, { count = 0, classes = '' } = {}) {
   const n = count > 0 ? `<span class="block-count">${count}</span>` : '';
   const note = block.note ? `<span class="table-note">${escapeHtml(block.note)}</span>` : '';
+  if (block.cardHref) {
+    return `<a class="${kind}-block card card-link${classes}" href="${escapeHtml(block.cardHref)}"><div class="card-core"><header class="block-head"><h3>${escapeHtml(block.title)}</h3>${n}${note}</header>${inner}</div></a>`;
+  }
   const more = block.href ? `<a class="block-link" href="${escapeHtml(block.href)}">${escapeHtml(block.moreLabel ?? 'View all')}</a>` : '';
   return `<section class="${kind}-block card${classes}"><div class="card-core"><header class="block-head"><h3>${escapeHtml(block.title)}</h3>${n}${note}${more}</header>${inner}</div></section>`;
 }
@@ -450,6 +456,17 @@ function renderSearch(search) {
     + '<button type="submit">Search</button></form>';
 }
 
+/** A screen's filter fields, each typed: the form puts what is given in the address. */
+function renderForm(form) {
+  if (!form || !Array.isArray(form.fields) || form.fields.length === 0) return '';
+  const fields = form.fields.map((f) => `<label class="form-field"><span class="filter-label">${escapeHtml(f.label)}</span>`
+    + `<input class="dp-input" name="${escapeHtml(f.name)}" type="search" value="${escapeHtml(f.value ?? '')}" placeholder="${escapeHtml(f.placeholder ?? '')}" autocomplete="off" spellcheck="false"></label>`).join('');
+  return `<form class="filter-form card" data-screen="${escapeHtml(form.screen)}" role="search"><div class="card-core">${fields}`
+    + `<div class="form-actions"><button type="submit" class="btn btn-small">${escapeHtml(form.submit ?? 'Filter')}</button>`
+    + (form.clearHref ? `<a class="btn btn-small btn-quiet" href="${escapeHtml(form.clearHref)}">Clear</a>` : '')
+    + '</div></div></form>';
+}
+
 /** A screen's filters: one labelled row of links each, above the table they narrow. */
 function renderFilters(filters) {
   if (!Array.isArray(filters) || filters.length === 0) return '';
@@ -466,11 +483,38 @@ function renderPresets(presets, label = 'Window') {
   )).join('')}</div>`;
 }
 
+/** A destination's pages as tabs: links, the open one marked. */
+export function renderTabs(tabs) {
+  if (!tabs || !Array.isArray(tabs.items) || tabs.items.length === 0) return '';
+  return `<nav class="page-tabs" aria-label="${escapeHtml(tabs.label ?? 'Pages')}">${tabs.items.map((t) => (
+    `<a class="page-tab" href="${escapeHtml(t.href)}"${t.id === tabs.current ? ' aria-current="page"' : ''}>${escapeHtml(t.label)}</a>`
+  )).join('')}</nav>`;
+}
+
 /**
- * A whole screen: the summary first (the lead blocks, the tiles, then the ranked and shared
- * blocks), the detail after
- * (the chart, the filters, the tables). Partial coverage is one line under the title; a stale
- * aggregate, a refusal or a state that cannot say keeps its banner.
+ * A page's head: its title, the tools at its right (the window, an action), then its tabs when it
+ * has them, and what the open page shows. `tools` and `badges` are HTML their caller escaped.
+ */
+export function renderPageHead({ title, eyebrow = null, tabs = null, question = null, subtitle = null, tools = '', badges = '' }) {
+  const lede = (question ? `<p class="question">${escapeHtml(question)}</p>` : '')
+    + (subtitle ? `<p class="subtitle">${escapeHtml(subtitle)}</p>` : '');
+  const tabbed = Boolean(tabs && tabs.items?.length);
+  return '<header class="screen-head"><div class="screen-title">'
+    + (eyebrow ? `<span class="eyebrow">${escapeHtml(eyebrow)}</span>` : '')
+    + `<h2>${escapeHtml(title)}${badges}</h2>`
+    + (tabbed ? '' : lede)
+    + '</div>'
+    + (tools ? `<div class="screen-tools">${tools}</div>` : '')
+    + '</header>'
+    + (tabbed ? renderTabs(tabs) + (lede ? `<div class="screen-lede">${lede}</div>` : '') : '');
+}
+
+/**
+ * A whole screen: the summary first (the lead blocks, the tiles, the filters, then the ranked and
+ * shared blocks), the detail after (the chart and the tables). A page can add a section above the
+ * summary and one below the tables, as `shell.before` and `shell.after`, HTML its caller escaped.
+ * Partial coverage is one line under the title; a stale aggregate, a refusal or a state that
+ * cannot say keeps its banner.
  */
 export function renderScreen(view, shell = {}) {
   if (view.needsInput && !view.search) return renderNeeds(view);
@@ -489,22 +533,16 @@ export function renderScreen(view, shell = {}) {
     ? `<details class="notes"><summary>About this data<span class="notes-count">${noteList.length}</span></summary><ul>${noteList.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`
     : '';
   const badges = (view.badges ?? []).length > 0 ? ` <span class="screen-badges">${view.badges.map(chip).join('')}</span>` : '';
-  const header = '<header class="screen-head"><div class="screen-title">'
-    + (shell.eyebrow ? `<span class="eyebrow">${escapeHtml(shell.eyebrow)}</span>` : '')
-    + `<h2>${escapeHtml(view.title)}${badges}</h2>`
-    + (view.question ? `<p class="question">${escapeHtml(view.question)}</p>` : '')
-    + (view.subtitle ? `<p class="subtitle">${escapeHtml(view.subtitle)}</p>` : '')
-    + '</div><div class="screen-tools">'
-    // A screen's own control, such as Teams' "+ Add a Team": HTML its caller rendered and escaped.
-    + (shell.tool ? `<div class="screen-tool">${shell.tool}</div>` : '')
-    + '<div class="screen-switches">'
-    + renderPresets(shell.switch)
-    + renderPresets(shell.presets)
-    + '</div></div></header>';
+  // A screen's own control, such as Teams' "+ Add a Team": HTML its caller rendered and escaped.
+  const tools = (shell.tool ? `<div class="screen-tool">${shell.tool}</div>` : '')
+    + (shell.presets ? `<div class="screen-switches">${renderPresets(shell.presets)}</div>` : '');
+  const header = renderPageHead({
+    title: shell.title ?? view.title, eyebrow: shell.eyebrow, tabs: shell.tabs, question: view.question, subtitle: view.subtitle, tools, badges,
+  });
   const actions = (view.actions ?? []).length > 0
     ? `<nav class="screen-actions">${view.actions.map((a) => `<a class="btn btn-small" href="${escapeHtml(a.href)}">${escapeHtml(a.label)}</a>`).join('')}</nav>`
     : '';
-  return `<article class="screen">${header}${renderSearch(view.search)}${actions}${status}${banners}${lead}${tiles}${blocks}${series}${filters}${tables}${notes}</article>`;
+  return `<article class="screen">${header}${renderSearch(view.search)}${actions}${status}${banners}${shell.before ?? ''}${renderForm(view.form)}${lead}${tiles}${filters}${blocks}${series}${tables}${shell.after ?? ''}${notes}</article>`;
 }
 
 /** Thin-line icons for the navigation: one stroke weight, no fills. */
@@ -513,8 +551,6 @@ const NAV_ICONS = Object.freeze({
   rules: '<path d="M10 6.5h10M10 12h10M10 17.5h10"/><path d="M4 6.5h2.5M4 12h2.5M4 17.5h2.5"/>',
   search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>',
   usage: '<path d="M4 19.5V10M9.5 19.5v-15M15 19.5v-7M20.5 19.5V7"/>',
-  collection: '<rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M9 20h6M12 16v4"/>',
-  governance: '<path d="M12 3.5 5 6.5v5c0 4.3 2.9 7.4 7 9 4.1-1.6 7-4.7 7-9v-5z"/><path d="m9.2 12 2 2 3.6-4"/>',
   settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
   archive: '<rect x="3.5" y="4.5" width="17" height="4" rx="1"/><path d="M5 8.5v10a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-10"/><path d="M10 12.5h4"/>',
 });
@@ -525,37 +561,16 @@ function navIcon(name) {
 }
 
 /**
- * The navigation, as the contents of the page's nav element. An item with no group is a top-level
- * link; the rest sit under their group, which folds. A group holding the current screen is open,
- * so the reader is never somewhere the navigation does not show.
+ * The navigation, as the contents of the page's nav element: one link per destination, the one
+ * holding the open page marked. The destinations kept at the foot sit apart from the rest.
  */
-export function renderNav(items, current, options = {}) {
-  const collapsed = new Set(options.collapsed ?? []);
-  const link = (item, nested) => {
+export function renderNav(items, current) {
+  let footed = false;
+  return items.map((item) => {
     const active = item.id === current ? ' class="active" aria-current="page"' : '';
-    const title = item.question ? ` title="Question ${escapeHtml(String(item.question))}"` : '';
-    return `<a href="${escapeHtml(item.href ?? `#${item.id}`)}"${active}${title}>${nested ? '' : navIcon(item.icon)}<span>${escapeHtml(item.label)}</span></a>`;
-  };
-  const out = [];
-  const groups = new Map();
-  for (const item of items) {
-    if (!item.group) {
-      out.push({ html: link(item, false) });
-      continue;
-    }
-    if (!groups.has(item.group)) {
-      const entry = { group: item.group, icon: item.groupIcon, members: [] };
-      groups.set(item.group, entry);
-      out.push(entry);
-    }
-    groups.get(item.group).members.push(item);
-  }
-  return out.map((entry) => {
-    if (entry.html) return entry.html;
-    const holdsCurrent = entry.members.some((m) => m.id === current);
-    const open = holdsCurrent || !collapsed.has(entry.group);
-    return `<details class="nav-group" data-group="${escapeHtml(entry.group)}"${open ? ' open' : ''}>`
-      + `<summary>${navIcon(entry.icon)}<span>${escapeHtml(entry.group)}</span><svg class="nav-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></summary>`
-      + `<div class="nav-items">${entry.members.map((m) => link(m, true)).join('')}</div></details>`;
+    const link = `<a href="${escapeHtml(item.href ?? `#${item.id}`)}"${active}>${navIcon(item.icon)}<span>${escapeHtml(item.label)}</span></a>`;
+    if (!item.foot || footed) return link;
+    footed = true;
+    return `<span class="nav-spacer" aria-hidden="true"></span>${link}`;
   }).join('');
 }

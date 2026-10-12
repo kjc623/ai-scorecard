@@ -109,6 +109,6 @@ test('Insights switches to Coding agents beside its window', async () => {
   const doc = fakeDocument('#insights?view=agents&preset=d30');
   await boot({ document: doc, api: createQueryApi({ transport: fixtureTransport() }), admin: null, session: null });
   const html = doc.html('app');
-  assert.match(html, /<a class="seg-item" href="#insights\?preset=d30&amp;view=agents" aria-current="true">Coding agents<\/a>/);
+  assert.match(html, /<a class="page-tab" href="#insights\?preset=d30&amp;view=agents" aria-current="page">Coding agents<\/a>/);
   assert.match(html, /Agent actions/);
 });

@@ -115,7 +115,6 @@ var Statements = []Statement{
 	{"settings_tenant", SQLSettingsTenant},
 	{"retention_defaults", SQLRetentionDefaults},
 	{"settings_tools", SQLSettingsTools},
-	{"settings_devices", SQLSettingsDevices},
 	{"current_collection_mode", SQLCurrentCollectionMode},
 	{"set_collection_mode", SQLSetCollectionMode},
 	{"current_scope_overrides", SQLCurrentScopeOverrides},

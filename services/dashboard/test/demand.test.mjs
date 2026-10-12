@@ -107,6 +107,6 @@ test('Insights switches to Demand beside its window', async () => {
   const doc = fakeDocument('#insights?view=demand&preset=d30');
   await boot({ document: doc, api: createQueryApi({ transport: fixtureTransport() }), admin: null, session: null });
   const html = doc.html('app');
-  assert.match(html, /<a class="seg-item" href="#insights\?preset=d30&amp;view=demand" aria-current="true">Demand<\/a>/);
+  assert.match(html, /<a class="page-tab" href="#insights\?preset=d30&amp;view=demand" aria-current="page">Demand<\/a>/);
   assert.match(html, /Most seats/);
 });

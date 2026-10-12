@@ -50,7 +50,8 @@ test('turning the directory read on and running it go to the admin API, and the 
   assert.match(html, /Stop reading/);
   assert.match(html, /<h2>Identity Providers<\/h2>/);
   assert.ok(!/Create a team|Create team/.test(html), 'teams are added on the Teams page');
-  assert.ok(html.includes('href="#deployment"'), 'SCIM provisioning is pointed to where its tokens are');
+  assert.match(renderDirectory(page.state, { setup: { status: 'loading' } }), /Loading sign-in and provisioning/, 'sign-in and SCIM provisioning are set up on the same page');
+  assert.match(renderDirectory({ status: 'loading' }, { setup: { status: 'loading' } }), /Loading sign-in and provisioning/, 'and are shown while the directory is still being read');
 });
 
 test('a role that is not an admin is told the page is an admin\'s', async () => {
