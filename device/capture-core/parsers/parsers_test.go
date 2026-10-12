@@ -157,6 +157,17 @@ func TestGenericNamesTheFileABodyRegisters(t *testing.T) {
 	}
 }
 
+func TestGenericNamesTheFilesAPromptLists(t *testing.T) {
+	body := `{"prompt":"summarise these","attachments":[` +
+		`{"file_name":"notes.txt","file_type":"text/plain","file_size":120,"extracted_content":"ACME-CANARY"},` +
+		`{"file_name":"","file_size":4000,"extracted_content":"pasted"}],"files":["0b6c2f9e"]}`
+	res, err := Generic{}.Parse([]byte(body), "application/json")
+	want := []dedup.Attachment{{Name: "notes.txt", MediaType: "text/plain", SizeBytes: 120}}
+	if err != nil || res.Text != "summarise these" || !reflect.DeepEqual(res.Attachments, want) {
+		t.Fatalf("got %+v, %v; want the prompt with %+v", res, err, want)
+	}
+}
+
 func TestGenericNamesTheFilesAFormUploads(t *testing.T) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)

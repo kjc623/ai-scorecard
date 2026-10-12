@@ -204,7 +204,9 @@ hook's record and the same prompt's OpenTelemetry record still merge, and the bu
 labels match their names. A prompt that reaches the agent only as telemetry names its files from
 its text, once the mode permits reading it: Claude Code's and GitHub Copilot's `@` mentions (with a
 path only when the mention is absolute, since the event carries no working directory), and the
-`<attachment filePath="…">` tags Copilot Chat sends an attached file in.
+`<attachment filePath="…">` tags Copilot Chat sends an attached file in. Another app's telemetry in
+the GenAI conventions names the files its message's parts name: an OpenAI file part's `filename`, a
+document's `title`, or the file name a part's URL ends in.
 
 ## Installed apps
 

@@ -546,6 +546,53 @@ func TestModeGatesTheMessageText(t *testing.T) {
 	}
 }
 
+// A prompt names the files its message's parts attach, by the name each part gives them, in both
+// the semconv and the older OpenAI forms. A file sent as bytes or by id alone is not named.
+func TestTheMessagesFilesAreNamed(t *testing.T) {
+	e := newEnv(t, protocol.ModeM1, nil)
+	r := receiver(t, e.counters, &recorder{accepts: func(string) bool { return true }, next: e.n})
+	exportSpans(t, r, service, func(tr trace.Tracer) {
+		_, s := tr.Start(context.Background(), "chat gpt-4o", trace.WithTimestamp(t0), trace.WithAttributes(
+			semconv.GenAIOperationNameChat, semconv.GenAIRequestModel("gpt-4o"),
+			semconv.GenAIInputMessagesKey.String(messagesJSON(t, map[string]any{"role": "user", "parts": []any{
+				map[string]any{"type": "text", "content": latest},
+				map[string]any{"type": "uri", "modality": "image", "uri": "https://files.example.com/q3/chart.png"},
+				map[string]any{"type": "file", "modality": "document", "file_id": "file-abc123"},
+				map[string]any{"type": "blob", "modality": "image", "content": "iVBORw0KGgo="},
+			}})),
+		))
+		s.End(trace.WithTimestamp(t0.Add(time.Second)))
+
+		_, s = tr.Start(context.Background(), "chat gpt-4o", trace.WithTimestamp(t0.Add(2*time.Second)), trace.WithAttributes(
+			attribute.String("gen_ai.system", "openai"), semconv.GenAIRequestModel("gpt-4o")))
+		s.AddEvent("gen_ai.content.prompt", trace.WithAttributes(attribute.String("gen_ai.prompt", messagesJSON(t,
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "text", "text": older},
+				map[string]any{"type": "file", "file": map[string]any{"filename": "Q3 forecast.xlsx", "file_data": "UEsDBA=="}},
+				map[string]any{"type": "input_file", "file_url": "https://files.example.com/board%20deck.pdf"},
+				map[string]any{"type": "document", "title": "notes.txt", "source": map[string]any{"type": "text", "data": "x"}},
+				map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64,iVBORw0KGgo="}},
+			}}))))
+		s.End(trace.WithTimestamp(t0.Add(3 * time.Second)))
+	})
+
+	prompts := byKind(e.sink.envelopes(t), "prompt")
+	if len(prompts) != 2 {
+		t.Fatalf("got %d prompt envelopes, want 2", len(prompts))
+	}
+	want := [][]string{{"chart.png"}, {"Q3 forecast.xlsx", "board deck.pdf", "notes.txt"}}
+	for i, p := range prompts {
+		var names []string
+		atts, _ := p["attachments"].([]any)
+		for _, a := range atts {
+			names = append(names, a.(map[string]any)["name"].(string))
+		}
+		if strings.Join(names, "|") != strings.Join(want[i], "|") {
+			t.Errorf("prompt %d names %q, want %q", i, names, want[i])
+		}
+	}
+}
+
 // Log records carry prompts: gen_ai.input.messages on an event, and the older per-message events,
 // where only a request's last message is reported and only when it is the user's.
 func TestSDKLogsBecomePrompts(t *testing.T) {

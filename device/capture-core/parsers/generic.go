@@ -16,9 +16,10 @@ import (
 // Generic reads a JSON body of no known target: a top-level `prompt`, else the last user-role
 // message of `messages[]`, else `input`. A body it cannot interpret returns ErrNoText so the
 // observation degrades instead of guessing which characters the user authored. It names the files
-// such a message attaches in the OpenAI and Anthropic part shapes, the files a multipart form
-// uploads, whose text it does not read, and the file a body registers for upload by its
-// `file_name` (as ChatGPT's apps do before sending the bytes).
+// such a message attaches in the OpenAI and Anthropic part shapes, the files a `prompt` body lists
+// in `attachments` by `file_name` (as Claude's apps send a file whose text they extracted), the
+// files a multipart form uploads, whose text it does not read, and the file a body registers for
+// upload by its `file_name` (as ChatGPT's apps do before sending the bytes).
 type Generic struct{}
 
 // Match implements Parser: the generic parser reads any destination.
@@ -47,15 +48,21 @@ func (Generic) Parse(payload []byte, mediaType string) (Result, error) {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		} `json:"messages"`
-		Input    json.RawMessage `json:"input"`
-		FileName string          `json:"file_name"`
-		FileSize int64           `json:"file_size"`
+		Input       json.RawMessage `json:"input"`
+		Attachments []registered    `json:"attachments"`
+		registered
 	}
 	if err := json.Unmarshal(payload, &body); err != nil {
 		return Result{}, ErrNoText
 	}
 	if body.Prompt != "" {
-		return Result{Text: body.Prompt, Shape: "prompt"}, nil
+		var files []dedup.Attachment
+		for _, a := range body.Attachments {
+			if f, ok := a.file(); ok {
+				files = AppendFile(files, f)
+			}
+		}
+		return Result{Text: body.Prompt, Attachments: files, Shape: "prompt"}, nil
 	}
 	for i := len(body.Messages) - 1; i >= 0; i-- {
 		if body.Messages[i].Role != "user" {
@@ -74,11 +81,23 @@ func (Generic) Parse(payload []byte, mediaType string) (Result, error) {
 			return Result{Text: text, Attachments: files, Shape: "input"}, nil
 		}
 	}
-	if f, ok := FileAt(body.FileName); ok {
-		f.Path, f.SizeBytes = "", max(body.FileSize, 0)
+	if f, ok := body.file(); ok {
 		return Result{Attachments: []dedup.Attachment{f}}, ErrNoText
 	}
 	return Result{}, ErrNoText
+}
+
+// registered is a file a body names by `file_name`, with its size and type when it gives them.
+type registered struct {
+	FileName string `json:"file_name"`
+	FileSize int64  `json:"file_size"`
+	FileType string `json:"file_type"`
+}
+
+func (r registered) file() (dedup.Attachment, bool) {
+	f, ok := FileAt(r.FileName)
+	f.Path, f.SizeBytes, f.MediaType = "", max(r.FileSize, 0), r.FileType
+	return f, ok
 }
 
 // contentPart is one part of a content array, in the shapes this parser reads: text parts, and

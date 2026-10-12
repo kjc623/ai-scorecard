@@ -196,7 +196,7 @@ func spanMessage(s *tracepb.Span) (userMessage, bool, error) {
 			}
 		}
 	}
-	return nil, false, nil
+	return userMessage{}, false, nil
 }
 
 // Logs implements otlp.Normalizer. A log record yields only a prompt event: the activity it
@@ -287,7 +287,7 @@ func (n *Normalizer) prompt(ctx context.Context, from otlp.Sender, fp string, at
 		SizeBytes:         msg.size(),
 		Enforce:           n.enforce(fp),
 		Content:           msg,
-		Extract:           core.ExtractorFunc(extractText),
+		Extract:           core.ExtractorFunc(msg.extract),
 		Person:            from.Person,
 	})
 	switch {
