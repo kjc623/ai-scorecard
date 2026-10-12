@@ -7,12 +7,14 @@
  * capture-core's spool.
  *
  * The content script holds the `File` object and drives an attachment transfer; this worker owns
- * the native channel, relays each frame and returns capture-core's own reply.
+ * the native channel, relays each frame and returns capture-core's own reply. The splash page asks
+ * it for a redirect rule's message and link.
  */
 
 import { ExtError } from '../src/adapter.js';
 import { createAttachmentCollector } from '../src/attachments/collect.js';
 import { createChromeAdapter } from '../src/chrome-adapter.js';
+import { RULE_ACTION } from '../src/enforce.js';
 import { createHealthReporter } from '../src/health.js';
 import { CORE_TYPE, DETAIL, TYPE } from '../src/messages.js';
 import { createNativeClient } from '../src/native.js';
@@ -159,8 +161,20 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
         throw e;
       }
     }
+    if (msg.type === 'capture_redirect_spec') return redirectSpec(msg.rule_id);
     return { ok: false, error: `unknown message type ${msg.type}` };
   });
+
+  /**
+   * What the splash page shows for a redirect rule: its message and link from the bundle in force.
+   * A rule that is not a redirect, or no longer in force, has nothing to show.
+   */
+  function redirectSpec(ruleId) {
+    const rules = policy.rules().rules;
+    const rule = (Array.isArray(rules) ? rules : []).find((r) => r && r.rule_id === ruleId && r.action === RULE_ACTION.REDIRECT);
+    if (!rule || typeof rule.link !== 'string' || !rule.link.startsWith('https://')) return { ok: false, error: 'no_redirect_rule' };
+    return { ok: true, message: rule.message || '', link: rule.link };
+  }
 
   function installAlarms() {
     adapter.alarms.create(HEALTH_ALARM, { periodInMinutes: HEALTH_PERIOD_MINUTES });

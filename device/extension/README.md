@@ -36,14 +36,18 @@ is more restrictive; when the bundle also scopes by population, device, notice o
 extension asks `capture-core` (`mode_query`). The bundle's `rules` and `sanctioned_tools` are
 matched as `capture-core/enforce` matches them, with no labels (the extension classifies nothing); a
 `warn` holds the request for the user's confirmation and a `block` cancels it, each showing the
-rule's message and link in the page.
+rule's message and link in the page. A `redirect` sends a tab opening a web app the catalog names to
+the extension's Sundial splash page (`splash/`), which shows the rule's message and a button to its
+link; the visit is recorded as the rule's `blocked` decision, and a prompt it matches is cancelled
+and its tab sent to the same page. The page's address carries only the rule id and the host, and it
+reads the message and link from the bundle in force.
 
 | Permission | Why |
 |---|---|
 | `webRequest`, host `<all_urls>` | see every request, including to services nobody listed; requests are never modified |
-| `webRequestBlocking` | cancel a request a `block` rule matches; granted only to a policy-installed extension, and its absence is reported |
+| `webRequestBlocking` | cancel a request a `block` rule matches, or send a page a `redirect` rule matches to the splash page; granted only to a policy-installed extension, and its absence is reported |
 | `nativeMessaging` | the only channel to `capture-core`; observations leave through it and nowhere else |
-| `tabs` | show a `warn` rule's confirmation, or a `block` rule's notice, in the tab that made the request |
+| `tabs` | show a `warn` rule's confirmation, or a `block` rule's notice, in the tab that made the request, and open a `redirect` rule's splash page there |
 | `alarms` | send the health report and refresh policy while the browser is idle |
 
 The content script runs in every frame's isolated world from `document_start`, because a file the

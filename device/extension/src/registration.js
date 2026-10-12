@@ -151,8 +151,10 @@ function guard(handler) {
 
 function toBlockingResponse(result) {
   if (!result) return undefined;
-  // `blocked` cancels through webRequestBlocking; everything else releases the request.
-  return result.cancel ? { cancel: true } : undefined;
+  // `blocked` cancels through webRequestBlocking, a redirected navigation goes to the splash page,
+  // and everything else releases the request.
+  if (result.cancel) return { cancel: true };
+  return result.redirect_url ? { redirectUrl: result.redirect_url } : undefined;
 }
 
 /** The automation marker is read from request headers, never from a page global. */

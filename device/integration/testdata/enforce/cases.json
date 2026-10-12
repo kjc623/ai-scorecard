@@ -1335,6 +1335,37 @@
         "action": "block",
         "message": "msg block_rest"
       }
+    },
+    {
+      "name": "a redirect rule decides like any other",
+      "bundle": {
+        "rules": [
+          {
+            "rule_id": "chatgpt.redirect",
+            "action": "redirect",
+            "match": {
+              "tools": [
+                "app:chatgpt"
+              ]
+            },
+            "message": "Use Copilot instead.",
+            "link": "https://copilot.example/"
+          }
+        ],
+        "sanctioned_tools": []
+      },
+      "input": {
+        "route": "ext.web_request",
+        "tool_fingerprint": "app:chatgpt",
+        "labels": [],
+        "labels_known": false
+      },
+      "want": {
+        "rule_id": "chatgpt.redirect",
+        "action": "redirect",
+        "message": "Use Copilot instead.",
+        "link": "https://copilot.example/"
+      }
     }
   ]
 }

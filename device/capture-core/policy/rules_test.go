@@ -115,6 +115,9 @@ func TestRulesValidation(t *testing.T) {
 		"upper-case link scheme": {`"https://intranet.example/ai"`, `"HTTPS://intranet.example/ai"`},
 		"relative link":          {`"https://intranet.example/ai"`, `"/ai"`},
 		"unknown route":          {`"routes": ["proxy.tls", "tool.hook"]`, `"routes": ["proxy.tls", "tool.mcp"]`},
+		"redirect without a link": {`"action": "warn",
+   "match": {"labels": [], "tools": [], "categories": [], "sanction": ["unsanctioned"], "routes": []}`, `"action": "redirect",
+   "match": {"labels": [], "tools": [], "categories": [], "sanction": ["unsanctioned"], "routes": []}`},
 	}
 	for name, r := range refused {
 		section := strings.Replace(rulesSection, r[0], r[1], 1)
@@ -139,6 +142,7 @@ func TestRulesValidation(t *testing.T) {
 		"no match lists": {`"match": {"labels": [], "tools": [], "categories": [], "sanction": [], "routes": []},
    "message": ""`, `"match": {}, "message": ""`},
 		"rule_id of 128": {`"rule_id": "allow_rest"`, `"rule_id": "a` + strings.Repeat("b", 127) + `"`},
+		"redirect":       {`"action": "block"`, `"action": "redirect"`},
 		"every route":    {`"routes": ["proxy.tls", "tool.hook"]`, `"routes": ["ext.web_request", "ext.page_context", "ext.dom", "proxy.tls", "proxy.loopback", "proc.detect", "cli.shim", "tool.hook", "tool.otel", "inv.scan", "net.flow"]`},
 	}
 	for name, r := range accepted {

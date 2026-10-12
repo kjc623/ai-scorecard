@@ -145,6 +145,7 @@ func TestRulesRefuseEveryBadValue(t *testing.T) {
 		{"a link with no host", rule(`{"rule_id":"r","action":"warn","message":"x","link":"https://"}`), apierr.CodeInvalidRequest, "link"},
 		{"an upper-case scheme", rule(`{"rule_id":"r","action":"warn","message":"x","link":"HTTPS://intranet.example"}`), apierr.CodeInvalidRequest, "link"},
 		{"a relative link", rule(`{"rule_id":"r","action":"warn","message":"x","link":"intranet.example/ai"}`), apierr.CodeInvalidRequest, "link"},
+		{"a redirect with no link", rule(`{"rule_id":"r","action":"redirect","message":"x","match":{"tools":["app:chatgpt"]}}`), apierr.CodeInvalidRequest, "link"},
 		{"an unknown route", rule(`{"rule_id":"r","action":"block","message":"x","match":{"routes":["tool.mcp"]}}`), apierr.CodeInvalidRequest, "match.routes"},
 		{"an unknown sanction", rule(`{"rule_id":"r","action":"block","message":"x","match":{"sanction":["unknown"]}}`), apierr.CodeInvalidRequest, "match.sanction"},
 		{"an empty tool", rule(`{"rule_id":"r","action":"block","message":"x","match":{"tools":[" "]}}`), apierr.CodeInvalidRequest, "match.tools"},
@@ -190,9 +191,12 @@ func TestRulesRefuseEveryBadValue(t *testing.T) {
 	}
 
 	// The boundaries are accepted: a message of 280 characters, an allow with no message, a link
-	// with a path and query, and the most rules a list may hold.
+	// with a path and query, a redirect with its link, and the most rules a list may hold.
 	if rec := r.do(t, "admin", "PUT", rulesPath, rule(`{"rule_id":"r","action":"warn","message":"`+strings.Repeat("é", 280)+`","link":"https://intranet.example/ai?x=1"}`)); rec.Code != http.StatusNoContent {
 		t.Fatalf("boundaries: %d %s", rec.Code, rec.Body)
+	}
+	if rec := r.do(t, "admin", "PUT", rulesPath, rule(`{"rule_id":"r","action":"redirect","message":"Use Copilot.","link":"https://copilot.example/","match":{"tools":["app:chatgpt"]}}`)); rec.Code != http.StatusNoContent {
+		t.Fatalf("a redirect: %d %s", rec.Code, rec.Body)
 	}
 	if rec := r.do(t, "admin", "PUT", rulesPath, `{"rules":[`+strings.Join(many[:100], ",")+`]}`); rec.Code != http.StatusNoContent {
 		t.Fatalf("100 rules: %d %s", rec.Code, rec.Body)

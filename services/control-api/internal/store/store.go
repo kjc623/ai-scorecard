@@ -240,7 +240,7 @@ type KillSwitch struct {
 const MaxEnforcementRules = 100
 
 // RuleActions is the closed set of enforcement rule actions (ops.enforcement_rule.action).
-var RuleActions = []string{"allow", "warn", "block"}
+var RuleActions = []string{"allow", "warn", "block", "redirect"}
 
 // EnforcementRule is one of the tenant's ordered enforcement rules (ops.enforcement_rule).
 type EnforcementRule struct {

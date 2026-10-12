@@ -467,6 +467,7 @@ test('adding a rule: it is checked, kept where it was put, and read back as a se
   assert.match((await attempt({ rule_id: 'warn_pii', message: 'x' })).message, /Another rule is already called warn_pii/);
   assert.match((await attempt({ rule_id: 'long', message: 'é'.repeat(281) })).message, /281 characters; at most 280/);
   assert.match((await attempt({ rule_id: 'plain_http', message: 'x', link: 'http://intranet.example' })).message, /https:\/\//);
+  assert.match((await attempt({ rule_id: 'no_link', message: 'Use Copilot.' }, 'redirect')).message, /redirect rule needs a link/);
   assert.equal(page.state.draft, null, 'no refused rule reached the list');
   const tooMany = { rule_id: 'r', action: 'allow', message: '', link: '', users: Array.from({ length: MAX_RULE_USERS + 1 }, (_, i) => `department:d${i}`), enabled: true, match: {} };
   assert.match(ruleProblem(tooMany).message, /at most 200/);
@@ -496,6 +497,24 @@ test('adding a rule: it is checked, kept where it was put, and read back as a se
   assert.match(panel(), /Allow every prompt\. Off: devices are not sent it\./);
   await page.act({ rl: 'apply' });
   assert.deepEqual(page.state.draft.slice(0, 2).map((r) => [r.rule_id, r.enabled]), [['allow_everything', false], ['allow_finance_falcon', true]]);
+});
+
+test('a redirect rule needs its link, names what it does, and is sent with it', async () => {
+  const { page, panel } = await loaded();
+  await page.act({ rl: 'add' });
+  page.setDraft('rule_id', 'chatgpt_to_copilot');
+  page.setDraft('message', 'Use Copilot for work.');
+  page.setDraft('link', 'https://copilot.example/');
+  await page.act({ rl: 'action', value: 'redirect' });
+  await page.act({ rl: 'match', field: 'categories', value: 'chat_assistant' });
+  assert.match(panel(), /aria-pressed="true">Redirect</);
+  assert.match(panel(), /Redirect visits and prompts to a tool in Chat assistant\./);
+  assert.match(panel(), /sees the Sundial page with your message and a button to your link/);
+  assert.match(panel(), />Link<\/label>/);
+  await page.act({ rl: 'apply' });
+  assert.equal(page.state.panel, null, 'a redirect with its link closes the panel');
+  const added = page.state.draft.find((r) => r.rule_id === 'chatgpt_to_copilot');
+  assert.deepEqual([added.action, added.link], ['redirect', 'https://copilot.example/']);
 });
 
 test('people, groups, departments, units and teams are picked from one list, and the rule names each by kind', async () => {
