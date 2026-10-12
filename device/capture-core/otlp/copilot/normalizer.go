@@ -226,13 +226,17 @@ func (n *Normalizer) promptText(a attrs) (core.ContentReader, int64) {
 // attached to a message inside one.
 var attachmentPath = regexp.MustCompile(`<attachment\s[^>]*?\bfilePath="([^"]+)"`)
 
-// attachedFiles names the files the prompt's <attachment> tags carry, with their paths.
+// attachedFiles names the files the prompt's <attachment> tags carry, with their paths, and those
+// it @-mentions, as the Copilot CLI attaches a file.
 func attachedFiles(text string) []dedup.Attachment {
 	var out []dedup.Attachment
 	for _, m := range attachmentPath.FindAllStringSubmatch(text, -1) {
 		if f, ok := parsers.FileAt(html.UnescapeString(m[1])); ok {
 			out = parsers.AppendFile(out, f)
 		}
+	}
+	for _, f := range parsers.MentionedFiles(text) {
+		out = parsers.AppendFile(out, f)
 	}
 	return out
 }

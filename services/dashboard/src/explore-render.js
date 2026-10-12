@@ -330,7 +330,9 @@ function fileHitParts(snippet) {
   const marked = snippet.replaceAll('</em>', '\u0000');
   const at = Math.max(marked.lastIndexOf('/'), marked.lastIndexOf('\\'));
   if (at < 0) return { name: snippet, folder: '' };
-  let folder = marked.slice(0, at + 1).replaceAll('\u0000', '</em>');
+  // The folder is shown without its trailing separator, except a root's (`/`, `C:\`).
+  const root = at === 0 || marked[at - 1] === ':';
+  let folder = marked.slice(0, root ? at + 1 : at).replaceAll('\u0000', '</em>');
   let name = marked.slice(at + 1).replaceAll('\u0000', '</em>');
   if (folder.split('<em>').length > folder.split('</em>').length) {
     folder += '</em>';

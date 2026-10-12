@@ -470,11 +470,12 @@ func TestThePromptIsTheLatestUserMessage(t *testing.T) {
 }
 
 // The files Copilot Chat attaches to a message, each sent inside an <attachment> tag with its path,
-// are named with their paths; a folder is not a file, and the digest is the text's alone.
+// are named with their paths, and a file the message @-mentions by its name; a folder and a chat
+// participant are not files, and the digest is the text's alone.
 func TestTheAttachedFilesAreNamed(t *testing.T) {
 	text := "<attachments>\n<attachment id=\"app.ts\" filePath=\"/home/ana/proj/src/app.ts\">\nexport {}\n</attachment>\n" +
 		"<attachment id=\"Q&amp;A.md\" isSummarized=\"true\" filePath=\"C:\\Users\\ana\\Q&amp;A.md\">\nx\n</attachment>\n" +
-		"<attachment id=\"src\" folderPath=\"/home/ana/proj/src\" />\n</attachments>\nsummarise these"
+		"<attachment id=\"src\" folderPath=\"/home/ana/proj/src\" />\n</attachments>\nsummarise these and @docs/plan.md for @workspace"
 	escaped, err := json.Marshal(text)
 	if err != nil {
 		t.Fatal(err)
@@ -513,6 +514,7 @@ func TestTheAttachedFilesAreNamed(t *testing.T) {
 		want := []protocol.AttachmentDescriptor{
 			{Name: "app.ts", Path: "/home/ana/proj/src/app.ts"},
 			{Name: "Q&A.md", Path: `C:\Users\ana\Q&A.md`},
+			{Name: "plan.md"},
 		}
 		if !reflect.DeepEqual(env.Attachments, want) || env.ContentDigest != dedup.ContentDigest(text, nil) {
 			t.Errorf("prompt envelope %s", e.Payload)

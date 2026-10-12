@@ -127,10 +127,12 @@ test('a hit on a file the device saw on disk names the file and the folder it ca
     { submissionId: 's1', snippet: 'C:\\Users\\ana\\<em>Finance</em>\\Q3 <em>forecast</em>.xlsx', fileName: true },
     { submissionId: 's2', snippet: '<em>/home/ana/q3.csv</em>', fileName: true },
     { submissionId: 's3', snippet: 'a/b <em>forecast</em>', fileName: false },
+    { submissionId: 's4', snippet: 'C:\\<em>forecast</em>.xlsx', fileName: true },
   ] } };
   const html = renderExploreText(state);
-  assert.match(html, /data-submission="s1"[^>]*><span class="x-hit-kind">Attached file<\/span><span class="x-hit-snippet">Q3 <em>forecast<\/em>\.xlsx<\/span><span class="x-hit-folder">From <span class="x-mono">C:\\Users\\ana\\<em>Finance<\/em>\\<\/span><\/span>/);
-  assert.match(html, /data-submission="s2"[^>]*><span class="x-hit-kind">Attached file<\/span><span class="x-hit-snippet"><em>q3\.csv<\/em><\/span><span class="x-hit-folder">From <span class="x-mono"><em>\/home\/ana\/<\/em><\/span>/, 'a highlight across the folder is closed and opened again');
+  assert.match(html, /data-submission="s1"[^>]*><span class="x-hit-kind">Attached file<\/span><span class="x-hit-snippet">Q3 <em>forecast<\/em>\.xlsx<\/span><span class="x-hit-folder">From <span class="x-mono">C:\\Users\\ana\\<em>Finance<\/em><\/span><\/span>/);
+  assert.match(html, /data-submission="s2"[^>]*><span class="x-hit-kind">Attached file<\/span><span class="x-hit-snippet"><em>q3\.csv<\/em><\/span><span class="x-hit-folder">From <span class="x-mono"><em>\/home\/ana<\/em><\/span>/, 'a highlight across the folder is closed and opened again');
+  assert.match(html, /data-submission="s4"[^>]*>.*?<span class="x-hit-folder">From <span class="x-mono">C:\\<\/span>/, 'a root keeps its separator');
   assert.match(html, /data-submission="s3"[^>]*><span class="x-hit-snippet">a\/b <em>forecast<\/em><\/span><span class="x-mono/, 'a prompt is not split as a path');
 });
 

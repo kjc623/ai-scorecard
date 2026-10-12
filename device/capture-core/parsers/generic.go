@@ -16,8 +16,9 @@ import (
 // Generic reads a JSON body of no known target: a top-level `prompt`, else the last user-role
 // message of `messages[]`, else `input`. A body it cannot interpret returns ErrNoText so the
 // observation degrades instead of guessing which characters the user authored. It names the files
-// such a message attaches in the OpenAI and Anthropic part shapes, and the files a multipart form
-// uploads, whose text it does not read.
+// such a message attaches in the OpenAI and Anthropic part shapes, the files a multipart form
+// uploads, whose text it does not read, and the file a body registers for upload by its
+// `file_name` (as ChatGPT's apps do before sending the bytes).
 type Generic struct{}
 
 // Match implements Parser: the generic parser reads any destination.
@@ -46,7 +47,9 @@ func (Generic) Parse(payload []byte, mediaType string) (Result, error) {
 			Role    string          `json:"role"`
 			Content json.RawMessage `json:"content"`
 		} `json:"messages"`
-		Input json.RawMessage `json:"input"`
+		Input    json.RawMessage `json:"input"`
+		FileName string          `json:"file_name"`
+		FileSize int64           `json:"file_size"`
 	}
 	if err := json.Unmarshal(payload, &body); err != nil {
 		return Result{}, ErrNoText
@@ -70,6 +73,10 @@ func (Generic) Parse(payload []byte, mediaType string) (Result, error) {
 		if text, files, ok := decodeContent(body.Input); ok {
 			return Result{Text: text, Attachments: files, Shape: "input"}, nil
 		}
+	}
+	if f, ok := FileAt(body.FileName); ok {
+		f.Path, f.SizeBytes = "", max(body.FileSize, 0)
+		return Result{Attachments: []dedup.Attachment{f}}, ErrNoText
 	}
 	return Result{}, ErrNoText
 }

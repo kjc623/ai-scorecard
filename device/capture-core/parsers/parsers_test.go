@@ -147,6 +147,16 @@ func TestGenericNamesTheFilesAMessageAttaches(t *testing.T) {
 	}
 }
 
+// A body that registers a file for upload by name, as ChatGPT's apps do before sending its bytes,
+// names the file.
+func TestGenericNamesTheFileABodyRegisters(t *testing.T) {
+	res, err := Generic{}.Parse([]byte(`{"file_name":"Q3 forecast.xlsx","file_size":2048,"use_case":"my_files"}`), "application/json")
+	if want := (dedup.Attachment{Name: "Q3 forecast.xlsx", SizeBytes: 2048}); !errors.Is(err, ErrNoText) ||
+		len(res.Attachments) != 1 || res.Attachments[0] != want {
+		t.Fatalf("got %+v, %v; want %+v and ErrNoText", res, err, want)
+	}
+}
+
 func TestGenericNamesTheFilesAFormUploads(t *testing.T) {
 	var buf bytes.Buffer
 	w := multipart.NewWriter(&buf)

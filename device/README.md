@@ -202,9 +202,9 @@ Files are looked up, never read, within 50 ms of the hook's budget. Cursor's ada
 Cursor lists as attached to the prompt. The record keeps them outside its content digest, so the
 hook's record and the same prompt's OpenTelemetry record still merge, and the bundle's custom
 labels match their names. A prompt that reaches the agent only as telemetry names its files from
-its text, once the mode permits reading it: Claude Code's `@` mentions (with a path only when the
-mention is absolute, since the event carries no working directory), and the `<attachment
-filePath="…">` tags GitHub Copilot Chat sends an attached file in.
+its text, once the mode permits reading it: Claude Code's and GitHub Copilot's `@` mentions (with a
+path only when the mention is absolute, since the event carries no working directory), and the
+`<attachment filePath="…">` tags Copilot Chat sends an attached file in.
 
 ## Installed apps
 

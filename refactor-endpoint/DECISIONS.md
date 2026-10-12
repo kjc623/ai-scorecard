@@ -2914,4 +2914,5 @@ dashboard.
   upload's, read from the body Chrome hands the extension, and the files a Claude Code, Codex or
   Cursor prompt names. It is indexed for search in place of the name and never enters the content
   digest. A prompt recorded only from telemetry names the files its text refers to: Claude Code's
-  `@` mentions and Copilot Chat's `<attachment filePath>` tags.
+  and Copilot's `@` mentions and Copilot Chat's `<attachment filePath>` tags. The generic parser
+  names the file a body registers by `file_name`, as ChatGPT's apps do before uploading it.
