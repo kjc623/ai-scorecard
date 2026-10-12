@@ -230,9 +230,9 @@ export function teamCoverageStatement(query) {
 
 /**
  * The demand for each tool not sanctioned (unsanctioned, or no decision yet): the people who sent
- * it a prompt in the window, each counted once however many buckets and fingerprints they used, and
- * how many of them are in a team; then, per team, how many of its current members used it, and the
- * team's size. A tool is the one its rows count as (registry toolRows); a fingerprint no app claims
+ * it a prompt in the window, each counted once however many buckets, fingerprints and device-derived
+ * refs they used, and how many of them are in a team; then, per team, how many of its current
+ * members used it, and the team's size. A tool is the one its rows count as (registry toolRows); a fingerprint no app claims
  * is a tool of its own with no decision. A row with no team is the tool across everyone.
  *
  * @param {{window:{from:string,to:string},bucket:string|null}} query
@@ -244,11 +244,12 @@ export function demandStatement(query) {
     text: [
       'WITH used AS (',
       "  SELECT coalesce('app:' || coalesce(c.app_key, h.app_key), u.tool_fingerprint) AS tool,",
-      "         u.user_ref, coalesce(s.sanctioned_state, 'unknown') AS sanctioned_state",
+      "         coalesce(ua.user_ref, u.user_ref) AS user_ref, coalesce(s.sanctioned_state, 'unknown') AS sanctioned_state",
       '    FROM mart.agg_tool_user_period u',
       '    LEFT JOIN ref.tool_catalogue c ON c.tool_fingerprint = u.tool_fingerprint',
       '    LEFT JOIN mart.v_tool_host h ON h.tenant_id = u.tenant_id AND h.tool_fingerprint = u.tool_fingerprint',
       '    LEFT JOIN ops.tool_sanction s ON s.tenant_id = u.tenant_id AND s.tool_key = coalesce(c.app_key, h.app_key)',
+      '    LEFT JOIN ops.user_ref_alias ua ON ua.tenant_id = u.tenant_id AND ua.alias_ref = u.user_ref',
       '   WHERE u.tenant_id = ops.current_tenant()',
       '     AND u.bucket_start >= $1::timestamptz AND u.bucket_start < $2::timestamptz',
       '     AND u.bucket_size = $3::text',
@@ -276,8 +277,8 @@ export function demandStatement(query) {
 }
 
 /**
- * The people who sent a prompt in the window, each counted once however many tools and buckets
- * they used, split by whether those tools are sanctioned; a tool with no decision is not
+ * The people who sent a prompt in the window, each counted once however many tools, buckets and
+ * device-derived refs they used, split by whether those tools are sanctioned; a tool with no decision is not
  * sanctioned. Beside them, the people they are out of: the active people the directory lists, and
  * the people last signed in on an enrolled device, for a tenant with no directory.
  *
@@ -289,23 +290,25 @@ export function peopleStatement(query) {
     id: 'people',
     text: [
       'WITH used AS (',
-      '  SELECT u.user_ref,',
+      '  SELECT coalesce(ua.user_ref, u.user_ref) AS user_ref,',
       "         bool_or(coalesce(s.sanctioned_state, 'unknown') = 'sanctioned') AS sanctioned,",
       "         bool_or(coalesce(s.sanctioned_state, 'unknown') <> 'sanctioned') AS other",
       '    FROM mart.agg_tool_user_period u',
       '    LEFT JOIN ref.tool_catalogue c ON c.tool_fingerprint = u.tool_fingerprint',
       '    LEFT JOIN mart.v_tool_host h ON h.tenant_id = u.tenant_id AND h.tool_fingerprint = u.tool_fingerprint',
       '    LEFT JOIN ops.tool_sanction s ON s.tenant_id = u.tenant_id AND s.tool_key = coalesce(c.app_key, h.app_key)',
+      '    LEFT JOIN ops.user_ref_alias ua ON ua.tenant_id = u.tenant_id AND ua.alias_ref = u.user_ref',
       '   WHERE u.tenant_id = ops.current_tenant()',
       '     AND u.bucket_start >= $1::timestamptz AND u.bucket_start < $2::timestamptz',
       '     AND u.bucket_size = $3::text',
-      '   GROUP BY u.user_ref)',
+      '   GROUP BY 1)',
       'SELECT count(*)::bigint AS people,',
       '       count(*) FILTER (WHERE sanctioned AND NOT other)::bigint AS people_sanctioned_only,',
       '       count(*) FILTER (WHERE sanctioned AND other)::bigint AS people_both,',
       '       count(*) FILTER (WHERE other AND NOT sanctioned)::bigint AS people_unsanctioned_only,',
       "       (SELECT count(*) FROM ops.user_dim d WHERE d.tenant_id = ops.current_tenant() AND d.status = 'active')::bigint AS directory_people,",
-      '       (SELECT count(DISTINCT d.last_user_ref) FROM ops.device d',
+      '       (SELECT count(DISTINCT coalesce(da.user_ref, d.last_user_ref)) FROM ops.device d',
+      '          LEFT JOIN ops.user_ref_alias da ON da.tenant_id = d.tenant_id AND da.alias_ref = d.last_user_ref',
       '         WHERE d.tenant_id = ops.current_tenant() AND d.revoked_at IS NULL)::bigint AS device_people',
       '  FROM used',
     ].join('\n'),

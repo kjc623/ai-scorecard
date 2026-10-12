@@ -1768,19 +1768,44 @@ export function unsanctionedView(state) {
  */
 function teamMembersTable(members, { byTeam = true, title = 'Prompts by person' } = {}) {
   const byName = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), undefined, { sensitivity: 'base' });
-  const rows = [...members.data].sort((a, b) => byName(a.team_name, b.team_name) || byName(a.name, b.name) || byName(a.subject, b.subject));
+  const rows = foldMembers(members.data).sort((a, b) => byName(a.name, b.name) || byName(a.subject, b.subject));
   return Object.freeze({
     title,
     columns: Object.freeze([
-      ...(byTeam ? [column('team_name', 'Team')] : []),
       column('name', 'User', 'person'),
+      ...(byTeam ? [column('team_names', 'Teams')] : []),
       column('submissions', 'Prompts', 'measure'),
     ]),
-    // The team heads its run of people rather than repeating on every line.
-    ...(byTeam ? { groupBy: 'team_name' } : {}),
     rows: Object.freeze(rows.map((row) => Object.freeze({ row, vocab: vocabOf(row) }))),
     emptyText: byTeam ? 'Nobody in these teams sent a prompt in this window.' : 'Nobody in this team sent a prompt in this window.',
   });
+}
+
+/**
+ * One row per person from the roster's rows, which come one per team, person and bucket: the
+ * person's teams by name, and their prompts in the window. A person's prompts are the same in every
+ * team they are in, so they are summed over one team's buckets, not over the teams.
+ */
+function foldMembers(data) {
+  const people = new Map();
+  for (const row of data) {
+    const subject = row.subject ?? null;
+    if (!people.has(subject)) people.set(subject, { subject, name: row.name ?? subject, teams: new Map() });
+    const person = people.get(subject);
+    const team = row.team ?? row.team_name ?? '';
+    const prior = person.teams.get(team);
+    person.teams.set(team, {
+      name: row.team_name ?? prior?.name ?? null,
+      submissions: (prior?.submissions ?? 0) + (Number(row.submissions) || 0),
+    });
+  }
+  return [...people.values()].map(({ subject, name, teams }) => Object.freeze({
+    subject,
+    name,
+    team_names: [...new Set([...teams.values()].map((t) => t.name).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' })).join(', ') || null,
+    submissions: Math.max(0, ...[...teams.values()].map((t) => t.submissions)),
+  }));
 }
 
 function teamMembersNotes(members) {
@@ -1790,8 +1815,8 @@ function teamMembersNotes(members) {
       ? 'Your role does not show each person\'s prompts; an analyst or admin sees them.'
       : `Each person's prompts could not be read: ${members.error?.message ?? members.resultState}.`];
   }
-  const notes = ['Each person is listed under every team they are in, ordered by team and name. Reading this list is audited.'];
-  if (members.meta?.truncated) notes.push(`Only the first ${formatCount(members.data.length)} people are listed.`);
+  const notes = ['Each person is listed once, by name, with the teams they are in. Reading this list is audited.'];
+  if (members.meta?.truncated) notes.push(`The roster was cut short at ${formatCount(members.data.length)} rows, so some people or days are missing.`);
   if (members.audit?.entry_id) notes.push(`Audited read: entry ${members.audit.entry_id} at ${formatInstant(members.audit.written_at)}.`);
   return notes;
 }
@@ -1909,7 +1934,7 @@ export function teamView(state, { team, members = null, teams = null, preset = n
   const group = foldCells(state, 'team', { sum: ['submissions'], max: ['users'] }).find((g) => g.key === String(team)) ?? null;
   const known = (teams ?? []).find((t) => t.team_id === String(team)) ?? null;
   const name = String(group?.first.team_name ?? known?.name ?? members?.data?.find((row) => row.team_name)?.team_name ?? 'Team');
-  const listed = members && !members.isRefusal ? members.data.length : null;
+  const listed = members && !members.isRefusal ? new Set(members.data.map((row) => row.subject)).size : null;
   const facts = teamFacts(known);
   return screen('team', name, null, 'mart.agg_team_period', {
     subtitle: facts ? `${facts}. A team counts the usage of the people in it now.` : 'One team\'s usage. A team counts the usage of the people in it now.',

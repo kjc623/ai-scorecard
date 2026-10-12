@@ -237,14 +237,15 @@ test('the Teams screen ranks the teams and lists the admin\'s quiet teams with a
   assert.match(ranking.items[3].sublabel, /No usage recorded in this window/);
 });
 
-test('the Users page heads the directory with each team\'s people, the team heading its run', async () => {
+test('the Users page heads the directory with each team member once, their teams beside their name', async () => {
   const { view } = await dashboardFor().load('person', { filters: {} });
   assert.deepEqual(view.tables.map((t) => t.title), ['Users', 'People']);
-  assert.equal(view.tables[0].groupBy, 'team_name');
+  assert.equal(view.tables[0].groupBy, undefined);
   const html = renderScreen(view, SHELL);
   assert.ok(html.indexOf('search-form') < html.indexOf('<h3>Users</h3>'), 'the roster sits under the search bar');
-  assert.match(html, /<tr class="row-group"><th scope="rowgroup" colspan="2">Engineering<\/th><\/tr>/, 'the team heads its people rather than repeating on every line');
-  assert.equal((html.match(/row-group/g) ?? []).length, 2, 'one heading per team');
+  const roster = html.slice(html.indexOf('<h3>Users</h3>'), html.indexOf('<h3>People</h3>'));
+  assert.equal((roster.match(/>Grace Hopper</g) ?? []).length, 1, 'a person in two teams, on two days, is listed once');
+  assert.match(roster, /<span class="block-count">3<\/span>/, 'the count is people, not rows');
 });
 
 test('without the admin list the Teams screen still ranks the teams that have usage', async () => {

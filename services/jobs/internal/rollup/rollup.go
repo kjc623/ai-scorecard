@@ -113,6 +113,22 @@ func WindowFor(bucketSize string, now time.Time, lookback int) (Window, error) {
 	return Window{BucketSize: bucketSize, From: from, To: to}, nil
 }
 
+// Covering returns the window widened back to the bucket that holds t, when t is older than it.
+func (w Window) Covering(t time.Time) Window {
+	t = t.UTC()
+	var start time.Time
+	switch w.BucketSize {
+	case BucketHour:
+		start = t.Truncate(time.Hour)
+	default:
+		start = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	}
+	if start.Before(w.From) {
+		w.From = start
+	}
+	return w
+}
+
 // LastCompleteBucket is the start of the newest bucket that has fully elapsed at now. It is what
 // the dashboard shows as "complete to": the open bucket a pass also writes is not claimed as
 // complete.
@@ -128,6 +144,31 @@ func LastCompleteBucket(bucketSize string, now time.Time) (time.Time, error) {
 		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, -1), nil
 	}
 }
+
+// PersonRefSQL moves to the canonical ref the submissions recorded under a ref
+// ops.user_ref_alias maps to another, and each device's last user likewise, and returns the
+// earliest received_at it moved (NULL when it moved none). ingest.record_event stores the canonical
+// ref once the alias exists; a device's earlier rows kept the ref it derived, from a UPN or an Entra
+// object id, and every per-person count would show that person once per ref. A moved submission
+// keeps its observations, which stay as the device reported them.
+const PersonRefSQL = `
+WITH moved AS (
+  UPDATE ingest.submission s
+     SET user_ref = a.user_ref
+    FROM ops.user_ref_alias a
+   WHERE s.tenant_id = $1 AND a.tenant_id = $1
+     AND s.user_ref = a.alias_ref AND a.user_ref <> a.alias_ref
+  RETURNING s.received_at
+),
+devices AS (
+  UPDATE ops.device d
+     SET last_user_ref = a.user_ref
+    FROM ops.user_ref_alias a
+   WHERE d.tenant_id = $1 AND a.tenant_id = $1
+     AND d.last_user_ref = a.alias_ref AND a.user_ref <> a.alias_ref
+  RETURNING 1
+)
+SELECT min(received_at) FROM moved`
 
 // Each aggregate computes the window's cells from the source, deletes the rows of cells the source
 // no longer has (a retention expiry or an erasure emptied them), and upserts the rest. The DELETE is
@@ -352,12 +393,14 @@ ON CONFLICT (tenant_id, bucket_start, bucket_size, tool_fingerprint, discovery_t
 // agentPeriodSQL is what coding agents report: per tool and model, the model requests and their
 // tokens, the actions the agent took, and the people behind them, beside the people behind the tool
 // on any model. A tool call names no model, so it counts under the empty model, as does a request
-// whose model the agent did not report.
+// whose model the agent did not report. A person is counted under their canonical ref: observations
+// keep the ref the device sent.
 var agentPeriodSQL = `
 WITH activity AS (
   SELECT date_trunc(%[1]s, o.received_at) AS bucket_start, o.tool_fingerprint, coalesce(o.model, '') AS model,
-         o.activity_type, o.input_tokens, o.output_tokens, o.user_ref
+         o.activity_type, o.input_tokens, o.output_tokens, coalesce(ua.user_ref, o.user_ref) AS user_ref
     FROM ingest.observation o
+    LEFT JOIN ops.user_ref_alias ua ON ua.tenant_id = o.tenant_id AND ua.alias_ref = o.user_ref
    WHERE o.tenant_id = $1 AND o.received_at >= $2 AND o.received_at < $3 AND o.kind = 'agent_activity'
 ),
 tools AS (

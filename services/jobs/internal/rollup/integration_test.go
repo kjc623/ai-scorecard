@@ -548,6 +548,65 @@ func TestTenantPassAsJobsRole(t *testing.T) {
 	}
 }
 
+// TestTenantPassCountsAPersonOnce: a person whose device reported under its object-id ref before
+// the directory named them, and under their canonical ref since, is one person after a pass: the
+// earlier submissions and the device's last user move to the canonical ref, and every bucket they
+// fall in is recomputed, older than the trailing windows too.
+func TestTenantPassCountsAPersonOnce(t *testing.T) {
+	tx := pgtest.Tx(t, pgtest.Open(t))
+	tenant, device := pgtest.Tenant(t, tx)
+	ev := events{tenant: tenant, device: device}
+	kyle, kyleOID := "u_"+strings.Repeat("a", 32), "u_"+strings.Repeat("b", 32)
+	now := time.Now().UTC()
+	stamp := func(d time.Duration) string { return now.Add(-d).Format(time.RFC3339) }
+
+	pgtest.Exec(t, tx, `INSERT INTO ops.user_dim (tenant_id, user_ref, department, display_name, status)
+	  VALUES ($1, $2, 'Engineering', 'Kyle Clark', 'active')`, tenant, kyle)
+	team := pgtest.Scalar(t, tx, `INSERT INTO ops.team (tenant_id, name, created_by) VALUES ($1, 'Engineering', 'test') RETURNING team_id::text`, tenant)
+	pgtest.Exec(t, tx, `INSERT INTO ops.team_include (tenant_id, team_id, kind, match_value, added_by)
+	  VALUES ($1, $2::uuid, 'department', 'Engineering', 'test')`, tenant, team)
+	ev.record(t, tx, stamp(time.Hour), ev.prompt(61, kyle, "toolA", stamp(time.Hour), nil, "logged", "high", 10))
+	ev.record(t, tx, stamp(10*24*time.Hour), ev.prompt(62, kyleOID, "toolA", stamp(10*24*time.Hour), nil, "logged", "high", 20))
+	ev.record(t, tx, stamp(10*24*time.Hour-time.Minute), ev.prompt(63, kyleOID, "toolA", stamp(10*24*time.Hour-time.Minute), nil, "blocked", "high", 30))
+	expect(t, tx, "the device's last user before the pass", `SELECT last_user_ref FROM ops.device WHERE tenant_id = $1`, kyleOID, tenant)
+
+	// Passes before the directory names the object id, back when its prompts were recent, count
+	// two people.
+	pgtest.AsJobs(t, tx)
+	since, until := now.AddDate(0, 0, -11).Truncate(24*time.Hour).Format(time.RFC3339), now.AddDate(0, 0, 1).Truncate(24*time.Hour).Format(time.RFC3339)
+	for _, size := range BucketSizes {
+		runBucket(t, tx, tenant, size, since, until)
+	}
+	expect(t, tx, "people before the alias",
+		`SELECT count(DISTINCT user_ref)::text FROM mart.agg_user_period WHERE tenant_id = $1`, "2", tenant)
+
+	// The directory writes the person's aliases, as SCIM does: their UPN-ref and their object id's.
+	pgtest.AsOwner(t, tx)
+	pgtest.Exec(t, tx, `INSERT INTO ops.user_ref_alias (tenant_id, alias_ref, user_ref) VALUES ($1, $2, $2), ($1, $3, $2)`, tenant, kyle, kyleOID)
+	pgtest.AsJobs(t, tx)
+	if _, err := Tenant(context.Background(), tx, tenant, now); err != nil {
+		t.Fatal(err)
+	}
+
+	expect(t, tx, "submissions under the object-id ref",
+		`SELECT count(*)::text FROM ingest.submission WHERE tenant_id = $1 AND user_ref = $2`, "0", tenant, kyleOID)
+	expect(t, tx, "the device's last user", `SELECT last_user_ref FROM ops.device WHERE tenant_id = $1`, kyle, tenant)
+	for _, size := range BucketSizes {
+		expect(t, tx, "people per "+size,
+			`SELECT string_agg(DISTINCT user_ref, ',') FROM mart.agg_user_period WHERE tenant_id = $1 AND bucket_size = $2`,
+			kyle, tenant, size)
+		expect(t, tx, "tool-user rows per "+size,
+			`SELECT string_agg(DISTINCT user_ref, ',') FROM mart.agg_tool_user_period WHERE tenant_id = $1 AND bucket_size = $2`,
+			kyle, tenant, size)
+		expect(t, tx, "prompts per "+size,
+			`SELECT sum(submissions)::text||'|'||sum(block_events)::text FROM mart.agg_user_period WHERE tenant_id = $1 AND bucket_size = $2`,
+			"3|1", tenant, size)
+		expect(t, tx, "the team's prompts per "+size,
+			`SELECT sum(submissions)::text||'|'||max(users)::text FROM mart.agg_team_period WHERE tenant_id = $1 AND bucket_size = $2`,
+			"3|1", tenant, size)
+	}
+}
+
 // --- helpers -------------------------------------------------------------------------------------
 
 // runBucket runs every aggregate for one bucket size over [from, to), each followed by its

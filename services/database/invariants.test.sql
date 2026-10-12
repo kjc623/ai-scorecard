@@ -3430,6 +3430,70 @@ END $$;
 RESET ROLE;
 
 -- =====================================================================================
+-- T88  One person, one row
+-- =====================================================================================
+
+-- A person the directory names, with usage both under their canonical ref and under the object-id
+-- ref a device derived before the alias existed, on a device whose last user is that ref, chosen
+-- for a team by it and in another team by department.
+INSERT INTO ops.user_dim (tenant_id, user_ref, department, display_name, status)
+VALUES (:ta, 'u_88888888888888888888888888888888', 'T88', 'Kyle Clark', 'active');
+INSERT INTO ops.user_ref_alias (tenant_id, alias_ref, user_ref) VALUES
+  (:ta, 'u_88888888888888888888888888888888', 'u_88888888888888888888888888888888'),
+  (:ta, 'u_88888888888888888888888888888889', 'u_88888888888888888888888888888888');
+INSERT INTO mart.agg_user_period (tenant_id, bucket_start, bucket_size, user_ref, submissions, bytes_total, tools_used) VALUES
+  (:ta, '2031-02-01', 'day', 'u_88888888888888888888888888888888', 2, 20, 1),
+  (:ta, '2031-02-01', 'day', 'u_88888888888888888888888888888889', 3, 30, 1),
+  (:ta, '2031-02-02', 'day', 'u_88888888888888888888888888888889', 1, 10, 1);
+INSERT INTO ops.device (tenant_id, device_id, os, last_user_ref, last_subject_name, last_seen_at)
+VALUES (:ta, '88888888-0000-4000-8000-000000000088', 'windows', 'u_88888888888888888888888888888889', 'AzureAD\KyleClark', '2031-02-02');
+INSERT INTO ops.team (tenant_id, team_id, name, created_by) VALUES
+  (:ta, '88888888-0000-4000-8000-000000000001', 'T88 chosen', 'admin-a'),
+  (:ta, '88888888-0000-4000-8000-000000000002', 'T88 department', 'admin-a');
+INSERT INTO ops.team_member (tenant_id, team_id, user_ref, added_by)
+VALUES (:ta, '88888888-0000-4000-8000-000000000001', 'u_88888888888888888888888888888889', 'admin-a');
+INSERT INTO ops.team_include (tenant_id, team_id, kind, match_value, added_by)
+VALUES (:ta, '88888888-0000-4000-8000-000000000002', 'department', 'T88', 'admin-a');
+
+SET ROLE sac_query;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+DO $$
+DECLARE
+  n bigint;
+  bad text;
+BEGIN
+  SELECT count(*), max(p.name) INTO n, bad FROM mart.v_person p
+   WHERE p.user_ref IN ('u_88888888888888888888888888888888', 'u_88888888888888888888888888888889');
+  IF n <> 1 OR bad <> 'Kyle Clark' THEN
+    RAISE EXCEPTION 'FAIL T88 the person is listed % times, as %', n, bad;
+  END IF;
+  SELECT string_agg(p.user_ref, ', ') INTO bad FROM mart.v_person p
+    JOIN ops.user_ref_alias a ON a.tenant_id = p.tenant_id AND a.alias_ref = p.user_ref AND a.user_ref <> p.user_ref;
+  IF bad IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T88 the people list names % by a ref the directory maps to another', bad;
+  END IF;
+  SELECT p.last_active_day::date::text INTO bad FROM mart.v_person p WHERE p.user_ref = 'u_88888888888888888888888888888888';
+  IF bad IS DISTINCT FROM '2031-02-02' THEN
+    RAISE EXCEPTION 'FAIL T88 the person was last active %, want their usage under every ref', bad;
+  END IF;
+
+  SELECT string_agg(DISTINCT m.team_id::text || '/' || m.user_ref, ', ' ORDER BY m.team_id::text || '/' || m.user_ref) INTO bad
+    FROM ops.v_team_member m WHERE m.team_id::text LIKE '88888888-%';
+  IF bad IS DISTINCT FROM '88888888-0000-4000-8000-000000000001/u_88888888888888888888888888888888, 88888888-0000-4000-8000-000000000002/u_88888888888888888888888888888888' THEN
+    RAISE EXCEPTION 'FAIL T88 the teams'' members are %', bad;
+  END IF;
+  SELECT string_agg(t.team_id::text || '/' || t.user_ref || '/' || t.submissions, ', ' ORDER BY t.team_id, t.bucket_start, t.submissions) INTO bad
+    FROM (SELECT tu.team_id, tu.user_ref, tu.bucket_start, sum(tu.submissions) AS submissions
+            FROM mart.v_team_member_period tu WHERE tu.team_id::text LIKE '88888888-%'
+           GROUP BY 1, 2, 3) t;
+  IF bad IS DISTINCT FROM '88888888-0000-4000-8000-000000000001/u_88888888888888888888888888888888/5, 88888888-0000-4000-8000-000000000001/u_88888888888888888888888888888888/1, 88888888-0000-4000-8000-000000000002/u_88888888888888888888888888888888/5, 88888888-0000-4000-8000-000000000002/u_88888888888888888888888888888888/1' THEN
+    RAISE EXCEPTION 'FAIL T88 the teams'' people per day are %', bad;
+  END IF;
+  RAISE NOTICE 'PASS T88 a person is one row in the people list and in each team, whichever refs their devices derived';
+END $$;
+RESET ROLE;
+
+-- =====================================================================================
 -- Report
 -- =====================================================================================
 

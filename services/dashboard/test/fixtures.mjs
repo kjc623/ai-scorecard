@@ -152,13 +152,16 @@ const TEAM_ROWS = Object.freeze([
   Object.freeze({ bucket: DAY, team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0003', team_name: 'Finance', submissions: 812, users: 96 }),
 ]);
 
-// The people behind the teams, in the API's order (team id, then reference). Volumes run against
-// the names, so a volume sort would be visible.
+// The people behind the teams, in the API's order: one row per day, team and reference. Grace is
+// in two teams and sent prompts on two days, so she has four rows; volumes run against the names,
+// so a volume sort would be visible.
 const TEAM_MEMBER_ROWS = Object.freeze([
-  Object.freeze({ team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', team_name: 'Engineering', subject: 'u_9a02', name: 'Ada Lovelace', submissions: 3 }),
-  Object.freeze({ team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', team_name: 'Engineering', subject: 'u_1b77', name: 'u_1b77', submissions: 40 }),
-  Object.freeze({ team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', team_name: 'Engineering', subject: 'u_4f21', name: 'Grace Hopper', submissions: 12 }),
-  Object.freeze({ team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0003', team_name: 'Finance', subject: 'u_4f21', name: 'Grace Hopper', submissions: 12 }),
+  Object.freeze({ bucket: DAY, team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', team_name: 'Engineering', subject: 'u_9a02', name: 'Ada Lovelace', submissions: 3 }),
+  Object.freeze({ bucket: DAY, team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', team_name: 'Engineering', subject: 'u_1b77', name: 'u_1b77', submissions: 40 }),
+  Object.freeze({ bucket: DAY, team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', team_name: 'Engineering', subject: 'u_4f21', name: 'Grace Hopper', submissions: 12 }),
+  Object.freeze({ bucket: '2026-09-29T00:00:00Z', team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', team_name: 'Engineering', subject: 'u_4f21', name: 'Grace Hopper', submissions: 5 }),
+  Object.freeze({ bucket: DAY, team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0003', team_name: 'Finance', subject: 'u_4f21', name: 'Grace Hopper', submissions: 12 }),
+  Object.freeze({ bucket: '2026-09-29T00:00:00Z', team: '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0003', team_name: 'Finance', subject: 'u_4f21', name: 'Grace Hopper', submissions: 5 }),
 ]);
 
 // The people list, in the API's order: by name, never by usage.

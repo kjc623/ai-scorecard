@@ -1042,6 +1042,23 @@ CREATE TABLE ops.directory_sync (
   CONSTRAINT directory_sync_failure_has_code CHECK ((last_status = 'failed') = (last_error IS NOT NULL))
 );
 
+-- Device-derived ref -> canonical ref. A device derives a person's ref from whatever it can resolve
+-- (a UPN, an Entra object id, an account name), so one person reaches the server under several refs.
+-- ingest.record_event resolves through this table, and the rollup moves a submission recorded before
+-- its alias existed, so stored submissions carry the canonical ref; observations keep the ref the
+-- device sent. Rows outlive deprovisioning, so a later event cannot start a second history for the
+-- same person.
+CREATE TABLE ops.user_ref_alias (
+  tenant_id   uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  alias_ref   text NOT NULL CONSTRAINT user_ref_alias_is_derived CHECK (alias_ref ~ '^u_[0-9a-f]{32}$'),
+  user_ref    text NOT NULL CONSTRAINT user_ref_alias_target_is_derived CHECK (user_ref ~ '^u_[0-9a-f]{32}$'),
+  created_at  timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (tenant_id, alias_ref)
+);
+
+-- Subject export and erasure start from the canonical ref and need every alias of it.
+CREATE INDEX user_ref_alias_by_canonical ON ops.user_ref_alias (tenant_id, user_ref);
+
 -- A team usage is reported by. Its members are the people chosen for it (ops.team_member) and the
 -- members of whatever it includes (ops.team_include), in any mix.
 CREATE TABLE ops.team (
@@ -1109,9 +1126,10 @@ WITH RECURSIVE reach (tenant_id, team_id, part_id) AS (
     JOIN ops.team_include i ON i.tenant_id = r.tenant_id AND i.team_id = r.part_id
    WHERE i.kind = 'team'
 )
-SELECT r.tenant_id, r.team_id, m.user_ref
+SELECT r.tenant_id, r.team_id, coalesce(ma.user_ref, m.user_ref) AS user_ref
   FROM reach r
   JOIN ops.team_member m ON m.tenant_id = r.tenant_id AND m.team_id = r.part_id
+  LEFT JOIN ops.user_ref_alias ma ON ma.tenant_id = m.tenant_id AND ma.alias_ref = m.user_ref
 UNION
 SELECT r.tenant_id, r.team_id, u.user_ref
   FROM reach r
@@ -1128,21 +1146,6 @@ SELECT r.tenant_id, r.team_id, ud.user_ref
     OR (i.kind = 'org_unit'
         AND (lower(ud.org_unit) = lower(i.match_value)
              OR right(lower(ud.org_unit), length(i.match_value) + 1) = ',' || lower(i.match_value)));
-
--- Device-derived ref -> canonical ref. A device derives a person's ref from whatever it can resolve
--- (a UPN, an Entra object id, an account name), so one person reaches the server under several refs.
--- ingest.record_event resolves through this table, so stored events carry the canonical ref. Rows
--- outlive deprovisioning, so a later event cannot start a second history for the same person.
-CREATE TABLE ops.user_ref_alias (
-  tenant_id   uuid NOT NULL REFERENCES ops.tenant(tenant_id),
-  alias_ref   text NOT NULL CONSTRAINT user_ref_alias_is_derived CHECK (alias_ref ~ '^u_[0-9a-f]{32}$'),
-  user_ref    text NOT NULL CONSTRAINT user_ref_alias_target_is_derived CHECK (user_ref ~ '^u_[0-9a-f]{32}$'),
-  created_at  timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (tenant_id, alias_ref)
-);
-
--- Subject export and erasure start from the canonical ref and need every alias of it.
-CREATE INDEX user_ref_alias_by_canonical ON ops.user_ref_alias (tenant_id, user_ref);
 
 -- The per-tenant key a device package carries (sacdk_ prefix, tenant id in clear), stored as its
 -- hash. A first enrolment presents it. One key enrols many devices, so it is counted, revocable and
@@ -1503,6 +1506,10 @@ CREATE UNIQUE INDEX submission_weak_key_uniq
   WHERE dedup_key IS NULL;
 
 CREATE INDEX submission_expiry ON ingest.submission (tenant_id, expires_at);
+
+-- One person's submissions: a subject's reads, and the rollup moving a device-derived ref's rows
+-- to the person's canonical ref once the directory names it.
+CREATE INDEX submission_by_user ON ingest.submission (tenant_id, user_ref);
 
 -- Rejected envelopes, kept for diagnosis with a short TTL. Content does not leave the device for a
 -- rejected record either, so the redacted envelope may carry the fields needed to diagnose a
@@ -2047,9 +2054,11 @@ SELECT t.tenant_id,
   FROM ops.tenant t;
 
 
--- The people an analyst can open: everyone the directory knows and everyone with usage, by name.
--- The name is the directory's display name, else the account name the person's device last
--- reported, else the pseudonymous ref. It carries no measure, so it cannot rank anyone.
+-- The people an analyst can open: everyone the directory knows and everyone with usage, by name,
+-- one row per person. Usage recorded under a device-derived ref before the directory named the
+-- person is theirs: a ref is read as its canonical one (ops.user_ref_alias). The name is the
+-- directory's display name, else the account name the person's device last reported, else the
+-- pseudonymous ref. It carries no measure, so it cannot rank anyone.
 CREATE VIEW mart.v_person
 WITH (security_invoker = true) AS
 SELECT coalesce(ud.tenant_id, a.tenant_id) AS tenant_id,
@@ -2062,27 +2071,32 @@ SELECT coalesce(ud.tenant_id, a.tenant_id) AS tenant_id,
        ud.status                           AS directory_status,
        a.last_active_day
   FROM ops.user_dim ud
-  FULL JOIN (SELECT u.tenant_id, u.user_ref, max(u.bucket_start) AS last_active_day
+  FULL JOIN (SELECT u.tenant_id, coalesce(ua.user_ref, u.user_ref) AS user_ref,
+                    max(u.bucket_start) AS last_active_day
                FROM mart.agg_user_period u
+               LEFT JOIN ops.user_ref_alias ua ON ua.tenant_id = u.tenant_id AND ua.alias_ref = u.user_ref
               WHERE u.bucket_size = 'day'
-              GROUP BY u.tenant_id, u.user_ref) a
+              GROUP BY 1, 2) a
     ON a.tenant_id = ud.tenant_id AND a.user_ref = ud.user_ref
   LEFT JOIN LATERAL (
     SELECT d.last_subject_name AS subject_name
       FROM ops.device d
+      LEFT JOIN ops.user_ref_alias da ON da.tenant_id = d.tenant_id AND da.alias_ref = d.last_user_ref
      WHERE d.tenant_id = coalesce(ud.tenant_id, a.tenant_id)
-       AND d.last_user_ref = coalesce(ud.user_ref, a.user_ref)
+       AND coalesce(da.user_ref, d.last_user_ref) = coalesce(ud.user_ref, a.user_ref)
        AND d.last_subject_name IS NOT NULL
      ORDER BY d.last_seen_at DESC NULLS LAST
      LIMIT 1) dn ON true;
 
 -- Each team member's usage per bucket, under the team's current membership: the people behind a
--- team's total. A person in two teams has a row in each.
+-- team's total. A person in two teams has a row in each. Usage under a device-derived ref is the
+-- person's, under their canonical ref.
 CREATE VIEW mart.v_team_member_period
 WITH (security_invoker = true) AS
-SELECT u.tenant_id, u.bucket_start, u.bucket_size, tm.team_id, u.user_ref, u.submissions
+SELECT u.tenant_id, u.bucket_start, u.bucket_size, tm.team_id, tm.user_ref, u.submissions
   FROM mart.agg_user_period u
-  JOIN ops.v_team_member tm ON tm.tenant_id = u.tenant_id AND tm.user_ref = u.user_ref;
+  LEFT JOIN ops.user_ref_alias ua ON ua.tenant_id = u.tenant_id AND ua.alias_ref = u.user_ref
+  JOIN ops.v_team_member tm ON tm.tenant_id = u.tenant_id AND tm.user_ref = coalesce(ua.user_ref, u.user_ref);
 
 
 -- =====================================================================================
@@ -2854,6 +2868,9 @@ GRANT SELECT (tenant_id, label, display_name) ON ops.custom_label TO sac_query;
 GRANT SELECT ON ops.team, ops.team_member, ops.team_include, ops.v_team_member, ops.scim_group,
       ops.scim_group_member TO sac_query;
 GRANT SELECT (tenant_id, scim_id, user_ref, active) ON ops.scim_user TO sac_query;
+-- A person's usage under any ref a device derived for them is listed and counted once, under the
+-- canonical ref.
+GRANT SELECT ON ops.user_ref_alias TO sac_query;
 GRANT SELECT ON ops.tenant, ops.user_dim, ops.device, ops.collector_state, ops.tool_sanction,
       ops.grant, ops.erasure_receipt, ops.coverage_snapshot, ops.aggregate_watermark,
       ops.retention_policy, ops.notice_acknowledgement, ops.policy_bundle,
@@ -2881,6 +2898,10 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON mart.finding, mart.agg_tool_period,
 GRANT SELECT ON ops.team, ops.team_member, ops.team_include, ops.v_team_member, ops.scim_group_member
   TO sac_ops;
 GRANT SELECT (tenant_id, scim_id, user_ref, active) ON ops.scim_user TO sac_ops;
+-- The rollup moves rows recorded under a device-derived ref to the person's canonical ref once the
+-- directory names it: the submissions it counts, and the device's last user.
+GRANT SELECT ON ops.user_ref_alias TO sac_ops;
+GRANT UPDATE (last_user_ref) ON ops.device TO sac_ops;
 -- Expiry deletes content and its index entries without being able to read either, and marks the
 -- content's submission shredded.
 GRANT SELECT (tenant_id, object_id, submission_id, event_id, expires_at), DELETE ON ops.content TO sac_ops;
