@@ -331,6 +331,9 @@ type HookEvaluate struct {
 	ToolName      string `json:"tool_name,omitempty"`
 	Cwd           string `json:"cwd,omitempty"`
 	ClientVersion string `json:"client_version,omitempty"`
+	// Attachments are the files the prompt attaches or names, as the hook found them on disk: each
+	// one's name, full path and size.
+	Attachments []AttachmentDescriptor `json:"attachments,omitempty"`
 }
 
 // CapPrompt sets PromptBytes from PromptText and, when the text is longer than
@@ -374,6 +377,18 @@ func (h HookEvaluate) Validate() error {
 		return fmt.Errorf("hook_evaluate: the prompt is %d bytes, over the %d limit", len(h.PromptText), MaxHookPromptBytes)
 	case !h.OverCap && h.PromptBytes != int64(len(h.PromptText)):
 		return errors.New("hook_evaluate: prompt_bytes is not the prompt's length")
+	case len(h.Attachments) > MaxAttachments:
+		return fmt.Errorf("hook_evaluate: %d attachments, over the %d limit", len(h.Attachments), MaxAttachments)
+	}
+	for _, a := range h.Attachments {
+		switch {
+		case a.Name == "":
+			return errors.New("hook_evaluate: an attachment has no name")
+		case utf8.RuneCountInString(a.Name) > MaxAttachmentNameRunes || utf8.RuneCountInString(a.Path) > MaxAttachmentPathRunes:
+			return errors.New("hook_evaluate: an attachment's name or path is over the envelope's limit")
+		case a.SizeBytes < 0:
+			return errors.New("hook_evaluate: an attachment's size is negative")
+		}
 	}
 	return nil
 }

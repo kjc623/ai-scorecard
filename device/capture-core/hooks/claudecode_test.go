@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -58,7 +59,7 @@ func TestClaudeCodeParsesTheDocumentedInput(t *testing.T) {
 				Tool: "claude_code", Event: c.event, SessionID: fixtureSession, Cwd: `C:\work\app`,
 				ToolName: c.toolName, PromptText: c.prompt, PromptBytes: int64(len(c.prompt)),
 			}
-			if ev != want {
+			if !reflect.DeepEqual(ev, want) {
 				t.Fatalf("Parse =\n%+v\nwant\n%+v", ev, want)
 			}
 			if err := ev.Validate(); err != nil {

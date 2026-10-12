@@ -11,6 +11,7 @@ import (
 	"slices"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/shadow-ai-capture/device/capture-core/dedup"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
@@ -120,6 +121,12 @@ type Observation struct {
 	// Attachments are descriptors the provider already has (file names from a multipart body,
 	// for example). They feed the Tier S names digest at M0.
 	Attachments []dedup.Attachment
+
+	// Referenced are files the route found beside the prompt that another route reporting the same
+	// prompt does not see: the files a coding tool's prompt attaches or names, as its hook found
+	// them on disk. They are recorded with the prompt's attachments but kept out of its digest and
+	// dedup key, so the hook's record and the tool's telemetry for one prompt still agree on both.
+	Referenced []dedup.Attachment
 
 	// Person, when set, attributes this one observation to a known person instead of the
 	// pipeline's identity (the console user). The browser relay sets it from the OS account of
@@ -474,7 +481,8 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 		}
 		in.DedupKey = key
 		in.ContentDigest = digest
-		in.Attachments = wireAttachments(atts)
+		recorded := append(slices.Clip(atts), obs.Referenced...)
+		in.Attachments = wireAttachments(recorded)
 		// The request kind is decided once, here, from the captured payload and the extracted
 		// text. It gates classification below and, downstream, the search index and the default
 		// event list.
@@ -544,7 +552,7 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 			p.classifyAttachments(ctx, c, obs.AttachmentContent, res.Mode, &in, &out)
 		}
 		if in.PromptKind != protocol.PromptKindClientGenerated {
-			in.Labels = mergeLabels(in.Labels, p.fileLabels(atts))
+			in.Labels = mergeLabels(in.Labels, p.fileLabels(recorded))
 		}
 		if res.Mode == protocol.ModeM2 && in.Excerpt == nil {
 			in.Excerpt = degradedExcerpt()
@@ -742,17 +750,18 @@ func readContent(ctx context.Context, mode protocol.CollectionMode, r ContentRea
 }
 
 // extract runs the route's text extraction. The attachment list falls back to the descriptors the
-// provider already had, which is what the Tier S names digest is built from.
+// provider already had, which is what the Tier S names digest is built from. An extraction that
+// found no text may still have named the request's files, and those are kept.
 func (p *Pipeline) extract(obs Observation, body []byte) (string, []dedup.Attachment, error) {
 	if obs.Extract == nil {
 		return "", obs.Attachments, errors.New("core: no extractor for this route, so no canonical text exists")
 	}
 	text, atts, err := obs.Extract.Extract(body, obs.MediaType)
-	if err != nil {
-		return "", obs.Attachments, err
-	}
 	if len(atts) == 0 {
 		atts = obs.Attachments
+	}
+	if err != nil {
+		return "", atts, err
 	}
 	return text, atts, nil
 }
@@ -946,22 +955,55 @@ func degradedExcerpt() *protocol.Excerpt {
 	return &protocol.Excerpt{Kind: "redacted_window", Text: "", RedactionApplied: true}
 }
 
-// wireAttachments converts canonicalisation inputs to the envelope's attachment shape: name, size
-// and, where the bytes were read, their digest. The contract's attachment carries no media type, so
-// the media type serves classification only and does not enter the envelope.
+// wireAttachments converts canonicalisation inputs to the envelope's attachment shape: name, path,
+// size and, where the bytes were read, their digest. The contract's attachment carries no media
+// type, so the media type serves classification only and does not enter the envelope. A request
+// body names its files as it likes, so the list is cut to what the contract admits rather than
+// making the whole record one ingest refuses: the first MaxAttachments, a name cut to its limit, and
+// a path dropped when it is over its own or the record's path budget.
 func wireAttachments(atts []dedup.Attachment) []protocol.AttachmentDescriptor {
 	if len(atts) == 0 {
 		return nil
 	}
-	out := make([]protocol.AttachmentDescriptor, 0, len(atts))
+	out := make([]protocol.AttachmentDescriptor, 0, min(len(atts), protocol.MaxAttachments))
+	pathBudget := maxPathBytes
 	for _, a := range atts {
-		w := protocol.AttachmentDescriptor{Name: a.Name, SizeBytes: a.SizeBytes}
+		if len(out) == protocol.MaxAttachments {
+			break
+		}
+		name := firstRunes(a.Name, protocol.MaxAttachmentNameRunes)
+		if name == "" {
+			continue
+		}
+		w := protocol.AttachmentDescriptor{Name: name, SizeBytes: max(a.SizeBytes, 0)}
+		if a.Path != "" && utf8.RuneCountInString(a.Path) <= protocol.MaxAttachmentPathRunes && len(a.Path) <= pathBudget {
+			w.Path = a.Path
+			pathBudget -= len(a.Path)
+		}
 		if a.ContentDigest != "" && a.ContentDigest != dedup.Unreadable {
 			w.ContentDigest = a.ContentDigest
 		}
 		out = append(out, w)
 	}
 	return out
+}
+
+// maxPathBytes bounds the attachment paths one record carries, well inside the envelope's size cap.
+const maxPathBytes = 32 << 10
+
+// firstRunes is s cut to its first n characters.
+func firstRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	i := 0
+	for j := range s {
+		if i == n {
+			return s[:j]
+		}
+		i++
+	}
+	return s
 }
 
 // SHA256Hex is the plain digest used for an over-cap prefix or a body with no extracted text. It

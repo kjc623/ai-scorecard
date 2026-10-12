@@ -4,7 +4,8 @@
 // The text read is the request's turn: the trailing input, after any trailing assistant message.
 // In Chat Completions that is the trailing user, tool and function messages; in Responses, the
 // trailing user messages and tool call outputs, or `input` itself when it is a string. Earlier
-// input was sent, and recorded, with the requests that first carried it.
+// input was sent, and recorded, with the requests that first carried it. The files the turn's user
+// messages attach are named by their `filename`.
 package openai
 
 import (
@@ -13,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/shadow-ai-capture/device/capture-core/dedup"
 	"github.com/shadow-ai-capture/device/capture-core/parsers"
 )
 
@@ -78,6 +80,26 @@ type chatMessage struct {
 type part struct {
 	Type string  `json:"type"`
 	Text *string `json:"text"`
+	// File is a Chat Completions file part's file; Filename and FileURL are a Responses input_file's.
+	File *struct {
+		Filename string `json:"filename"`
+	} `json:"file"`
+	Filename string `json:"filename"`
+	FileURL  string `json:"file_url"`
+}
+
+// name is the file a file part attaches, by the name the request gives it; "" for any other part
+// and for a file sent by id alone.
+func (p part) name() string {
+	switch {
+	case p.Type == "file" && p.File != nil:
+		return p.File.Filename
+	case p.Type == "input_file" && p.Filename != "":
+		return p.Filename
+	case p.Type == "input_file":
+		return parsers.URLFileName(p.FileURL)
+	}
+	return ""
 }
 
 func parseChat(raw json.RawMessage) (parsers.Result, error) {
@@ -113,15 +135,17 @@ func parseChat(raw json.RawMessage) (parsers.Result, error) {
 	}
 
 	var texts []string
+	var files []dedup.Attachment
 	for i := start; i < end; i++ {
 		at := fmt.Sprintf("message %d", i)
 		var got []string
+		var named []dedup.Attachment
 		var err error
 		switch *msgs[i].Role {
 		case "user":
-			got, err = contentText(msgs[i].Content, at, "text", userPartsWithoutText)
+			got, named, err = contentText(msgs[i].Content, at, "text", userPartsWithoutText)
 		case "tool":
-			got, err = contentText(msgs[i].Content, at, "text", nil)
+			got, _, err = contentText(msgs[i].Content, at, "text", nil)
 		case "function":
 			got, err = nullableString(msgs[i].Content, at)
 		}
@@ -129,8 +153,9 @@ func parseChat(raw json.RawMessage) (parsers.Result, error) {
 			return parsers.Result{}, err
 		}
 		texts = append(texts, got...)
+		files = append(files, named...)
 	}
-	return result(texts, shapeChat)
+	return result(texts, files, shapeChat)
 }
 
 func isChatInput(role string) bool { return role == "user" || role == "tool" || role == "function" }
@@ -142,30 +167,35 @@ var userPartsWithoutText = map[string]bool{"image_url": true, "input_audio": tru
 var inputPartsWithoutText = map[string]bool{"input_image": true, "input_file": true}
 
 // contentText reads content that is a string or an array of parts: textType parts (`text` in
-// Chat Completions, `input_text` in Responses) and the documented parts without text in others.
-func contentText(raw json.RawMessage, at, textType string, others map[string]bool) ([]string, error) {
+// Chat Completions, `input_text` in Responses) and the documented parts without text in others,
+// with the names of the files those attach.
+func contentText(raw json.RawMessage, at, textType string, others map[string]bool) ([]string, []dedup.Attachment, error) {
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
-		return []string{s}, nil
+		return []string{s}, nil, nil
 	}
 	var parts []part
 	if err := json.Unmarshal(raw, &parts); err != nil {
-		return nil, parsers.UnknownShape(name, at+": content is neither a string nor an array of parts")
+		return nil, nil, parsers.UnknownShape(name, at+": content is neither a string nor an array of parts")
 	}
 	var texts []string
+	var files []dedup.Attachment
 	for j, p := range parts {
 		switch {
 		case p.Type == textType:
 			if p.Text == nil {
-				return nil, parsers.UnknownShape(name, fmt.Sprintf("%s part %d: a text part has no text", at, j))
+				return nil, nil, parsers.UnknownShape(name, fmt.Sprintf("%s part %d: a text part has no text", at, j))
 			}
 			texts = append(texts, *p.Text)
 		case others[p.Type]:
+			if n := p.name(); n != "" {
+				files = append(files, dedup.Attachment{Name: n})
+			}
 		default:
-			return nil, parsers.UnknownShape(name, fmt.Sprintf("%s part %d has an undocumented type", at, j))
+			return nil, nil, parsers.UnknownShape(name, fmt.Sprintf("%s part %d has an undocumented type", at, j))
 		}
 	}
-	return texts, nil
+	return texts, files, nil
 }
 
 func nullableString(raw json.RawMessage, at string) ([]string, error) {
@@ -218,7 +248,7 @@ var stopItems = map[string]bool{
 func parseResponses(raw json.RawMessage) (parsers.Result, error) {
 	var s string
 	if json.Unmarshal(raw, &s) == nil {
-		return result([]string{s}, shapeResponses)
+		return result([]string{s}, nil, shapeResponses)
 	}
 	var items []item
 	if err := json.Unmarshal(raw, &items); err != nil {
@@ -246,22 +276,25 @@ func parseResponses(raw json.RawMessage) (parsers.Result, error) {
 	}
 
 	var texts []string
+	var files []dedup.Attachment
 	for i := start; i < end; i++ {
 		at := fmt.Sprintf("input item %d", i)
 		var got []string
+		var named []dedup.Attachment
 		var err error
 		switch kinds[i] {
 		case kindUserMessage:
-			got, err = contentText(items[i].Content, at, "input_text", inputPartsWithoutText)
+			got, named, err = contentText(items[i].Content, at, "input_text", inputPartsWithoutText)
 		case kindToolOutput:
-			got, err = contentText(items[i].Output, at, "input_text", inputPartsWithoutText)
+			got, _, err = contentText(items[i].Output, at, "input_text", inputPartsWithoutText)
 		}
 		if err != nil {
 			return parsers.Result{}, err
 		}
 		texts = append(texts, got...)
+		files = append(files, named...)
 	}
-	return result(texts, shapeResponses)
+	return result(texts, files, shapeResponses)
 }
 
 // itemKind classifies one Responses input item. A message may omit `type`; an item reference
@@ -300,9 +333,9 @@ func itemKind(it item, at string) (int, error) {
 	}
 }
 
-func result(texts []string, shape string) (parsers.Result, error) {
+func result(texts []string, files []dedup.Attachment, shape string) (parsers.Result, error) {
 	if len(texts) == 0 {
-		return parsers.Result{}, parsers.ErrNoText
+		return parsers.Result{Attachments: files}, parsers.ErrNoText
 	}
-	return parsers.Result{Text: strings.Join(texts, "\n"), Shape: shape}, nil
+	return parsers.Result{Text: strings.Join(texts, "\n"), Attachments: files, Shape: shape}, nil
 }

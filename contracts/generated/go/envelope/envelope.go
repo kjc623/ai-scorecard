@@ -406,8 +406,14 @@ type Attachment struct {
 	// The filename as reported by the request or read from the file object. Recorded as-is rather than
 	// normalised, because the customer searches for the name they recognise; normalisation for
 	// matching happens at index time.
-	Name      string `json:"name"`
-	SizeBytes *int64 `json:"size_bytes,omitempty"`
+	Name string `json:"name"`
+	// The file's full path on the device, where the collector saw it: a browser form upload of a file
+	// on disk, or a file a coding tool's prompt attaches or names. Absent otherwise; a page that reads
+	// the file itself, a paste and a request body carry no path. It names the user's folders, so it is
+	// indexed with the name at the `attachment_names` search tier and is never part of the content
+	// digest.
+	Path      *string `json:"path,omitempty"`
+	SizeBytes *int64  `json:"size_bytes,omitempty"`
 	// Digest of the attachment bytes. Present only when the collector could read the file object,
 	// which is the page-context route; a filename alone is still emitted without it.
 	ContentDigest *Sha256 `json:"content_digest,omitempty"`

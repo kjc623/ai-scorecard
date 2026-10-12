@@ -43,6 +43,7 @@ func (codex) Parse(event string, stdin []byte) (protocol.HookEvaluate, error) {
 		Cwd:         in.Cwd,
 		PromptText:  *in.Prompt,
 		PromptBytes: int64(len(*in.Prompt)),
+		Attachments: promptFiles(*in.Prompt, in.Cwd),
 	}, nil
 }
 

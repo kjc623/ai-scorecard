@@ -1,7 +1,10 @@
 package parsers
 
 import (
+	"bytes"
 	"errors"
+	"mime/multipart"
+	"net/textproto"
 	"testing"
 
 	"github.com/shadow-ai-capture/device/capture-core/dedup"
@@ -125,5 +128,45 @@ func TestGenericBlockResponseIsPlainText(t *testing.T) {
 	}
 	if _, _, body := (Generic{}).BlockResponse("Not here.", ""); string(body) != "Not here." {
 		t.Fatalf("body without a link = %q", body)
+	}
+}
+
+func TestGenericNamesTheFilesAMessageAttaches(t *testing.T) {
+	body := `{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"summarise"},` +
+		`{"type":"file","file":{"filename":"q3.pdf","file_data":"data:application/pdf;base64,JVBERi0xLjQK"}},` +
+		`{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}]}`
+	res, err := Generic{}.Parse([]byte(body), "application/json")
+	if err != nil || res.Text != "summarise" || len(res.Attachments) != 1 || res.Attachments[0].Name != "q3.pdf" {
+		t.Fatalf("got %+v, %v; want the text and q3.pdf", res, err)
+	}
+	only := `{"messages":[{"role":"user","content":[{"type":"document","title":"msa.pdf","source":{"type":"base64","data":"JVBERi0xLjQK"}}]}]}`
+	res, err = Generic{}.Parse([]byte(only), "application/json")
+	if !errors.Is(err, ErrNoText) || len(res.Attachments) != 1 || res.Attachments[0].Name != "msa.pdf" {
+		t.Fatalf("a message of one document gave %+v, %v; want its name and ErrNoText", res, err)
+	}
+}
+
+func TestGenericNamesTheFilesAFormUploads(t *testing.T) {
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	_ = w.WriteField("purpose", "assistants")
+	h := textproto.MIMEHeader{}
+	h.Set("Content-Disposition", `form-data; name="file"; filename="C:\\Users\\u\\Q3 forecast.xlsx"`)
+	h.Set("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+	part, _ := w.CreatePart(h)
+	_, _ = part.Write([]byte("0123456789"))
+	_ = w.Close()
+
+	res, err := Generic{}.Parse(buf.Bytes(), w.FormDataContentType())
+	if !errors.Is(err, ErrNoText) {
+		t.Fatalf("err = %v, want ErrNoText: a form's text is not read", err)
+	}
+	want := dedup.Attachment{Name: "Q3 forecast.xlsx", MediaType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", SizeBytes: 10}
+	if len(res.Attachments) != 1 || res.Attachments[0] != want {
+		t.Fatalf("files %+v, want %+v", res.Attachments, want)
+	}
+	cut := buf.Bytes()[:bytes.Index(buf.Bytes(), []byte("0123"))+2]
+	if res, _ := (Generic{}).Parse(cut, w.FormDataContentType()); len(res.Attachments) != 1 || res.Attachments[0].Name != "Q3 forecast.xlsx" || res.Attachments[0].SizeBytes != 0 {
+		t.Fatalf("a form cut at the cap gave %+v, want the file named without a size", res.Attachments)
 	}
 }

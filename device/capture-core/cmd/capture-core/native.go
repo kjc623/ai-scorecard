@@ -304,7 +304,7 @@ func toCoreObservation(o protocol.ObservationMessage, bundles func() *policy.Bun
 	}
 	atts := make([]dedup.Attachment, 0, len(o.Attachments))
 	for _, a := range o.Attachments {
-		atts = append(atts, dedup.Attachment{Name: a.Name, MediaType: a.MediaType, SizeBytes: a.SizeBytes, ContentDigest: a.ContentDigest})
+		atts = append(atts, dedup.Attachment{Name: a.Name, Path: a.Path, MediaType: a.MediaType, SizeBytes: a.SizeBytes, ContentDigest: a.ContentDigest})
 	}
 	obs := core.Observation{
 		Route:             o.Route,

@@ -78,6 +78,12 @@
           "maxLength": 255,
           "description": "The filename as reported by the request or read from the file object. Recorded as-is rather than normalised, because the customer searches for the name they recognise; normalisation for matching happens at index time."
         },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096,
+          "description": "The file's full path on the device, where the collector saw it: a browser form upload of a file on disk, or a file a coding tool's prompt attaches or names. Absent otherwise; a page that reads the file itself, a paste and a request body carry no path. It names the user's folders, so it is indexed with the name at the `attachment_names` search tier and is never part of the content digest."
+        },
         "size_bytes": {
           "type": "integer",
           "minimum": 0
