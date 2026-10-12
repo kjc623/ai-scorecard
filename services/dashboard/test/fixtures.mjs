@@ -67,6 +67,15 @@ const DEVICE_ROWS = Object.freeze([
   Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000004', hostname: 'OPS-BUILD-4', device_os: 'windows', os_version: '11', agent_version: '1.3.0', collection_mode: 'm0', managed_state: 'managed', user_ref: 'u_1b77', subject_name: 'svc-build', region: 'us', liveness: 'revoked', collectors_reporting: 1, collectors_healthy: 0, collectors_degraded: 0, collectors_absent: 1, collectors_tampered: 0, collectors: ['cli_shim'], spool_depth: 0, spool_dropped_total: 4412, last_seen_at: '2026-09-12T09:00:00Z' }),
 ]);
 
+/** Each device's collectors as ops.collector_state holds them, matching the sums on DEVICE_ROWS. */
+const COLLECTOR_ROWS = Object.freeze([
+  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000001', collector: 'capture_core', collector_state: 'healthy', error_code: null, last_report_at: '2026-10-01T11:57:00Z', last_success_at: '2026-10-01T11:57:00Z' }),
+  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000001', collector: 'capture_extension', collector_state: 'healthy', error_code: null, last_report_at: '2026-10-01T11:56:00Z', last_success_at: '2026-10-01T11:56:00Z' }),
+  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000002', collector: 'capture_core', collector_state: 'healthy', error_code: null, last_report_at: '2026-09-29T02:11:00Z', last_success_at: '2026-09-29T02:11:00Z' }),
+  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000002', collector: 'egress_proxy', collector_state: 'degraded', error_code: 'client_pinned', last_report_at: '2026-09-29T02:10:00Z', last_success_at: '2026-09-28T17:40:00Z' }),
+  Object.freeze({ device: '9f1c0b6e-0000-4000-8000-000000000004', collector: 'cli_shim', collector_state: 'absent', error_code: null, last_report_at: '2026-09-12T09:00:00Z', last_success_at: '2026-09-11T22:15:00Z' }),
+]);
+
 const ACTIVITY_ROWS = Object.freeze([
   Object.freeze({
     submission_id: '11111111-2222-4333-8444-555555555551',
@@ -519,6 +528,19 @@ const REALISTIC = Object.freeze({
     coverage: coverage({ state: 'partial' }),
     meta: { source: 'mart.v_device_liveness' },
   }),
+  // One device's row and its collectors, as the Devices page reads them by the device's id.
+  'mart.v_device_liveness': ok({
+    data: DEVICE_ROWS,
+    freshness: freshness({ aggregate: 'ops.device', state: 'fresh', aggregate_note: 'current state' }),
+    coverage: coverage({ state: 'partial' }),
+    meta: { source: 'mart.v_device_liveness', kind: 'list' },
+  }),
+  'ops.collector_state': ok({
+    data: COLLECTOR_ROWS,
+    freshness: freshness({ aggregate: 'ops.collector_state', state: 'fresh', aggregate_note: 'current state' }),
+    coverage: coverage({ state: 'partial' }),
+    meta: { source: 'ops.collector_state', kind: 'list' },
+  }),
   q8_activity: ok({
     data: ACTIVITY_ROWS,
     page: page({ returned: 3, next_cursor: 'eyJhIjoiZXZlbnQifQ.c2ln', newer_events_exist: true }),
@@ -605,16 +627,18 @@ function cursorOf(body) {
   return typeof value === 'string' && value.length > 0 ? value : null;
 }
 
-/** A read narrowed to one tool or one team answers with that tool's or team's rows only, as the API does. */
+/** A read narrowed to one tool, team or device answers with its rows only, as the API does. */
 function narrowed(reply, body) {
   if (!Array.isArray(reply?.data)) return reply;
+  const filters = Array.isArray(body?.filters) ? body.filters : [];
   const tool = body?.params?.tool;
   const team = body?.params?.team;
-  const teams = (Array.isArray(body?.filters) ? body.filters : []).find((f) => f.field === 'team' && f.op === 'in')?.value;
-  if (!tool && !team && !teams) return reply;
+  const teams = filters.find((f) => f.field === 'team' && f.op === 'in')?.value;
+  const device = filters.find((f) => f.field === 'device' && f.op === 'eq')?.value;
+  if (!tool && !team && !teams && !device) return reply;
   return Object.freeze({
     ...reply,
-    data: reply.data.filter((row) => (!tool || row.tool === tool) && (!team || row.team === team) && (!teams || teams.includes(row.team))),
+    data: reply.data.filter((row) => (!tool || row.tool === tool) && (!team || row.team === team) && (!teams || teams.includes(row.team)) && (!device || row.device === device)),
   });
 }
 
@@ -645,4 +669,4 @@ export function fixtureTransport(scenario = 'realistic') {
   });
 }
 
-export { TOOL_ROWS, DEVICE_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, TEAM_ROWS, TEAM_MEMBER_ROWS, PEOPLE_ROWS, CLASS_ROWS, PERSON_ROWS, RULE_ROWS, RULE_MATCH_ROWS, PEOPLE_ROW, FIRST_SEEN_ROWS, SHIFT_ROWS, DISCOVERY_ROWS, INVENTORY_SCAN, DEMAND_ROWS, AGENT_ROWS, WINDOW };
+export { TOOL_ROWS, DEVICE_ROWS, COLLECTOR_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, TEAM_ROWS, TEAM_MEMBER_ROWS, PEOPLE_ROWS, CLASS_ROWS, PERSON_ROWS, RULE_ROWS, RULE_MATCH_ROWS, PEOPLE_ROW, FIRST_SEEN_ROWS, SHIFT_ROWS, DISCOVERY_ROWS, INVENTORY_SCAN, DEMAND_ROWS, AGENT_ROWS, WINDOW };

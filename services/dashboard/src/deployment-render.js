@@ -1,4 +1,7 @@
-// deployment-render.js — Settings → Deployment, state to HTML. Pure: no DOM, no I/O, no state.
+// deployment-render.js — the deployment settings, state to HTML. Pure: no DOM, no I/O, no state.
+//
+// Two sections of other pages read them: installing the agent, below Settings → Devices, and
+// sign-in and SCIM provisioning, on Settings → Identity Providers.
 //
 // The same honesty rules as every other screen: a count the server did not send is "not reported",
 // never 0; a revoked key is not an expired one; nothing is a share of the fleet, and the key count is
@@ -42,25 +45,15 @@ export function depCard(title, body, { extra = '', wide = false, id = '' } = {})
     + `<div class="dp-body">${body}</div></div></section>`;
 }
 
-function depHeader(eyebrow) {
-  return '<header class="screen-head"><div class="screen-title">'
-    + (eyebrow ? `<span class="eyebrow">${escapeHtml(eyebrow)}</span>` : '')
-    + '<h2>Deployment</h2>'
-    + '<p class="question">Put the capture agent on your organisation\'s Windows devices, and keep people in sync from your identity provider.</p>'
-    + '</div></header>';
-}
-
 // ---------------------------------------------------------------------------------------------
 // States before the data
 // ---------------------------------------------------------------------------------------------
 
-function depSkeleton() {
+function depSkeleton(what) {
   const lines = (widths) => widths.map((w) => `<span class="dp-skel" style="width:${w}%"></span>`).join('');
-  const tile = (w) => `<div class="tile card"><div class="card-core">${lines([42, w])}</div></div>`;
   const card = (widths) => `<section class="card dp-card"><div class="card-core"><div class="dp-body dp-skels">${lines(widths)}</div></div></section>`;
-  return `<p class="sr" role="status">Loading the deployment settings…</p><div class="tiles" aria-hidden="true">${tile(30)}${tile(55)}${tile(40)}${tile(35)}</div>`
-    + `<div class="dp-grid" aria-hidden="true">${card([36, 78, 64])}${card([44, 70, 58])}</div>`
-    + `<div aria-hidden="true">${card([30, 92, 84, 61])}</div>`;
+  return `<p class="sr" role="status">Loading ${escapeHtml(what)}…</p>`
+    + `<div aria-hidden="true">${card([36, 78, 64])}${card([30, 92, 84, 61])}</div>`;
 }
 
 function depRefused(problem) {
@@ -102,11 +95,6 @@ function depTiles(data, now) {
       label: 'Active deployment keys',
       value: keys.length === 0 ? { kind: 'number', value: 0, text: '0' } : { kind: 'number', value: active, text: `${formatCount(active)} of ${formatCount(keys.length)}` },
       note: keys.length === 0 ? 'none created yet' : [`${formatCount(revoked)} revoked`, expired > 0 ? `${formatCount(expired)} expired` : null].filter(Boolean).join(' · '),
-    },
-    {
-      label: 'People provisioned', value: number(data.scim.users),
-      note: data.scim.users === null ? 'not reported by the server'
-        : `${data.scim.groups === null ? 'groups not reported' : `${formatCount(data.scim.groups)} group${data.scim.groups === 1 ? '' : 's'}`} · ${data.scim.last_provisioned_at ? `last ${formatInstant(data.scim.last_provisioned_at)}` : 'never provisioned'}`,
     },
     {
       label: 'Agent release', value: data.release?.version ? { kind: 'number', value: 0, text: data.release.version } : { kind: 'absent' },
@@ -305,7 +293,7 @@ function depScim(state) {
     + '<li>Assign the users or groups to provision, then turn provisioning on.</li>'
     + '</ol></details>'
     + '<details class="dp-howto"><summary>Other identity providers</summary><p>Any SCIM 2.0 client works: the base URL above, with a token created here as its bearer token. <code>userName</code> is the person\'s sign-in name, their UPN or email address.</p></details>';
-  const body = '<p>People and groups can be kept in sync by your identity provider over SCIM 2.0. With Microsoft Entra ID, Sundial can instead read them itself: see <a href="#directory">Identity Providers</a>.</p>'
+  const body = '<p>An identity provider such as Microsoft Entra ID or Okta can push people and groups to Sundial over SCIM 2.0. Sundial keeps one directory either way: a person who arrives both ways is one person.</p>'
     + kv + depSecret(state) + form
     + depProblem(state.scim.problem, 'No token was created.')
     + table
@@ -314,33 +302,50 @@ function depScim(state) {
   return depCard('User provisioning (SCIM)', body, { wide: true, id: 'dp-scim' });
 }
 
-const DEP_NOTES = Object.freeze([
-  'Every change on this page is written to the audit trail under your name.',
+/** What an admin should know about installing the agent, for the notes of the page it is on. */
+export const DEPLOYMENT_NOTES = Object.freeze([
+  'Every change to the deployment settings is written to the audit trail under your name.',
   'A deployment key lets a device enrol into your organisation. It does not let anyone read data.',
   'The counts are what the server reports for your organisation. None is a share of your fleet: the product does not know how many devices you have that it has not seen.',
 ]);
 
+/** A section's state before its data: still loading, or refused with why. */
+function depPending(state, what) {
+  if (state.status === 'idle' || state.status === 'loading') return depSkeleton(what);
+  if (state.status === 'refused' || !state.data) return depRefused(state.problem);
+  return null;
+}
+
+function depRefreshed(state) {
+  return state.refreshProblem
+    ? `<div class="banner banner-warning" role="status"><strong>Not refreshed</strong><span>${escapeHtml(state.refreshProblem.message ?? '')} What is shown is from the last read.</span></div>`
+    : '';
+}
+
 /**
- * The whole page for one state.
+ * Installing the agent, below the device list: the enrolment figures, whether Intune must also
+ * manage a device, the packages to download and the deployment keys they carry.
  *
  * @param {object} state  createDeployment().state
  * @param {object} [options]
- * @param {string|null} [options.eyebrow]
  * @param {Date} [options.now]
  */
-export function renderDeployment(state, { eyebrow = 'Settings', now = new Date() } = {}) {
-  const head = depHeader(eyebrow);
-  if (state.status === 'idle' || state.status === 'loading') return `<article class="screen dp" aria-busy="true">${head}${depSkeleton()}</article>`;
-  if (state.status === 'refused' || !state.data) return `<article class="screen dp">${head}${depRefused(state.problem)}</article>`;
-  const refresh = state.refreshProblem
-    ? `<div class="banner banner-warning" role="status"><strong>Not refreshed</strong><span>${escapeHtml(state.refreshProblem.message ?? '')} What is shown is from the last read.</span></div>`
-    : '';
-  const notes = `<details class="notes"><summary>About these settings<span class="notes-count">${DEP_NOTES.length}</span></summary><ul>${DEP_NOTES.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`;
-  return `<article class="screen dp">${head}${refresh}${depTiles(state.data, now)}`
-    + `<div class="dp-grid">${depSignIn(state.data)}${depVerification(state)}</div>`
-    + depDownload(state)
-    + depKeys(state, now)
-    + depScim(state)
-    + notes
-    + '</article>';
+export function renderAgentSetup(state, { now = new Date() } = {}) {
+  const head = '<header class="screen-section"><h3>Install the agent</h3>'
+    + '<p class="subtitle">Put the capture agent on your organisation\'s Windows devices.</p></header>';
+  const pending = depPending(state, 'the deployment settings');
+  return `<section class="dp setup"${pending && state.status !== 'refused' ? ' aria-busy="true"' : ''}>${head}`
+    + (pending ?? `${depRefreshed(state)}${depTiles(state.data, now)}${depDownload(state)}${depVerification(state)}${depKeys(state, now)}`)
+    + '</section>';
+}
+
+/**
+ * Sign-in and SCIM provisioning, on Identity Providers: which provider people sign in through, and
+ * the SCIM endpoint and tokens.
+ *
+ * @param {object} state  createDeployment().state
+ */
+export function renderIdentitySetup(state) {
+  const pending = depPending(state, 'sign-in and provisioning');
+  return pending ?? `${depRefreshed(state)}${depSignIn(state.data)}${depScim(state)}`;
 }

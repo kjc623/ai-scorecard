@@ -1,10 +1,11 @@
-// deployment.test.mjs — Settings → Deployment, driven without a browser.
+// deployment.test.mjs — installing the agent (under Settings → Devices) and sign-in and SCIM
+// (under Settings → Identity Providers), driven without a browser.
 //
 // The controller (src/deployment.js) runs against a fake admin API built on the real
-// createAdminApi, so the requests asserted are the ones a browser would send. The renderer
-// (src/deployment-render.js) is asserted for each state the page can be in: loading, refused,
-// empty and populated. The navigation is asserted through boot() with a signed-in session, for
-// what each role is offered.
+// createAdminApi, so the requests asserted are the ones a browser would send. The two renderers
+// (src/deployment-render.js) are asserted together for each state the settings can be in: loading,
+// refused, empty and populated. The navigation is asserted through boot() with a signed-in session,
+// for what each role is offered.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,7 +13,7 @@ import { readFileSync } from 'node:fs';
 
 import { createAdminApi, createQueryApi, filenameFromDisposition, normaliseDeployment } from '../src/transport.js';
 import { createDeployment, deploymentKeyState, verificationAvailable } from '../src/deployment.js';
-import { renderDeployment } from '../src/deployment-render.js';
+import { renderAgentSetup, renderIdentitySetup } from '../src/deployment-render.js';
 import { escapeHtml } from '../src/render.js';
 import { INSTALLED } from '../../../device/installer/manifest.mjs';
 import { boot } from '../src/app.js';
@@ -22,6 +23,9 @@ import { fixtureTransport } from './fixtures.mjs';
 const queryApi = () => createQueryApi({ transport: fixtureTransport() });
 
 const NOW = new Date('2026-10-05T12:00:00Z');
+
+/** Both sections the deployment settings feed, as one string to assert over. */
+const renderDeployment = (state, options) => renderAgentSetup(state, options) + renderIdentitySetup(state);
 
 function populated(overrides = {}) {
   return {
@@ -86,7 +90,7 @@ test('loading: the page shows its frame and placeholders, and says it is loading
   const pending = controller.load();
   assert.equal(controller.state.status, 'loading');
   const html = renderDeployment(controller.state, { now: NOW });
-  assert.match(html, /<h2>Deployment<\/h2>/);
+  assert.match(html, /<h3>Install the agent<\/h3>/);
   assert.match(html, /aria-busy="true"/);
   assert.match(html, /dp-skel/);
   assert.match(html, /Loading the deployment settings/);
@@ -347,35 +351,48 @@ function session(roles, pages) {
   return { actor: `${roles[0]}@lab.test`, tenant: '5a3c0de0-7e57-4a11-9000-0000000d3a01', roles, role: roles[0], pages };
 }
 
-test('a viewer is shown no Search, no Users, no Audit trail and no Settings; reaching Deployment directly is refused in the page', async () => {
+test('a viewer is shown Devices under Settings and nothing else there; the old Deployment address is not theirs either', async () => {
   const { admin, requests } = fakeAdmin({ [GET]: () => ({ status: 200, body: populated() }) });
   const doc = fakeDocument('#posture');
-  await boot({ document: doc, api: queryApi(), admin, session: session(['viewer'], ['posture', 'tools', 'teams', 'devices']) });
+  await boot({ document: doc, api: queryApi(), admin, session: session(['viewer'], ['posture', 'tools', 'teams', 'rules', 'sanction', 'devices']) });
   const nav = doc.html('nav');
   assert.doesNotMatch(nav, />Search</);
-  assert.doesNotMatch(nav, />Users</);
-  assert.doesNotMatch(nav, />Audit trail</);
-  assert.doesNotMatch(nav, />Deployment</);
-  assert.doesNotMatch(nav, />Settings</);
-  assert.match(nav, />Devices</);
+  assert.match(nav, /<a href="#devices"[^>]*>(?:(?!<\/a>)[\s\S])*<span>Settings<\/span><\/a>/, 'Settings opens on Devices, the one page of it a viewer may open');
   assert.match(doc.html('who'), /viewer@lab\.test/);
   assert.match(doc.html('who'), /action="\/signout"/);
+
+  await doc.navigate('#devices');
+  assert.doesNotMatch(doc.html('app'), /class="page-tab/, 'one page of Settings needs no tabs');
+  assert.doesNotMatch(doc.html('app'), /Install the agent/);
   await doc.navigate('#deployment');
+  assert.equal(doc.location.hash, '#devices', 'the old address lands on Devices');
+  await doc.navigate('#directory');
   assert.match(doc.html('app'), /This page is not offered to you here/);
   assert.equal(requests.length, 0, 'the admin API was not asked');
 });
 
-test('an admin is shown Settings → Deployment and the page renders over the admin API', async () => {
-  const { admin, requests } = fakeAdmin({ [GET]: () => ({ status: 200, body: populated() }) });
+test('an admin installs the agent below the device list, and sets up sign-in and SCIM on Identity Providers', async () => {
+  const { admin, requests } = fakeAdmin({
+    [GET]: () => ({ status: 200, body: populated() }),
+    'GET /admin/v1/directory': () => ({ status: 200, body: {} }),
+  });
   const doc = fakeDocument('#deployment');
-  await boot({ document: doc, api: queryApi(), admin, session: session(['admin'], ['posture', 'tools', 'teams', 'audit', 'deployment']) });
+  await boot({ document: doc, api: queryApi(), admin, session: session(['admin'], ['posture', 'tools', 'teams', 'rules', 'labels', 'sanction', 'settings', 'devices', 'directory', 'audit']) });
+  assert.equal(doc.location.hash, '#devices');
   const nav = doc.html('nav');
   assert.match(nav, />Settings</);
-  assert.match(nav, />Deployment</);
   assert.doesNotMatch(nav, />Search</, 'an admin does not search prompt text');
+  assert.match(doc.html('app'), /Install the agent/);
   assert.match(doc.html('app'), /Deployment keys/);
   assert.match(doc.html('app'), /Laptops/);
+  assert.ok(doc.html('app').indexOf('Install the agent') > doc.html('app').indexOf('<table'), 'below the device list');
   assert.equal(requests[0].path, '/admin/v1/deployment');
+
+  await doc.navigate('#directory');
+  assert.match(doc.html('app'), /<h2>Settings<\/h2>/);
+  assert.match(doc.html('app'), /aria-current="page"[^>]*>Identity Providers</);
+  assert.match(doc.html('app'), /User provisioning \(SCIM\)/);
+  assert.match(doc.html('app'), /Microsoft Entra ID/);
 });
 
 test('the uninstall and detection steps match the installer and the package README', () => {

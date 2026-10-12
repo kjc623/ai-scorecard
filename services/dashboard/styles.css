@@ -126,26 +126,18 @@ code {
 
 .nav { display: flex; flex-direction: column; gap: 2px; flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-width: none; }
 .nav > * { flex: none; }
-.nav a, .nav summary {
+.nav a {
   display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 0 10px; border-radius: 10px;
-  color: var(--ink-soft); text-decoration: none; font-size: 13.5px; cursor: pointer; list-style: none;
+  color: var(--ink-soft); text-decoration: none; font-size: 13.5px; cursor: pointer;
   transition: background .35s var(--ease), color .35s var(--ease), transform .35s var(--ease);
 }
-.nav summary::-webkit-details-marker { display: none; }
-.nav summary { font-weight: 500; color: var(--text); user-select: none; }
-.nav a:hover, .nav summary:hover { background: var(--tray); color: var(--ink); }
-.nav a:active, .nav summary:active { transform: scale(.985); }
+.nav a:hover { background: var(--tray); color: var(--ink); }
+.nav a:active { transform: scale(.985); }
 .nav a.active { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
 .nav-icon { flex: none; width: 17px; height: 17px; color: var(--ink-soft); }
-.nav a.active .nav-icon, .nav details[open] > summary .nav-icon { color: var(--accent); }
-.nav-chev { flex: none; width: 13px; height: 13px; margin-left: auto; color: var(--ink-faint); transition: transform .45s var(--ease); }
-.nav details[open] > summary .nav-chev { transform: rotate(90deg); }
-.nav-group { margin-top: 2px; }
-.nav-items { display: flex; flex-direction: column; gap: 1px; margin: 2px 0 6px 18px; padding-left: 9px; border-left: 1px solid var(--line); }
-.nav-items a { min-height: 30px; font-size: 13px; }
-.nav-items a:hover { transform: translateX(2px); }
-.nav-items a.active { position: relative; }
-.nav-items a.active::before { content: ""; position: absolute; left: -10px; top: 8px; bottom: 8px; width: 1px; background: var(--accent); }
+.nav a.active .nav-icon { color: var(--accent); }
+/* Settings and Archive sit at the foot of the panel, apart from the destinations above them. */
+.nav-spacer { flex: 1 1 auto; min-height: 18px; }
 
 .side-foot { margin-top: auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 4px 0; border-top: 1px solid var(--line); }
 .icon-btn {
@@ -189,6 +181,23 @@ code {
 .screen-head .subtitle { margin: 4px 0 0; font-size: 13.5px; color: var(--ink-soft); }
 .screen-head .question + .subtitle { display: none; }
 .screen-tools { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; }
+/* A destination's pages, as tabs under its title: links, unlike the window's segmented switch. */
+.page-tabs { display: flex; gap: 24px; margin-top: -4px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+.page-tab {
+  flex: none; padding: 8px 0 11px; margin-bottom: -1px; border: 0; border-bottom: 2px solid transparent;
+  background: none; font: 500 14px var(--sans); color: var(--ink-soft); text-decoration: none; white-space: nowrap; cursor: pointer;
+  transition: color .35s var(--ease), border-color .35s var(--ease);
+}
+.page-tab:hover { color: var(--ink); }
+.page-tab[aria-current="page"], .page-tab[aria-pressed="true"] { color: var(--ink); border-bottom-color: var(--accent); }
+.screen-lede .question { margin: 0; font-size: 15px; color: var(--text); }
+.screen-lede .subtitle { margin: 0; font-size: 13.5px; color: var(--ink-soft); }
+.screen-lede .question + .subtitle { display: none; }
+/* A section a page adds below its own, such as installing the agent below the device list. */
+.screen-section { margin-top: 18px; }
+.screen-section h3 { margin: 0; font: 400 28px/1.1 var(--serif); letter-spacing: -0.02em; color: var(--ink); }
+.screen-section .subtitle { margin: 6px 0 0; font-size: 13.5px; color: var(--ink-soft); }
+.setup { display: flex; flex-direction: column; gap: 18px; }
 .screen-switches { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; }
 .screen-badges { display: inline-flex; gap: 6px; margin-left: 6px; vertical-align: middle; }
 
@@ -229,13 +238,19 @@ code {
 .tiles:has(> .tile:nth-child(5)) { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
 .tiles:has(> .tile:nth-child(5)) > .tile:first-child { grid-column: auto; }
 .tiles:has(> .tile:nth-child(5)) > .tile:first-child .tile-value { font-size: 44px; }
-a.tile { display: block; text-decoration: none; color: inherit; }
+a.tile, a.card-link { display: block; text-decoration: none; color: inherit; }
+a.card-link { transition: transform .5s var(--ease); }
+a.card-link:hover { transform: translateY(-2px); }
 .tile-link:hover .tile-more { text-decoration: underline; }
 .tile-split { margin-top: 10px; }
 .tile .dist-legend { margin-top: 8px; }
 .filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; }
 .filter { display: inline-flex; align-items: center; gap: 10px; }
 .filter-label { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-soft); }
+.filter-form { margin: 0; }
+.filter-form .card-core { padding: 14px 16px; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 14px; }
+.form-field { display: flex; flex-direction: column; gap: 6px; flex: 1 1 170px; min-width: 0; }
+.form-actions { display: flex; gap: 8px; align-items: center; }
 .tile-label { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em; color: var(--ink-soft); }
 .tile-value { font: 400 36px/1.1 var(--serif); letter-spacing: -0.02em; color: var(--ink); }
 .tile-value .v-vocab { font: 12px/1.7 var(--mono); letter-spacing: 0; vertical-align: middle; }
@@ -523,7 +538,7 @@ tr.row-group:first-child th { border-top: 0; padding-top: 4px; }
 .btn-quiet { background: transparent; font-weight: 500; color: var(--text); }
 .btn-small { height: 28px; padding: 0 12px; font-size: 12px; }
 
-/* ── Settings → Deployment ────────────────────────────────────────────────────────────────── */
+/* ── the settings pages ────────────────────────────────────────────────────────────────────── */
 .dp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 14px; }
 .dp-body { padding: 0 22px 20px; display: grid; gap: 12px; align-content: start; }
 .dp-body > p { margin: 0; max-width: 78ch; }
@@ -729,7 +744,6 @@ td.dp-action { text-align: right; white-space: nowrap; }
 }
 
 /* ── Rules: the rulebase, read top to bottom, and the side panel a rule is edited in ──────── */
-.rl-tabs .seg-item { text-decoration: none; }
 .rl-unsaved {
   display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 16px;
   padding: 10px 12px 10px 16px; border-radius: 14px; background: var(--accent-soft); color: var(--ink); font-size: 13px;

@@ -1,4 +1,4 @@
-// settings.js — Settings → Settings: the state of the page and every action on it.
+// settings.js — Settings → Collection and the sanction decisions: their state and every action on them.
 //
 // The page an admin uses to change what the tenant collects and keeps: the collection mode (within
 // the ceiling) with an optional narrower per-tool override, the event and content retention
@@ -9,9 +9,10 @@
 // old value and the new value. The enforcement rules and the custom labels they name are on Rules
 // (rules.js).
 //
-// Split like the Deployment page: `createSettings` is DOM-free, so a test can drive it without a
-// browser. A mode increase that starts capturing content is not sent until the admin confirms it:
-// the controller holds the choice in `mode.confirm` and only then issues the write.
+// Split like the deployment settings (deployment.js): `createSettings` is DOM-free, so a test can
+// drive it without a browser. A mode increase that starts capturing content is not sent until the
+// admin confirms it: the controller holds the choice in `mode.confirm` and only then issues the
+// write.
 
 /** The four collection modes, and which transition counts as "starting to capture content". */
 export const COLLECTION_MODES = Object.freeze(['m0', 'm1', 'm2', 'm3']);

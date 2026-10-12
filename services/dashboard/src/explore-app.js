@@ -16,14 +16,14 @@
 
 import { createQueryApi, httpTransport, createContentApi, httpContentTransport, createListExportApi, httpExportTransport, loadSession } from './transport.js';
 import { renderNav } from './render.js';
-import { shellNavItems, readCollapsed, wireShell } from './shell.js';
-import { allowedPageIds, filterNavItems } from './session.js';
+import { shellNavItems, wireShell } from './shell.js';
+import { allowedPageIds } from './session.js';
 import { windowFor, buildPeopleDocument } from './dsl.js';
 import { readState } from './states.js';
 import {
   EXPLORE_DATASETS, EXPLORE_DEFAULT_DATASET, exploreDataset, exploreWindowPreset, isUserRef,
   parseExploreQuery, formatExploreQuery, checkExploreFilter,
-  buildExploreRequest, buildExploreRecordRequest, buildExploreCollectorsRequest, encodeExploreHash, decodeExploreHash, exploreUserInput,
+  buildExploreRequest, buildExploreRecordRequest, encodeExploreHash, decodeExploreHash, exploreUserInput,
 } from './explore-model.js';
 import {
   renderExploreDatasets, renderExploreWindow,
@@ -346,25 +346,11 @@ export function createExplorer({ api, content = null, export: exportApi = null, 
     return run();
   }
 
-  /** Open one result. An event or finding is re-read on its own (Q9); a device or audit row is shown as held. */
+  /** Open one result: the event or finding is re-read on its own (Q9). */
   async function open(key) {
     const dataset = EXPLORE_DATASETS[state.dataset];
     const row = state.rows.find((r) => dataset.rowKey(r) === key) ?? null;
     const seq = ++detailSeq;
-    if (dataset.detail === 'row') {
-      if (!row) return state;
-      if (dataset.id !== 'devices') {
-        set({ detail: Object.freeze({ status: 'ready', key, row, record: null, submissionId: null }) });
-        return state;
-      }
-      // A device row also lists every collector the device reported, read on its own.
-      const held = { status: 'ready', key, row, record: null, submissionId: null };
-      set({ detail: Object.freeze({ ...held, collectors: Object.freeze({ status: 'loading', result: null }) }) });
-      const result = await ask(() => buildExploreCollectorsRequest(row.device));
-      if (seq !== detailSeq) return state;
-      set({ detail: Object.freeze({ ...held, collectors: Object.freeze({ status: result.isRefusal ? 'refused' : 'ready', result }) }) });
-      return state;
-    }
     // A linked record may not be on the page that is loaded; its id is still enough to read it.
     const submissionId = row?.submission_id ?? String(key).split('|')[0];
     set({ detail: Object.freeze({ status: 'loading', key, row, record: null, submissionId }) });
@@ -635,14 +621,20 @@ export function createExplorer({ api, content = null, export: exportApi = null, 
  */
 export async function bootExplore({ document, api: given, content: givenContent, export: givenExport } = {}) {
   const el = (id) => document.getElementById(id);
-  const collapsed = readCollapsed(document);
+  // Devices and the audit trail are listed in Settings; an address from when Search listed them
+  // opens them there.
+  const moved = /^#(devices|audit)\b/.exec(String(document.location?.hash ?? ''));
+  if (moved && typeof document.location.replace === 'function') {
+    document.location.replace(`index.html#${moved[1]}`);
+    return null;
+  }
   const nav = el('nav');
   // The same navigation panel as the dashboard. A signed-in role may see fewer pages than the
   // shell names; the server decides, and the read path refuses the rest.
   const session = await loadSession();
   const allowed = allowedPageIds(session);
-  if (nav) nav.innerHTML = renderNav(filterNavItems(shellNavItems({ page: 'index.html' }), allowed), 'explore', { collapsed: [...collapsed] });
-  wireShell({ document, collapsed, session });
+  if (nav) nav.innerHTML = renderNav(shellNavItems({ page: 'index.html', allowed }), 'search');
+  wireShell({ document, session });
   const api = given ?? createQueryApi({ transport: httpTransport() });
   const content = givenContent ?? createContentApi({ transport: httpContentTransport() });
   const exportApi = givenExport ?? createListExportApi({ transport: httpExportTransport() });

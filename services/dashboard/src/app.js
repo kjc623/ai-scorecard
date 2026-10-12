@@ -11,8 +11,8 @@ import { createQueryApi, httpTransport, loadSession, createAdminApi, httpAdminTr
 import { readState } from './states.js';
 import { QUESTIONS, context } from './questions.js';
 import {
-  postureView, insightsView, adoptionView, discoveredView, demandView, agentsView, toolsView, toolView, unsanctionedView, teamsView, teamView, classesView,
-  personView, peopleView, devicesView, eventView, auditView, refusalView,
+  postureView, activityView, adoptionView, discoveredView, demandView, agentsView, toolsView, toolView, teamsView, teamView,
+  personView, peopleView, devicesView, deviceView, eventView, auditView, rulesView, sanctionView, refusalView,
   needsInputView,
 } from './views.js';
 import {
@@ -20,54 +20,52 @@ import {
   buildSanctionShiftDocument, buildTeamMembersDocument, buildToolPromptsDocument,
 } from './dsl.js';
 import { renderScreen, renderNav } from './render.js';
-import { shellNavItems, groupOf, readCollapsed, wireShell } from './shell.js';
-import { allowedPageIds, filterNavItems, mayOpen } from './session.js';
+import { SECTIONS, sectionOf, shellNavItems, tabsFor, wireShell } from './shell.js';
+import { allowedPageIds, mayOpen } from './session.js';
 import { createDeployment } from './deployment.js';
-import { renderDeployment } from './deployment-render.js';
+import { DEPLOYMENT_NOTES, renderAgentSetup } from './deployment-render.js';
 import { createSettings } from './settings.js';
 import { createDirectory } from './directory.js';
 import { renderDirectory } from './directory-render.js';
-import { renderSettings } from './settings-render.js';
+import { renderSanctionDecisions, renderSettings } from './settings-render.js';
 import { createRules } from './rules.js';
 import { renderRuleDialog, renderRules } from './rules-render.js';
 import { createTeamEditor } from './team-editor.js';
 import { renderTeamAdd, renderTeamDialog, renderTeamEdit } from './team-editor-render.js';
 
 /**
- * The screens. The event detail is reached from a row that names a submission; the rest are in the
- * navigation. Unsanctioned use and data classes are a switch on Usage.
+ * The screens, each a tab of a destination in shell.js. One tool, team, person, device or event is
+ * the same screen opened on a row of its list.
+ *
+ * An `admin` screen reads and writes control-api's admin API, not the query API: it has no
+ * question and no envelope, and boot() hands it to its own controller. Rules is one for an admin,
+ * who edits the rules (rules.js), and a query screen for everyone else, who reads them.
  */
 export const SCREENS = Object.freeze([
   Object.freeze({ id: 'posture', label: 'Overview', question: null, kind: 'posture' }),
-  // Rules: the enforcement rules and the custom labels they name, over the admin API (rules.js),
-  // with each rule's prompts from the query API.
-  Object.freeze({ id: 'rules', label: 'Rules', question: null, kind: 'admin' }),
-  Object.freeze({ id: 'insights', label: 'Insights', question: null, kind: 'answer' }),
   Object.freeze({ id: 'tools', label: 'Tools', question: 1, kind: 'answer', questionId: 'q1_tools_ranked' }),
   Object.freeze({ id: 'teams', label: 'Teams', question: 3, kind: 'answer', questionId: 'q3_team_growth' }),
   Object.freeze({ id: 'person', label: 'Users', question: 6, kind: 'input', questionId: 'q6_subject_series' }),
+  Object.freeze({ id: 'rules', label: 'Rules', question: null, kind: 'answer', editor: true }),
+  Object.freeze({ id: 'labels', label: 'Labels', question: null, kind: 'admin' }),
+  Object.freeze({ id: 'sanction', label: 'Tools', question: null, kind: 'answer' }),
+  Object.freeze({ id: 'activity', label: 'Activity', question: null, kind: 'answer' }),
+  Object.freeze({ id: 'insights', label: 'Insights', question: null, kind: 'answer' }),
+  Object.freeze({ id: 'settings', label: 'Collection', question: null, kind: 'admin' }),
   Object.freeze({ id: 'devices', label: 'Devices', question: 7, kind: 'answer', questionId: 'q7_devices' }),
-  Object.freeze({ id: 'audit', label: 'Audit', question: 10, kind: 'answer', questionId: 'q10_audit_trail' }),
-  // Settings → Deployment reads and writes control-api's admin API, not the query API: it has no
-  // question and no envelope, and boot() hands it to its own controller (deployment.js).
-  Object.freeze({ id: 'deployment', label: 'Deployment', question: null, kind: 'admin' }),
-  // Settings → Settings is the other admin screen, over the same admin API (settings.js).
-  Object.freeze({ id: 'settings', label: 'Settings', question: null, kind: 'admin' }),
-  // Settings → Identity Providers: where people and groups come from (directory.js).
   Object.freeze({ id: 'directory', label: 'Identity Providers', question: null, kind: 'admin' }),
+  Object.freeze({ id: 'audit', label: 'Audit trail', question: 10, kind: 'answer', questionId: 'q10_audit_trail' }),
   Object.freeze({ id: 'event', label: 'Event detail', question: 9, kind: 'input', questionId: 'q9_event_detail' }),
 ]);
 
-/** What the Usage screen can show: each is its own question, switched in place. */
-const USAGE_MODES = Object.freeze({
-  tools: Object.freeze({ label: 'Tools', questionId: 'q1_tools_ranked', view: toolsView }),
-  classes: Object.freeze({ label: 'Data classes', questionId: 'q4_class_mix', view: classesView }),
-  unsanctioned: Object.freeze({ label: 'Unsanctioned', questionId: 'q2_unsanctioned_users', view: unsanctionedView }),
-});
+/** The window Policy reads its figures over: the rules' matches and the tools' usage. */
+const POLICY_PRESET = 'd30';
 
-function usageMode(filters) {
-  return USAGE_MODES[filters?.view] ? filters.view : 'tools';
-}
+/** The fields the audit trail filters by, as q10 names them. */
+const AUDIT_FILTERS = Object.freeze(['actor', 'action', 'object_type', 'case']);
+
+/** A tool's sanction, as Usage → Tools filters by it. */
+const SANCTION_FILTER = Object.freeze(['sanctioned', 'unsanctioned', 'unknown']);
 
 export const SCREEN_IDS = Object.freeze(SCREENS.map((s) => s.id));
 
@@ -148,26 +146,35 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
       switch (screen.kind) {
         case 'posture': {
           const devices = await ask('q7_devices', context({ preset: ctx.preset, limit: 500, filters: params.filters ?? {}, now: now() }));
-          // The summary reads one more question.
+          // The summary reads the window's usage, and the rules with what they matched in it.
           const tools = await part(() => ask('q1_tools_ranked', ctx));
-          return { view: postureView({ devices, tools }, { preset: ctx.preset, insights: params.insights !== false }), shell: shell() };
+          const rules = await part(async () => readState(await api.run(buildListDocument('ops.enforcement_rule', {}, 100))));
+          const ruleMatches = await part(async () => readState(await api.run(buildRuleMatchesDocument({ window: ctx.window }))));
+          return { view: postureView({ devices, tools, rules, ruleMatches }, { preset: ctx.preset, activity: params.activity !== false }), shell: shell() };
         }
         case 'answer': {
-          if (screen.questionId === 'q6_subject_series' || screen.questionId === 'q9_event_detail') {
-            return { view: needsInputView({ id: screen.id, title: screen.label, question: null, hint: 'This screen needs an identifier from another screen.' }), shell: shell() };
-          }
           if (screen.id === 'tools') {
             if (params.filters.tool) return { view: await toolScreen(String(params.filters.tool), ctx), shell: shell() };
-            const mode = USAGE_MODES[usageMode(params.filters)];
-            return { view: mode.view(await ask(mode.questionId, ctx), { preset: ctx.preset }), shell: shell() };
+            const sanction = SANCTION_FILTER.includes(params.filters.sanction) ? params.filters.sanction : null;
+            return { view: toolsView(await ask('q1_tools_ranked', ctx), { preset: ctx.preset, sanction }), shell: shell() };
           }
           if (screen.id === 'teams') return { view: await teamsScreen(params, ctx), shell: shell() };
+          if (screen.id === 'rules') return { view: await rulesScreen(), shell: shell() };
+          if (screen.id === 'sanction') {
+            const usage = await ask('q1_tools_ranked', context({ preset: POLICY_PRESET, now: now() }));
+            return { view: sanctionView(usage), shell: shell() };
+          }
+          if (screen.id === 'activity') return { view: await activityScreen(ctx), shell: shell() };
           if (screen.id === 'insights') {
-            const tab = INSIGHTS_SCREENS[params.filters.view] ?? insightsScreen;
+            const tab = INSIGHTS_SCREENS[params.filters.view] ?? adoptionScreen;
             return { view: await tab(ctx), shell: shell() };
           }
-          const state = await ask(screen.questionId, ctx);
-          return { view: viewFor(screen.id, state, params), shell: shell() };
+          if (screen.id === 'devices' && params.filters.device) return { view: await deviceScreen(String(params.filters.device)), shell: shell() };
+          if (screen.id === 'audit') {
+            const state = await ask('q10_audit_trail', context({ preset: ctx.preset, cursor: params.filters.cursor ?? null, filters: params.filters, now: now() }));
+            return { view: state.resultState === 'audit_chain_broken' ? refusalView(state, { title: 'Audit trail' }) : auditView(state, { filters: params.filters, preset: params.preset }), shell: shell() };
+          }
+          return { view: devicesView(await ask('q7_devices', ctx), { filters: params.filters ?? {}, now: now() }), shell: shell() };
         }
         case 'input': {
           if (screen.id === 'person') {
@@ -176,9 +183,8 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
               const search = String(params.filters?.q ?? '').trim();
               const cursor = params.filters?.cursor ?? null;
               const people = readState(await api.run(buildPeopleDocument({ search, cursor })));
-              // Each team's people and their submissions head the first page of everyone; a search
-              // or a later page is the directory alone.
-              const members = search || cursor ? null : await part(async () => teamMembers(await ask('q3_team_growth', ctx), ctx));
+              // Each person's teams and prompts in the window come from the teams' rosters.
+              const members = await part(async () => teamMembers(await ask('q3_team_growth', ctx), ctx));
               return { view: peopleView(people, { search, members }), shell: shell() };
             }
             const state = await ask('q6_subject_series', context({ preset: ctx.preset, filters: { subject }, now: now() }));
@@ -239,26 +245,50 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
   }
 
   /**
-   * Insights: the window's tool usage and class mix, the enforcement rules and the prompts each
-   * matched, and the tool usage of the period of the same length just before it, which the changes
-   * are measured against. Only the window's usage is needed; without the others their panels say
-   * what is missing. The previous period is read first, so the coverage the page reports is the
-   * window's own.
+   * Policy → Rules as everyone but an admin reads it: the rules as they stand, each with the
+   * prompts it decided over the last 30 days. Without the rules the page says why; without the
+   * matches the rules are listed with their counts absent.
    */
-  async function insightsScreen(ctx) {
+  async function rulesScreen() {
+    const ctx = context({ preset: POLICY_PRESET, now: now() });
+    const ruleMatches = await part(async () => readState(await api.run(buildRuleMatchesDocument({ window: ctx.window }))));
+    if (ruleMatches) remember(ruleMatches);
+    const rules = await refusable(async () => readState(await api.run(buildListDocument('ops.enforcement_rule', {}, 100))));
+    return rulesView({ rules, ruleMatches });
+  }
+
+  /**
+   * Policy → Activity: the window's tool usage and class mix, the enforcement rules and the prompts
+   * each matched, and the tool usage of the period of the same length just before it, which the
+   * changes are measured against. Only the window's usage is needed; without the others their
+   * panels say what is missing. The previous period is read first, so the coverage the page reports
+   * is the window's own.
+   */
+  async function activityScreen(ctx) {
     const previous = await part(() => ask('q1_tools_ranked', context({ preset: ctx.preset, now: new Date(Date.parse(ctx.window.from)) })));
     const usage = await ask('q1_tools_ranked', ctx);
     const classes = await part(() => ask('q4_class_mix', ctx));
     const rules = await part(async () => readState(await api.run(buildListDocument('ops.enforcement_rule', {}, 100))));
     const ruleMatches = await part(async () => readState(await api.run(buildRuleMatchesDocument({ window: ctx.window }))));
-    return insightsView({ usage, previous, classes, rules, ruleMatches }, { preset: ctx.preset });
+    return activityView({ usage, previous, classes, rules, ruleMatches }, { preset: ctx.preset });
+  }
+
+  /**
+   * One device: its row in the fleet list and every collector it reported. A device the list does
+   * not hold is said to be unknown; collectors that could not be read say why in place.
+   */
+  async function deviceScreen(device) {
+    const collectors = await refusable(async () => readState(await api.run(buildListDocument('ops.collector_state', { device }, 100))));
+    const row = readState(await api.run(buildListDocument('mart.v_device_liveness', { device }, 1)));
+    remember(row);
+    return deviceView({ device, row, collectors }, { now: now() });
   }
 
   /**
    * Insights, Adoption: the window's tool usage, which carries the people who used AI; the same
    * read of the period before it, for the change; the applications first seen in the window; and
    * the prompts per bucket by sanction. Only the window's usage is needed; without the others their
-   * panels say what is missing. The previous period is read first, as on Exposure.
+   * panels say what is missing. The previous period is read first, as on Activity.
    */
   async function adoptionScreen(ctx) {
     const previous = await part(() => ask('q1_tools_ranked', context({ preset: ctx.preset, now: new Date(Date.parse(ctx.window.from)) })));
@@ -301,7 +331,7 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
     return agentsView({ agents, previous }, { preset: ctx.preset });
   }
 
-  /** The tabs of Insights other than Exposure, by the `view` that names them. */
+  /** The tabs of Insights, by the `view` that names them. */
   const INSIGHTS_SCREENS = Object.freeze({ adoption: adoptionScreen, discovered: discoveredScreen, demand: demandScreen, agents: agentsScreen });
 
   /** The Teams screen: every team, or one team when the address names it. */
@@ -332,14 +362,6 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
     return refusable(async () => readState(await api.run(buildTeamMembersDocument({ window: ctx.window, teams: ids }))));
   }
 
-  function viewFor(screenId, state, params) {
-    switch (screenId) {
-      case 'devices': return devicesView(state, { filters: params.filters ?? {}, now: now() });
-      case 'audit': return state.resultState === 'audit_chain_broken' ? refusalView(state, { title: 'Audit' }) : auditView(state);
-      default: return refusalView(state, { title: screenId });
-    }
-  }
-
   return Object.freeze({ load, observed, screenIds: SCREEN_IDS });
 }
 
@@ -355,50 +377,87 @@ export function parseHash(hash) {
   return { id, preset: filters.preset, filters };
 }
 
-/** The navigation of shell.js, with each screen's question number for its tooltip. */
-const NAV_ITEMS = shellNavItems({ questionOf: (id) => SCREENS.find((s) => s.id === id)?.question ?? null });
+/**
+ * An address from an earlier layout, as the address that now opens the same thing; null for an
+ * address that is current. Links and bookmarks made before keep working.
+ */
+export function redirectFor({ id, filters }, allowed = null) {
+  const { view, ...rest } = filters;
+  const at = (screenId, params) => {
+    const query = new URLSearchParams(params).toString();
+    return `#${screenId}${query ? `?${query}` : ''}`;
+  };
+  const window = filters.preset ? { preset: filters.preset } : {};
+  if (id === 'deployment') return '#devices';
+  if (id === 'rules' && view === 'labels') return '#labels';
+  if (id === 'tools' && view === 'unsanctioned') return at('tools', { ...rest, sanction: 'unsanctioned' });
+  if (id === 'tools' && view === 'classes') return mayOpen(allowed, 'activity') ? at('activity', window) : at('tools', window);
+  if (id === 'insights' && view === 'exposure') return at('activity', rest);
+  return null;
+}
 
 /** Screens whose question takes a time window, and the windows offered. */
-const WINDOWED_KINDS = Object.freeze(['answer', 'input']);
-const UNWINDOWED_SCREENS = Object.freeze(['devices', 'event']);
+const WINDOWED = Object.freeze(['posture', 'tools', 'teams', 'person', 'activity', 'insights', 'audit']);
 const PRESET_LABELS = Object.freeze({ h24: '24h', d7: '7d', d30: '30d', d90: '90d' });
 
 /** The window switcher for a screen: each preset is a link that keeps the other parameters. */
 function presetsFor(screen, preset, filters) {
-  if (!WINDOWED_KINDS.includes(screen.kind) || UNWINDOWED_SCREENS.includes(screen.id)) return null;
+  if (!WINDOWED.includes(screen.id)) return null;
   const current = PRESET_LABELS[preset] ? preset : 'd7';
   const items = Object.entries(PRESET_LABELS).map(([id, label]) => {
-    const params = new URLSearchParams({ ...filters, preset: id });
+    // A later page of a list belongs to the window it was read in.
+    const { cursor: _cursor, ...kept } = filters;
+    const params = new URLSearchParams({ ...kept, preset: id });
     return { id, label, href: `#${screen.id}?${params.toString()}` };
   });
   return { current, items };
 }
 
-/** The tabs of Insights, each a question a customer asks; Exposure is the default. */
-const INSIGHTS_TABS = Object.freeze({ exposure: 'Exposure', adoption: 'Adoption', discovered: 'Discovered', demand: 'Demand', agents: 'Coding agents' });
+/** The tabs of Insights, each a question a customer asks; Adoption is the default. */
+const INSIGHTS_TABS = Object.freeze({ adoption: 'Adoption', discovered: 'Discovered', demand: 'Demand', agents: 'Coding agents' });
 
-/** The switch a screen carries beside its window: what Usage shows, and which tab of Insights. */
-function switchFor(screen, preset, filters) {
-  const link = (extra) => {
-    const query = new URLSearchParams({ ...(PRESET_LABELS[preset] ? { preset } : {}), ...extra }).toString();
-    return `#${screen.id}${query ? `?${query}` : ''}`;
-  };
+/** The parameters that open one record of a list rather than the list. */
+const RECORD_PARAMS = Object.freeze({ tools: 'tool', teams: 'team', person: 'subject', devices: 'device' });
+
+/**
+ * What a screen's head shows: on a list, its destination's name with the destination's pages as
+ * tabs; on one record, the record's own title under its destination's name. Insights' tabs are its
+ * own questions. A tab that takes a window keeps the one chosen.
+ */
+function headFor(screen, preset, filters, allowed) {
+  const section = sectionOf(screen.id);
+  const keep = (id) => (PRESET_LABELS[preset] && WINDOWED.includes(id) ? `?preset=${preset}` : '');
+  if (screen.id === 'event' || filters[RECORD_PARAMS[screen.id]]) return { eyebrow: section?.label ?? null };
   if (screen.id === 'insights') {
+    const link = (extra) => {
+      const query = new URLSearchParams({ ...(PRESET_LABELS[preset] ? { preset } : {}), ...extra }).toString();
+      return `#insights${query ? `?${query}` : ''}`;
+    };
     return {
-      label: 'Show',
-      current: INSIGHTS_TABS[filters.view] ? filters.view : 'exposure',
-      items: Object.entries(INSIGHTS_TABS).map(([id, label]) => ({ id, label, href: link(id === 'exposure' ? {} : { view: id }) })),
+      eyebrow: section?.label ?? null,
+      title: screen.label,
+      tabs: {
+        label: screen.label,
+        current: INSIGHTS_TABS[filters.view] ? filters.view : 'adoption',
+        items: Object.entries(INSIGHTS_TABS).map(([id, label]) => ({ id, label, href: link(id === 'adoption' ? {} : { view: id }) })),
+      },
     };
   }
-  // One tool's screen is reached from the list; it has no list to switch.
-  if (screen.id === 'tools' && !filters.tool) {
-    return {
-      label: 'Show',
-      current: usageMode(filters),
-      items: Object.entries(USAGE_MODES).map(([id, mode]) => ({ id, label: mode.label, href: link(id === 'tools' ? {} : { view: id }) })),
-    };
-  }
-  return null;
+  const tabs = tabsFor(screen.id, { allowed, hrefOf: (id) => `#${id}${keep(id)}` });
+  if (tabs) return { title: section.label, tabs };
+  // A destination the session opens one page of names that page, under the destination.
+  const page = section?.pages.find((p) => p.id === screen.id);
+  return section && page && section.pages.length > 1 ? { eyebrow: section.label, title: page.label } : {};
+}
+
+/** Every page the navigation can offer; the server says which of them a session may open. */
+const PAGE_IDS = new Set(SECTIONS.flatMap((s) => s.pages.map((p) => p.id)));
+
+/** Put an address in place of the current one without a navigation, so Back skips the old one. */
+function replaceHash(document, hash) {
+  const history = document.defaultView?.history;
+  if (typeof history?.replaceState === 'function') history.replaceState(null, '', hash);
+  else document.location.hash = hash;
 }
 
 /**
@@ -472,7 +531,7 @@ function copyToClipboard(document, text) {
  * Boot the dashboard into a document. The only function in this package that touches the DOM.
  *
  * Every read goes to the page's own origin: /v1/* for the query API and /admin/v1/* for
- * Settings → Deployment, which the dashboard server forwards with the session's product token.
+ * the admin pages, which the dashboard server forwards with the session's product token.
  *
  * @param {object} input
  * @param {Document} input.document
@@ -491,28 +550,52 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   // query-api and control-api refuse what lies behind the rest.
   const session = givenSession !== undefined ? givenSession : await loadSession();
   const allowed = allowedPageIds(session);
-  const navItems = filterNavItems(NAV_ITEMS, allowed);
-  const navIds = new Set(NAV_ITEMS.map((item) => item.id));
-  const collapsed = readCollapsed(document);
+  const navItems = shellNavItems({ allowed });
   // The tab is titled by the product name the page itself shows, so the two cannot disagree.
   const brand = document.querySelector?.('.brand h1')?.textContent?.trim() || 'Sundial';
 
   let paintedNav = null;
   let paintedScreen = null;
+  // The query screen on the page, kept so the admin section it carries can be repainted alone.
+  let painted = null;
   let deployment = null;
   let settings = null;
   let directory = null;
   let rules = null;
   let editor = null;
-  // An admin adds and edits teams on Teams; the server refuses the admin API to anyone else.
-  const mayManage = mayOpen(allowed, 'directory');
+  // An admin edits Policy and Settings and adds and edits teams; the server refuses the admin API
+  // to anyone else.
+  const mayAdmin = mayOpen(allowed, 'settings');
   // The add and edit pop-up lives outside the screen, so a screen repaint never closes it.
   const dialog = document.getElementById('team-dialog');
   // So does the rule panel.
   const ruleDialog = document.getElementById('rule-dialog');
 
-  function paintDeployment(state) {
-    if (paintedScreen === 'deployment') root.innerHTML = renderDeployment(state, { eyebrow: groupOf('deployment') });
+  /** The head of a screen at the current address. */
+  function headNow(screenId) {
+    const { preset, filters } = parseHash(document.location.hash);
+    return headFor(SCREENS.find((s) => s.id === screenId), preset, filters, allowed);
+  }
+
+  /**
+   * The admin section a query screen carries for an admin: installing the agent below the device
+   * list, and the sanction decisions above the tools Policy lists.
+   */
+  function adminSection(screenId, filters) {
+    if (!mayAdmin) return {};
+    if (screenId === 'devices' && !filters.device) return { after: renderAgentSetup(deploymentController().state) };
+    if (screenId === 'sanction') return { before: renderSanctionDecisions(settingsController().state) };
+    return {};
+  }
+
+  function paintQuery() {
+    if (!painted || painted.screen !== paintedScreen) return;
+    repaint(document, root, renderScreen(painted.view, { ...painted.shell, ...adminSection(painted.screen, painted.filters) }));
+  }
+
+  function paintDeployment() {
+    if (paintedScreen === 'devices') paintQuery();
+    if (paintedScreen === 'directory') paintDirectory();
   }
 
   function deploymentController() {
@@ -526,7 +609,8 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   }
 
   function paintSettings(state) {
-    if (paintedScreen === 'settings') root.innerHTML = renderSettings(state, { eyebrow: groupOf('settings') });
+    if (paintedScreen === 'settings') repaint(document, root, renderSettings(state, { head: headNow('settings') }));
+    if (paintedScreen === 'sanction') paintQuery();
   }
 
   function settingsController() {
@@ -534,8 +618,11 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     return settings;
   }
 
-  function paintDirectory(state) {
-    if (paintedScreen === 'directory') root.innerHTML = renderDirectory(state, { eyebrow: groupOf('directory') });
+  /** Identity Providers: the directory, with sign-in and SCIM from the deployment settings. */
+  function paintDirectory() {
+    if (paintedScreen === 'directory' && directory) {
+      repaint(document, root, renderDirectory(directory.state, { head: headNow('directory'), setup: deployment?.state ?? null }));
+    }
   }
 
   function directoryController() {
@@ -543,11 +630,10 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     return directory;
   }
 
-  /** Rules and its panel. The tab is in the address, so Back and a shared link open it. */
+  /** Rules or Labels, and the rule panel. */
   function paintRules(state) {
-    if (paintedScreen === 'rules') {
-      const tab = parseHash(document.location.hash).filters.view === 'labels' ? 'labels' : 'rules';
-      repaint(document, root, renderRules(state, { tab, eyebrow: groupOf('rules'), insights: mayOpen(allowed, 'insights') }));
+    if (paintedScreen === 'rules' || paintedScreen === 'labels') {
+      repaint(document, root, renderRules(state, { tab: paintedScreen, head: headNow(paintedScreen), activity: mayOpen(allowed, 'activity') }));
     }
     if (!ruleDialog) return;
     repaint(document, ruleDialog, renderRuleDialog(state));
@@ -585,15 +671,26 @@ export async function boot({ document, api, admin, session: givenSession } = {})
 
   /** The control an admin has in the Teams header: add a team on the list, edit it on a team's screen. */
   function toolFor(screen, filters) {
-    if (screen.id !== 'teams' || !mayManage) return null;
+    if (screen.id !== 'teams' || !mayAdmin) return null;
     return filters.team ? renderTeamEdit(String(filters.team)) : renderTeamAdd();
   }
 
+  /** Read a controller's page when it is first opened, or again when its last read did not finish. */
+  async function loadOnce(controller, sameScreen) {
+    if (!sameScreen || controller.state.status !== 'ready') await controller.load();
+  }
+
   async function render() {
-    const { id, preset, filters } = parseHash(document.location.hash);
+    let route = parseHash(document.location.hash);
+    const moved = redirectFor(route, allowed);
+    if (moved) {
+      replaceHash(document, moved);
+      route = parseHash(moved);
+    }
+    const { id, preset, filters } = route;
     const screen = SCREENS.find((s) => s.id === id) ?? SCREENS[0];
-    // The navigation is repainted only when it changes, so its groups do not re-open on every click.
-    const navHtml = renderNav(navItems, screen.id, { collapsed: [...collapsed] });
+    // The navigation is repainted only when it changes.
+    const navHtml = renderNav(navItems, sectionOf(screen.id)?.id ?? null);
     if (navHtml !== paintedNav) {
       paintedNav = navHtml;
       nav.innerHTML = navHtml;
@@ -603,50 +700,58 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     const sameScreen = screen.id === paintedScreen;
     // Moving to another screen swaps the content with a short fade; only the first load arrives in full.
     root.classList?.toggle('switched', !sameScreen && paintedScreen !== null);
-    // Leaving Deployment takes the one-time SCIM token with it.
-    if (!sameScreen && paintedScreen === 'deployment') deployment?.leave();
+    // Leaving Identity Providers takes the one-time SCIM token with it.
+    if (!sameScreen && paintedScreen === 'directory') deployment?.leave();
+    const before = paintedScreen;
     paintedScreen = screen.id;
     root.classList?.toggle('same-screen', sameScreen);
-    if (navIds.has(screen.id) && !mayOpen(allowed, screen.id)) {
+    if (PAGE_IDS.has(screen.id) && !mayOpen(allowed, screen.id)) {
       root.innerHTML = renderScreen(notPermittedView(screen), {});
       return;
     }
-    if (screen.kind === 'admin') {
-      if (screen.id === 'rules') {
+    if (screen.kind === 'admin' || (screen.editor && mayAdmin)) {
+      document.title = `${headNow(screen.id).title ?? screen.label} · ${brand}`;
+      if (screen.id === 'rules' || screen.id === 'labels') {
         const controller = rulesController();
         paintRules(controller.state);
-        if (!sameScreen || controller.state.status !== 'ready') await controller.load();
+        // Rules and Labels are one rulebase: moving between them reads nothing again.
+        await loadOnce(controller, before === 'rules' || before === 'labels');
         return;
       }
       if (screen.id === 'directory') {
         const controller = directoryController();
-        paintDirectory(controller.state);
-        if (!sameScreen || controller.state.status !== 'ready') await controller.load();
+        const setup = deploymentController();
+        paintDirectory();
+        await Promise.all([loadOnce(controller, sameScreen), loadOnce(setup, sameScreen)]);
         return;
       }
-      if (screen.id === 'settings') {
-        const controller = settingsController();
-        paintSettings(controller.state);
-        if (!sameScreen || controller.state.status !== 'ready') await controller.load();
-        return;
-      }
-      const controller = deploymentController();
-      paintDeployment(controller.state);
-      if (!sameScreen || controller.state.status !== 'ready') await controller.load();
+      const controller = settingsController();
+      paintSettings(controller.state);
+      await loadOnce(controller, sameScreen);
       return;
     }
     const typing = sameScreen && document.activeElement?.name === 'subject';
     // While the next read runs the page keeps what it shows, dimmed: no blank, no jump.
     root.setAttribute?.('aria-busy', 'true');
-    const { view, shell } = await dashboard.load(screen.id, { preset, filters, mayManage, insights: mayOpen(allowed, 'insights') });
+    const { view, shell } = await dashboard.load(screen.id, { preset, filters, mayManage: mayAdmin, activity: mayOpen(allowed, 'activity') });
     root.setAttribute?.('aria-busy', 'false');
     const { preset: _preset, ...others } = filters;
-    root.innerHTML = renderScreen(view, { ...shell, eyebrow: groupOf(screen.id), switch: switchFor(screen, preset, others), presets: presetsFor(screen, preset, others), tool: toolFor(screen, filters) });
+    const setup = mayAdmin && screen.id === 'devices' && !filters.device;
+    painted = {
+      screen: screen.id,
+      filters,
+      view: setup ? { ...view, notes: [...(view.notes ?? []), ...DEPLOYMENT_NOTES] } : view,
+      shell: { ...shell, ...headFor(screen, preset, others, allowed), presets: presetsFor(screen, preset, others), tool: toolFor(screen, filters) },
+    };
+    root.innerHTML = renderScreen(painted.view, { ...painted.shell, ...adminSection(screen.id, filters) });
     document.title = `${view?.title ?? screen.label} · ${brand}`;
     if (typing) root.querySelector?.('input[name="subject"]')?.focus();
+    // An admin's section below or above the screen reads its own settings.
+    if (setup) await loadOnce(deploymentController(), sameScreen);
+    if (mayAdmin && screen.id === 'sanction') await loadOnce(settingsController(), sameScreen);
   }
 
-  wireShell({ document, collapsed, session });
+  wireShell({ document, session });
 
   // The handler returns the render promise. A browser ignores a listener's return value, so this
   // costs nothing there; it means a test can await a navigation and read the finished page rather
@@ -686,10 +791,23 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       if (editor) editor.act({ team: form.dataset.teamForm });
       return;
     }
-    // Deployment's forms act through their buttons; Enter in the token label creates the token.
+    // The deployment sections' forms act through their buttons; Enter in the token label creates it.
     if (form?.dataset?.depForm !== undefined) {
       event.preventDefault();
       if (deployment && form.dataset.depForm !== 'none') deployment.act({ dep: form.dataset.depForm });
+      return;
+    }
+    // The audit trail's filters: each field given narrows the list, in the window chosen.
+    if (form?.dataset?.screen === 'audit') {
+      event.preventDefault();
+      const { filters } = parseHash(document.location.hash);
+      const params = new URLSearchParams(filters.preset ? { preset: filters.preset } : {});
+      for (const name of AUDIT_FILTERS) {
+        const value = String(form.elements[name]?.value ?? '').trim();
+        if (value !== '') params.set(name, value);
+      }
+      const query = params.toString();
+      document.location.hash = `#audit${query ? `?${query}` : ''}`;
       return;
     }
     // The person screen's one input: a reference opens that person, anything else searches names.
@@ -699,8 +817,8 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     document.location.hash = /^u_[0-9a-f]{32}$/.test(value) ? `#person?subject=${encodeURIComponent(value)}`
       : value ? `#person?q=${encodeURIComponent(value)}` : '#person';
   });
-  // Deployment's buttons name their action in data-dep; Settings' controls name theirs in
-  // data-action, and Rules' in data-rl.
+  // The deployment sections' buttons name their action in data-dep; Settings' controls name
+  // theirs in data-action, and Rules' in data-rl.
   document.addEventListener('click', (event) => {
     // A rule's ⋯ menu closes when anything else is clicked.
     for (const menu of document.querySelectorAll?.('details.rl-menu[open]') ?? []) {
@@ -721,7 +839,9 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     const action = event.target?.closest?.('[data-action]');
     if (action && settings && action.tagName !== 'SELECT' && !action.disabled) {
       event.preventDefault();
-      settings.act({ ...action.dataset });
+      const done = settings.act({ ...action.dataset });
+      // A sanction decided on Policy → Tools is read again into the tools listed below it.
+      if (action.dataset.action === 'sanction' && paintedScreen === 'sanction') Promise.resolve(done).then(() => render());
       return;
     }
     const dirTarget = event.target?.closest?.('[data-dir]');

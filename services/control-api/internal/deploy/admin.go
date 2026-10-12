@@ -1,6 +1,7 @@
-// Package deploy is the deployment admin API and the packages it builds: the Settings ->
-// Deployment page's read, the tenant package download that mints a deployment key per download,
-// key revocation, the device-verification setting, the SCIM token endpoints, and the browser
+// Package deploy is the deployment admin API and the packages it builds: the read behind the
+// dashboard's agent setup (Settings -> Devices) and sign-in and SCIM (Settings -> Identity
+// Providers), the tenant package download that mints a deployment key per download, key
+// revocation, the device-verification setting, the SCIM token endpoints, and the browser
 // extension's update manifest and CRX.
 //
 // Every admin route requires a product access token carrying the admin role, resolved by an

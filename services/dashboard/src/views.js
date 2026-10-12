@@ -9,8 +9,8 @@
 // kept apart in another.
 
 import { emptyStateFor, measureOf, vocabOf } from './states.js';
-import { formatBytes, formatCount, formatInstant, formatLabels, formatPercent, formatScore, plural } from './format.js';
-import { SOURCES, TEMPLATES, UNRECOGNISED_TOOL, SITE_PREFIX, COLLECTION_MODE_LABELS, WINDOWS } from './vocab.js';
+import { formatBytes, formatCount, formatInstant, formatLabels, formatPercent, plural } from './format.js';
+import { SOURCES, TEMPLATES, UNRECOGNISED_TOOL, SITE_PREFIX, COLLECTION_MODE_LABELS, COLLECTOR_DETAILS, WINDOWS } from './vocab.js';
 import { EXPLORE_DATASETS, encodeExploreHash } from './explore-model.js';
 import { RULE_ACTION_LABELS, RULE_CATEGORIES, RULE_MATCH_FIELDS, RULE_MATCH_TITLES, RULE_ROUTES } from './rules.js';
 import { ENDPOINT_TOOLS } from './settings.js';
@@ -275,6 +275,8 @@ export function withPreset(hash, preset) {
   if (!preset || preset === 'd7') return hash;
   return `${hash}${hash.includes('?') ? '&' : '?'}preset=${encodeURIComponent(preset)}`;
 }
+/** The window Policy reads usage over. */
+const POLICY_WINDOW = 'd30';
 export const toolHref = (fingerprint, preset = null) => withPreset(`#tools?tool=${encodeURIComponent(fingerprint)}`, preset);
 export const teamHref = (team, preset = null) => withPreset(`#teams?team=${encodeURIComponent(team)}`, preset);
 
@@ -405,7 +407,7 @@ const SANCTION_PARTS = Object.freeze(['sanctioned', 'unsanctioned', 'unknown']);
  * seen under; a fingerprint outside the catalogue is a tool of its own, with no decision. When no
  * tool has a decision, the block says so and opens where the decision is made.
  */
-export function sanctionShare(state, { title = 'Applications', emptyText = 'No tool was detected in this window.', settingsHref = '#settings' } = {}) {
+export function sanctionShare(state, { title = 'Applications', emptyText = 'No tool was detected in this window.', settingsHref = '#sanction' } = {}) {
   const tools = new Map();
   for (const row of state.data) {
     if (row.tool === null || row.tool === undefined) continue;
@@ -470,7 +472,7 @@ function emptyLine(state, none) {
   return said && said.kind !== 'empty' ? `${said.title}. ${said.text}` : none;
 }
 
-/** The fleet's reporting figure beside its enrolled denominator, split into the devices that report and the ones that do not, each opening its list. */
+/** The fleet's reporting figure beside its enrolled denominator, split into the devices that report and the ones that do not; it opens the device list. */
 function reportingTile(cov) {
   const known = (v) => v !== null && v !== undefined;
   const reporting = known(cov?.devices_reporting) ? Number(cov.devices_reporting) : null;
@@ -482,10 +484,9 @@ function reportingTile(cov) {
       : `of ${formatCount(enrolled)} enrolled devices`,
     {
       href: '#devices',
-      moreLabel: 'All devices',
       split: reporting !== null && enrolled !== null ? Object.freeze([
-        Object.freeze({ key: 'reporting', label: 'Reporting', count: reporting, href: '#devices?status=reporting' }),
-        Object.freeze({ key: 'never_reported', label: 'Not reporting', count: Math.max(0, enrolled - reporting), href: '#devices?status=attention' }),
+        Object.freeze({ key: 'reporting', label: 'Reporting', count: reporting }),
+        Object.freeze({ key: 'never_reported', label: 'Not reporting', count: Math.max(0, enrolled - reporting) }),
       ]) : null,
     });
 }
@@ -502,10 +503,7 @@ function searchEventsLink(filters, preset) {
   const dataset = EXPLORE_DATASETS.events;
   const wanted = preset ?? dataset.defaultWindow;
   const windowPreset = dataset.windows.includes(wanted) ? wanted : dataset.windows[dataset.windows.length - 1];
-  return {
-    href: `explore.html${encodeExploreHash({ dataset, windowPreset, filters })}`,
-    moreLabel: windowPreset === wanted ? 'Search' : `Search, ${WINDOWS[windowPreset].label.toLowerCase()}`,
-  };
+  return { href: `explore.html${encodeExploreHash({ dataset, windowPreset, filters })}` };
 }
 
 const METADATA_ONLY = 'metadata-only collection (M0)';
@@ -535,12 +533,12 @@ function attachmentsTile(usage, { preset, filters = {} }) {
 
 /**
  * The prompts that matched an enforcement rule on one of their labels, out of every prompt, split by
- * what happened to them. It opens Insights where the page is offered, and nothing elsewhere.
+ * what happened to them. It opens where they are broken down.
  */
 function sensitiveTile(usage, { href }) {
   const sensitive = sumMeasure(usage, 'sensitive');
   const prompts = sumMeasure(usage, 'submissions');
-  const options = href ? { href, moreLabel: 'Insights' } : {};
+  const options = { href };
   if (sensitive.kind !== 'number') return tile('Sensitive prompts', { kind: 'absent', text: '—' }, absentNote(usage), options);
   return tile('Sensitive prompts', { kind: 'number', text: formatCount(sensitive.value) },
     prompts.kind === 'number' ? `of ${formatCount(prompts.value)} prompts matched a rule on their labels` : null,
@@ -554,6 +552,49 @@ function sensitiveTile(usage, { href }) {
 }
 
 /**
+ * The rules that decided the most prompts in the window, each with its action, and what Policy
+ * still waits on: the rules that matched nothing, and the tools with no sanction decision. The
+ * whole card opens Policy. Without the rules or their matches, it says which could not be read.
+ */
+function policyAtWork(rules, matches, usage, { href, limit = 4 }) {
+  const known = rules && !rules.isRefusal ? rules.data : null;
+  const counted = matches && !matches.isRefusal ? matches : null;
+  const base = { kind: 'ranking', title: 'Policy at work', cardHref: href, itemLabel: 'Rule', valueLabel: 'Prompts', metaLabels: Object.freeze([]) };
+  if (!known || !counted) {
+    const missing = !known ? 'The rules could not be read.' : 'What the rules matched could not be read for this window.';
+    return Object.freeze({ ...base, items: Object.freeze([]), emptyText: missing });
+  }
+  if (known.length === 0) return Object.freeze({ ...base, items: Object.freeze([]), emptyText: 'No enforcement rule is set, so every prompt is logged.' });
+  const groups = new Map(foldCells(counted, 'rule', { sum: ['matches'], max: [] }).map((g) => [g.key, g]));
+  const matchesOf = (rule) => (groups.has(String(rule.rule)) ? foldedMeasure(groups.get(String(rule.rule)), 'matches').value ?? 0 : 0);
+  const ranked = known.map((rule) => ({ rule, n: matchesOf(rule) })).filter((r) => r.n > 0)
+    .sort((a, b) => b.n - a.n || String(a.rule.rule).localeCompare(String(b.rule.rule)));
+  const total = ranked.reduce((sum, r) => sum + r.n, 0);
+  const quiet = known.length - ranked.length;
+  const undecided = new Set(usage.data.filter((row) => row.tool !== null && row.tool !== undefined && !['sanctioned', 'unsanctioned'].includes(row.sanctioned_state)).map((row) => String(row.tool))).size;
+  const summary = [
+    quiet === 0 ? 'Every rule matched a prompt in this window' : `${plural(quiet, 'rule', 'rules')} matched nothing in this window`,
+    usage === NOTHING ? null : undecided === 0 ? 'every tool in use has a sanction decision' : `${plural(undecided, 'tool waits', 'tools wait')} for a sanction decision`,
+  ].filter(Boolean).join(' · ');
+  return Object.freeze({
+    ...base,
+    summary: `${summary}.`,
+    emptyText: 'No rule matched a prompt in this window.',
+    items: Object.freeze(ranked.slice(0, limit).map(({ rule, n }) => Object.freeze({
+      key: String(rule.rule),
+      href: null,
+      label: String(rule.rule),
+      mono: true,
+      chip: Object.freeze({ key: RULE_ACTION_KEYS[rule.action] ?? 'unknown', text: RULE_ACTION_LABELS[rule.action] ?? String(rule.action ?? 'unknown') }),
+      value: { kind: 'number', value: n },
+      share: total > 0 ? n / total : null,
+      meta: Object.freeze([]),
+      trend: Object.freeze([]),
+    }))),
+  });
+}
+
+/**
  * The landing page: what a customer wants at a glance, each figure opening the screen that holds
  * the rest of it. Usage comes from its own question; when it does not come back its panels are
  * empty. The devices reporting tile keeps the enrolled denominator beside every figure here.
@@ -561,11 +602,13 @@ function sensitiveTile(usage, { href }) {
  * @param {object} input
  * @param {object} input.devices    view state for the device list (it carries coverage)
  * @param {object} [input.tools]    view state for tool usage
+ * @param {object} [input.rules]    view state for the enforcement rules as they stand
+ * @param {object} [input.ruleMatches] view state for the prompts each rule matched in the window
  * @param {object} [input.coverage] a coverage block, when the device read did not carry one
  * @param {object} [options]
- * @param {boolean} [options.insights] whether Insights is offered, for the tile that opens it
+ * @param {boolean} [options.activity] whether Policy → Activity is offered, for the tile that opens it
  */
-export function postureView({ devices, tools = null, coverage }, { preset = null, insights = true } = {}) {
+export function postureView({ devices, tools = null, rules = null, ruleMatches = null, coverage }, { preset = null, activity = true } = {}) {
   const cov = devices?.coverage ?? coverage ?? null;
   const usage = tools ?? NOTHING;
   const at = (hash) => withPreset(hash, preset);
@@ -587,14 +630,17 @@ export function postureView({ devices, tools = null, coverage }, { preset = null
   return screen('posture', 'Overview', null, null, {
     subtitle: null,
     tiles: Object.freeze([
-      measureTile('Prompts', usage, 'submissions', formatCount, { trend: trendOf(usage), href: at('#tools'), moreLabel: 'Tools' }),
+      measureTile('Prompts', usage, 'submissions', formatCount, { trend: trendOf(usage), href: at('#tools') }),
       attachmentsTile(usage, { preset }),
-      sensitiveTile(usage, { href: insights ? at('#insights') : null }),
-      usersTile(usage, { href: '#person', moreLabel: 'Users' }),
+      // Activity breaks the sensitive prompts down; where it is not offered, the rules that
+      // matched them are.
+      sensitiveTile(usage, { href: activity ? at('#activity') : '#rules' }),
+      usersTile(usage, { href: at('#person') }),
       reportingTile(cov),
     ]),
     blocks: Object.freeze([
-      sanctionShare(usage, { emptyText: emptyLine(tools, 'No tool was detected in this window.') }),
+      { ...sanctionShare(usage, { emptyText: emptyLine(tools, 'No tool was detected in this window.') }), cardHref: '#sanction' },
+      policyAtWork(rules, ruleMatches, tools ? usage : NOTHING, { href: '#rules' }),
       rankTools(usage, { href: at('#tools'), limit: 6, link: (fingerprint) => toolHref(fingerprint, preset), emptyText: emptyLine(tools, 'No tool was in use in this window.') }),
     ]),
     series: Object.freeze([]),
@@ -605,7 +651,7 @@ export function postureView({ devices, tools = null, coverage }, { preset = null
 }
 
 // ---------------------------------------------------------------------------------------------
-// Insights: Exposure
+// Policy → Activity
 // ---------------------------------------------------------------------------------------------
 
 /** The period of the same length just before the window, in words: "the previous 7 days". */
@@ -793,7 +839,7 @@ function ruleConditionsText(rule) {
  * since removed is listed after the rest under its id. Without the rules, the rows are the ids the
  * matches name; without the matches, the rules are listed with their counts absent.
  */
-function rulesTable(rules, matches) {
+function rulesTable(rules, matches, { period = 'in this window' } = {}) {
   const known = rules && !rules.isRefusal ? rules.data : null;
   const counted = matches && !matches.isRefusal ? matches : null;
   const groups = new Map((counted ? foldCells(counted, 'rule', { sum: RULE_MATCHES, max: [] }) : []).map((g) => [g.key, g]));
@@ -817,13 +863,13 @@ function rulesTable(rules, matches) {
   let summary = null;
   if (known && counted && known.length > 0) {
     const quiet = known.filter((rule) => count(String(rule.rule), 'matches') === 0).length;
-    summary = quiet === 0 ? 'Every rule matched at least one prompt in this window.'
-      : quiet === known.length ? 'No rule matched a prompt in this window.'
-        : `${formatCount(known.length - quiet)} of ${formatCount(known.length)} rules matched a prompt in this window; ${formatCount(quiet)} matched none.`;
+    summary = quiet === 0 ? `Every rule matched at least one prompt ${period}.`
+      : quiet === known.length ? `No rule matched a prompt ${period}.`
+        : `${formatCount(known.length - quiet)} of ${formatCount(known.length)} rules matched a prompt ${period}; ${formatCount(quiet)} matched none.`;
   } else if (known && !counted) {
-    summary = 'The prompts each rule matched could not be read for this window.';
+    summary = `The prompts each rule matched could not be read ${period.replace(/^in /, 'for ')}.`;
   }
-  const emptyText = known ? 'No enforcement rule is set, so every prompt is logged. Rules are set on the Rules page.'
+  const emptyText = known ? 'No enforcement rule is set, so every prompt is logged. Rules are set on Policy → Rules.'
     : rules?.isRefusal ? `The rules could not be read: ${rules.error?.message ?? rules.resultState}.`
       : 'The rules could not be read.';
   return Object.freeze({
@@ -868,9 +914,9 @@ function exposureSeries(usage) {
 }
 
 /**
- * Insights, Exposure: the prompts that matched an enforcement rule on a label the rule names, as
- * a share of every prompt; what happened to them; the tools they went to; the labels involved;
- * and the shape over the window. Every count is compared with the period of the same length just
+ * Policy → Activity: the prompts that matched an enforcement rule on a label the rule names, as a
+ * share of every prompt; what happened to them; the tools they went to; the labels involved; and
+ * the shape over the window. Every count is compared with the period of the same length just
  * before it, when that period could be read.
  *
  * @param {object} input
@@ -880,7 +926,7 @@ function exposureSeries(usage) {
  * @param {object} [input.rules]     view state for the enforcement rules as they stand
  * @param {object} [input.ruleMatches] view state for the prompts each rule matched in the window
  */
-export function insightsView({ usage, previous = null, classes = null, rules = null, ruleMatches = null }, { preset = 'd7', link = toolHref } = {}) {
+export function activityView({ usage, previous = null, classes = null, rules = null, ruleMatches = null }, { preset = 'd7', link = toolHref } = {}) {
   const period = previousPeriod(preset);
   const before = comparable(previous);
   const notes = [
@@ -895,7 +941,7 @@ export function insightsView({ usage, previous = null, classes = null, rules = n
   const prompts = sumMeasure(usage, 'submissions');
   const sensitive = sumMeasure(usage, 'sensitive');
   if (sensitive.kind === 'number' && sensitive.value === 0 && prompts.kind === 'number' && prompts.value > 0) {
-    notes.unshift('No prompt in this window matched a rule that names one of its labels. Nothing counts as sensitive until an enforcement rule names a label; rules are set on the Rules page.');
+    notes.unshift('No prompt in this window matched a rule that names one of its labels. Nothing counts as sensitive until an enforcement rule names a label; rules are set on Policy → Rules.');
   }
   notes.push(before
     ? `Each change compares this window with ${period}.`
@@ -907,8 +953,8 @@ export function insightsView({ usage, previous = null, classes = null, rules = n
   const exposedEmpty = !classes ? 'The labels could not be read for this window.'
     : classes.isRefusal ? `The labels could not be read: ${classes.error?.message ?? classes.resultState}.`
       : emptyLine(classes, 'No label a rule names was found in this window.');
-  return screen('insights', 'Insights', null, 'mart.v_tool_usage', {
-    subtitle: 'Exposure: the prompts that matched an enforcement rule on their labels, where they went and what happened to them.',
+  return screen('activity', 'Activity', null, 'mart.v_tool_usage', {
+    subtitle: 'What the rules caught: the prompts that matched an enforcement rule on their labels, where they went and what happened to them.',
     lead: Object.freeze([exposureFunnel(usage, before, { period, emptyText: emptyLine(usage, 'No prompts in this window.') })]),
     tiles: Object.freeze([]),
     blocks: Object.freeze([
@@ -919,6 +965,89 @@ export function insightsView({ usage, previous = null, classes = null, rules = n
     series: Object.freeze(exposureSeries(usage)),
     tables: Object.freeze([]),
     ...shared(usage, notes),
+  });
+}
+
+/**
+ * Policy → Rules as everyone but an admin reads it: the rules in the order a device applies them,
+ * each with the prompts it decided over the last 30 days. An admin edits them on the same page.
+ *
+ * @param {object} input
+ * @param {object} input.rules         view state for the enforcement rules as they stand
+ * @param {object} [input.ruleMatches] view state for the prompts each rule matched over 30 days
+ */
+export function rulesView({ rules, ruleMatches = null }) {
+  const table = rulesTable(rules, ruleMatches, { period: 'in the last 30 days' });
+  const notes = [
+    'The first rule that matches a prompt decides what happens to it; a prompt no rule matches is allowed and logged.',
+    'Each rule\'s counts are the prompts it decided in the last 30 days, split by what happened to them.',
+    'Only an admin can change the rules.',
+  ];
+  if (ruleMatches?.meta?.truncated) notes.push('Not every rule\'s matches could be read, so some counts are lower than they are.');
+  const state = ruleMatches ?? rules;
+  return screen('rules', 'Rules', null, 'ops.enforcement_rule', {
+    subtitle: 'What happens to a prompt, by who sends it, the tool it goes to and what it holds. The first rule that matches decides.',
+    tiles: Object.freeze([]),
+    tables: Object.freeze([table]),
+    series: Object.freeze([]),
+    ...shared(state, notes),
+  });
+}
+
+/** The order Policy → Tools lists decisions in: the tools still waiting for one first. */
+const DECISION_ORDER = Object.freeze(['unknown', 'unsanctioned', 'sanctioned']);
+
+/**
+ * Policy → Tools: every tool in use over the last 30 days with its sanction decision, the tools
+ * still waiting for one first, each opening its usage. An admin decides them above the list.
+ *
+ * @param {object} state view state for tool usage over the last 30 days (Q1)
+ */
+export function sanctionView(state, { link = toolHref } = {}) {
+  const decision = (group) => (DECISION_ORDER.includes(group.first.sanctioned_state) ? group.first.sanctioned_state : 'unknown');
+  const groups = foldCells(state, 'tool').sort((a, b) => DECISION_ORDER.indexOf(decision(a)) - DECISION_ORDER.indexOf(decision(b))
+    || toolName(a.first).localeCompare(toolName(b.first), undefined, { sensitivity: 'base' }) || a.key.localeCompare(b.key));
+  const rows = groups.map((group) => {
+    const name = toolName(group.first);
+    return Object.freeze({
+      decision: SANCTION_TEXT[decision(group)],
+      tool_cell: Object.freeze({
+        primary: name,
+        mono: name === group.key,
+        title: `Tool fingerprint ${group.key}`,
+        secondary: isSite(group) ? NOT_CATALOGUED : name === UNRECOGNISED_TOOL ? group.key : null,
+      }),
+      submissions: foldedMeasure(group, 'submissions').value ?? null,
+      users: foldedMeasure(group, 'users').value ?? null,
+      href: link ? link(group.key, POLICY_WINDOW) : null,
+    });
+  });
+  return screen('sanction', 'Tools', null, 'mart.v_tool_usage', {
+    subtitle: 'Each tool in use over the last 30 days with its sanction decision. A tool with no decision is unknown, never unsanctioned.',
+    lead: Object.freeze([sanctionShare(state, { emptyText: emptyLine(state, 'No tool was detected in the last 30 days.'), settingsHref: null })]),
+    tiles: Object.freeze([]),
+    tables: Object.freeze([
+      Object.freeze({
+        ...tableFrom({ data: rows }, {
+          title: 'Tools by decision',
+          columns: [
+            column('decision', 'Decision'),
+            column('tool_cell', 'Tool', 'stack'),
+            column('submissions', 'Prompts', 'measure'),
+            column('users', 'People', 'measure'),
+          ],
+          emptyText: emptyLine(state, 'No tool was in use in the last 30 days.'),
+        }),
+        groupBy: 'decision',
+        rowHref: 'href',
+        breakdowns: false,
+      }),
+    ]),
+    series: Object.freeze([]),
+    ...shared(state, [
+      'A decision covers every fingerprint of the tool: each way a device recognises it. Only an admin can change it.',
+      'Prompts and people are the last 30 days. A tool\'s people is the most counted in any one day, a floor for the 30 days.',
+    ]),
   });
 }
 
@@ -1626,30 +1755,47 @@ function seriesTitle(state, what = 'Prompts') {
   return bucket ? `${what} per ${bucket}` : `${what} per bucket`;
 }
 
+/** A filtered tools list with nothing in it, by the sanction it was filtered to. */
+const NONE_WITH = Object.freeze({
+  sanctioned: 'No sanctioned tool was in use in this window.',
+  unsanctioned: 'No unsanctioned tool was in use in this window.',
+  unknown: 'Every tool in use in this window has a sanction decision.',
+});
+
 /**
  * Every AI tool seen in the window, as one ranked list: a tool is one line with its share, its
  * people, its blocks and its trend, and opens its own screen. The per-bucket cells are folded
- * into the window; the chart below is the window over time.
+ * into the window; the chart below is the window over time. A sanction filter narrows everything
+ * but the split of tools by sanction, which is what it chooses from.
  */
-export function toolsView(state, { link = toolHref, preset = null } = {}) {
+export function toolsView(state, { link = toolHref, preset = null, sanction = null } = {}) {
   const linkTo = link ? (fingerprint) => link(fingerprint, preset) : null;
+  const decisionOf = (row) => (SANCTION_PARTS.includes(row.sanctioned_state) ? row.sanctioned_state : 'unknown');
+  const shown = sanction ? Object.freeze({ ...state, data: Object.freeze(state.data.filter((row) => decisionOf(row) === sanction)) }) : state;
+  const href = (value) => withPreset(value ? `#tools?sanction=${value}` : '#tools', preset);
+  const none = sanction ? NONE_WITH[sanction] : 'No tool was in use in this window.';
   return screen('tools', 'Tools', null, 'mart.v_tool_usage', {
     subtitle: 'Every AI tool seen in this window, by prompts. Open a tool to see who uses it and what was sent.',
     lead: Object.freeze([
       sanctionShare(state, { emptyText: emptyLine(state, 'No tool was detected in this window.') }),
     ]),
     tiles: Object.freeze([
-      measureTile('Prompts', state, 'submissions', formatCount, { trend: trendOf(state) }),
-      measureTile('Blocked', state, 'blocked'),
-      measureTile('Data sent', state, 'bytes_total', formatBytes),
-      attachmentsTile(state, { preset }),
+      measureTile('Prompts', shown, 'submissions', formatCount, { trend: trendOf(shown) }),
+      measureTile('Blocked', shown, 'blocked'),
+      measureTile('Data sent', shown, 'bytes_total', formatBytes),
+      attachmentsTile(shown, { preset }),
     ]),
+    filters: Object.freeze([Object.freeze({
+      label: 'Sanction',
+      current: sanction ?? '',
+      items: Object.freeze([{ id: '', label: 'All', href: href(null) }, ...SANCTION_PARTS.map((key) => ({ id: key, label: SANCTION_TEXT[key], href: href(key) }))]),
+    })]),
     blocks: Object.freeze([
-      rankTools(state, { title: 'Tools by prompts', link: linkTo, emptyText: emptyLine(state, 'No tool was in use in this window.') }),
+      rankTools(shown, { title: 'Tools by prompts', link: linkTo, emptyText: emptyLine(state, none) }),
     ]),
-    tables: Object.freeze([uncataloguedTools(state, { link: linkTo })].filter(Boolean)),
+    tables: Object.freeze([uncataloguedTools(shown, { link: linkTo })].filter(Boolean)),
     // A window with no cell has no shape to draw: the ranking's empty line says why.
-    series: Object.freeze(state.data.length > 0 ? [seriesFrom(state, { measure: 'submissions', title: seriesTitle(state) })] : []),
+    series: Object.freeze(shown.data.length > 0 ? [seriesFrom(shown, { measure: 'submissions', title: seriesTitle(shown) })] : []),
     ...shared(state, [
       'Rank is by prompts with a deterministic tie-break, and is never a sanction signal.',
       'Unknown is its own answer: a tool with no decision renders as unknown, never as unsanctioned.',
@@ -1733,34 +1879,6 @@ export function toolView({ usage, people = null, findings = null, names = {} }, 
     ...shared(usage, [
       ...notes,
       'Unknown is its own answer: a tool with no decision renders as unknown, never as unsanctioned.',
-    ]),
-  });
-}
-
-export function unsanctionedView(state) {
-  const tools = new Set(state.data.map((row) => row.tool));
-  return screen('unsanctioned', 'Unsanctioned', TEMPLATES.q2_unsanctioned_users.title, 'mart.agg_tool_user_period', {
-    subtitle: 'Which tools are unsanctioned, and which people are using them. Subject-bearing: this read is audited.',
-    tiles: Object.freeze([
-      measureTile('Prompts', state, 'submissions'),
-      tile('Tools involved', { kind: 'number', text: formatCount(tools.size) }, null),
-      tile('People in this page', { kind: 'number', text: formatCount(state.data.length) }, 'A page count, not a fleet total.'),
-    ]),
-    tables: Object.freeze([
-      tableFrom(state, {
-        title: 'People by tool (ordered by tool, then person — not by volume)',
-        columns: [
-          column('tool', 'Tool'),
-          column('subject', 'User', 'person'),
-          column('submissions', 'Prompts', 'measure'),
-          column('bytes_total', 'Bytes', 'measure-bytes'),
-        ],
-        emptyText: 'Nobody used an unsanctioned tool in this window.',
-      }),
-    ]),
-    series: Object.freeze([]),
-    ...shared(state, [
-      'This table is ordered by tool and then by person: it is a list, not a ranking. There is no view of people sorted by volume.',
     ]),
   });
 }
@@ -1954,48 +2072,6 @@ export function teamView(state, { team, members = null, teams = null, preset = n
   });
 }
 
-export function classesView(state) {
-  const classTotal = state.meta?.extras?.class_total?.[0]?.submissions_total ?? null;
-  const notes = [];
-  const degraded = sumMeasure(state, 'degraded_events');
-  if (degraded.kind === 'number' && degraded.value > 0) {
-    notes.push(`${formatCount(degraded.value)} events in this window could not be classified: a classifier failure is not a fall in sensitive data.`);
-  } else if (degraded.kind === 'absent') {
-    notes.push('This response carries no degraded_events measure, so classifier health for this window is unknown.');
-  }
-  if (classTotal !== null) {
-    notes.push(`The non-additive total for the same window is ${formatCount(classTotal)} prompts, from a different source: class rows fan out and must not be summed as prompts.`);
-  }
-  return screen('classes', 'Data classes', TEMPLATES.q4_class_mix.title, 'mart.agg_class_period', {
-    subtitle: 'Sensitive-data classes, with the classifier health that produced them.',
-    tiles: Object.freeze([
-      measureTile('Class-carrying prompts (fan-out)', state, 'submissions'),
-      measureTile('People (lower bound)', state, 'users'),
-      measureTile('Max score', state, 'max_score', formatScore),
-      tile('Non-additive total', classTotal === null ? { kind: 'absent', text: '—' } : { kind: 'number', text: formatCount(classTotal) },
-        classTotal === null ? 'No separately-computed total came back with this page.' : 'From the tool aggregate, not from summing class rows.'),
-    ]),
-    tables: Object.freeze([
-      tableFrom(state, {
-        title: 'Classes by prompts',
-        columns: [
-          column('class', 'Class', 'vocab'),
-          column('severity', 'Severity', 'vocab'),
-          column('tool', 'Tool'),
-          column('classifier_version', 'Classifier', 'vocab'),
-          column('submissions', 'Prompts carrying it', 'measure'),
-          column('users', 'People', 'measure'),
-          column('max_score', 'Max score', 'measure-score'),
-          column('degraded_events', 'Degraded', 'measure'),
-        ],
-        emptyText: 'No sensitive data was classified in this window.',
-      }),
-    ]),
-    series: Object.freeze([seriesFrom(state, { measure: 'submissions', title: 'Class-carrying prompts per bucket' })]),
-    ...shared(state, notes),
-  });
-}
-
 export function personView(state, { subject, person = null, preset = null, exploreHref = 'explore.html' }) {
   const series = seriesFrom(state, { measure: 'submissions', title: 'Prompts per day' });
   const flush = state.meta?.extras?.flush_check?.[0] ?? null;
@@ -2045,22 +2121,28 @@ export function personView(state, { subject, person = null, preset = null, explo
 }
 
 /**
- * The people the directory and the devices know, by name, to open one person's page. It has no
- * usage column to sort by: it is a directory, not a ranking. Above it, when read, each team's
- * people with their prompts in the window, by team and then by name.
+ * The people the directory and the devices know, by name, to open one person's page, each with
+ * the teams they are in and their prompts in the window from those teams' rosters. It is a
+ * directory, not a ranking: it is in name order, and nothing sorts it by usage.
  */
 export function peopleView(state, { search = '', members = null } = {}) {
   const next = state.page?.next_cursor ?? null;
   const query = (extra) => new URLSearchParams({ ...(search ? { q: search } : {}), ...extra }).toString();
   const named = state.data.filter((row) => row.directory_name || row.subject_name).length;
-  const table = tableFrom(state, {
+  const roster = members && !members.isRefusal ? new Map(foldMembers(members.data).map((row) => [row.subject, row])) : null;
+  const rows = state.data.map((row) => {
+    const member = roster?.get(row.subject) ?? null;
+    return Object.freeze({ ...row, team_names: member?.team_names ?? null, submissions: member ? member.submissions : null });
+  });
+  const table = tableFrom({ ...state, data: rows }, {
     title: search ? `People whose name starts with "${search}"` : 'People',
     columns: [
       column('name', 'Name', 'person'),
+      column('team_names', 'Teams'),
       column('department', 'Department'),
-      column('org_unit', 'Organisational unit'),
       column('directory_status', 'Directory', 'vocab'),
       column('last_active_day', 'Last active', 'instant'),
+      column('submissions', 'Prompts', 'measure'),
     ],
     emptyText: search ? 'Nobody\'s name starts with that.' : 'Nobody is known yet: people arrive from the directory, or with their first prompt.',
   });
@@ -2069,7 +2151,6 @@ export function peopleView(state, { search = '', members = null } = {}) {
     search: Object.freeze({ value: search }),
     tiles: Object.freeze([]),
     tables: Object.freeze([
-      ...(members && !members.isRefusal ? [teamMembersTable(members, { title: 'Users' })] : []),
       Object.freeze({
         ...table,
         breakdowns: false,
@@ -2081,6 +2162,7 @@ export function peopleView(state, { search = '', members = null } = {}) {
       ...(state.data.length > 0 && named === 0
         ? ['No name is known for anyone on this page: the tenant keeps people hashed, or no directory has been read yet. Each is listed by reference.']
         : []),
+      ...(roster ? ['Teams and prompts come from the rosters of the teams with usage in this window: a person in none of them shows a dash, not a zero.'] : []),
       ...teamMembersNotes(members),
     ]),
     // A list of people is current state, not a measurement: fleet coverage and aggregate age say
@@ -2130,67 +2212,74 @@ const DEVICE_LABELS = Object.freeze({ windows: 'Windows', macos: 'macOS', linux:
 const STATUS_LABELS = Object.freeze({ attention: 'Needs attention', reporting: 'Reporting', stale: 'Quiet', never_reported: 'Never checked in', degraded: 'Degraded', tampered: 'Tampered', revoked: 'Revoked' });
 const ATTENTION_KEYS = Object.freeze(['stale', 'never_reported', 'degraded', 'tampered']);
 
-/** The words beside a device's name: what it runs, whether it is managed, its agent and its mode. */
+/** The words beside a device's name: what it runs, whether it is managed, and its agent. */
 function deviceFacts(row) {
   const os = [DEVICE_LABELS[row.device_os] ?? (row.device_os ? String(row.device_os) : null), row.os_version ? String(row.os_version) : null].filter(Boolean).join(' ');
   return [
     os || null,
     DEVICE_LABELS[row.managed_state] ?? (row.managed_state ? String(row.managed_state) : null),
     row.agent_version ? `Agent ${row.agent_version}` : null,
-    row.collection_mode ? COLLECTION_MODE_LABELS[row.collection_mode] ?? `Mode ${row.collection_mode}` : null,
   ].filter(Boolean).join(' · ') || null;
+}
+
+/** The collection mode a device reported it applied, in words; null when it reported none. */
+const modeText = (row) => (row.collection_mode ? COLLECTION_MODE_LABELS[row.collection_mode] ?? `Mode ${row.collection_mode}` : null);
+
+/** One device's page. */
+export const deviceHref = (device) => `#devices?device=${encodeURIComponent(String(device))}`;
+
+/** One device's row, in the cells the list and the device's page both show. */
+function deviceRow(row, now) {
+  const status = deviceStatus(row);
+  const lastSeen = row.last_seen_at ? ago(row.last_seen_at, now) : null;
+  const collectors = collectorsSummary(row);
+  // The device name is the hostname, with the UUID kept for the hover and as the fallback. The
+  // user is the clear account name of the most recent submission, with the pseudonymous ref as
+  // the fallback. directory_name is the directory's own current name, shown above it when a
+  // sync has supplied one; both are absent for a 'hashed' tenant.
+  const user = row.subject_name ?? row.user_ref ?? null;
+  const directoryName = row.directory_name ?? null;
+  return {
+    ...row,
+    status: status.key,
+    status_text: status.text,
+    last_seen_at_ago: lastSeen,
+    device_name: row.hostname || null,
+    user,
+    directory_name: directoryName,
+    mode: modeText(row),
+    collectors,
+    href: row.device ? deviceHref(row.device) : null,
+    device_cell: Object.freeze({
+      primary: row.hostname || (row.device ? `${String(row.device).slice(0, 8)}…` : null),
+      mono: !row.hostname,
+      title: row.device ? String(row.device) : null,
+      secondary: deviceFacts(row),
+    }),
+    user_cell: Object.freeze({
+      primary: directoryName ?? user,
+      secondary: directoryName && user && directoryName !== user ? user : null,
+      title: row.user_ref ? String(row.user_ref) : null,
+    }),
+    status_cell: Object.freeze({
+      chip: Object.freeze({ key: status.key, text: status.text }),
+      secondary: [lastSeen ? `Last seen ${lastSeen}` : null, collectors ? `Collectors ${collectors}` : null].filter(Boolean).join(' · ') || null,
+    }),
+  };
 }
 
 /**
  * Devices, as a customer reads them: how much of the fleet is reporting, which devices need
- * attention and why, and one row per device in three cells: the device and what it runs, the
- * person on it, and its state with when it was last seen. A row opens the device's activity.
+ * attention and why, and one row per device: the device and what it runs, its state with when it
+ * was last seen, the person on it, and the collection mode it applied. A row opens the device.
  *
  * @param {object} state view state for the device list
  * @param {object} [options]
  * @param {object} [options.filters]    status (attention | reporting | one state), device_os, managed_state
  * @param {Date}   [options.now]        for "last seen"
- * @param {string} [options.exploreHref] the search page, which lists one device's events
  */
-export function devicesView(state, { filters = {}, now = new Date(), exploreHref = 'explore.html' } = {}) {
-  const all = state.data.map((row) => {
-    const status = deviceStatus(row);
-    const lastSeen = row.last_seen_at ? ago(row.last_seen_at, now) : null;
-    const collectors = collectorsSummary(row);
-    // The device name is the hostname, with the UUID kept for the hover and as the fallback. The
-    // user is the clear account name of the most recent submission, with the pseudonymous ref as
-    // the fallback. directory_name is the directory's own current name, shown above it when a
-    // sync has supplied one; both are absent for a 'hashed' tenant.
-    const user = row.subject_name ?? row.user_ref ?? null;
-    const directoryName = row.directory_name ?? null;
-    return {
-      ...row,
-      status: status.key,
-      status_text: status.text,
-      last_seen_at_ago: lastSeen,
-      device_name: row.hostname || null,
-      user,
-      directory_name: directoryName,
-      mode: row.collection_mode ?? null,
-      collectors,
-      activity: row.device ? `${exploreHref}#events?device=${encodeURIComponent(String(row.device))}` : null,
-      device_cell: Object.freeze({
-        primary: row.hostname || (row.device ? `${String(row.device).slice(0, 8)}…` : null),
-        mono: !row.hostname,
-        title: row.device ? String(row.device) : null,
-        secondary: deviceFacts(row),
-      }),
-      user_cell: Object.freeze({
-        primary: directoryName ?? user,
-        secondary: directoryName && user && directoryName !== user ? user : null,
-        title: row.user_ref ? String(row.user_ref) : null,
-      }),
-      status_cell: Object.freeze({
-        chip: Object.freeze({ key: status.key, text: status.text }),
-        secondary: [lastSeen ? `Last seen ${lastSeen}` : null, collectors ? `Collectors ${collectors}` : null].filter(Boolean).join(' · ') || null,
-      }),
-    };
-  });
+export function devicesView(state, { filters = {}, now = new Date() } = {}) {
+  const all = state.data.map((row) => deviceRow(row, now));
   const needsAttention = all.filter((row) => row.status !== 'reporting');
 
   const specific = ATTENTION_KEYS.includes(filters.status) || filters.status === 'revoked' ? filters.status : '';
@@ -2278,44 +2367,156 @@ export function devicesView(state, { filters = {}, now = new Date(), exploreHref
             column('device_cell', 'Device', 'stack'),
             column('status_cell', 'Status', 'stack'),
             column('user_cell', 'User', 'stack'),
-            Object.freeze({ key: 'activity', label: '', kind: 'link', linkLabel: 'View activity' }),
+            column('mode', 'Applied mode'),
           ],
           emptyText: 'No device matches these filters.',
         }),
-        rowHref: 'activity',
+        rowHref: 'href',
         breakdowns: false,
       }),
     ]),
     series: Object.freeze([]),
     ...shared(state, [
       'Reporting, quiet, never checked in and revoked are four different facts, and none is inferred from silence.',
-      'One row per device. Its status is the worst of its collectors\' states; the collectors themselves are listed from the device\'s activity.',
+      'One row per device. Its status is the worst of its collectors\' states; open a device to see each collector.',
+      'Applied mode is the collection mode the device reported it applied, which can trail the mode set in Settings until the device next checks in.',
     ]),
   });
 }
 
-export function auditView(state) {
-  return screen('audit', 'Audit', TEMPLATES.q10_audit_trail.title, 'ops.audit', {
+/** What a collector reported, in the order the server returned them. Off in policy is not a fault. */
+function collectorRows(collectors) {
+  return collectors.data.map((r) => {
+    const off = r.error_code === 'disabled_by_policy';
+    return Object.freeze({
+      collector: r.collector ?? null,
+      state: off ? 'disabled' : r.collector_state ?? 'unknown',
+      state_text: off ? 'Off in policy' : String(r.collector_state ?? 'unknown'),
+      // The cause in words, with the device's detail code kept on hover.
+      cause: Object.freeze(off || !r.error_code ? { primary: 'None' } : { primary: COLLECTOR_DETAILS[r.error_code] ?? String(r.error_code), title: String(r.error_code) }),
+      last_report_at: r.last_report_at ?? null,
+    });
+  });
+}
+
+/**
+ * One device: what it runs, its state and the person on it, and every collector it reported, with
+ * the cause each gave. A device the fleet list does not hold is said to be unknown.
+ *
+ * @param {object} input
+ * @param {string} input.device       the device id the address names
+ * @param {object} input.row          view state for the device's row in the fleet list
+ * @param {object} [input.collectors] view state for its collectors
+ */
+export function deviceView({ device, row, collectors = null }, { now = new Date(), exploreHref = 'explore.html' } = {}) {
+  const found = row.data[0] ?? null;
+  const d = found ? deviceRow(found, now) : null;
+  const actions = Object.freeze([
+    Object.freeze({ label: 'Prompts and events', href: `${exploreHref}#events?device=${encodeURIComponent(device)}` }),
+    Object.freeze({ label: 'All devices', href: '#devices' }),
+  ]);
+  if (!d) {
+    return screen('device', `${device.slice(0, 8)}…`, null, 'mart.v_device_liveness', {
+      subtitle: `Device ${device}`,
+      actions,
+      tiles: Object.freeze([]),
+      tables: Object.freeze([]),
+      series: Object.freeze([]),
+      ...shared(row, row.isRefusal ? [] : ['No enrolled device has this id.']),
+    });
+  }
+  const read = collectors && !collectors.isRefusal;
+  const reported = read ? collectors.data.length : found.collectors_reporting ?? null;
+  const tiles = [
+    tile('Status', { kind: 'vocab', text: d.status_text, key: d.status }, d.last_seen_at_ago ? `Last seen ${d.last_seen_at_ago}` : 'Never seen'),
+    tile('Applied mode', d.mode ? { kind: 'vocab', text: d.mode, key: found.collection_mode } : { kind: 'absent', text: '—' }, d.mode ? null : 'The device has not reported a mode.'),
+    tile('Collectors', reported === null ? { kind: 'absent', text: '—' } : { kind: 'number', text: formatCount(count(reported)) }, d.collectors),
+  ];
+  const notes = [];
+  if (collectors?.isRefusal) notes.push(`The collectors could not be read: ${collectors.error?.message ?? collectors.resultState}.`);
+  const user = d.user_cell.primary ? `Last used by ${d.user_cell.primary}` : null;
+  return screen('device', d.device_cell.primary ?? device, null, 'mart.v_device_liveness', {
+    subtitle: [d.device_cell.secondary, user, device].filter(Boolean).join(' · '),
+    actions,
+    tiles: Object.freeze(tiles),
+    tables: Object.freeze(read ? [
+      Object.freeze({
+        ...tableFrom({ data: collectorRows(collectors) }, {
+          title: 'Collectors',
+          columns: [
+            column('collector', 'Collector'),
+            column('state', 'State', 'status'),
+            column('cause', 'Cause', 'stack'),
+            column('last_report_at', 'Last report', 'instant'),
+          ],
+          emptyText: 'This device has not reported any collector.',
+        }),
+        breakdowns: false,
+      }),
+    ] : []),
+    series: Object.freeze([]),
+    ...shared(row, [
+      ...notes,
+      'A collector switched off by policy is off, not a fault. Every other state is the one the device last reported.',
+    ]),
+  });
+}
+
+/** The audit trail's filters, as q10 takes them. */
+const AUDIT_FIELDS = Object.freeze([
+  Object.freeze({ name: 'actor', label: 'Actor', placeholder: 'Who made the read' }),
+  Object.freeze({ name: 'action', label: 'Action', placeholder: 'Such as query.events' }),
+  Object.freeze({ name: 'object_type', label: 'Object type', placeholder: 'Such as ingest.submission' }),
+  Object.freeze({ name: 'case', label: 'Case', placeholder: 'A case reference' }),
+]);
+
+/**
+ * The audit trail: what has been accessed and changed, and by whom, newest first, narrowed by the
+ * filters given. A page that holds more continues on the next.
+ *
+ * @param {object} state view state for the audit trail (Q10)
+ * @param {object} [options]
+ * @param {object} [options.filters] the filters and the cursor in the address
+ * @param {string} [options.preset]  the window, kept by the filters and the next page
+ */
+export function auditView(state, { filters = {}, preset = null } = {}) {
+  const given = Object.fromEntries(AUDIT_FIELDS.map((f) => [f.name, typeof filters[f.name] === 'string' ? filters[f.name] : '']).filter(([, v]) => v !== ''));
+  const window = preset ? { preset } : {};
+  const at = (extra) => {
+    const query = new URLSearchParams({ ...window, ...extra }).toString();
+    return `#audit${query ? `?${query}` : ''}`;
+  };
+  const next = state.page?.next_cursor ?? null;
+  const filtered = Object.keys(given).length > 0;
+  return screen('audit', 'Audit trail', TEMPLATES.q10_audit_trail.title, 'ops.audit', {
     subtitle: 'What has been accessed, and by whom. Reading this log is itself a subject-level read.',
+    form: Object.freeze({
+      screen: 'audit',
+      fields: Object.freeze(AUDIT_FIELDS.map((f) => Object.freeze({ ...f, value: given[f.name] ?? '' }))),
+      clearHref: filtered ? at({}) : null,
+    }),
     tiles: Object.freeze([
       tile('Entries in page', { kind: 'number', text: formatCount(state.data.length) }, null),
       tile('Hash links', { kind: 'vocab', text: state.resultState === 'audit_chain_broken' ? 'broken' : 'verified in this page' }, 'Whole-chain verification is the reconciler\'s job, not a page\'s.'),
       tile('Anchored head', { kind: 'absent', text: 'not exposed' }, 'This API returns no anchor head or anchor time; the dashboard cannot show the last anchored entry.'),
     ]),
     tables: Object.freeze([
-      tableFrom(state, {
-        title: 'Audit entries',
-        columns: [
-          column('occurred_at', 'When', 'instant'),
-          column('actor_type', 'Actor type', 'vocab'),
-          column('actor', 'Actor'),
-          column('action', 'Action', 'vocab'),
-          column('object_type', 'Object type', 'vocab'),
-          column('object_id', 'Object'),
-          column('subject', 'Subject ref'),
-          column('case', 'Case'),
-        ],
-        emptyText: 'Nothing has been accessed in this window.',
+      Object.freeze({
+        ...tableFrom(state, {
+          title: 'Audit entries',
+          columns: [
+            column('occurred_at', 'When', 'instant'),
+            column('actor_type', 'Actor type', 'vocab'),
+            column('actor', 'Actor'),
+            column('action', 'Action', 'vocab'),
+            column('object_type', 'Object type', 'vocab'),
+            column('object_id', 'Object'),
+            column('subject', 'Subject ref'),
+            column('case', 'Case'),
+          ],
+          emptyText: filtered ? 'Nothing matches these filters in this window.' : 'Nothing has been accessed in this window.',
+        }),
+        ...(next ? { href: at({ ...given, cursor: next }), moreLabel: 'Next page' } : {}),
       }),
     ]),
     series: Object.freeze([]),

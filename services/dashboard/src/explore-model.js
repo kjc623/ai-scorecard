@@ -1,8 +1,8 @@
 // explore-model.js — what the Explore page can search, and how a typed query becomes closed filters.
 //
-// Explore is one page over the four list reads of the DSL: events (Q8), findings (Q5), devices (Q7)
-// and the audit trail (Q10). It adds no read path. Every request it makes is one of the existing
-// template builders in questions.js, so it cannot ask anything the DSL does not admit.
+// Explore is one page over two list reads of the DSL: events (Q8) and findings (Q5). It adds no
+// read path. Every request it makes is one of the existing template builders in questions.js, so it
+// cannot ask anything the DSL does not admit.
 //
 // The query bar is a convenience over the same closed filters the rail shows: `tool:tls_b6681b043244c43f
 // action:blocked`. It is parsed here, and anything it cannot place is a *problem* that blocks the
@@ -15,7 +15,6 @@
 
 import { WINDOWS } from './vocab.js';
 import { QUESTIONS, context } from './questions.js';
-import { buildListDocument } from './dsl.js';
 
 const DATA_CLASSES = Object.freeze(['payment_card', 'government_id', 'credential', 'customer_pii', 'source_code', 'legal_commercial', 'health']);
 const SEVERITIES = Object.freeze(['low', 'medium', 'high', 'critical']);
@@ -61,8 +60,7 @@ const USER_FIELD = exploreField('subject', 'User', { hint: 'A name as the direct
  * @property {string} label
  * @property {string} noun          singular, for sentences
  * @property {string} questionId    the template every read of this dataset uses
- * @property {'record'|'row'} detail 'record' re-reads one submission (Q9); 'row' shows the row held
- * @property {ReadonlyArray<string>} windows  window presets offered; empty means current state
+ * @property {ReadonlyArray<string>} windows  window presets offered
  * @property {string} ordering      the server's fixed ordering, stated rather than implied
  */
 
@@ -73,7 +71,6 @@ export const EXPLORE_DATASETS = Object.freeze({
     label: 'Events',
     noun: 'event',
     questionId: 'q8_activity',
-    detail: 'record',
     exportable: true,
     windows: Object.freeze(['h6', 'h24', 'd7', 'd30']),
     defaultWindow: 'd7',
@@ -110,7 +107,6 @@ export const EXPLORE_DATASETS = Object.freeze({
     label: 'Findings',
     noun: 'finding',
     questionId: 'q5_findings',
-    detail: 'record',
     exportable: true,
     windows: Object.freeze(['h24', 'd7', 'd30']),
     defaultWindow: 'd7',
@@ -132,96 +128,6 @@ export const EXPLORE_DATASETS = Object.freeze({
       exploreColumn('subject', 'User', 'person'),
       exploreColumn('tool', 'Tool', 'mono'),
       exploreColumn('review_state', 'Review', 'vocab'),
-    ]),
-  }),
-
-  devices: Object.freeze({
-    id: 'devices',
-    label: 'Devices',
-    noun: 'device row',
-    questionId: 'q7_devices',
-    detail: 'row',
-    windows: Object.freeze([]),
-    defaultWindow: null,
-    ordering: 'By device',
-    rowKey: (row) => String(row.device),
-    fields: Object.freeze([
-      exploreField('liveness', 'Liveness', { values: ['reporting', 'stale', 'never_reported', 'revoked'] }),
-      exploreField('collector_state', 'Collector state', { values: ['healthy', 'degraded', 'absent', 'tampered'] }),
-      exploreField('device_os', 'OS', { values: ['windows', 'macos'] }),
-      exploreField('managed_state', 'Managed', { values: ['managed', 'unmanaged', 'unknown'] }),
-      exploreField('collector', 'Collector', { hint: 'Such as capture_extension' }),
-      exploreField('region', 'Region', { hint: 'A residency region, such as eu' }),
-    ]),
-    columns: Object.freeze([
-      exploreColumn('device', 'Device', 'id'),
-      exploreColumn('device_os', 'OS', 'vocab'),
-      exploreColumn('managed_state', 'Managed', 'vocab'),
-      exploreColumn('region', 'Region', 'mono'),
-      exploreColumn('liveness', 'Liveness', 'vocab'),
-      exploreColumn('collectors_reporting', 'Collectors', 'count'),
-      exploreColumn('collectors_degraded', 'Degraded', 'count'),
-      exploreColumn('collectors_tampered', 'Tampered', 'count'),
-      exploreColumn('last_seen_at', 'Last seen', 'server-clock'),
-      exploreColumn('spool_dropped_total', 'Dropped', 'count'),
-    ]),
-    detailFields: Object.freeze([
-      exploreColumn('device', 'Device', 'mono'),
-      exploreColumn('device_os', 'OS', 'vocab'),
-      exploreColumn('managed_state', 'Managed', 'vocab'),
-      exploreColumn('region', 'Region', 'mono'),
-      exploreColumn('liveness', 'Liveness', 'vocab'),
-      exploreColumn('collectors_reporting', 'Collectors', 'count'),
-      exploreColumn('collectors_healthy', 'Healthy', 'count'),
-      exploreColumn('collectors_degraded', 'Degraded', 'count'),
-      exploreColumn('collectors_absent', 'Absent', 'count'),
-      exploreColumn('collectors_tampered', 'Tampered', 'count'),
-      exploreColumn('last_seen_at', 'Last seen', 'server-clock'),
-      exploreColumn('spool_depth', 'Spool depth', 'count'),
-      exploreColumn('spool_dropped_total', 'Dropped from spool', 'count'),
-    ]),
-  }),
-
-  audit: Object.freeze({
-    id: 'audit',
-    label: 'Audit trail',
-    noun: 'audit entry',
-    questionId: 'q10_audit_trail',
-    detail: 'row',
-    windows: Object.freeze(['h24', 'd7', 'd30', 'd90']),
-    defaultWindow: 'd7',
-    ordering: 'Newest first',
-    rowKey: (row) => String(row.audit_seq),
-    fields: Object.freeze([
-      exploreField('actor', 'Actor', { hint: 'Who made the read' }),
-      exploreField('action', 'Action', {
-        values: ['query.aggregate', 'query.events', 'query.findings', 'query.devices', 'query.coverage', 'query.record', 'audit.read'],
-        closed: false,
-      }),
-      exploreField('object_type', 'Object type', { hint: 'Such as ingest.submission' }),
-      USER_FIELD,
-      exploreField('case', 'Case', { hint: 'A case reference' }),
-    ]),
-    columns: Object.freeze([
-      exploreColumn('occurred_at', 'When', 'server-clock'),
-      exploreColumn('actor', 'Actor', 'text'),
-      exploreColumn('action', 'Action', 'mono'),
-      exploreColumn('object_type', 'Object type', 'mono'),
-      exploreColumn('subject', 'User', 'mono'),
-      exploreColumn('case', 'Case', 'mono'),
-    ]),
-    detailFields: Object.freeze([
-      exploreColumn('audit_seq', 'Entry', 'mono'),
-      exploreColumn('occurred_at', 'When', 'server-clock'),
-      exploreColumn('actor_type', 'Actor type', 'vocab'),
-      exploreColumn('actor', 'Actor', 'text'),
-      exploreColumn('action', 'Action', 'mono'),
-      exploreColumn('object_type', 'Object type', 'mono'),
-      exploreColumn('object_id', 'Object', 'mono'),
-      exploreColumn('subject', 'User', 'mono'),
-      exploreColumn('case', 'Case', 'mono'),
-      exploreColumn('row_hash', 'Row hash', 'mono'),
-      exploreColumn('prev_hash', 'Previous hash', 'mono'),
     ]),
   }),
 });
@@ -355,7 +261,6 @@ export function formatExploreQuery(filters, dataset, names = {}) {
 
 /** The window preset in force for a dataset: the one asked for when it is offered, else the default. */
 export function exploreWindowPreset(dataset, preset) {
-  if (dataset.windows.length === 0) return null;
   return dataset.windows.includes(preset) ? preset : dataset.defaultWindow;
 }
 
@@ -399,11 +304,6 @@ export function buildExploreRecordRequest({ submissionId, receivedAtHint }) {
   return QUESTIONS.q9_event_detail.request(context({
     filters: { submission_id: submissionId, received_at_hint: receivedAtHint },
   }));
-}
-
-/** Every collector one device has reported, behind a device row. A device reports a few dozen at most. */
-export function buildExploreCollectorsRequest(device) {
-  return buildListDocument('ops.collector_state', { device: String(device ?? '') }, 100);
 }
 
 /** `#events?window=d7&tool=tls_b6681b043244c43f&open=<key>`: the whole page state, so a search can be linked. */

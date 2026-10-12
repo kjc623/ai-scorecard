@@ -66,7 +66,6 @@ const SAMPLE_RULES = Object.freeze({
   health: Object.freeze({ rule: 'HEALTH_CLINICAL_VOCABULARY', rule_title: 'Clinical information', severity: 'critical' }),
   legal_commercial: Object.freeze({ rule: 'LEGAL_CLAUSE_VOCABULARY', rule_title: 'Contract language', severity: 'medium' }),
 });
-const SAMPLE_ANALYSTS = Object.freeze(['r.okafor@customer.example', 'm.lindqvist@customer.example', 'd.haddad@customer.example']);
 
 /** mulberry32: small, seedable, and good enough to spread sample rows. */
 function sampleRng(seed) {
@@ -201,96 +200,10 @@ export function buildExploreSample(now) {
     }
   }
 
-  // Each device's collector rows as ops.collector_state holds them: capture-core and the extension
-  // on every device that checked in, plus Claude Code's configuration (tampered on every third
-  // device) and Cursor's, switched off by policy, on a device that reports. The device rows sum
-  // them, one row per device.
-  const collectors = [];
-  const devices = [];
-  for (let i = 0; i < 14; i += 1) {
-    const device = sampleUuid(0xd0, i);
-    const os = i % 3 === 0 ? 'macos' : 'windows';
-    const region = i % 4 === 0 ? 'us' : 'eu';
-    const base = { device, device_os: os, managed_state: i === 7 ? 'unknown' : 'managed', region };
-    if (i === 11) {
-      devices.push(Object.freeze({ ...base, managed_state: 'unmanaged', liveness: 'never_reported', collectors_reporting: 0, collectors_healthy: 0, collectors_degraded: 0, collectors_absent: 0, collectors_tampered: 0, collectors: [], spool_depth: null, spool_dropped_total: null, last_seen_at: null }));
-      continue;
-    }
-    const liveness = i === 5 ? 'stale' : i === 9 ? 'revoked' : 'reporting';
-    const seen = liveness === 'reporting' ? end - Math.floor(rand() * 600_000) : end - Math.floor((2 + rand() * 16) * 86_400_000);
-    const last_seen_at = sampleIso(seen);
-    const own = [];
-    for (const collector of ['capture_core', 'capture_extension']) {
-      const state = liveness === 'revoked' ? 'absent' : liveness === 'stale' ? 'degraded' : i === 2 && collector === 'capture_extension' ? 'tampered' : 'healthy';
-      own.push(Object.freeze({
-        device, collector, collector_state: state,
-        error_code: state === 'tampered' ? 'bundle_signature_invalid' : null,
-        last_report_at: last_seen_at, last_success_at: state === 'healthy' ? last_seen_at : null,
-        spool_depth: state === 'degraded' ? Math.floor(200 + rand() * 900) : 0,
-      }));
-    }
-    if (liveness === 'reporting') {
-      const tampered = parseInt(device.slice(-2), 16) % 3 === 0;
-      own.push(Object.freeze({
-        device, collector: 'tool_config_claude_code', collector_state: tampered ? 'degraded' : 'healthy',
-        error_code: tampered ? 'config_tampered' : null, last_report_at: last_seen_at, last_success_at: last_seen_at, spool_depth: 0,
-      }));
-      own.push(Object.freeze({
-        device, collector: 'tool_config_cursor', collector_state: 'absent',
-        error_code: 'disabled_by_policy', last_report_at: last_seen_at, last_success_at: null, spool_depth: 0,
-      }));
-    }
-    const by = (state) => own.filter((c) => c.collector_state === state).length;
-    devices.push(Object.freeze({
-      ...base,
-      liveness,
-      collectors_reporting: own.length,
-      collectors_healthy: by('healthy'),
-      collectors_degraded: by('degraded'),
-      collectors_absent: by('absent'),
-      collectors_tampered: by('tampered'),
-      collectors: own.map((c) => c.collector).sort(),
-      spool_depth: own.reduce((n, c) => n + c.spool_depth, 0),
-      spool_dropped_total: liveness === 'revoked' ? 4412 : 0,
-      last_seen_at,
-    }));
-    for (const c of own) {
-      collectors.push(Object.freeze({ device: c.device, collector: c.collector, collector_state: c.collector_state, error_code: c.error_code, last_report_at: c.last_report_at, last_success_at: c.last_success_at }));
-    }
-  }
-  devices.sort((a, b) => a.device.localeCompare(b.device));
-
-  const audit = [];
-  let auditMs = end;
-  for (let i = 0; i < 44; i += 1) {
-    auditMs -= Math.floor(rand() * 2 * (SAMPLE_SPAN_MS / 44)) + 1000;
-    const kind = rand();
-    const event = pick(events);
-    const record = kind < 0.3;
-    const action = record ? 'query.record' : kind < 0.65 ? 'query.events' : kind < 0.85 ? 'query.findings' : 'audit.read';
-    audit.push(Object.freeze({
-      audit_seq: 8200 - i,
-      occurred_at: sampleIso(auditMs),
-      actor_type: 'user',
-      actor: pick(SAMPLE_ANALYSTS),
-      action,
-      object_type: action === 'audit.read' ? 'ops.audit' : action === 'query.findings' ? 'mart.v_finding' : 'ingest.submission',
-      object_id: record ? event.submission_id : null,
-      subject: action === 'audit.read' ? null : event.subject,
-      case: record && rand() < 0.6 ? `CASE-2026-${100 + Math.floor(rand() * 60)}` : null,
-      detail: Object.freeze(record ? {} : { filters: action === 'audit.read' ? [] : ['subject'] }),
-      prev_hash: sampleHex(Math.imul(8199 - i, 2246822519), 8),
-      row_hash: sampleHex(Math.imul(8200 - i, 2246822519), 8),
-    }));
-  }
-
   return Object.freeze({
     people: Object.freeze(people),
     events: Object.freeze(events),
     findings: Object.freeze(findings),
-    devices: Object.freeze(devices),
-    collectors: Object.freeze(collectors),
-    audit: Object.freeze(audit),
   });
 }
 
@@ -298,8 +211,6 @@ export function buildExploreSample(now) {
 const SAMPLE_LISTS = Object.freeze({
   q8_activity: Object.freeze({ rows: 'events', clock: 'received_at', source: 'ingest.submission', audited: true }),
   q5_findings: Object.freeze({ rows: 'findings', clock: 'detected_at', source: 'mart.v_finding', audited: true }),
-  q7_devices: Object.freeze({ rows: 'devices', clock: null, source: 'mart.v_device_liveness', audited: false }),
-  q10_audit_trail: Object.freeze({ rows: 'audit', clock: 'occurred_at', source: 'ops.audit', audited: true }),
 });
 
 const SAMPLE_NON_FILTERS = Object.freeze(['window', 'limit', 'cursor']);
@@ -494,21 +405,6 @@ export function createExploreFake({ now = () => new Date(), scenario = 'realisti
     });
   }
 
-  // One device's collector rows: a list document with an equality filter on the device, not audited.
-  function collectorsReply(body) {
-    if (current === 'busy') return STATE_ENVELOPES.busy;
-    const device = (body.filters ?? []).find((f) => f.field === 'device' && f.op === 'eq')?.value;
-    if (!device) return STATE_ENVELOPES.refused_shape;
-    const rows = current === 'empty' ? [] : sample.collectors.filter((row) => row.device === device);
-    return sampleEnvelope(rows.length > 0 ? 'ok' : 'empty', {
-      data: rows,
-      page: Object.freeze({ returned: rows.length, next_cursor: null, snapshot_upper_bound: sampleIso(now().getTime()), newer_events_exist: false }),
-      freshness: freshFor('ops.collector_state'),
-      coverage: coverage(),
-      meta: { source: 'ops.collector_state', kind: 'list' },
-    });
-  }
-
   // The people list: a case-insensitive name prefix, or one reference. Ordered by name, as the
   // product orders it.
   function peopleReply(body) {
@@ -537,7 +433,6 @@ export function createExploreFake({ now = () => new Date(), scenario = 'realisti
 
   const answer = (body) => {
     if (body?.source === 'mart.v_person') return peopleReply(body);
-    if (body?.source === 'ops.collector_state') return collectorsReply(body);
     if (SAMPLE_LISTS[body?.template]) return listReply(body);
     if (body?.template === 'q9_event_detail') return recordReply(body);
     return STATE_ENVELOPES.refused_shape;

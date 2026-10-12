@@ -2,49 +2,64 @@
 // shape, the reader's stored preferences, and the controls in the navigation panel.
 //
 // The dashboard (app.js) and the Explore page (explore-app.js) both boot through this, so the
-// sidebar is one thing: the same groups, the same folding, the same theme switch, and the same line
-// saying who is signed in, with its sign-out button.
+// sidebar is one thing: the same destinations, the same theme switch, and the same line saying who
+// is signed in, with its sign-out button.
 
 import { escapeHtml } from './render.js';
 
 /**
- * The navigation: Rules beside Overview, the usage screens under one group, the admin's settings
- * under another, and the pages still being built under Archive, which only pre-production offers.
- * Every other screen is reached from a row or a switch on one of these. A signed-in role sees only
- * the items its server offers it (session.js), and a group with none of its items offered is not
- * shown.
+ * The navigation: four destinations and Settings, each holding its pages as tabs under its title.
+ * Archive holds the pages still being built, and only pre-production offers it. Settings and Archive
+ * sit at the foot of the panel. Every other screen is reached from a row or a tile on one of these.
  */
-export const NAV_GROUPS = Object.freeze([
-  { group: null, icon: 'overview', ids: ['posture'], labels: { posture: 'Overview' } },
-  { group: null, icon: 'rules', ids: ['rules'], labels: { rules: 'Rules' } },
-  { group: 'Usage', icon: 'usage', ids: ['tools', 'teams', 'person'], labels: { tools: 'Tools', teams: 'Teams', person: 'Users' } },
-  { group: null, icon: 'collection', ids: ['devices'], labels: { devices: 'Devices' } },
-  { group: null, icon: 'governance', ids: ['audit'], labels: { audit: 'Audit trail' } },
-  { group: 'Settings', icon: 'settings', ids: ['settings', 'deployment', 'directory'], labels: { settings: 'Settings', deployment: 'Deployment', directory: 'Identity Providers' } },
-  { group: 'Archive', icon: 'archive', ids: ['insights'], labels: { insights: 'Insights' } },
+export const SECTIONS = Object.freeze([
+  section('overview', 'Overview', 'overview', [['posture', 'Overview']]),
+  section('usage', 'Usage', 'usage', [['tools', 'Tools'], ['teams', 'Teams'], ['person', 'Users']]),
+  section('search', 'Search', 'search', [['explore', 'Search']], { href: 'explore.html' }),
+  section('policy', 'Policy', 'rules', [['rules', 'Rules'], ['labels', 'Labels'], ['sanction', 'Tools'], ['activity', 'Activity']]),
+  section('archive', 'Archive', 'archive', [['insights', 'Insights']], { foot: true }),
+  section('settings', 'Settings', 'settings', [['settings', 'Collection'], ['devices', 'Devices'], ['directory', 'Identity Providers'], ['audit', 'Audit trail']], { foot: true }),
 ]);
 
-const NAV_FOLDED = Object.freeze(NAV_GROUPS.filter((g) => g.folded).map((g) => g.group));
-
-/**
- * The navigation as renderNav takes it. `page` prefixes each screen link, so a sibling page links
- * back into the dashboard; the Explore page sits under Rules, as a top-level link, on both.
- */
-export function shellNavItems({ page = '', questionOf = () => null } = {}) {
-  const items = NAV_GROUPS.flatMap(({ group, icon, ids, labels }) => ids.map((id) => ({
-    id, label: labels[id], question: questionOf(id), group, icon, groupIcon: icon, href: `${page}#${id}`,
-  })));
-  const at = items.findIndex((item) => item.id === 'rules') + 1;
-  return [
-    ...items.slice(0, at),
-    { id: 'explore', label: 'Search', href: 'explore.html', icon: 'search', group: null },
-    ...items.slice(at),
-  ];
+function section(id, label, icon, pages, { href = null, foot = false } = {}) {
+  return Object.freeze({
+    id, label, icon, href, foot,
+    pages: Object.freeze(pages.map(([page, title]) => Object.freeze({ id: page, label: title }))),
+  });
 }
 
-/** The group a screen sits under, for the eyebrow above its title. */
-export function groupOf(screenId) {
-  return NAV_GROUPS.find((g) => g.ids.includes(screenId))?.group ?? null;
+/** The destination a page belongs to. An event is a record Search opens. */
+export function sectionOf(pageId) {
+  const id = pageId === 'event' ? 'explore' : pageId;
+  return SECTIONS.find((s) => s.pages.some((p) => p.id === id)) ?? null;
+}
+
+/**
+ * The navigation as renderNav takes it: one link per destination the session is offered, to the
+ * first of its pages the session may open. `allowed` null keeps every page. `page` prefixes each
+ * link, so a sibling page links back into the dashboard.
+ */
+export function shellNavItems({ page = '', allowed = null } = {}) {
+  return SECTIONS.flatMap((s) => {
+    const open = s.pages.filter((p) => !allowed || allowed.has(p.id));
+    if (open.length === 0) return [];
+    return [Object.freeze({
+      id: s.id, label: s.label, icon: s.icon, foot: s.foot,
+      pages: Object.freeze(s.pages.map((p) => p.id)),
+      href: s.href ?? `${page}#${open[0].id}`,
+    })];
+  });
+}
+
+/**
+ * The tabs of the destination a page belongs to, as the page header shows them: the pages the
+ * session may open, each a link. Null for a destination with one page, which needs no tabs.
+ */
+export function tabsFor(pageId, { allowed = null, hrefOf = (id) => `#${id}` } = {}) {
+  const s = sectionOf(pageId);
+  if (!s || s.pages.length < 2) return null;
+  const items = s.pages.filter((p) => !allowed || allowed.has(p.id)).map((p) => Object.freeze({ id: p.id, label: p.label, href: hrefOf(p.id) }));
+  return items.length > 1 ? Object.freeze({ label: s.label, current: pageId, items: Object.freeze(items) }) : null;
 }
 
 const ROLE_LABELS = Object.freeze({ viewer: 'Viewer', analyst: 'Analyst', content_reader: 'Content reader', admin: 'Admin' });
@@ -79,11 +94,11 @@ export function writePref(document, key, value) {
 }
 
 /**
- * The shell's own controls: who is signed in, which navigation groups are folded, the theme, the
- * mobile menu, and a row that opens the record it names. Every lookup is optional, so a test
- * document with none of these elements boots the same way.
+ * The shell's own controls: who is signed in, the theme, the mobile menu, and a row that opens the
+ * record it names. Every lookup is optional, so a test document with none of these elements boots
+ * the same way.
  */
-export function wireShell({ document, collapsed, session = null }) {
+export function wireShell({ document, session = null }) {
   const el = (id) => (typeof document.getElementById === 'function' ? document.getElementById(id) : null);
   const html = document.documentElement;
 
@@ -95,15 +110,6 @@ export function wireShell({ document, collapsed, session = null }) {
   if (html?.dataset && (theme === 'light' || theme === 'dark')) html.dataset.theme = theme;
 
   if (typeof document.addEventListener !== 'function') return;
-
-  // A folded group stays folded across screens and visits.
-  document.addEventListener('toggle', (event) => {
-    const group = event.target?.dataset?.group;
-    if (!group) return;
-    if (event.target.open) collapsed.delete(group);
-    else collapsed.add(group);
-    writePref(document, 'sac.nav.collapsed', [...collapsed].join('|'));
-  }, true);
 
   document.addEventListener('click', (event) => {
     const target = event.target;
@@ -140,9 +146,4 @@ export function wireShell({ document, collapsed, session = null }) {
 function follow(document, href) {
   if (String(href).startsWith('#')) document.location.hash = href;
   else document.location.href = href;
-}
-
-/** The navigation groups the reader has folded; the rarely needed ones start folded. */
-export function readCollapsed(document) {
-  return new Set(String(readPref(document, 'sac.nav.collapsed', NAV_FOLDED.join('|'))).split('|').filter(Boolean));
 }

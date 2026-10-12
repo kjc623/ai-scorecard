@@ -118,7 +118,7 @@ function pickList(state) {
   const rows = items.map((item) => row(state, item)).join('');
   const empty = items.length === 0
     ? `<li class="pick-empty">${loading ? 'Reading…' : escapeHtml(emptyText(state))}`
-      + (!loading && !state.term && state.filter !== 'team' && state.filter !== 'user' ? ' Turn on reading from Microsoft Entra ID under <a href="#directory">Identity Providers</a>, or set up SCIM under <a href="#deployment">Deployment</a>.' : '')
+      + (!loading && !state.term && state.filter !== 'team' && state.filter !== 'user' ? ' Turn on reading from Microsoft Entra ID under <a href="#directory">Identity Providers</a>, or set up SCIM on the same page.' : '')
       + '</li>'
     : '';
   const wantsPeople = state.filter === 'all' || state.filter === 'user';

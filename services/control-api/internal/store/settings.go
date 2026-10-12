@@ -38,12 +38,6 @@ SELECT a.app_key, a.display_name, coalesce(s.sanctioned_state, 'unknown') AS san
     ON s.tenant_id = $1::uuid AND s.tool_key = a.app_key
  ORDER BY a.display_name, a.app_key`
 
-	SQLSettingsDevices = `
-SELECT device_id::text, coalesce(hostname, ''), coalesce(collection_mode, ''), last_seen_at
-  FROM ops.device
- WHERE tenant_id = $1::uuid AND revoked_at IS NULL
- ORDER BY device_id`
-
 	SQLCurrentCollectionMode = `SELECT coalesce(collection_mode, '') FROM ops.tenant WHERE tenant_id = $1::uuid`
 
 	SQLSetCollectionMode = `
@@ -176,9 +170,6 @@ func (s *SQLStore) Settings(ctx context.Context, tenantID string) (Settings, err
 		if out.Tools, err2 = settingsTools(ctx, tx, tenantID); err2 != nil {
 			return err2
 		}
-		if out.Devices, err2 = settingsDevices(ctx, tx, tenantID); err2 != nil {
-			return err2
-		}
 		if out.Endpoint, err2 = endpointSettings(ctx, tx, tenantID); err2 != nil {
 			return err2
 		}
@@ -237,25 +228,6 @@ func settingsTools(ctx context.Context, tx *sql.Tx, tenantID string) ([]ToolDeci
 		if err := json.Unmarshal(fingerprints, &d.Fingerprints); err != nil {
 			return nil, fmt.Errorf("store: settings tools: fingerprints: %w", err)
 		}
-		out = append(out, d)
-	}
-	return out, rows.Err()
-}
-
-func settingsDevices(ctx context.Context, tx *sql.Tx, tenantID string) ([]DeviceMode, error) {
-	rows, err := tx.QueryContext(ctx, SQLSettingsDevices, tenantID)
-	if err != nil {
-		return nil, fmt.Errorf("store: settings devices: %w", err)
-	}
-	defer rows.Close()
-	var out []DeviceMode
-	for rows.Next() {
-		var d DeviceMode
-		var seen sql.NullTime
-		if err := rows.Scan(&d.DeviceID, &d.Hostname, &d.CollectionMode, &seen); err != nil {
-			return nil, fmt.Errorf("store: settings devices: %w", err)
-		}
-		d.LastSeenAt = nullTime(seen)
 		out = append(out, d)
 	}
 	return out, rows.Err()
