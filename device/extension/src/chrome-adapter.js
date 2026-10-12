@@ -237,6 +237,20 @@ export function createChromeAdapter(scope = globalThis) {
     },
 
     /**
+     * A redirect rule's splash page, opened in the tab whose prompt was cancelled. Nothing waits for
+     * it: a request with no tab is not redirected, and the prompt stays cancelled.
+     */
+    showRedirect: async (spec) => {
+      try {
+        if (!Number.isInteger(spec.tab_id) || spec.tab_id < 0) return { shown: false };
+        await api.tabs.update(spec.tab_id, { url: spec.url });
+        return { shown: true };
+      } catch (e) {
+        return { shown: false };
+      }
+    },
+
+    /**
      * The block notice, rendered in the page after the request was cancelled. Nothing waits for
      * it: a tab with no content script shows nothing, and the request stays cancelled.
      */

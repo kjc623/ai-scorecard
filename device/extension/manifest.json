@@ -45,6 +45,16 @@
       "matches": [
         "<all_urls>"
       ]
+    },
+    {
+      "resources": [
+        "splash/redirect.html",
+        "splash/redirect.css",
+        "splash/redirect.js"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ]
 }

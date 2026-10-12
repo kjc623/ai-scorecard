@@ -184,16 +184,23 @@ type EndpointTool struct {
 // RuleAction is what an enforcement rule does to a matching submission.
 type RuleAction string
 
-// The closed set of rule actions. The envelope records allow as logged, warn as warned and block
-// as blocked.
+// The closed set of rule actions. The envelope records allow as logged, warn as warned, and block
+// and redirect as blocked. A redirect sends a person browsing to a web app to the extension's
+// splash page and the rule's link; every other route stops the prompt as a block does.
 const (
-	RuleAllow RuleAction = "allow"
-	RuleWarn  RuleAction = "warn"
-	RuleBlock RuleAction = "block"
+	RuleAllow    RuleAction = "allow"
+	RuleWarn     RuleAction = "warn"
+	RuleBlock    RuleAction = "block"
+	RuleRedirect RuleAction = "redirect"
 )
 
 // Valid reports whether the action is in the closed set.
-func (a RuleAction) Valid() bool { return a == RuleAllow || a == RuleWarn || a == RuleBlock }
+func (a RuleAction) Valid() bool {
+	return a == RuleAllow || a == RuleWarn || a == RuleBlock || a == RuleRedirect
+}
+
+// Stops reports whether the action keeps the prompt from being sent.
+func (a RuleAction) Stops() bool { return a == RuleBlock || a == RuleRedirect }
 
 // MaxRuleMessage is the longest message a rule may carry, in characters.
 const MaxRuleMessage = 280
@@ -792,7 +799,10 @@ func validRules(rules []Rule) error {
 		}
 		seen[r.RuleID] = true
 		if !r.Action.Valid() {
-			return fmt.Errorf("policy: rule %s has action %q outside the set {allow,warn,block}", r.RuleID, r.Action)
+			return fmt.Errorf("policy: rule %s has action %q outside the set {allow,warn,block,redirect}", r.RuleID, r.Action)
+		}
+		if r.Action == RuleRedirect && r.Link == "" {
+			return fmt.Errorf("policy: rule %s redirects without a link", r.RuleID)
 		}
 		if utf8.RuneCountInString(r.Message) > MaxRuleMessage {
 			return fmt.Errorf("policy: rule %s has a message over %d characters", r.RuleID, MaxRuleMessage)

@@ -28,7 +28,7 @@ import { extensionIdFromKey } from './extension-id.mjs';
 export const CRX_FILE = 'shadow-ai-capture.crx';
 const PACKAGE_ROOT = resolve(fileURLToPath(import.meta.url), '..', '..');
 // What a browser loads. Tests, tools and package metadata stay out of the CRX.
-const PACKAGED = ['manifest.json', 'background', 'content', 'src'];
+const PACKAGED = ['manifest.json', 'background', 'content', 'splash', 'src'];
 // A fixed ZIP timestamp makes the CRX a function of its inputs: the same sources, version and key
 // give the same bytes and the same sha256.
 const ZIP_TIME = Date.UTC(2024, 0, 1);

@@ -70,8 +70,9 @@ export function ruleSentence(rule, data, names = {}) {
   if (rule.match.categories.length) clauses.push(`to a tool in ${either(named('categories'))}`);
   if (rule.match.sanction.length) clauses.push(`to ${rule.match.sanction.length === 1 ? (rule.match.sanction[0] === 'unsanctioned' ? 'an unsanctioned' : 'a sanctioned') : 'a sanctioned or unsanctioned'} tool`);
   if (rule.match.routes.length) clauses.push(`seen by ${either(named('routes'))}`);
-  const verb = { allow: 'Allow', warn: 'Warn before sending', block: 'Block' }[rule.action] ?? 'Match';
-  const sentence = clauses.length ? `${verb} prompts ${clauses.join(', ')}.` : `${verb} every prompt.`;
+  const verb = { allow: 'Allow', warn: 'Warn before sending', block: 'Block', redirect: 'Redirect' }[rule.action] ?? 'Match';
+  const noun = rule.action === 'redirect' ? ['visits and prompts', 'visit and prompt'] : ['prompts', 'prompt'];
+  const sentence = clauses.length ? `${verb} ${noun[0]} ${clauses.join(', ')}.` : `${verb} every ${noun[1]}.`;
   return rule.enabled ? sentence : `${sentence} Off: devices are not sent it.`;
 }
 
@@ -513,6 +514,7 @@ function usersSection(panel, names) {
 function seenNote(action) {
   switch (action) {
     case 'block': return 'The request is cancelled, and the person sees “Request blocked” with your message, the link and Dismiss.';
+    case 'redirect': return 'A person opening the web app in the browser sees the Sundial page with your message and a button to your link. A desktop app or command-line tool has no page to show, so there the prompt is blocked with your message and link.';
     case 'warn': return 'The request is held, and the person sees “Request held for confirmation” with your message, the link, Send anyway and Cancel request.';
     default: return 'The prompt is sent and recorded under this rule\'s name; the person sees nothing.';
   }
@@ -550,8 +552,8 @@ export function renderRuleDialog(state) {
   const actions = RULE_ACTIONS.map((a) => `<button type="button" class="seg-item" data-rl="action" data-value="${a}" aria-pressed="${rule.action === a}">${escapeHtml(RULE_ACTION_LABELS[a])}</button>`).join('');
   const action = section('Action', `<div class="seg dp-seg" role="group" aria-label="Action">${actions}</div>`
     + `<p class="dp-note">${escapeHtml(seenNote(rule.action))}</p>`
-    + field('message', rule.action === 'allow' ? 'Message (optional)' : 'Message', rule.message, ` maxlength="${MAX_RULE_MESSAGE}" placeholder="Shown to the person; needed for warn and block"`)
-    + field('link', 'Link (optional)', rule.link, ' placeholder="https://" spellcheck="false"'));
+    + field('message', rule.action === 'allow' ? 'Message (optional)' : 'Message', rule.message, ` maxlength="${MAX_RULE_MESSAGE}" placeholder="Shown to the person; needed for warn, block and redirect"`)
+    + field('link', rule.action === 'redirect' ? 'Link' : 'Link (optional)', rule.link, ' placeholder="https://" spellcheck="false"'));
   const n = panel.index === null ? null : panel.index + 1;
   return '<div class="dialog-panel" tabindex="-1">'
     + '<header class="dialog-head"><div>'

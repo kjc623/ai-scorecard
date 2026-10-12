@@ -99,7 +99,7 @@ type CatalogSignal struct {
 	Value    string `json:"value"`
 }
 
-// Rule is one enforcement rule. Action is allow, warn or block.
+// Rule is one enforcement rule. Action is allow, warn, block or redirect.
 type Rule struct {
 	RuleID  string    `json:"rule_id"`
 	Action  string    `json:"action"`

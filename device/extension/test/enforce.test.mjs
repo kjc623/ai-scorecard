@@ -17,6 +17,7 @@ import {
   DEFAULT_RULE_ID,
   REASON,
   createBudget,
+  decideNavigation,
   decideSync,
   decideWithConfirmation,
   degradedDetail,
@@ -56,6 +57,31 @@ function base(overrides = {}) {
     ...overrides,
   };
 }
+
+test('a matching redirect rule cancels the prompt, is recorded blocked, and asks for the splash page', () => {
+  const redirect = rule('redirect_tool', 'redirect', { tools: ['tf1:redirected'] });
+  const r = decideSync(base({ bundle: { rules: [redirect], sanctioned_tools: [] }, tool_fingerprint: 'tf1:redirected' }));
+  assert.deepEqual(r.decision, { action: DECISION.BLOCKED, rule_id: 'redirect_tool', decided_locally: true });
+  assert.equal(r.reason, REASON.RULE_REDIRECT);
+  assert.equal(r.cancel, true);
+  assert.equal(r.redirect, true);
+  assert.equal(r.link, 'https://intranet.example/redirect_tool');
+});
+
+test('a navigation is redirected only to a catalogued app a redirect rule matches, never to its link\'s own host', () => {
+  const redirect = { ...rule('away', 'redirect', { tools: ['app:chat'] }), link: 'https://approved.example/start' };
+  const bundle = { rules: [redirect], sanctioned_tools: [] };
+  assert.deepEqual(decideNavigation(bundle, { url: 'https://chat.example/', tool_fingerprint: 'app:chat' }),
+    { rule_id: 'away', message: 'msg away', link: 'https://approved.example/start' });
+  assert.equal(decideNavigation(bundle, { url: 'https://chat.example/', tool_fingerprint: 'host:chat.example' }), null);
+  assert.equal(decideNavigation({ rules: [{ ...redirect, match: {} }] }, { url: 'https://news.example/', tool_fingerprint: 'host:news.example' }), null,
+    'a rule that matches everything never redirects a page outside the catalog');
+  assert.equal(decideNavigation({ rules: [{ ...redirect, action: 'block' }] }, { url: 'https://chat.example/', tool_fingerprint: 'app:chat' }), null);
+  for (const url of ['https://approved.example/start', 'https://www.approved.example/']) {
+    assert.equal(decideNavigation({ rules: [{ ...redirect, match: {} }] }, { url, tool_fingerprint: 'app:approved' }), null, `${url} is the link's own host`);
+  }
+  assert.equal(decideNavigation({ rules: 'not a list' }, { url: 'https://chat.example/', tool_fingerprint: 'app:chat' }), null, 'an evaluation error lets the page open');
+});
 
 test('no matching rule is `logged` under policy.default with decided_locally true', () => {
   const r = decideSync(base());

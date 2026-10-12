@@ -794,6 +794,7 @@ td.dp-action { text-align: right; white-space: nowrap; }
 .rl-action-allow { background: var(--ok-bg); color: var(--ok); }
 .rl-action-warn { background: var(--warn-bg); color: var(--warn); }
 .rl-action-block { background: var(--bad-bg); color: var(--bad); }
+.rl-action-redirect { background: var(--info-bg); color: var(--info); }
 .rl-switch {
   position: relative; width: 34px; height: 20px; margin-top: 2px; padding: 0; cursor: pointer; border-radius: 9999px;
   border: 1px solid var(--line-strong); background: var(--sunken); transition: background .3s var(--ease), border-color .3s var(--ease);

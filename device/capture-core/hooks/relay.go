@@ -341,10 +341,10 @@ func decodeEvaluate(msg protocol.NativeMessage) (protocol.HookEvaluate, protocol
 }
 
 func hookAction(a policy.RuleAction) protocol.HookAction {
-	switch a {
-	case policy.RuleBlock:
+	switch {
+	case a.Stops():
 		return protocol.HookBlock
-	case policy.RuleWarn:
+	case a == policy.RuleWarn:
 		return protocol.HookWarn
 	default:
 		return protocol.HookAllow

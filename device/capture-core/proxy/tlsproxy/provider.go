@@ -930,14 +930,14 @@ func (r *ruling) settle() {
 	}
 }
 
-func (r *ruling) blocks() bool { return r.canEnforce && r.decision.Action == policy.RuleBlock }
+func (r *ruling) blocks() bool { return r.canEnforce && r.decision.Action.Stops() }
 
 // message is what the client and the notification show.
 func (r *ruling) message() string {
 	switch {
 	case r.decision.Message != "":
 		return r.decision.Message
-	case r.decision.Action == policy.RuleBlock:
+	case r.decision.Action.Stops():
 		return defaultBlockMessage
 	default:
 		return defaultWarnMessage
@@ -949,7 +949,7 @@ func (r *ruling) message() string {
 // client is connected; the notification is shown in the background, so the client never waits for
 // it. A failure changes nothing about the decision; it is counted.
 func (p *Provider) notifier(conn net.Conn, r *ruling) func() {
-	if !r.canEnforce || (r.decision.Action != policy.RuleBlock && r.decision.Action != policy.RuleWarn) {
+	if !r.canEnforce || (!r.decision.Action.Stops() && r.decision.Action != policy.RuleWarn) {
 		return func() {}
 	}
 	if p.cfg.Session == nil || p.cfg.Notify == nil {

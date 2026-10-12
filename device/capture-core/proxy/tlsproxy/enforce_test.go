@@ -249,6 +249,27 @@ func TestTLSBlockAtM0ReadsNothingAndForwardsNothing(t *testing.T) {
 	waitForNotification(t, e.helper, protocol.Notify{Title: "Shadow AI Capture", Body: ruleMessage})
 }
 
+// A desktop app has no page to redirect, so a redirect rule stops the request as a block does, and
+// the notification carries the rule's message and link.
+func TestTLSRedirectRuleBlocksAndNotifiesWithTheLink(t *testing.T) {
+	redirect := policy.Rule{RuleID: "redirect_proxy", Action: policy.RuleRedirect, Message: ruleMessage, Link: ruleLink,
+		Match: policy.RuleMatch{Routes: []protocol.Route{protocol.RouteProxyTLS}}}
+	e := startEnforcing(t, protocol.ModeM1, nil, redirect)
+	body := `{"model":"claude-sonnet-4-5","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}`
+	resp, _ := e.post(t, "api.anthropic.com", "/v1/messages", contentLength(body), body)
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if n := e.upstream.Load(); n != 0 {
+		t.Fatalf("the upstream received %d requests, want none", n)
+	}
+	waitFor(t, 2*time.Second, "the recorded decision", func() bool { return len(e.pipe.recorded()) == 1 })
+	if d := e.pipe.recorded(); d[0] != decided("redirect_proxy", protocol.ActionBlocked) {
+		t.Fatalf("recorded decisions = %+v, want blocked", d)
+	}
+	waitForNotification(t, e.helper, protocol.Notify{Title: "Shadow AI Capture", Body: ruleMessage, Link: ruleLink})
+}
+
 // A warning rule carries the request, records warned, and notifies once it is forwarded.
 func TestTLSWarnRuleForwardsThenNotifies(t *testing.T) {
 	warn := policy.Rule{RuleID: "warn_credentials", Action: policy.RuleWarn, Message: ruleMessage, Link: ruleLink,

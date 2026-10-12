@@ -412,6 +412,67 @@ test('a block nobody could be shown still cancels, and the missing notice is cou
   assert.equal(h.app.health.counters.snapshot().errors_by_code.block_notice_unavailable, 1);
 });
 
+// ── redirect ────────────────────────────────────────────────────────────────────────────────
+
+const WEB_CATALOG = [{ app_key: 'example_web', category: 'chat_assistant', signals: [{ platform: 'any', kind: 'inference_domain', value: '.example-ai.invalid' }] }];
+const REDIRECT_WEB = {
+  rule_id: 'example_to_copilot',
+  action: 'redirect',
+  match: { labels: [], tools: ['app:example_web'], categories: [], sanction: [], routes: [] },
+  message: 'Use Copilot for work.',
+  link: 'https://copilot.example/',
+};
+const redirectBundle = (rules = [REDIRECT_WEB]) => ({ ...ruleBundle(rules), catalog: WEB_CATALOG });
+const openPage = (url) => chromeRequest({ url, method: 'GET', type: 'main_frame', requestId: 'nav1' });
+
+/** Ask the worker as the splash page does, through Chrome's sendResponse. */
+function askWorker(h, message) {
+  return new Promise((resolve) => {
+    for (const handler of h.fake.state.messageHandlers) handler(message, { url: 'chrome-extension://fake-extension-id/splash/redirect.html' }, resolve);
+  });
+}
+
+test('opening a web app a redirect rule matches goes to the splash page, and the visit is recorded as the rule\'s block', async () => {
+  const h = await started({ bundle: redirectBundle() });
+  const response = await h.fake.drive('body', openPage('https://chat.example-ai.invalid/c/new'));
+  await settle();
+
+  assert.deepEqual(response, { redirectUrl: 'chrome-extension://fake-extension-id/splash/redirect.html?rule=example_to_copilot&from=chat.example-ai.invalid' },
+    'the address names the rule and the host, never the message or link');
+  const obs = h.core.lastObservation();
+  assert.ok(obs, 'a redirected visit is an event, so the rule\'s hits are counted');
+  assert.deepEqual(obs.decision, { action: 'blocked', rule_id: 'example_to_copilot', decided_locally: true });
+  assert.equal(obs.tool_fingerprint, 'app:example_web');
+  assert.equal(obs.has_content, false);
+  assert.equal(obs.size_bytes, 0);
+
+  assert.deepEqual(await askWorker(h, { type: 'capture_redirect_spec', rule_id: 'example_to_copilot' }),
+    { ok: true, message: 'Use Copilot for work.', link: 'https://copilot.example/' }, 'the splash page reads the rule from the bundle in force');
+  assert.deepEqual(await askWorker(h, { type: 'capture_redirect_spec', rule_id: 'block_unsanctioned_browser' }),
+    { ok: false, error: 'no_redirect_rule' }, 'a rule that is not a redirect gives the splash page nothing to show');
+});
+
+test('a redirect does not apply to a page outside the catalog, a sub-frame, or the host its link goes to', async () => {
+  const everywhere = { ...REDIRECT_WEB, rule_id: 'unsanctioned_away', match: { ...REDIRECT_WEB.match, tools: [], sanction: ['unsanctioned'] } };
+  const h = await started({ bundle: redirectBundle([everywhere]) });
+  assert.equal(await h.fake.drive('body', openPage('https://news.example/today')), undefined, 'a rule on sanction alone never redirects the whole web');
+  assert.equal(await h.fake.drive('body', chromeRequest({ url: 'https://chat.example-ai.invalid/', method: 'GET', type: 'sub_frame' })), undefined);
+
+  const loop = await started({ bundle: redirectBundle([{ ...REDIRECT_WEB, link: 'https://chat.example-ai.invalid/approved' }]) });
+  assert.equal(await loop.fake.drive('body', openPage('https://chat.example-ai.invalid/approved')), undefined, 'the link\'s own host is never redirected back to the splash page');
+  await settle();
+  assert.equal(observationFrames(loop.core).length, 0);
+});
+
+test('a prompt a redirect rule matches is cancelled and its tab sent to the splash page', async () => {
+  const h = await started({ bundle: redirectBundle() });
+  const response = await h.fake.drive('body', chromeRequest({ url: CHAT_URL, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }));
+  await settle();
+  assert.deepEqual(response, { cancel: true });
+  assert.deepEqual(h.fake.state.tabUpdates, [{ tabId: 1, url: 'chrome-extension://fake-extension-id/splash/redirect.html?rule=example_to_copilot&from=chat.example-ai.invalid' }]);
+  assert.deepEqual(h.core.lastObservation().decision, { action: 'blocked', rule_id: 'example_to_copilot', decided_locally: true });
+});
+
 test('the bundle\'s rules match on what the extension knows: a label rule does not match without a classification', async () => {
   const h = await started({
     bundle: ruleBundle([{ ...BLOCK_BROWSER, rule_id: 'block_credentials', match: { labels: ['credential'], routes: ['ext.web_request'] } }]),

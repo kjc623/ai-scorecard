@@ -102,6 +102,30 @@ func TestBlockOnCredentialBlocksAnAWSKeyAndRecordsBlocked(t *testing.T) {
 	}
 }
 
+// A command-line tool has no page to redirect, so a redirect rule answers the hook as a block with
+// the rule's message and link, and the prompt is recorded as blocked.
+func TestRedirectRuleAnswersTheHookAsABlock(t *testing.T) {
+	classifier, _ := startClassifier(t, buildClassifier(t, t.TempDir()))
+	sink := &memSink{}
+	redirect := blockCredentials
+	redirect.RuleID, redirect.Action = "redirect_credentials", policy.RuleRedirect
+	pipe := newPipeline(t, sink, testBundle(protocol.ModeM1, redirect))
+	r := newRelay(t, pipe, classifier)
+
+	answer, served := ask(t, r, evaluateFrame(t, "claude_code", "deploy with key "+awsKey+" please"))
+	if d := decision(t, answer); d != (protocol.HookDecision{Action: protocol.HookBlock, Message: redirect.Message, Link: redirect.Link, RuleID: "redirect_credentials"}) {
+		t.Fatalf("decision = %+v", d)
+	}
+	waitServed(t, served)
+	entries := sink.all()
+	if len(entries) != 1 {
+		t.Fatalf("spooled %d records, want 1", len(entries))
+	}
+	if got := decodeEnvelope(t, entries[0]); got.Decision == nil || got.Decision.Action != protocol.ActionBlocked || got.Decision.RuleID != "redirect_credentials" {
+		t.Fatalf("record = %s", entries[0].Payload)
+	}
+}
+
 // Under a classifier host slower than the relay's budget, each hook of a burst is answered from the
 // bundle with the labels unknown, and the host keeps running: a classification that runs out of
 // budget does not end it.
