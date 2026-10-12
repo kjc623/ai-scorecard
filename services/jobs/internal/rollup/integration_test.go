@@ -65,7 +65,7 @@ func TestRollupAgainstPostgreSQL(t *testing.T) {
 	expect(t, tx, "org rows without a directory",
 		`SELECT count(*)::text FROM mart.agg_org_period WHERE tenant_id = $1`, "0", tenant)
 	expect(t, tx, "day watermarks",
-		`SELECT count(*)::text FROM ops.aggregate_watermark WHERE tenant_id = $1 AND bucket_size = 'day'`, "8", tenant)
+		`SELECT count(*)::text FROM ops.aggregate_watermark WHERE tenant_id = $1 AND bucket_size = 'day'`, "9", tenant)
 
 	// A second run over the same inputs leaves the same values and the same number of rows.
 	runBucket(t, tx, tenant, BucketDay, from, to)
@@ -305,6 +305,64 @@ func TestRollupDiscovery(t *testing.T) {
 		`SELECT count(*)::text FROM mart.agg_discovery_period WHERE tenant_id = $1 AND bucket_size = 'day'`, "3", tenant)
 }
 
+func TestRollupAgentActivity(t *testing.T) {
+	tx := pgtest.Tx(t, pgtest.Open(t))
+	tenant, device := pgtest.Tenant(t, tx)
+	ev := events{tenant: tenant, device: device}
+	const from, to = "2026-01-15T00:00:00Z", "2026-01-16T00:00:00Z"
+	const bucket = "2026-01-15T00:00:00Z"
+	activity := func(n int, user, at, kind string, extra map[string]any) {
+		m := ev.base(n, user, "app:claude_code", at)
+		for k, v := range map[string]any{"direction": "none", "kind": "agent_activity", "source": "tool.otel",
+			"collection_mode": "m0", "activity_type": kind} {
+			m[k] = v
+		}
+		for k, v := range extra {
+			m[k] = v
+		}
+		ev.record(t, tx, at, m)
+	}
+	request := func(model string, in, out int) map[string]any {
+		return map[string]any{"model": model, "input_tokens": in, "output_tokens": out, "duration_ms": 900}
+	}
+
+	// Two people's model requests on two models, and each one's tool call, which names no model; a
+	// third person's request on one of them; a prompt to the same tool is not agent activity.
+	activity(70, "userA", "2026-01-15T01:00:00Z", "model_request", request("claude-sonnet-4", 1000, 200))
+	activity(71, "userA", "2026-01-15T02:00:00Z", "model_request", request("claude-sonnet-4", 500, 100))
+	activity(72, "userA", "2026-01-15T02:10:00Z", "tool_call", map[string]any{"tool_name": "Bash", "outcome": "success", "duration_ms": 40})
+	activity(73, "userB", "2026-01-15T03:00:00Z", "model_request", request("claude-sonnet-4", 300, 50))
+	activity(74, "userB", "2026-01-15T03:05:00Z", "model_request", request("claude-haiku", 40, 10))
+	activity(75, "userB", "2026-01-15T03:10:00Z", "tool_call", map[string]any{"tool_name": "Edit", "outcome": "denied", "duration_ms": 5})
+	activity(77, "userC", "2026-01-15T05:00:00Z", "model_request", request("claude-haiku", 60, 20))
+	ev.record(t, tx, "2026-01-15T04:00:00Z", ev.prompt(76, "userA", "app:claude_code", "2026-01-15T04:00:00Z",
+		[]label{{Class: "source_code", Score: 0.5}}, "logged", "high", 10))
+
+	rows := `SELECT string_agg(tool_fingerprint||'|'||model||'|'||requests||'|'||actions||'|'||input_tokens||'|'||output_tokens||'|'||users||'|'||tool_users, ',' ORDER BY tool_fingerprint, model)
+	           FROM mart.agg_agent_period WHERE tenant_id = $1 AND bucket_size = 'day' AND bucket_start = $2::timestamptz`
+	want := "app:claude_code||0|2|0|0|2|3,app:claude_code|claude-haiku|2|0|100|30|2|3,app:claude_code|claude-sonnet-4|3|0|1800|350|2|3"
+
+	pgtest.AsJobs(t, tx)
+	runBucket(t, tx, tenant, BucketDay, from, to)
+	expect(t, tx, "agent rows", rows, want, tenant, bucket)
+	runBucket(t, tx, tenant, BucketDay, from, to)
+	expect(t, tx, "agent rows after re-run", rows, want, tenant, bucket)
+	runBucket(t, tx, tenant, BucketHour, "2026-01-15T02:00:00Z", "2026-01-15T04:00:00Z")
+	expect(t, tx, "hour buckets",
+		`SELECT string_agg(to_char(bucket_start AT TIME ZONE 'UTC', 'HH24')||'|'||model||'|'||requests||'|'||actions, ',' ORDER BY bucket_start, model)
+		   FROM mart.agg_agent_period WHERE tenant_id = $1 AND bucket_size = 'hour'`,
+		"02||0|1,02|claude-sonnet-4|1|0,03||0|1,03|claude-haiku|1|0,03|claude-sonnet-4|1|0", tenant)
+
+	// A person's erased activity leaves the counts without them.
+	pgtest.AsOwner(t, tx)
+	pgtest.Exec(t, tx, `SET LOCAL sac.retention_delete = on`)
+	pgtest.Exec(t, tx, `DELETE FROM ingest.observation WHERE tenant_id = $1 AND user_ref = 'userB'`, tenant)
+	pgtest.AsJobs(t, tx)
+	runBucket(t, tx, tenant, BucketDay, from, to)
+	expect(t, tx, "agent rows after one person is erased", rows,
+		"app:claude_code||0|1|0|0|1|2,app:claude_code|claude-haiku|1|0|60|20|1|2,app:claude_code|claude-sonnet-4|2|0|1500|300|1|2", tenant, bucket)
+}
+
 func TestRollupHourBuckets(t *testing.T) {
 	tx := pgtest.Tx(t, pgtest.Open(t))
 	tenant, device := pgtest.Tenant(t, tx)
@@ -477,7 +535,7 @@ func TestTenantPassAsJobsRole(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect(t, tx, "watermarks", `SELECT count(*)::text FROM ops.aggregate_watermark WHERE tenant_id = $1`,
-		fmt.Sprint(len(BucketSizes)*8), tenant)
+		fmt.Sprint(len(BucketSizes)*9), tenant)
 	expect(t, tx, "prompts in today's day bucket",
 		`SELECT sum(submissions)::text FROM mart.agg_tool_period
 		  WHERE tenant_id = $1 AND bucket_size = 'day' AND tool_fingerprint = 'toolA'`, "1", tenant)

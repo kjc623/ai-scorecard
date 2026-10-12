@@ -1413,6 +1413,8 @@ CREATE INDEX observation_expiry ON ingest.observation (tenant_id, expires_at);
 
 -- The rollup reads a window of discoveries without scanning the tenant's prompts.
 CREATE INDEX observation_discovery ON ingest.observation (tenant_id, received_at) WHERE kind = 'discovery';
+-- The same for what coding agents report.
+CREATE INDEX observation_agent_activity ON ingest.observation (tenant_id, received_at) WHERE kind = 'agent_activity';
 
 -- The dedup key for an observation without a content digest (M0, a canvas UI, a WebSocket session,
 -- a rollup, a discovery, an agent activity): tenant, device, tool, kind, a 300-second bucket and the
@@ -1789,6 +1791,25 @@ CREATE TABLE mart.agg_discovery_period (
 );
 -- A tool's first sighting is read across every bucket it has.
 CREATE INDEX agg_discovery_period_by_tool ON mart.agg_discovery_period (tenant_id, tool_fingerprint, bucket_size, bucket_start);
+
+-- What coding agents report, per bucket: for each tool and model, the model requests and the tokens
+-- they sent and received, the actions the agent took (its tool calls, which name no model, so they
+-- are under the empty model), the people behind them, and the people behind the tool on any model,
+-- repeated on each of its rows. Both are distinct counts within the bucket, so buckets do not add up.
+CREATE TABLE mart.agg_agent_period (
+  tenant_id        uuid NOT NULL,
+  bucket_start     timestamptz NOT NULL,
+  bucket_size      text NOT NULL CHECK (bucket_size IN ('hour','day')),
+  tool_fingerprint text NOT NULL,
+  model            text NOT NULL DEFAULT '',
+  requests         bigint NOT NULL CHECK (requests >= 0),
+  actions          bigint NOT NULL CHECK (actions >= 0),
+  input_tokens     bigint NOT NULL CHECK (input_tokens >= 0),
+  output_tokens    bigint NOT NULL CHECK (output_tokens >= 0),
+  users            int NOT NULL CHECK (users > 0),
+  tool_users       int NOT NULL CHECK (tool_users >= users),
+  PRIMARY KEY (tenant_id, bucket_start, bucket_size, tool_fingerprint, model)
+);
 
 -- Device liveness. A device that has stopped sends nothing, so its silence is turned into an
 -- explicit state here. `stale`, `never_reported` and `revoked` are different facts. One row per
@@ -2641,7 +2662,7 @@ DECLARE
     'mart.finding', 'mart.agg_tool_period', 'mart.agg_tool_user_period',
     'mart.agg_class_period', 'mart.agg_org_period', 'mart.agg_user_period',
     'mart.agg_device_period', 'mart.agg_team_period', 'mart.agg_rule_period',
-    'mart.agg_discovery_period'
+    'mart.agg_discovery_period', 'mart.agg_agent_period'
   ];
 BEGIN
   FOREACH t IN ARRAY tenant_tables LOOP
@@ -2834,7 +2855,8 @@ GRANT INSERT ON ops.audit TO sac_vault;
 GRANT SELECT ON ingest.submission, ingest.observation TO sac_query;
 GRANT SELECT ON mart.finding, mart.agg_tool_period, mart.agg_tool_user_period,
       mart.agg_class_period, mart.agg_org_period, mart.agg_user_period, mart.agg_device_period,
-      mart.agg_team_period, mart.agg_rule_period, mart.agg_discovery_period, mart.v_device_liveness,
+      mart.agg_team_period, mart.agg_rule_period, mart.agg_discovery_period, mart.agg_agent_period,
+      mart.v_device_liveness,
       mart.v_tool_usage, mart.v_finding, mart.v_tenant_suspension_impact, mart.v_person,
       mart.v_team_member_period, mart.v_tool_first_seen, mart.v_tool_host TO sac_query;
 -- The enforcement rules, for the matches per rule on Insights: what each rule matches and does, and
@@ -2871,7 +2893,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON ingest.rejected TO sac_ops;
 GRANT SELECT, INSERT, UPDATE, DELETE ON mart.finding, mart.agg_tool_period,
       mart.agg_tool_user_period, mart.agg_class_period, mart.agg_org_period,
       mart.agg_user_period, mart.agg_device_period, mart.agg_team_period,
-      mart.agg_rule_period, mart.agg_discovery_period TO sac_ops;
+      mart.agg_rule_period, mart.agg_discovery_period, mart.agg_agent_period TO sac_ops;
 -- The team rollup reads each team's members as of the pass.
 GRANT SELECT ON ops.team, ops.team_member, ops.team_include, ops.v_team_member, ops.scim_group_member
   TO sac_ops;

@@ -7,7 +7,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildDiscoveryDocument, buildListDocument, buildRuleMatchesDocument, buildTemplate, windowFor, DashboardQueryError } from '../src/dsl.js';
+import { buildAgentDocument, buildDemandDocument, buildDiscoveryDocument, buildListDocument, buildRuleMatchesDocument, buildTemplate, windowFor, DashboardQueryError } from '../src/dsl.js';
 import { SOURCES, TEMPLATES, TEMPLATE_NAMES, WINDOWS } from '../src/vocab.js';
 
 const WINDOW = { from: '2026-09-24T00:00:00Z', to: '2026-10-01T00:00:00Z' };
@@ -89,8 +89,38 @@ test('what discovery found reads per tool, kind and item, in the coarsest bucket
   refuses(() => buildDiscoveryDocument({ window: { from: WINDOW.to, to: WINDOW.from } }), 'bad_window');
 });
 
+test('teams crossed with tools read per team and fingerprint, in the coarsest bucket the window allows', () => {
+  const now = new Date('2026-10-01T12:00:00Z');
+  assert.deepEqual(buildDemandDocument({ window: windowFor('d30', now) }), {
+    query_version: '1',
+    source: 'mart.agg_team_period',
+    bucket: 'month',
+    dimensions: ['team', 'tool'],
+    measures: ['submissions'],
+    window: { from: '2026-09-01T12:00:00.000Z', to: '2026-10-01T12:00:00.000Z' },
+    limit: 1999,
+  });
+  assert.equal(buildDemandDocument({ window: windowFor('h24', now) }).bucket, 'hour');
+  refuses(() => buildDemandDocument({ window: { from: WINDOW.to, to: WINDOW.from } }), 'bad_window');
+});
+
+test('what coding agents report reads per tool and model, in the coarsest bucket the window allows', () => {
+  const now = new Date('2026-10-01T12:00:00Z');
+  assert.deepEqual(buildAgentDocument({ window: windowFor('d30', now) }), {
+    query_version: '1',
+    source: 'mart.agg_agent_period',
+    bucket: 'month',
+    dimensions: ['tool', 'model'],
+    measures: ['requests', 'actions', 'input_tokens', 'output_tokens', 'users', 'tool_users'],
+    window: { from: '2026-09-01T12:00:00.000Z', to: '2026-10-01T12:00:00.000Z' },
+    limit: 1999,
+  });
+  assert.equal(buildAgentDocument({ window: windowFor('h24', now) }).bucket, 'hour');
+  refuses(() => buildAgentDocument({ window: { from: WINDOW.to, to: WINDOW.from } }), 'bad_window');
+});
+
 test('the vocabularies here are complete enough to describe every source and template', () => {
-  assert.equal(Object.keys(SOURCES).length, 20);
+  assert.equal(Object.keys(SOURCES).length, 21);
   assert.equal(TEMPLATE_NAMES.length, 10);
   for (const [name, spec] of Object.entries(SOURCES)) {
     assert.ok(spec.kind === 'aggregate' || spec.kind === 'list', `${name} has a kind`);

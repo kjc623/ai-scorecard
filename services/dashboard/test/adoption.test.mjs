@@ -165,7 +165,7 @@ test('Insights switches between its tabs beside its window, and each keeps the o
   const doc = fakeDocument('#insights?view=adoption&preset=d30');
   await boot({ document: doc, api: createQueryApi({ transport: fixtureTransport() }), admin: null, session: null });
   const html = doc.html('app');
-  assert.match(html, /<div class="seg" role="group" aria-label="Show"><a class="seg-item" href="#insights\?preset=d30">Exposure<\/a><a class="seg-item" href="#insights\?preset=d30&amp;view=adoption" aria-current="true">Adoption<\/a><a class="seg-item" href="#insights\?preset=d30&amp;view=discovered">Discovered<\/a><\/div>/);
+  assert.match(html, /<div class="seg" role="group" aria-label="Show"><a class="seg-item" href="#insights\?preset=d30">Exposure<\/a><a class="seg-item" href="#insights\?preset=d30&amp;view=adoption" aria-current="true">Adoption<\/a><a class="seg-item" href="#insights\?preset=d30&amp;view=discovered">Discovered<\/a><a class="seg-item" href="#insights\?preset=d30&amp;view=demand">Demand<\/a><a class="seg-item" href="#insights\?preset=d30&amp;view=agents">Coding agents<\/a><\/div>/);
   assert.match(html, /<a class="seg-item" href="#insights\?view=adoption&amp;preset=d7">7d<\/a>/, 'a window keeps the tab');
   assert.match(html, /People using AI/);
 });

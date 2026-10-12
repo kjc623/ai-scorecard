@@ -296,6 +296,8 @@ td.num { position: relative; }
   border-radius: 6px; background: var(--accent-soft); transform-origin: right center; z-index: 0;
 }
 td.num > :not(.cell-bar) { position: relative; z-index: 1; }
+/* The whole a share is out of, quieter than the part. */
+.cell-of { font-size: 12px; color: var(--ink-soft); white-space: nowrap; }
 tbody tr { transition: background .3s var(--ease); }
 tbody tr:hover { background: var(--tray); }
 tr.row-link { cursor: pointer; }
@@ -648,6 +650,9 @@ td.dp-action { text-align: right; white-space: nowrap; }
   .app { padding-left: 16px; padding-right: 16px; }
   .app { padding-top: 24px; }
   .screen-tools { align-items: flex-start; }
+  /* A switch longer than a phone is wide wraps onto a second row. */
+  .screen-switches { justify-content: flex-start; }
+  .screen-switches .seg { flex-wrap: wrap; border-radius: 18px; }
   .tile:first-child { grid-column: auto; }
   .tile:first-child .tile-value { font-size: 40px; }
   .axis, .bars { height: 150px; }

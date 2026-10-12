@@ -178,7 +178,9 @@ function measure(name, column, opts = {}) {
  * @property {ReadonlyArray<string>} indexes  Indexes the shape requires
  * @property {ReadonlyArray<{id:string,sql:string,when:ReadonlyArray<string>}>} [joins]
  * @property {ReadonlyArray<string>} [extraSelect] Frozen extra select-list entries
- * @property {ReadonlyArray<string>} [sideReads] Side reads that travel with every read of the source
+ * @property {ReadonlyArray<string|{id:string,whenDimensions:ReadonlyArray<string>}>} [sideReads] Side reads
+ *                                  that travel with a read of the source; one with `whenDimensions` only
+ *                                  when every named dimension is grouped
  * @property {ReadonlyArray<string>} [warnings]
  */
 
@@ -212,6 +214,8 @@ const MERGE_CONF_CARD = { cardinality: 2 };
 const DISCOVERY_TYPE_CARD = { cardinality: 6 };
 // A runtime's models and a process's inference hosts.
 const ITEM_CARD = { cardinality: 20 };
+// The models a tenant's coding agents call.
+const MODEL_CARD = { cardinality: 40 };
 
 /**
  * A tool aggregate read with the tool each row counts as, so a list of tools has one row per tool
@@ -527,6 +531,13 @@ export const SOURCES = Object.freeze({
       }),
       toolName('tp'),
     ]),
+    // Teams crossed with tools is the question behind a licence. Its people are counted once over
+    // the window, per team and across everyone, for every tool not sanctioned, which per-bucket
+    // `users` cannot add up to; how many teams there are travels beside them.
+    sideReads: Object.freeze([
+      Object.freeze({ id: 'demand', whenDimensions: Object.freeze(['team', 'tool']) }),
+      Object.freeze({ id: 'team_coverage', whenDimensions: Object.freeze(['team', 'tool']) }),
+    ]),
     warnings: Object.freeze([
       'A team counts the usage of its current members: membership is read when the rollup runs, not when a prompt was sent.',
       'A person in two teams counts in both, so team rows are not additive across teams.',
@@ -680,6 +691,57 @@ export const SOURCES = Object.freeze({
     // A tool missing from a device whose inventory scan is not reporting is unknown, not absent.
     sideReads: Object.freeze(['inventory_scan']),
     warnings: Object.freeze([
+      'sanctioned_state is the decision as it stands now; NULL means no decision, or a fingerprint outside the catalogue.',
+    ]),
+  }),
+
+  // -------------------------------------------------------------------------------------------
+  // Insights — what coding agents report: their model requests, tokens and actions.
+  // -------------------------------------------------------------------------------------------
+  'mart.agg_agent_period': Object.freeze({
+    id: 'mart.agg_agent_period',
+    kind: 'aggregate',
+    label: 'What coding agents report per bucket (mart.agg_agent_period)',
+    from: toolRows('mart.agg_agent_period', 'a'),
+    tenantColumn: 'a.tenant_id',
+    costClass: 'aggregate',
+    time: null,
+    bucket: { startColumn: 'a.bucket_start', sizeColumn: 'a.bucket_size', sizes: NATIVE_BUCKETS },
+    dimensions: Object.freeze({
+      bucket: dim('bucket', 'a.bucket_start', 'timestamp'),
+      tool: toolDim('a'),
+      // Empty for an agent's actions, which name no model.
+      model: dim('model', 'a.model', 'text', { ...MODEL_CARD }),
+    }),
+    measures: Object.freeze({
+      requests: measure('requests', 'a.requests'),
+      actions: measure('actions', 'a.actions'),
+      input_tokens: measure('input_tokens', 'a.input_tokens'),
+      output_tokens: measure('output_tokens', 'a.output_tokens'),
+      // Distinct within a bucket, so a window reads the busiest bucket's count: a lower bound.
+      // tool_users is the tool's people on any model, the same on each of the tool's rows.
+      users: measure('users', 'a.users', { agg: 'max', semantics: 'distinct_lower_bound' }),
+      tool_users: measure('tool_users', 'a.tool_users', { agg: 'max', semantics: 'distinct_lower_bound' }),
+    }),
+    grain: Object.freeze(['bucket', 'tool', 'model']),
+    order: Object.freeze([
+      { dim: 'bucket', dir: 'desc' },
+      { dim: 'tool', dir: 'asc' },
+      { dim: 'model', dir: 'asc' },
+    ]),
+    subjectBearing: false,
+    requiresSubjectScope: false,
+    indexes: Object.freeze(['mart.agg_agent_period PK (tenant_id, bucket_start, bucket_size, tool_fingerprint, model)']),
+    // A tool is named and judged as the rest of the console does: by the tool its rows count as.
+    extraSelect: Object.freeze([
+      toolName('a'),
+      Object.freeze({
+        sql: "(SELECT ts.sanctioned_state FROM ops.tool_sanction ts WHERE ts.tenant_id = ops.current_tenant() AND 'app:' || ts.tool_key = a.tool_id) AS \"sanctioned_state\"",
+        whenDimensions: Object.freeze(['tool']),
+      }),
+    ]),
+    warnings: Object.freeze([
+      'An agent reports here only while it exports its own telemetry; one that does not is absent, not idle.',
       'sanctioned_state is the decision as it stands now; NULL means no decision, or a fingerprint outside the catalogue.',
     ]),
   }),
@@ -1471,6 +1533,7 @@ export const SOURCE_WATERMARK = Object.freeze({
   'mart.agg_class_period': 'mart.agg_class_period',
   'mart.agg_rule_period': 'mart.agg_rule_period',
   'mart.agg_discovery_period': 'mart.agg_discovery_period',
+  'mart.agg_agent_period': 'mart.agg_agent_period',
   'ops.enforcement_rule': null,
   'mart.agg_user_period': 'mart.agg_user_period',
   'mart.agg_device_period': 'mart.agg_device_period',

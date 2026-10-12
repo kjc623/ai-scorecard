@@ -236,6 +236,41 @@ const DISCOVERY_ROWS = Object.freeze([
   discovered('exe:0123456789abcdef', 'inference_connection', 'api.example.test', 1, { tool_name: 'Unrecognised tool', category: null, sanctioned_state: null, first_seen: '2026-09-29T00:00:00Z' }),
 ]);
 
+// The demand for each tool not sanctioned, as query-api returns it: a row with no team for the tool
+// across everyone, then one per team. A person in Engineering and Finance counts in both.
+const [ENG, LEGAL, FIN] = ['0001', '0002', '0003'].map((n) => `7d0c1a52-58f4-4a51-9b1e-1f6d2f0a${n}`);
+const CLAUDE = Object.freeze({ tool: 'app:claude_code', tool_name: 'Claude Code', sanctioned_state: 'unsanctioned' });
+const GATEWAY = Object.freeze({ tool: 'shadow_llm_gateway', tool_name: 'Unrecognised tool', sanctioned_state: 'unknown' });
+const SITE = Object.freeze({ tool: 'host:chat.example.ai', tool_name: 'chat.example.ai', sanctioned_state: 'unknown' });
+const demand = (tool, team, name, size, people, inTeams = null) => Object.freeze({ ...tool, team_id: team, team_name: name, team_size: size, people, people_in_teams: inTeams });
+const DEMAND_ROWS = Object.freeze([
+  demand(GATEWAY, null, null, null, 2, 2),
+  demand(SITE, null, null, null, 14, 9),
+  demand(CLAUDE, null, null, null, 230, 200),
+  demand(CLAUDE, ENG, 'Engineering', 700, 180),
+  demand(GATEWAY, ENG, 'Engineering', 700, 2),
+  demand(CLAUDE, LEGAL, 'Legal', 12, 1),
+  demand(CLAUDE, FIN, 'Finance', 110, 25),
+  demand(SITE, FIN, 'Finance', 110, 9),
+]);
+
+// What coding agents reported in a month, per tool and model as query-api returns them: a tool once
+// across its fingerprints. An agent's actions are under the empty model, and the CLI's requests name
+// no model.
+const agent = (tool, tool_name, sanctioned_state, model, requests, actions, input_tokens, output_tokens, users, tool_users) => Object.freeze({
+  bucket: '2026-09-01T00:00:00Z', tool, tool_name, sanctioned_state, model, requests, actions, input_tokens, output_tokens, users, tool_users,
+});
+const AGENT_ROWS = Object.freeze([
+  agent('app:claude_code', 'Claude Code', 'sanctioned', '', 0, 9800, 0, 0, 36, 41),
+  agent('app:claude_code', 'Claude Code', 'sanctioned', 'claude-sonnet-4', 4200, 0, 61_000_000, 2_400_000, 38, 41),
+  agent('app:claude_code', 'Claude Code', 'sanctioned', 'claude-haiku-4', 900, 0, 3_000_000, 100_000, 12, 41),
+  agent('app:codex', 'Codex CLI', null, '', 0, 1500, 0, 0, 9, 9),
+  agent('app:codex', 'Codex CLI', null, 'gpt-5-codex', 600, 0, 8_000_000, 500_000, 9, 9),
+  agent('app:copilot_cli', 'GitHub Copilot CLI', 'unsanctioned', '', 50, 0, 200_000, 10_000, 2, 2),
+  agent('app:github_copilot', 'GitHub Copilot', 'sanctioned', 'claude-sonnet-4', 300, 0, 2_000_000, 90_000, 6, 22),
+  agent('app:github_copilot', 'GitHub Copilot', 'sanctioned', 'gpt-4.1', 1200, 0, 5_000_000, 300_000, 20, 22),
+]);
+
 /** Where the inventory scan stands on the enrolled fleet, beside what it found. */
 const INVENTORY_SCAN = Object.freeze({ devices_enrolled: 4620, scanned: 4400, not_scanned: 200, switched_off: 20 });
 
@@ -369,6 +404,29 @@ const REALISTIC = Object.freeze({
       applied_bucket: 'month',
       measure_semantics: { devices: 'distinct_lower_bound' },
       extras: { inventory_scan: [INVENTORY_SCAN] },
+    },
+  }),
+  'mart.agg_agent_period': ok({
+    data: AGENT_ROWS,
+    freshness: freshness({ aggregate: 'mart.agg_agent_period' }),
+    coverage: coverage({ state: 'partial' }),
+    meta: {
+      source: 'mart.agg_agent_period',
+      applied_bucket: 'month',
+      measure_semantics: { users: 'distinct_lower_bound', tool_users: 'distinct_lower_bound' },
+    },
+  }),
+  'mart.agg_team_period': ok({
+    data: Object.freeze([
+      Object.freeze({ bucket: '2026-09-01T00:00:00Z', team: ENG, team_name: 'Engineering', tool: 'tls_b6681b043244c43f', tool_name: 'Claude Code', submissions: 2100 }),
+      Object.freeze({ bucket: '2026-09-01T00:00:00Z', team: FIN, team_name: 'Finance', tool: 'host:chat.example.ai', tool_name: 'chat.example.ai', submissions: 40 }),
+    ]),
+    freshness: freshness({ aggregate: 'mart.agg_team_period' }),
+    coverage: coverage({ state: 'partial' }),
+    meta: {
+      source: 'mart.agg_team_period',
+      applied_bucket: 'month',
+      extras: { demand: DEMAND_ROWS, team_coverage: [{ users_all: 4210, users_in_teams: 2680, teams: 4 }] },
     },
   }),
   'mart.v_tool_usage': ok({
@@ -587,4 +645,4 @@ export function fixtureTransport(scenario = 'realistic') {
   });
 }
 
-export { TOOL_ROWS, DEVICE_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, TEAM_ROWS, TEAM_MEMBER_ROWS, PEOPLE_ROWS, CLASS_ROWS, PERSON_ROWS, RULE_ROWS, RULE_MATCH_ROWS, PEOPLE_ROW, FIRST_SEEN_ROWS, SHIFT_ROWS, DISCOVERY_ROWS, INVENTORY_SCAN, WINDOW };
+export { TOOL_ROWS, DEVICE_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, TEAM_ROWS, TEAM_MEMBER_ROWS, PEOPLE_ROWS, CLASS_ROWS, PERSON_ROWS, RULE_ROWS, RULE_MATCH_ROWS, PEOPLE_ROW, FIRST_SEEN_ROWS, SHIFT_ROWS, DISCOVERY_ROWS, INVENTORY_SCAN, DEMAND_ROWS, AGENT_ROWS, WINDOW };

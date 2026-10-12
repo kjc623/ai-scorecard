@@ -759,6 +759,129 @@
       "bounded_cells": 20
     }
   },
+  "source:mart.agg_agent_period:day": {
+    "result_state_hint": "none",
+    "statements": [
+      {
+        "id": "read",
+        "text": "SELECT a.bucket_start AS bucket,\n       a.tool_id AS \"tool\",\n       a.model AS \"model\",\n       SUM(a.requests) AS \"requests\",\n       SUM(a.actions) AS \"actions\",\n       SUM(a.input_tokens) AS \"input_tokens\",\n       ops.tool_display_name(a.tool_id) AS \"tool_name\",\n       (SELECT ts.sanctioned_state FROM ops.tool_sanction ts WHERE ts.tenant_id = ops.current_tenant() AND 'app:' || ts.tool_key = a.tool_id) AS \"sanctioned_state\"\n  FROM (SELECT x.*, coalesce('app:' || coalesce(xc.app_key, xh.app_key), x.tool_fingerprint) AS tool_id, coalesce(xc.app_key, xh.app_key) AS tool_key FROM mart.agg_agent_period x LEFT JOIN ref.tool_catalogue xc ON xc.tool_fingerprint = x.tool_fingerprint LEFT JOIN mart.v_tool_host xh ON xh.tenant_id = x.tenant_id AND xh.tool_fingerprint = x.tool_fingerprint) a\n WHERE a.tenant_id = ops.current_tenant()\n   AND a.bucket_start >= $1::timestamptz\n   AND a.bucket_start < $2::timestamptz\n   AND a.bucket_start <= $3::timestamptz\n   AND a.bucket_size = $4::text\n   AND starts_with(a.tool_id, $5::text)\n GROUP BY a.bucket_start, a.tool_id, a.model\n ORDER BY a.bucket_start DESC NULLS LAST, a.tool_id ASC NULLS LAST, a.model ASC NULLS LAST\n LIMIT $6::int",
+        "params": [
+          "2026-09-01T00:00:00.000Z",
+          "2026-09-08T00:00:00.000Z",
+          "2026-09-08T00:00:00.000Z",
+          "day",
+          "claude",
+          21
+        ]
+      },
+      {
+        "id": "freshness",
+        "text": "SELECT w.aggregate_name, w.bucket_size, w.last_complete_bucket, w.last_run_at, w.last_run_rows,\n       EXTRACT(EPOCH FROM (now() - w.last_run_at))::bigint AS lag_seconds\n  FROM ops.aggregate_watermark w\n WHERE w.tenant_id = ops.current_tenant()\n   AND w.aggregate_name = $1::text\n   AND w.bucket_size = $2::text",
+        "params": [
+          "mart.agg_agent_period",
+          "day"
+        ]
+      },
+      {
+        "id": "coverage",
+        "text": "SELECT\n  (SELECT count(*) FROM ops.device d\n    WHERE d.tenant_id = ops.current_tenant() AND d.revoked_at IS NULL) AS devices_enrolled,\n  (SELECT count(*) FROM ops.device d\n    WHERE d.tenant_id = ops.current_tenant() AND d.revoked_at IS NULL\n      AND d.last_seen_at > now() - interval '24 hours') AS devices_reporting,\n  (SELECT count(*) FROM ops.coverage_snapshot v\n    WHERE v.tenant_id = ops.current_tenant()\n      AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n      AND v.expected) AS expected_collector_days,\n  (SELECT count(*) FROM ops.coverage_snapshot v\n    WHERE v.tenant_id = ops.current_tenant()\n      AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n      AND v.observed) AS observed_collector_days,\n  (SELECT coalesce(jsonb_object_agg(g.gap_reason, g.n), '{}'::jsonb)\n     FROM (SELECT coalesce(v.gap_reason, 'unknown') AS gap_reason, count(*) AS n\n             FROM ops.coverage_snapshot v\n            WHERE v.tenant_id = ops.current_tenant()\n              AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n              AND v.expected AND NOT v.observed\n            GROUP BY 1) g) AS gap_reasons",
+        "params": [
+          "2026-09-01",
+          "2026-09-08"
+        ]
+      }
+    ],
+    "meta": {
+      "source": "mart.agg_agent_period",
+      "applied_bucket": "day",
+      "native_bucket_size": "day",
+      "measure_semantics": {
+        "requests": "additive",
+        "actions": "additive",
+        "input_tokens": "additive"
+      },
+      "order": [
+        {
+          "by": "bucket",
+          "dir": "desc",
+          "key": "bucket"
+        },
+        {
+          "by": "tool",
+          "dir": "asc",
+          "key": "tool"
+        },
+        {
+          "by": "model",
+          "dir": "asc",
+          "key": "model"
+        }
+      ],
+      "estimated_cells": 280,
+      "bounded_cells": 21
+    }
+  },
+  "source:mart.agg_agent_period:week+rollup": {
+    "result_state_hint": "none",
+    "statements": [
+      {
+        "id": "read",
+        "text": "SELECT date_trunc('week', a.bucket_start) AS bucket,\n       a.tool_id AS \"tool\",\n       a.model AS \"model\",\n       SUM(a.requests) AS \"requests\",\n       SUM(a.actions) AS \"actions\",\n       SUM(a.input_tokens) AS \"input_tokens\",\n       ops.tool_display_name(a.tool_id) AS \"tool_name\",\n       (SELECT ts.sanctioned_state FROM ops.tool_sanction ts WHERE ts.tenant_id = ops.current_tenant() AND 'app:' || ts.tool_key = a.tool_id) AS \"sanctioned_state\"\n  FROM (SELECT x.*, coalesce('app:' || coalesce(xc.app_key, xh.app_key), x.tool_fingerprint) AS tool_id, coalesce(xc.app_key, xh.app_key) AS tool_key FROM mart.agg_agent_period x LEFT JOIN ref.tool_catalogue xc ON xc.tool_fingerprint = x.tool_fingerprint LEFT JOIN mart.v_tool_host xh ON xh.tenant_id = x.tenant_id AND xh.tool_fingerprint = x.tool_fingerprint) a\n WHERE a.tenant_id = ops.current_tenant()\n   AND a.bucket_start >= $1::timestamptz\n   AND a.bucket_start < $2::timestamptz\n   AND a.bucket_start <= $3::timestamptz\n   AND a.bucket_size = $4::text\n   AND starts_with(a.tool_id, $5::text)\n GROUP BY GROUPING SETS ((date_trunc('week', a.bucket_start), a.tool_id, a.model), ())\n ORDER BY date_trunc('week', a.bucket_start) DESC NULLS LAST, a.tool_id ASC NULLS LAST, a.model ASC NULLS LAST",
+        "params": [
+          "2026-09-01T00:00:00.000Z",
+          "2026-09-08T00:00:00.000Z",
+          "2026-09-08T00:00:00.000Z",
+          "day",
+          "claude"
+        ]
+      },
+      {
+        "id": "freshness",
+        "text": "SELECT w.aggregate_name, w.bucket_size, w.last_complete_bucket, w.last_run_at, w.last_run_rows,\n       EXTRACT(EPOCH FROM (now() - w.last_run_at))::bigint AS lag_seconds\n  FROM ops.aggregate_watermark w\n WHERE w.tenant_id = ops.current_tenant()\n   AND w.aggregate_name = $1::text\n   AND w.bucket_size = $2::text",
+        "params": [
+          "mart.agg_agent_period",
+          "day"
+        ]
+      },
+      {
+        "id": "coverage",
+        "text": "SELECT\n  (SELECT count(*) FROM ops.device d\n    WHERE d.tenant_id = ops.current_tenant() AND d.revoked_at IS NULL) AS devices_enrolled,\n  (SELECT count(*) FROM ops.device d\n    WHERE d.tenant_id = ops.current_tenant() AND d.revoked_at IS NULL\n      AND d.last_seen_at > now() - interval '24 hours') AS devices_reporting,\n  (SELECT count(*) FROM ops.coverage_snapshot v\n    WHERE v.tenant_id = ops.current_tenant()\n      AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n      AND v.expected) AS expected_collector_days,\n  (SELECT count(*) FROM ops.coverage_snapshot v\n    WHERE v.tenant_id = ops.current_tenant()\n      AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n      AND v.observed) AS observed_collector_days,\n  (SELECT coalesce(jsonb_object_agg(g.gap_reason, g.n), '{}'::jsonb)\n     FROM (SELECT coalesce(v.gap_reason, 'unknown') AS gap_reason, count(*) AS n\n             FROM ops.coverage_snapshot v\n            WHERE v.tenant_id = ops.current_tenant()\n              AND v.snapshot_day >= $1::date AND v.snapshot_day < $2::date\n              AND v.expected AND NOT v.observed\n            GROUP BY 1) g) AS gap_reasons",
+        "params": [
+          "2026-09-01",
+          "2026-09-08"
+        ]
+      }
+    ],
+    "meta": {
+      "source": "mart.agg_agent_period",
+      "applied_bucket": "week",
+      "native_bucket_size": "day",
+      "measure_semantics": {
+        "requests": "additive",
+        "actions": "additive",
+        "input_tokens": "additive"
+      },
+      "order": [
+        {
+          "by": "bucket",
+          "dir": "desc",
+          "key": "bucket"
+        },
+        {
+          "by": "tool",
+          "dir": "asc",
+          "key": "tool"
+        },
+        {
+          "by": "model",
+          "dir": "asc",
+          "key": "model"
+        }
+      ],
+      "estimated_cells": 41,
+      "bounded_cells": 41
+    }
+  },
   "source:mart.agg_class_period:day": {
     "result_state_hint": "none",
     "statements": [
@@ -1397,6 +1520,24 @@
           "2026-09-01",
           "2026-09-08"
         ]
+      },
+      {
+        "id": "demand",
+        "text": "WITH used AS (\n  SELECT coalesce('app:' || coalesce(c.app_key, h.app_key), u.tool_fingerprint) AS tool,\n         u.user_ref, coalesce(s.sanctioned_state, 'unknown') AS sanctioned_state\n    FROM mart.agg_tool_user_period u\n    LEFT JOIN ref.tool_catalogue c ON c.tool_fingerprint = u.tool_fingerprint\n    LEFT JOIN mart.v_tool_host h ON h.tenant_id = u.tenant_id AND h.tool_fingerprint = u.tool_fingerprint\n    LEFT JOIN ops.tool_sanction s ON s.tenant_id = u.tenant_id AND s.tool_key = coalesce(c.app_key, h.app_key)\n   WHERE u.tenant_id = ops.current_tenant()\n     AND u.bucket_start >= $1::timestamptz AND u.bucket_start < $2::timestamptz\n     AND u.bucket_size = $3::text\n     AND coalesce(s.sanctioned_state, 'unknown') <> 'sanctioned'),\nmembers AS (\n  SELECT m.team_id, m.user_ref FROM ops.v_team_member m WHERE m.tenant_id = ops.current_tenant()),\nsizes AS (SELECT team_id, count(*)::bigint AS team_size FROM members GROUP BY team_id),\nreach AS (\n  SELECT u.tool, u.sanctioned_state, NULL::uuid AS team_id, count(DISTINCT u.user_ref)::bigint AS people,\n         count(DISTINCT u.user_ref) FILTER (WHERE u.user_ref IN (SELECT user_ref FROM members))::bigint AS people_in_teams\n    FROM used u GROUP BY u.tool, u.sanctioned_state\n  UNION ALL\n  SELECT u.tool, u.sanctioned_state, m.team_id, count(DISTINCT u.user_ref)::bigint, NULL::bigint\n    FROM used u JOIN members m ON m.user_ref = u.user_ref\n   GROUP BY u.tool, u.sanctioned_state, m.team_id)\nSELECT r.tool, ops.tool_display_name(r.tool) AS tool_name, r.sanctioned_state,\n       r.team_id, t.name AS team_name, z.team_size, r.people, r.people_in_teams\n  FROM reach r\n  LEFT JOIN ops.team t ON t.tenant_id = ops.current_tenant() AND t.team_id = r.team_id\n  LEFT JOIN sizes z ON z.team_id = r.team_id\n ORDER BY r.team_id NULLS FIRST, r.tool COLLATE \"C\"",
+        "params": [
+          "2026-09-01T00:00:00.000Z",
+          "2026-09-08T00:00:00.000Z",
+          "day"
+        ]
+      },
+      {
+        "id": "team_coverage",
+        "text": "WITH active AS (\n  SELECT DISTINCT u.user_ref FROM mart.agg_user_period u\n   WHERE u.tenant_id = ops.current_tenant()\n     AND u.bucket_start >= $1::timestamptz AND u.bucket_start < $2::timestamptz\n     AND u.bucket_size = $3::text)\nSELECT\n  (SELECT count(*)::bigint FROM active) AS users_all,\n  (SELECT count(*)::bigint FROM active a\n    WHERE EXISTS (SELECT 1 FROM ops.v_team_member m\n                   WHERE m.tenant_id = ops.current_tenant() AND m.user_ref = a.user_ref)) AS users_in_teams,\n  (SELECT count(*)::bigint FROM ops.team t WHERE t.tenant_id = ops.current_tenant()) AS teams",
+        "params": [
+          "2026-09-01T00:00:00.000Z",
+          "2026-09-08T00:00:00.000Z",
+          "day"
+        ]
       }
     ],
     "meta": {
@@ -1456,6 +1597,24 @@
         "params": [
           "2026-09-01",
           "2026-09-08"
+        ]
+      },
+      {
+        "id": "demand",
+        "text": "WITH used AS (\n  SELECT coalesce('app:' || coalesce(c.app_key, h.app_key), u.tool_fingerprint) AS tool,\n         u.user_ref, coalesce(s.sanctioned_state, 'unknown') AS sanctioned_state\n    FROM mart.agg_tool_user_period u\n    LEFT JOIN ref.tool_catalogue c ON c.tool_fingerprint = u.tool_fingerprint\n    LEFT JOIN mart.v_tool_host h ON h.tenant_id = u.tenant_id AND h.tool_fingerprint = u.tool_fingerprint\n    LEFT JOIN ops.tool_sanction s ON s.tenant_id = u.tenant_id AND s.tool_key = coalesce(c.app_key, h.app_key)\n   WHERE u.tenant_id = ops.current_tenant()\n     AND u.bucket_start >= $1::timestamptz AND u.bucket_start < $2::timestamptz\n     AND u.bucket_size = $3::text\n     AND coalesce(s.sanctioned_state, 'unknown') <> 'sanctioned'),\nmembers AS (\n  SELECT m.team_id, m.user_ref FROM ops.v_team_member m WHERE m.tenant_id = ops.current_tenant()),\nsizes AS (SELECT team_id, count(*)::bigint AS team_size FROM members GROUP BY team_id),\nreach AS (\n  SELECT u.tool, u.sanctioned_state, NULL::uuid AS team_id, count(DISTINCT u.user_ref)::bigint AS people,\n         count(DISTINCT u.user_ref) FILTER (WHERE u.user_ref IN (SELECT user_ref FROM members))::bigint AS people_in_teams\n    FROM used u GROUP BY u.tool, u.sanctioned_state\n  UNION ALL\n  SELECT u.tool, u.sanctioned_state, m.team_id, count(DISTINCT u.user_ref)::bigint, NULL::bigint\n    FROM used u JOIN members m ON m.user_ref = u.user_ref\n   GROUP BY u.tool, u.sanctioned_state, m.team_id)\nSELECT r.tool, ops.tool_display_name(r.tool) AS tool_name, r.sanctioned_state,\n       r.team_id, t.name AS team_name, z.team_size, r.people, r.people_in_teams\n  FROM reach r\n  LEFT JOIN ops.team t ON t.tenant_id = ops.current_tenant() AND t.team_id = r.team_id\n  LEFT JOIN sizes z ON z.team_id = r.team_id\n ORDER BY r.team_id NULLS FIRST, r.tool COLLATE \"C\"",
+        "params": [
+          "2026-09-01T00:00:00.000Z",
+          "2026-09-08T00:00:00.000Z",
+          "day"
+        ]
+      },
+      {
+        "id": "team_coverage",
+        "text": "WITH active AS (\n  SELECT DISTINCT u.user_ref FROM mart.agg_user_period u\n   WHERE u.tenant_id = ops.current_tenant()\n     AND u.bucket_start >= $1::timestamptz AND u.bucket_start < $2::timestamptz\n     AND u.bucket_size = $3::text)\nSELECT\n  (SELECT count(*)::bigint FROM active) AS users_all,\n  (SELECT count(*)::bigint FROM active a\n    WHERE EXISTS (SELECT 1 FROM ops.v_team_member m\n                   WHERE m.tenant_id = ops.current_tenant() AND m.user_ref = a.user_ref)) AS users_in_teams,\n  (SELECT count(*)::bigint FROM ops.team t WHERE t.tenant_id = ops.current_tenant()) AS teams",
+        "params": [
+          "2026-09-01T00:00:00.000Z",
+          "2026-09-08T00:00:00.000Z",
+          "day"
         ]
       }
     ],

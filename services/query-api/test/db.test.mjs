@@ -316,6 +316,7 @@ test('one tool is one row in every listing, however many fingerprints it was see
           await client.query("INSERT INTO mart.agg_team_period (tenant_id, bucket_start, bucket_size, team_id, tool_fingerprint, submissions, users) VALUES (ops.current_tenant(), $1, 'day', $3, $2, 1, 1)", [...args, team]);
           await client.query("INSERT INTO mart.agg_class_period (tenant_id, bucket_start, bucket_size, class_code, tool_fingerprint, severity, classifier_version, submissions, users) VALUES (ops.current_tenant(), $1, 'day', $3, $2, 'high', 'v1', 1, 1)", [...args, classCode]);
           await client.query("INSERT INTO mart.agg_discovery_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, discovery_type, item, devices, last_seen) VALUES (ops.current_tenant(), $1, 'day', $2, 'app_installed', '', 1, $1::timestamptz + interval '1 hour')", args);
+          await client.query("INSERT INTO mart.agg_agent_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, model, requests, actions, input_tokens, output_tokens, users, tool_users) VALUES (ops.current_tenant(), $1, 'day', $2, 'model-a', 1, 0, 10, 1, 1, 1)", args);
           await client.query(
             `INSERT INTO ingest.submission
                (tenant_id, submission_id, dedup_weak_key, kind, device_id, user_ref, tool_fingerprint,
@@ -604,6 +605,43 @@ test('what discovery found reads per tool under all its fingerprints, kind and i
   );
 });
 
+test('what coding agents report reads per tool under all its fingerprints and model, named and judged by the catalogue, people as the busiest day', { skip: SKIP }, async () => {
+  await scratch(
+    async (client) => {
+      await client.query("INSERT INTO ops.tool_sanction (tenant_id, tool_key, sanctioned_state, decided_by, decided_at) VALUES (ops.current_tenant(), 'claude_code', 'sanctioned', 'db-test', now())");
+      await client.query(
+        `INSERT INTO mart.agg_agent_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, model, requests, actions, input_tokens, output_tokens, users, tool_users) VALUES
+           (ops.current_tenant(), '2026-09-02', 'day', 'app:claude_code', 'claude-sonnet-4', 3, 0, 1800, 350, 2, 4),
+           (ops.current_tenant(), '2026-09-03', 'day', 'app:claude_code', 'claude-sonnet-4', 2, 0, 1200, 200, 3, 3),
+           (ops.current_tenant(), '2026-09-03', 'day', 'tls_b6681b043244c43f', 'claude-sonnet-4', 4, 0, 400, 40, 1, 2),
+           (ops.current_tenant(), '2026-09-03', 'hour', 'app:claude_code', 'claude-sonnet-4', 9, 0, 9000, 900, 9, 9),
+           (ops.current_tenant(), '2026-09-03', 'day', 'app:claude_code', '', 0, 7, 0, 0, 2, 3),
+           (ops.current_tenant(), '2026-09-03', 'day', 'app:codex', 'gpt-5', 1, 0, 40, 10, 1, 1),
+           (ops.current_tenant(), '2026-08-20', 'day', 'app:codex', 'gpt-5', 5, 0, 500, 50, 1, 1)`,
+      );
+    },
+    async (client, tenant) => {
+      const ctx = { now: NOW, tenant, actorId: 'db-test', cursorKey: KEY };
+      const read = await executePlan(
+        plan({ query_version: '1', source: 'mart.agg_agent_period', bucket: 'month', dimensions: ['tool', 'model'], measures: ['requests', 'actions', 'input_tokens', 'output_tokens', 'users', 'tool_users'], window: WINDOW, limit: 100 }, ctx),
+        { ...ctx, client: nested(client) },
+      );
+      assert.deepEqual(
+        read.data.map((r) => [r.tool, r.model, Number(r.requests), Number(r.actions), Number(r.input_tokens), Number(r.output_tokens), r.users, r.tool_users, r.tool_name, r.sanctioned_state]),
+        [
+          ['app:claude_code', '', 0, 7, 0, 0, 2, 3, 'Claude Code', 'sanctioned'],
+          ['app:claude_code', 'claude-sonnet-4', 9, 0, 3400, 590, 3, 4, 'Claude Code', 'sanctioned'],
+          ['app:codex', 'gpt-5', 1, 0, 40, 10, 1, 1, 'Codex CLI', null],
+        ],
+        'day rows in the window only, summed across fingerprints, with the busiest day\'s people',
+      );
+      assert.equal(read.meta.measure_semantics.users, 'distinct_lower_bound');
+      assert.equal(read.meta.measure_semantics.tool_users, 'distinct_lower_bound');
+      assert.equal(read.freshness.aggregate, 'mart.agg_agent_period');
+    },
+  );
+});
+
 test('Q1 counts the people behind the usage once each, by the sanction of their tools, beside the people they are out of', { skip: SKIP }, async () => {
   const [ada, bob, cara, dan] = ['a', 'b', 'c', 'd'].map((c) => `u_${c.repeat(32)}`);
   let sanctioned = null;
@@ -684,6 +722,63 @@ test('Q1 counts the people behind the usage once each, by the sanction of their 
         ],
         'a tool first seen before the window is not new however new its fingerprint; a detection is not a prompt; its people include those since the window',
       );
+    },
+  );
+});
+
+test('teams crossed with tools carry the people per team for each tool not sanctioned, a tool once across its fingerprints', { skip: SKIP }, async () => {
+  const [ada, bob, cara, dan, eve] = ['a', 'b', 'c', 'd', 'e'].map((c) => `u_${c.repeat(32)}`);
+  await scratch(
+    async (client) => {
+      await client.query(
+        `INSERT INTO ops.tool_sanction (tenant_id, tool_key, sanctioned_state, decided_by, decided_at) VALUES
+           (ops.current_tenant(), 'claude_code', 'unsanctioned', 'db-test', now()),
+           (ops.current_tenant(), 'cursor', 'sanctioned', 'db-test', now())`,
+      );
+      const teams = {};
+      for (const name of ['Platform', 'Data', 'Quiet']) {
+        teams[name] = (await client.query("INSERT INTO ops.team (tenant_id, name, created_by) VALUES (ops.current_tenant(), $1, 'db-test') RETURNING team_id", [name])).rows[0].team_id;
+      }
+      for (const [team, user] of [['Platform', ada], ['Platform', bob], ['Data', bob], ['Data', cara], ['Quiet', dan]]) {
+        await client.query("INSERT INTO ops.team_member (tenant_id, team_id, user_ref, added_by) VALUES (ops.current_tenant(), $1, $2, 'db-test')", [teams[team], user]);
+      }
+      // ada uses Claude Code under both its fingerprints; bob uses it and the sanctioned Cursor;
+      // cara a tool outside the catalogue; eve, in no team, Claude Code; dan only before the window.
+      for (const [day, fingerprint, user, submissions] of [
+        ['2026-09-02', 'tls_b6681b043244c43f', ada, 2], ['2026-09-03', 'app:claude_code', ada, 1],
+        ['2026-09-03', 'tls_b6681b043244c43f', bob, 5], ['2026-09-03', 'app:cursor', bob, 9],
+        ['2026-09-05', 'tls_never_seen_anywhere', cara, 1], ['2026-09-04', 'app:claude_code', eve, 1],
+        ['2026-08-20', 'tls_b6681b043244c43f', dan, 4],
+      ]) {
+        await client.query(
+          "INSERT INTO mart.agg_tool_user_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, user_ref, submissions, bytes_total) VALUES (ops.current_tenant(), $1, 'day', $2, $3, $4, 10)",
+          [day, fingerprint, user, submissions],
+        );
+      }
+    },
+    async (client, tenant) => {
+      const ctx = { now: NOW, tenant, actorId: 'db-test', cursorKey: KEY };
+      const read = await executePlan(
+        plan({ query_version: '1', source: 'mart.agg_team_period', bucket: 'month', dimensions: ['team', 'tool'], measures: ['submissions'], window: WINDOW, limit: 100 }, ctx),
+        { ...ctx, client: nested(client) },
+      );
+      const rows = read.meta.extras.demand.map((r) => [r.team_name, r.tool, r.tool_name, r.sanctioned_state,
+        r.team_size === null ? null : Number(r.team_size), Number(r.people), r.people_in_teams === null ? null : Number(r.people_in_teams)]);
+      const order = (a, b) => String(a[0]).localeCompare(String(b[0])) || a[1].localeCompare(b[1]);
+      assert.deepEqual(rows.sort(order), [
+        ['Data', 'app:claude_code', 'Claude Code', 'unsanctioned', 2, 1, null],
+        ['Data', 'tls_never_seen_anywhere', 'Unrecognised tool', 'unknown', 2, 1, null],
+        ['Platform', 'app:claude_code', 'Claude Code', 'unsanctioned', 2, 2, null],
+        [null, 'app:claude_code', 'Claude Code', 'unsanctioned', null, 3, 2],
+        [null, 'tls_never_seen_anywhere', 'Unrecognised tool', 'unknown', null, 1, 1],
+      ].sort(order), 'a person counts once per tool across its fingerprints; a sanctioned tool and use before the window are left out');
+      assert.equal(Number(read.meta.extras.team_coverage[0].teams), 3);
+
+      const teamsOnly = await executePlan(
+        plan({ query_version: '1', source: 'mart.agg_team_period', bucket: 'month', dimensions: ['team'], measures: ['submissions'], window: WINDOW, limit: 100 }, ctx),
+        { ...ctx, client: nested(client) },
+      );
+      assert.equal(teamsOnly.meta.extras?.demand, undefined, 'a read of teams alone does not count the demand');
     },
   );
 });
