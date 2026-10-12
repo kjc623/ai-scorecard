@@ -321,6 +321,24 @@ function exploreHitMeta(hit) {
   return `<span class="x-hit-meta x-mono">${parts.map((part) => `<span>${escapeHtml(part)}</span>`).join('<span class="x-hit-sep" aria-hidden="true">|</span>')}</span>`;
 }
 
+/**
+ * An attached file's hit as the file's name and the folder it was attached from: the index holds a
+ * file's path where the device saw one. A highlight across the last separator is closed in the
+ * folder and opened again in the name.
+ */
+function fileHitParts(snippet) {
+  const marked = snippet.replaceAll('</em>', '\u0000');
+  const at = Math.max(marked.lastIndexOf('/'), marked.lastIndexOf('\\'));
+  if (at < 0) return { name: snippet, folder: '' };
+  let folder = marked.slice(0, at + 1).replaceAll('\u0000', '</em>');
+  let name = marked.slice(at + 1).replaceAll('\u0000', '</em>');
+  if (folder.split('<em>').length > folder.split('</em>').length) {
+    folder += '</em>';
+    name = `<em>${name}`;
+  }
+  return { name, folder };
+}
+
 /** The number of hits one page asks for. */
 function exploreTextPageSize(text) {
   const size = text.pageSize ?? TEXT_PAGE_SIZES[TEXT_PAGE_SIZES.length - 1];
@@ -366,10 +384,16 @@ export function renderExploreText(state) {
   }
   const rows = text.hits.map((hit) => {
     // The fragment is escaped whole; only the search's own highlight marks are put back.
-    const snippet = escapeHtml(hit.snippet).replaceAll('&lt;em&gt;', '<em>').replaceAll('&lt;/em&gt;', '</em>');
-    const kind = hit.fileName ? '<span class="x-hit-kind">Attached file</span>' : '';
+    const marked = (fragment) => escapeHtml(fragment).replaceAll('&lt;em&gt;', '<em>').replaceAll('&lt;/em&gt;', '</em>');
+    let body = `<span class="x-hit-snippet">${marked(hit.snippet)}</span>`;
+    if (hit.fileName) {
+      const { name, folder } = fileHitParts(hit.snippet);
+      body = '<span class="x-hit-kind">Attached file</span>'
+        + `<span class="x-hit-snippet">${marked(name)}</span>`
+        + (folder ? `<span class="x-hit-folder">From <span class="x-mono">${marked(folder)}</span></span>` : '');
+    }
     return `<li><button type="button" class="x-hit" data-act="hit" data-submission="${escapeHtml(hit.submissionId)}" aria-pressed="${hit.submissionId === state.detail.submissionId}">`
-      + `${kind}<span class="x-hit-snippet">${snippet}</span>${exploreHitMeta(hit)}</button></li>`;
+      + `${body}${exploreHitMeta(hit)}</button></li>`;
   }).join('');
   const count = `<p class="x-text-count x-sub">Showing ${escapeHtml(formatCount(text.hits.length))} match${text.hits.length === 1 ? '' : 'es'}${text.nextCursor ? ', more available' : ''}.</p>`;
   const foot = text.moreProblem

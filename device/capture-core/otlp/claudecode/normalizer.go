@@ -22,6 +22,7 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/dedup"
 	"github.com/shadow-ai-capture/device/capture-core/enforce"
 	"github.com/shadow-ai-capture/device/capture-core/otlp"
+	"github.com/shadow-ai-capture/device/capture-core/parsers"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -150,7 +151,8 @@ func (n *Normalizer) convert(ctx context.Context, from otlp.Sender, lr *logspb.L
 }
 
 // prompt hands a user_prompt to the pipeline. The text stays behind the reader, so the resolved
-// mode decides whether it is ever read.
+// mode decides whether it is ever read. The files the prompt @-mentions are named from the text;
+// the event carries no working directory, so only an absolute mention has a path.
 func (n *Normalizer) prompt(ctx context.Context, from otlp.Sender, a attrs, at time.Time) error {
 	var size int64
 	if s := a.count(attrPromptLength); s != nil {
@@ -166,6 +168,7 @@ func (n *Normalizer) prompt(ctx context.Context, from otlp.Sender, a attrs, at t
 		Enforce:         n.enforce(),
 		Content:         promptReader(a.promptText()),
 		Extract:         core.ExtractorFunc(extractPrompt),
+		References:      parsers.MentionedFiles,
 		Person:          from.Person,
 		ClientID:        a.str(attrSessionID),
 	})

@@ -231,7 +231,8 @@ input.x-filter { width: 124px; cursor: text; }
 .x-hit-kind { font-size: 12px; font-weight: 600; color: var(--ink-2); }
 .x-hit-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--ink-3); }
 .x-hit-sep { color: var(--ink-faint); }
-.x-hit-snippet em { font-style: normal; font-weight: 650; color: var(--accent); }
+.x-hit-folder { font-size: 12px; color: var(--ink-2); overflow-wrap: anywhere; }
+.x-hit-snippet em, .x-hit-folder em { font-style: normal; font-weight: 650; color: var(--accent); }
 .x-content h4 { font-size: 12px; font-weight: 600; color: var(--ink-2); margin: 10px 0 6px; }
 .x-content .x-pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 46vh; overflow-y: auto; }
 .x-typed { font-size: 13px; border-left: 2px solid var(--accent); border-radius: 0 11px 11px 0; }

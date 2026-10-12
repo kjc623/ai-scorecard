@@ -11,6 +11,7 @@ import assert from 'node:assert/strict';
 
 import { createAttachmentSender, createChunkedHasher } from '../src/attachments/sender.js';
 import { createFileRegistry } from '../src/attachments/files.js';
+import { createUploadPaths, MAX_PATH_CHARS } from '../src/attachments/paths.js';
 import { createFakeCore } from '../test-support/fake-core.mjs';
 import { CORE_TYPE, MAX_ATTACHMENT_BYTES, NATIVE_MESSAGE_VERSION, REFUSAL, TYPE } from '../src/messages.js';
 import { fakeCrypto, settle } from '../test-support/harness.mjs';
@@ -349,4 +350,40 @@ test('a File whose read throws is reported as a failed read, never an exception'
   assert.equal(r.code, 'read_failed');
   assert.equal(errors.length, 1, 'the failure is reported to the caller so it can be counted');
   assert.match(errors[0].message, /NotAllowedError/);
+});
+
+test('an uploaded file is placed by its path in the tab that uploaded it, once', () => {
+  const paths = createUploadPaths();
+  paths.note({ tabId: 4, requestBody: { raw: [{ bytes: new ArrayBuffer(8) }, { file: '/home/ana/Quarterly/q3.csv' }, { bytes: null }] } });
+  paths.note({ tabId: 4, requestBody: { raw: [{ file: 'C:\\Users\\ana\\Documents\\deck.pdf' }] } });
+  paths.note({ tabId: 5, requestBody: { raw: [{ file: '/home/ana/elsewhere/notes.txt' }] } });
+
+  assert.deepEqual(paths.place(4, [{ name: 'q3.csv', size_bytes: 3 }, { name: 'deck.pdf' }, { name: 'notes.txt' }, { name: 'q3.csv' }]), [
+    { name: 'q3.csv', size_bytes: 3, path: '/home/ana/Quarterly/q3.csv' },
+    { name: 'deck.pdf', path: 'C:\\Users\\ana\\Documents\\deck.pdf' },
+    { name: 'notes.txt' },
+    { name: 'q3.csv' },
+  ], 'another tab\'s upload is not this one\'s, and one path places one file');
+  assert.deepEqual(paths.place(5, [{ name: 'notes.txt' }]), [{ name: 'notes.txt', path: '/home/ana/elsewhere/notes.txt' }]);
+});
+
+test('a path waits for its submission a bounded time, and only so many are held', () => {
+  let now = 0;
+  const paths = createUploadPaths({ clock: () => now, holdMs: 1000, maxHeld: 2 });
+  paths.note({ tabId: 1, requestBody: { raw: [{ file: '/a/old.txt' }] } });
+  now = 1001;
+  assert.deepEqual(paths.place(1, [{ name: 'old.txt' }]), [{ name: 'old.txt' }], 'a path held past its time is let go');
+
+  paths.note({ tabId: 1, requestBody: { raw: [{ file: '/a/one.txt' }, { file: '/a/two.txt' }, { file: '/a/three.txt' }] } });
+  assert.deepEqual(paths.place(1, [{ name: 'one.txt' }, { name: 'three.txt' }]), [{ name: 'one.txt' }, { name: 'three.txt', path: '/a/three.txt' }]);
+});
+
+test('a path the record cannot hold, or a request with no tab, is not held', () => {
+  const paths = createUploadPaths();
+  const long = `/${'d'.repeat(MAX_PATH_CHARS)}/big.txt`;
+  paths.note({ tabId: 1, requestBody: { raw: [{ file: long }, { file: '' }, { file: 7 }] } });
+  paths.note({ tabId: -1, requestBody: { raw: [{ file: '/a/background.txt' }] } });
+  paths.note({ tabId: 1, requestBody: { formData: { doc: ['big.txt'] } } });
+  assert.deepEqual(paths.place(1, [{ name: 'big.txt' }]), [{ name: 'big.txt' }]);
+  assert.deepEqual(paths.place(-1, [{ name: 'background.txt' }]), [{ name: 'background.txt' }]);
 });

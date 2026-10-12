@@ -207,8 +207,9 @@ func pairs(a, b *entry) bool {
 	return a.obs.SizeBytes == b.obs.SizeBytes && d <= M0Window && d >= -M0Window
 }
 
-// merged is the one observation for a pair: the hook's route, decision and person, the earlier
-// occurred_at, and the content of whichever side holds the text.
+// merged is the one observation for a pair: the hook's route, decision, person and the files it
+// found, the earlier occurred_at, and the content of whichever side holds the text. When the hook
+// found no files, the files the telemetry's text refers to stand in.
 func merged(a, b *entry) core.Observation {
 	hook, otel := a, b
 	if hook.obs.Route != protocol.RouteToolHook {
@@ -224,6 +225,9 @@ func merged(a, b *entry) core.Observation {
 		obs.Extract = otel.obs.Extract
 		obs.MediaType = otel.obs.MediaType
 		obs.OverCap = otel.obs.OverCap
+	}
+	if len(obs.Referenced) == 0 {
+		obs.References = otel.obs.References
 	}
 	return obs
 }

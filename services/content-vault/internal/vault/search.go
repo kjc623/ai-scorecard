@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/shadow-ai-capture/content-vault/internal/store"
 )
@@ -122,7 +123,11 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (SearchResult, 
 			})
 		}
 		for i := range hits {
-			hits[i].Snippet = bound(hits[i].Snippet)
+			if hits[i].UnitKind == store.UnitAttachmentName {
+				hits[i].Snippet = boundName(hits[i].Snippet)
+			} else {
+				hits[i].Snippet = bound(hits[i].Snippet)
+			}
 		}
 		res.Hits = hits
 		return nil
@@ -258,6 +263,19 @@ func bound(s string) string {
 		return s
 	}
 	return string(r[:maxSnippetRunes]) + "…"
+}
+
+// boundName bounds an attachment's snippet from its start, because a path ends with the file's
+// name. A path cut short loses its highlights rather than keep half a mark.
+func boundName(s string) string {
+	if utf8.RuneCountInString(s) <= maxSnippetRunes {
+		return s
+	}
+	r := []rune(strings.NewReplacer("<em>", "", "</em>", "").Replace(s))
+	if len(r) <= maxSnippetRunes {
+		return string(r)
+	}
+	return "…" + string(r[len(r)-maxSnippetRunes:])
 }
 
 func filterDetail(f store.SearchFilters) map[string]any {

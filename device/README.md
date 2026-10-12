@@ -79,8 +79,9 @@ service refuses the manifest with `mode_forbids_read` when policy reads no conte
 32 MiB per attachment and 64 MiB per connection in memory, and drops bytes whose observation does
 not name them by digest within two minutes. The observation's bytes are classified under its mode
 (documents go to classifier-host's isolated parser child), the labels join the event's, and the
-bytes are discarded: the envelope carries only the name, size and digest, and nothing is written
-to the spool or the content store.
+bytes are discarded: the envelope carries only the name, size and digest, with the path the
+browser uploaded the file from when the extension saw one, and nothing is written to the spool or
+the content store.
 
 An observation's attachments also take the bundle's custom labels whose file types or file name
 patterns (`*` and `?`, whatever their case) match an attachment's name.
@@ -193,6 +194,17 @@ Code's JSON output with exit code 0: a block with the rule's message and link, a
 `systemMessage`, and no output to allow. Codex's adapter does the same for `UserPromptSubmit`: a
 block is `{"decision": "block", "reason": ...}` (the rule's id when it has no message, since Codex
 ignores a block without a reason).
+
+A prompt event also carries the files the prompt names, by name, path and size: each word that
+reads as a path (Claude Code's `@src/app.go`, the path Codex's file search writes, a quoted path or
+one a terminal escapes) resolved against the tool's working directory, when it names a regular file.
+Files are looked up, never read, within 50 ms of the hook's budget. Cursor's adapter adds the files
+Cursor lists as attached to the prompt. The record keeps them outside its content digest, so the
+hook's record and the same prompt's OpenTelemetry record still merge, and the bundle's custom
+labels match their names. A prompt that reaches the agent only as telemetry names its files from
+its text, once the mode permits reading it: Claude Code's `@` mentions (with a path only when the
+mention is absolute, since the event carries no working directory), and the `<attachment
+filePath="…">` tags GitHub Copilot Chat sends an attached file in.
 
 ## Installed apps
 

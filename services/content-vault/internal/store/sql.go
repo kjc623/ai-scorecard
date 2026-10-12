@@ -181,10 +181,15 @@ SELECT st.submission_id::text, st.unit_kind, st.unit_index, %s, s.received_at
 var (
 	// Terms: the vault builds $2 as tsquery text from sanitised terms, so to_tsquery cannot fail. An
 	// attachment name also matches when it contains every pattern in $16; the first, the longest,
-	// narrows through the partial trigram index.
+	// narrows through the partial trigram index. A prompt's snippet is a fragment around the match;
+	// an attachment's is its whole name or path, whose file name is at the end.
 	sqlSearchTerms = fmt.Sprintf(searchTemplate,
-		`ts_headline('simple', st.body, to_tsquery('simple', $2::text),
-                   'StartSel=<em>, StopSel=</em>, MaxFragments=1, MaxWords=24, MinWords=6, FragmentDelimiter= … '),
+		`CASE WHEN st.unit_kind = 'attachment_name'
+            THEN ts_headline('simple', st.body, to_tsquery('simple', $2::text),
+                             'StartSel=<em>, StopSel=</em>, HighlightAll=true')
+            ELSE ts_headline('simple', st.body, to_tsquery('simple', $2::text),
+                             'StartSel=<em>, StopSel=</em>, MaxFragments=1, MaxWords=24, MinWords=6, FragmentDelimiter= … ')
+       END,
        ts_rank(st.tsv, to_tsquery('simple', $2::text))`,
 		`(st.tsv @@ to_tsquery('simple', $2::text)
         OR (st.unit_kind = 'attachment_name'

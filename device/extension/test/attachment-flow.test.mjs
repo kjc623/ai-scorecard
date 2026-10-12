@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 
 import { createAttachmentCollector } from '../src/attachments/collect.js';
 import { TYPE } from '../src/messages.js';
-import { chromeRequest } from '../test-support/fake-chrome.mjs';
+import { chromeRequest, toArrayBuffer } from '../test-support/fake-chrome.mjs';
 import { CHAT_BODY } from '../test-support/fixtures.mjs';
 import { attachTab, createHarness, settle, waitFor } from '../test-support/harness.mjs';
 
@@ -70,6 +70,33 @@ test('an attached file is transferred to capture-core before the observation tha
   ]);
   assert.equal(observation.page_context_attachments, true);
   assert.deepEqual(tab.asked, ['capture_upload_check', 'capture_upload_send']);
+});
+
+test('a file the tab uploaded in a form is named with the path it was uploaded from', async () => {
+  const h = await started({ version: 'b1', tenant_default_mode: 'm2' });
+  attachTab(h, TAB, [FILE]);
+  const path = `C:\\Users\\ana\\Documents\\Forecasts\\${FILE.name}`;
+  const upload = chromeRequest({
+    requestId: 'u1',
+    url: 'https://chat.example-ai.invalid/backend/files',
+    tabId: TAB,
+    headers: { 'content-type': 'multipart/form-data; boundary=b' },
+  });
+  // What Chrome hands the body lane for a page's fetch of a FormData holding a file from disk.
+  upload.requestBody = {
+    raw: [
+      { bytes: toArrayBuffer(`--b\r\nContent-Disposition: form-data; name="file"; filename="${FILE.name}"\r\nContent-Type: text/csv\r\n\r\n`) },
+      { file: path },
+      { bytes: toArrayBuffer('\r\n--b--\r\n') },
+    ],
+  };
+  await h.fake.drive('body', upload);
+  await submit(h);
+  await waitFor(() => observations(h).some((o) => o.attachments), { label: 'the observation naming the file' });
+
+  const [attached] = observations(h).find((o) => o.attachments).attachments;
+  assert.deepEqual(attached, { name: FILE.name, path, size_bytes: FILE.bytes.byteLength, media_type: FILE.media_type, content_digest: sha256(FILE.bytes) });
+  assert.ok(!JSON.stringify(h.core.received.filter((m) => m.type === TYPE.ATTACHMENT_MANIFEST)).includes('Forecasts'), 'the path travels with the observation, not the transfer');
 });
 
 test('only the frame that sent the request is asked for its files', async () => {

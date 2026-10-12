@@ -5,6 +5,7 @@ import (
 	"errors"
 	"mime/multipart"
 	"net/textproto"
+	"reflect"
 	"testing"
 
 	"github.com/shadow-ai-capture/device/capture-core/dedup"
@@ -168,5 +169,43 @@ func TestGenericNamesTheFilesAFormUploads(t *testing.T) {
 	cut := buf.Bytes()[:bytes.Index(buf.Bytes(), []byte("0123"))+2]
 	if res, _ := (Generic{}).Parse(cut, w.FormDataContentType()); len(res.Attachments) != 1 || res.Attachments[0].Name != "Q3 forecast.xlsx" || res.Attachments[0].SizeBytes != 0 {
 		t.Fatalf("a form cut at the cap gave %+v, want the file named without a size", res.Attachments)
+	}
+}
+
+// A prompt's @-mentions name files from the text alone: a relative mention by its name, an absolute
+// one with its path. A folder, an agent, an MCP resource, an address and a mention repeated name
+// nothing more.
+func TestMentionedFilesNamesTheFilesAPromptMentions(t *testing.T) {
+	prompt := `Compare @src/app.go#L3 with @/home/ana/q3.xlsx, @"C:\Users\ana\deck one.pptx" and @'notes.md'. ` +
+		`Skip @docs, @agent-reviewer, @github:repos/o/r/issues/1, ana@example.com and @src/app.go.`
+	want := []dedup.Attachment{
+		{Name: "app.go"},
+		{Name: "q3.xlsx", Path: "/home/ana/q3.xlsx"},
+		{Name: "deck one.pptx", Path: `C:\Users\ana\deck one.pptx`},
+		{Name: "notes.md"},
+	}
+	if got := MentionedFiles(prompt); !reflect.DeepEqual(got, want) {
+		t.Fatalf("MentionedFiles\n%+v\nwant\n%+v", got, want)
+	}
+	if got := MentionedFiles("no mentions here"); got != nil {
+		t.Fatalf("MentionedFiles = %+v, want none", got)
+	}
+}
+
+// A path names its last segment, on either separator, and keeps the path when it is absolute.
+func TestFileAt(t *testing.T) {
+	for path, want := range map[string]dedup.Attachment{
+		"/home/ana/q3.csv":             {Name: "q3.csv", Path: "/home/ana/q3.csv"},
+		`C:\Users\ana\q3.csv`:          {Name: "q3.csv", Path: `C:\Users\ana\q3.csv`},
+		`\\server\share\q3.csv`:        {Name: "q3.csv", Path: `\\server\share\q3.csv`},
+		"src/q3.csv":                   {Name: "q3.csv"},
+		"vscode-remote://wsl/a/q3.csv": {Name: "q3.csv"},
+	} {
+		if got, ok := FileAt(path); !ok || got != want {
+			t.Errorf("FileAt(%q) = %+v, %v; want %+v", path, got, ok, want)
+		}
+	}
+	if _, ok := FileAt("/home/ana/"); ok {
+		t.Error("a folder named a file")
 	}
 }

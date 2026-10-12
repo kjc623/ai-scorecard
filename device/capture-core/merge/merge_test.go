@@ -513,3 +513,26 @@ func TestTheMergedRecordKeepsTheHooksFiles(t *testing.T) {
 		})
 	}
 }
+
+// When the hook found no files, the merged record names those the telemetry's text refers to; the
+// hook's own files are kept over them.
+func TestTheMergedRecordFallsBackToTheTelemetrysFiles(t *testing.T) {
+	refs := func(string) []dedup.Attachment { return []dedup.Attachment{{Name: "plan.md"}} }
+	for _, hookFound := range []bool{false, true} {
+		synctest.Test(t, func(t *testing.T) {
+			p := &fakePipeline{mode: protocol.ModeM1}
+			b := merge.New(merge.Config{Pipeline: p})
+			h, o := hook(canary, t0), otel(canary, t0)
+			if hookFound {
+				h.Referenced = []dedup.Attachment{{Name: "plan.md", Path: "/home/u/plan.md"}}
+			}
+			o.References = refs
+			process(t, b, h)
+			process(t, b, o)
+			got := p.submitted()
+			if len(got) != 1 || (got[0].obs.References != nil) == hookFound {
+				t.Fatalf("hook found files %v: records %+v", hookFound, got)
+			}
+		})
+	}
+}

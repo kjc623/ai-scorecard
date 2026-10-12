@@ -8,7 +8,10 @@ registered for a destination whose mode does not read content. At a mode that re
 files the user chose, dropped or pasted in the frame that sent the request, and has not sent with
 an earlier prompt, are transferred to `capture-core` (manifest, chunks, completion) before the
 observation that names them, so the agent can classify them on the device; the observation carries
-each file's name, media type, size and digest. Plain ES modules, no build step.
+each file's name, media type, size and digest. When the page uploaded the file in a multipart form,
+the browser shows the body lane the file's path in place of its bytes; the worker holds that path
+for the tab (at most 64, for 30 minutes) and gives it to the descriptor of the same name. Plain ES
+modules, no build step.
 
 ## How it runs in production
 

@@ -28,7 +28,8 @@
 /**
  * @typedef {object} RequestRecordInput
  * A normalised request. Chrome exposes two requestBody shapes: form encodings arrive as parsed
- * `formData`, everything else as `raw` bytes (copied here from Chrome's ArrayBuffer).
+ * `formData`, everything else as `raw` parts: bytes (copied here from Chrome's ArrayBuffer), or the
+ * path of a file uploaded from disk in place of its bytes.
  * @property {string} requestId
  * @property {string} url
  * @property {string} method

@@ -11,7 +11,7 @@
 // Prints one PASS or FAIL line per check and exits 1 on a failure. With no browser it exits 3
 // (skipped) and prints the reason on its last line.
 
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -62,12 +62,15 @@ const CHAT_BODY = JSON.stringify({
 
 // The page posts a chat-shaped body when it loads and again on send(). It holds a file input the
 // check selects a file into, and a second one that behaves as a chat composer's does: it uploads a
-// chosen file at once and clears itself. An embedded frame runs the content script too.
+// chosen file at once, in a multipart form, and clears itself. An embedded frame runs the content
+// script too.
 const PAGE = `<!doctype html><html><body><input id="attachment" type="file"><input id="composer" type="file">
 <iframe src="/widget"></iframe><script>
 document.getElementById('composer').addEventListener('change', async (event) => {
   const file = event.target.files[0];
-  await fetch('/upload', { method: 'PUT', body: file });
+  const form = new FormData();
+  form.append('file', file);
+  await fetch('/upload', { method: 'POST', body: form });
   event.target.value = '';
   window.__uploaded = file.name;
 });
@@ -208,7 +211,8 @@ try {
   );
 
   // 8. A file chosen in an input the page clears once it has uploaded it still goes with the next
-  // submission, and the embedded frame, which holds no file, does not answer for the page.
+  // submission, with the path the browser uploaded it from, and the embedded frame, which holds no
+  // file, does not answer for the page.
   const composed = join(work, 'composer-upload.txt');
   writeFileSync(composed, 'COMPOSER-UPLOAD '.repeat(8));
   await (await page.$('#composer')).uploadFile(composed);
@@ -218,10 +222,11 @@ try {
     () => worker.evaluate(`globalThis.__observations.map((o) => o.payload).find((p) => p && p.attachments && p.attachments.some((a) => a.name === 'composer-upload.txt')) || null`),
     15_000,
   );
+  const uploaded = withUpload?.attachments?.find((a) => a.name === 'composer-upload.txt');
   verdict(
-    'a file the page uploads and clears from its input goes with the next submission',
-    Boolean(cleared) && Boolean(withUpload),
-    `input ${cleared ? 'cleared by the page' : 'not cleared'}, ${withUpload ? 'the next submission named the file' : 'no observation named the file'}`,
+    'a file the page uploads and clears from its input goes with the next submission, with its path',
+    Boolean(cleared) && [composed, realpathSync(composed)].includes(uploaded?.path),
+    `input ${cleared ? 'cleared by the page' : 'not cleared'}, ${uploaded ? `the next submission named the file${uploaded.path ? ` at ${uploaded.path}` : ' without its path'}` : 'no observation named the file'}`,
   );
 } catch (err) {
   verdict('the browser run completes', false, err.message);

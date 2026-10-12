@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -218,6 +219,42 @@ func TestLiveUploadRetrieveRedeem(t *testing.T) {
 	}
 	if _, err := l.svc.Retrieve(ctx, vault.RetrieveRequest{TenantID: w.tenant, EventID: newID(), Principal: "alice@example.com"}); !isDenial(err, vault.ReasonNoContentObject) {
 		t.Fatalf("retrieval with no content = %v", err)
+	}
+}
+
+// An attached file indexed by its path is found by its name or a folder, and its snippet is the
+// whole path, its end kept when it is long.
+func TestLiveSearchFindsAFileByItsPath(t *testing.T) {
+	l := newLive(t)
+	w := l.seedTenant("attachment_names")
+	deep := `C:\Users\ana\OneDrive - Contoso\` + strings.Repeat(`Archive\`, 30) + `board deck.pptx`
+	sub := l.seedSubmission(w, "user", `[]`, time.Now().Add(-time.Hour).Truncate(time.Second))
+	event := newID()
+	object, _ := json.Marshal(map[string]any{"prompt": "summarise", "attachments": []map[string]string{
+		{"name": "Q3 forecast with region detail.xlsx", "path": `C:\Users\ana\Documents\Finance\Q3 forecast with region detail.xlsx`},
+		{"name": "board deck.pptx", "path": deep},
+	}})
+	if _, err := l.upload(w, event, l.seedGrant(w, event, sub), object); err != nil {
+		t.Fatal(err)
+	}
+	search := func(form store.SearchForm, q string) []store.SearchHit {
+		t.Helper()
+		res, err := l.svc.Search(context.Background(), vault.SearchRequest{TenantID: w.tenant, Principal: "alice", Form: form, Query: q})
+		if err != nil {
+			t.Fatalf("search %s %q: %v", form, q, err)
+		}
+		return res.Hits
+	}
+	if hits := search(store.FormTerms, "region"); len(hits) != 1 ||
+		hits[0].Snippet != `C:\Users\ana\Documents\Finance\Q3 forecast with <em>region</em> detail.xlsx` {
+		t.Fatalf("terms hits = %+v, want the whole path with the term marked", hits)
+	}
+	if hits := search(store.FormSubstring, `Finance\Q3`); len(hits) != 1 {
+		t.Fatalf("a folder and the name do not find the file: %+v", hits)
+	}
+	if hits := search(store.FormTerms, "board deck"); len(hits) != 1 || !strings.HasSuffix(hits[0].Snippet, `\board deck.pptx`) ||
+		!strings.HasPrefix(hits[0].Snippet, "…") {
+		t.Fatalf("a long path's snippet = %+v, want its end", hits)
 	}
 }
 

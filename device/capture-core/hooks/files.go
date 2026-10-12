@@ -3,14 +3,12 @@ package hooks
 import (
 	"os"
 	"path/filepath"
-	"regexp"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
+	"github.com/shadow-ai-capture/device/capture-core/parsers"
 	"github.com/shadow-ai-capture/device/protocol"
 )
 
@@ -29,8 +27,8 @@ const maxPathWords = 64
 func promptFiles(prompt, cwd string) []protocol.AttachmentDescriptor {
 	var paths []string
 	seen := map[string]bool{}
-	for _, w := range promptWords(prompt) {
-		p := resolvePath(pathWord(w), cwd)
+	for _, w := range parsers.PathWords(prompt) {
+		p := resolvePath(w.Path, cwd)
 		if p == "" || seen[p] {
 			continue
 		}
@@ -100,78 +98,6 @@ func describeFile(path string, size int64) (protocol.AttachmentDescriptor, bool)
 		return protocol.AttachmentDescriptor{}, false
 	}
 	return protocol.AttachmentDescriptor{Name: name, Path: path, SizeBytes: max(size, 0)}, true
-}
-
-// promptWords splits a prompt at whitespace. A quoted run at the start of a word is one word, quotes
-// removed, as a terminal and Codex quote a path with spaces; outside Windows a backslash before a
-// space keeps it in the word, as a terminal escapes a dropped file's path.
-func promptWords(prompt string) []string {
-	var words []string
-	var w strings.Builder
-	flush := func() {
-		if w.Len() > 0 {
-			words = append(words, w.String())
-			w.Reset()
-		}
-	}
-	rs := []rune(prompt)
-	for i := 0; i < len(rs); i++ {
-		r := rs[i]
-		switch {
-		case (r == '"' || r == '\'') && (w.Len() == 0 || w.String() == "@"):
-			end := indexRune(rs[i+1:], r)
-			if end < 0 {
-				w.WriteRune(r)
-				continue
-			}
-			w.WriteString(string(rs[i+1 : i+1+end]))
-			i += end + 1
-		case unicode.IsSpace(r):
-			flush()
-		case r == '\\' && runtime.GOOS != "windows" && i+1 < len(rs) && rs[i+1] == ' ':
-			w.WriteRune(' ')
-			i++
-		default:
-			w.WriteRune(r)
-		}
-	}
-	flush()
-	return words
-}
-
-func indexRune(rs []rune, r rune) int {
-	for i, c := range rs {
-		if c == r {
-			return i
-		}
-	}
-	return -1
-}
-
-var (
-	// lineSuffix is a line reference after a path: Claude Code's `#L10-20` or a compiler's `:42:7`.
-	lineSuffix = regexp.MustCompile(`(#L\d+(-\d+)?|(:\d+){1,2})$`)
-	// extension is a file name's extension: a dot after at least one character, then letters and
-	// digits.
-	extension = regexp.MustCompile(`.\.[A-Za-z0-9]{1,16}$`)
-	// scheme is a URL's or an MCP resource's prefix (`https:`, `github:`), which a drive letter is not.
-	scheme = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.-]+:`)
-)
-
-// pathWord is the path a word holds, "" when it does not read as one: the word without a leading
-// `@`, the brackets and punctuation of the sentence around it, and a line reference.
-func pathWord(w string) string {
-	w = strings.TrimPrefix(w, "@")
-	w = strings.TrimLeft(w, "([{<")
-	w = strings.TrimRight(w, ")]}>,;!?'\".")
-	w = lineSuffix.ReplaceAllString(w, "")
-	if w == "" || scheme.MatchString(w) {
-		return ""
-	}
-	if strings.ContainsAny(w, `/\`) || strings.HasPrefix(w, "~") || extension.MatchString(w) {
-		return w
-	}
-	return ""
 }
 
 // resolvePath is the absolute, clean form of p: under the home directory for `~`, and under cwd

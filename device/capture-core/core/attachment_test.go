@@ -206,11 +206,12 @@ func TestMergeLabelsStopsAtTheEnvelopeCap(t *testing.T) {
 	}
 }
 
-// A file a hook found beside the prompt is recorded with its path, and the record's digest and key
-// are the ones a route that saw only the text computes, so the two records of one prompt agree.
+// A file a hook found beside the prompt, or one the prompt's text names, is recorded, and the
+// record's digest and key are the ones a route that saw only the text computes, so the two records
+// of one prompt agree.
 func TestPipelineRecordsReferencedFilesOutsideTheDigest(t *testing.T) {
 	text := []byte("explain @docs/plan.md")
-	observe := func(referenced []dedup.Attachment) (protocol.Entry, map[string]json.RawMessage) {
+	observe := func(set func(*Observation)) map[string]json.RawMessage {
 		sink := &recordingSink{}
 		b := m1Bundle()
 		b.CustomLabels = []policy.CustomLabel{{Label: "custom_plans", FileNames: []string{"plan*"}}}
@@ -227,8 +228,8 @@ func TestPipelineRecordsReferencedFilesOutsideTheDigest(t *testing.T) {
 			Extract: ExtractorFunc(func(b []byte, _ string) (string, []dedup.Attachment, error) {
 				return string(b), nil, nil
 			}),
-			Referenced: referenced,
 		}
+		set(&obs)
 		if _, err := p.Process(context.Background(), obs); err != nil {
 			t.Fatalf("Process: %v", err)
 		}
@@ -236,24 +237,67 @@ func TestPipelineRecordsReferencedFilesOutsideTheDigest(t *testing.T) {
 		if err := json.Unmarshal(sink.last().Payload, &env); err != nil {
 			t.Fatal(err)
 		}
-		return sink.last(), env
+		return env
 	}
-	_, alone := observe(nil)
-	_, hook := observe([]dedup.Attachment{{Name: "plan.md", Path: "/home/u/docs/plan.md", SizeBytes: 12}})
-	for _, f := range []string{"content_digest", "dedup_key"} {
-		if len(alone[f]) == 0 || string(alone[f]) != string(hook[f]) {
-			t.Errorf("%s differs: %s without the file, %s with it", f, alone[f], hook[f])
+	alone := observe(func(*Observation) {})
+	for name, c := range map[string]struct {
+		set  func(*Observation)
+		want protocol.AttachmentDescriptor
+	}{
+		"found by the hook": {
+			func(o *Observation) {
+				o.Referenced = []dedup.Attachment{{Name: "plan.md", Path: "/home/u/docs/plan.md", SizeBytes: 12}}
+			},
+			protocol.AttachmentDescriptor{Name: "plan.md", Path: "/home/u/docs/plan.md", SizeBytes: 12},
+		},
+		"named by the text": {
+			func(o *Observation) {
+				o.References = func(got string) []dedup.Attachment {
+					if got != string(text) {
+						t.Errorf("References was given %q, want the extracted text", got)
+					}
+					return []dedup.Attachment{{Name: "plan.md"}}
+				}
+			},
+			protocol.AttachmentDescriptor{Name: "plan.md"},
+		},
+	} {
+		env := observe(c.set)
+		for _, f := range []string{"content_digest", "dedup_key"} {
+			if len(alone[f]) == 0 || string(alone[f]) != string(env[f]) {
+				t.Errorf("%s: %s differs: %s without the file, %s with it", name, f, alone[f], env[f])
+			}
+		}
+		var atts []protocol.AttachmentDescriptor
+		if err := json.Unmarshal(env["attachments"], &atts); err != nil {
+			t.Fatal(err)
+		}
+		if len(atts) != 1 || atts[0] != c.want {
+			t.Fatalf("%s: attachments = %+v, want %+v", name, atts, c.want)
+		}
+		if !bytes.Contains(env["labels"], []byte("custom_plans")) {
+			t.Fatalf("%s: labels = %s, want the file's custom label", name, env["labels"])
 		}
 	}
-	var atts []protocol.AttachmentDescriptor
-	if err := json.Unmarshal(hook["attachments"], &atts); err != nil {
+}
+
+// At M0 the text is never read, so nothing is asked of it.
+func TestPipelineAsksNothingOfTheTextAtM0(t *testing.T) {
+	sink := &recordingSink{}
+	p := newTestPipeline(t, sink, m0Bundle())
+	_, err := p.Process(context.Background(), Observation{
+		Route: protocol.RouteToolOTel, Kind: protocol.KindPrompt, ToolFingerprint: "tool",
+		OccurredAt: time.Unix(1_700_000_000, 0), SizeBytes: 3, MediaType: "text/plain",
+		Content: &countingReader{body: []byte("@a.md")},
+		Enforce: decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
+		Extract: ExtractorFunc(func(b []byte, _ string) (string, []dedup.Attachment, error) { return string(b), nil, nil }),
+		References: func(string) []dedup.Attachment {
+			t.Fatal("References was called at M0")
+			return nil
+		},
+	})
+	if err != nil {
 		t.Fatal(err)
-	}
-	if want := (protocol.AttachmentDescriptor{Name: "plan.md", Path: "/home/u/docs/plan.md", SizeBytes: 12}); len(atts) != 1 || atts[0] != want {
-		t.Fatalf("attachments = %+v, want %+v", atts, want)
-	}
-	if !bytes.Contains(hook["labels"], []byte("custom_plans")) {
-		t.Fatalf("labels = %s, want the file's custom label", hook["labels"])
 	}
 }
 

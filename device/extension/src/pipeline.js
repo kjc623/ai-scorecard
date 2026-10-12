@@ -117,6 +117,8 @@ export function createPipeline({
     counters.inc(COUNTER.OBSERVED);
     const url = detail.url;
     const host = hostOf(url);
+    // A file upload is not itself a submission, but it is where the browser names the file's path.
+    if (attachments) attachments.noteUploads(detail);
 
     // Shape classification comes before the mode is consulted for content.
     const request = shapeInput(detail, body, tab_context);

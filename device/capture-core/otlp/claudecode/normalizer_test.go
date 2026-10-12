@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	collogspb "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	logspb "go.opentelemetry.io/proto/otlp/logs/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 
@@ -420,6 +422,48 @@ func TestM1CarriesADigestAndLabelsButNoText(t *testing.T) {
 		}
 		if bytes.Contains(e.Payload, []byte("SAC-CANARY")) {
 			t.Errorf("the envelope carries the prompt text: %s", e.Payload)
+		}
+	}
+	if prompts != 2 {
+		t.Fatalf("%d prompt envelopes, want 2", prompts)
+	}
+}
+
+// The files a prompt @-mentions are named from its text, an absolute mention with its path, and
+// the digest is the text's alone, as the hook's record of the same prompt computes it.
+func TestThePromptsMentionsNameItsFiles(t *testing.T) {
+	const text = "compare @src/app.go with @/home/ana/q3.xlsx"
+	req := fixture(t, "logs-prompts-on.json")
+	for _, rl := range req.GetResourceLogs() {
+		for _, sl := range rl.GetScopeLogs() {
+			for _, lr := range sl.GetLogRecords() {
+				for _, kv := range lr.GetAttributes() {
+					if kv.GetKey() == attrPrompt {
+						kv.GetValue().Value = &commonpb.AnyValue_StringValue{StringValue: text}
+					}
+				}
+			}
+		}
+	}
+	h := newHarness(t, protocol.ModeM1)
+	h.send(t, req)
+	prompts := 0
+	for _, e := range h.sink.all() {
+		var env struct {
+			Kind          string                          `json:"kind"`
+			ContentDigest string                          `json:"content_digest"`
+			Attachments   []protocol.AttachmentDescriptor `json:"attachments"`
+		}
+		if err := json.Unmarshal(e.Payload, &env); err != nil {
+			t.Fatal(err)
+		}
+		if env.Kind != "prompt" {
+			continue
+		}
+		prompts++
+		want := []protocol.AttachmentDescriptor{{Name: "app.go"}, {Name: "q3.xlsx", Path: "/home/ana/q3.xlsx"}}
+		if !reflect.DeepEqual(env.Attachments, want) || env.ContentDigest != dedup.ContentDigest(text, nil) {
+			t.Errorf("prompt envelope %s", e.Payload)
 		}
 	}
 	if prompts != 2 {

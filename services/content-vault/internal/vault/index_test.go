@@ -24,6 +24,7 @@ func TestIndexUnits(t *testing.T) {
 		{"a body nobody typed", `{"events":[{"name":"telemetry"}]}`, "", nil},
 		{"an assistant-only body", `{"messages":[{"role":"assistant","content":"hi"}]}`, "", nil},
 		{"structured object", `{"prompt":"review this","attachments":[{"name":" a.pdf "},{"name":""},{"size_bytes":3}]}`, "review this", []string{"a.pdf"}},
+		{"attachments with their paths", `{"prompt":"compare","attachments":[{"name":"q3.xlsx","path":"C:\\Users\\ana\\q3.xlsx"},{"name":"b.pdf","path":""}]}`, "compare", []string{`C:\Users\ana\q3.xlsx`, "b.pdf"}},
 		{"structured object with a body prompt", `{"prompt":"{\"messages\":[{\"role\":\"user\",\"content\":\"inner\"}]}","attachments":[]}`, "inner", nil},
 		{"invalid JSON is text", `{"messages": [`, `{"messages": [`, nil},
 		{"NUL and invalid UTF-8", "a\x00b\xffc", "a b�c", nil},
@@ -96,5 +97,20 @@ func TestCursorRoundTrip(t *testing.T) {
 		if _, err := decodeCursor(bad); err == nil {
 			t.Errorf("decodeCursor(%q) accepted a bad cursor", bad)
 		}
+	}
+}
+
+// An attachment's snippet keeps the end of a long path, where the file's name is, and drops the
+// highlights rather than keep half a mark.
+func TestBoundNameKeepsTheFileName(t *testing.T) {
+	short := `C:\Users\ana\<em>Q3</em> forecast.xlsx`
+	if got := boundName(short); got != short {
+		t.Fatalf("boundName(%q) = %q", short, got)
+	}
+	long := `C:\Users\ana\` + strings.Repeat(`folder\`, 40) + `<em>Q3</em> forecast.xlsx`
+	got := boundName(long)
+	if !strings.HasPrefix(got, "…") || !strings.HasSuffix(got, `\Q3 forecast.xlsx`) || strings.Contains(got, "em>") ||
+		utf8.RuneCountInString(got) != maxSnippetRunes+1 {
+		t.Fatalf("boundName(long) = %q", got)
 	}
 }

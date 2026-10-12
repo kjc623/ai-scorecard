@@ -128,6 +128,12 @@ type Observation struct {
 	// dedup key, so the hook's record and the tool's telemetry for one prompt still agree on both.
 	Referenced []dedup.Attachment
 
+	// References names the files the prompt's text refers to, as a route whose text is all it has
+	// finds them: the files a coding tool's prompt mentions, as its telemetry reports the prompt.
+	// It is called with the extracted text once the mode permits reading it, and its files are
+	// recorded as Referenced are.
+	References func(text string) []dedup.Attachment
+
 	// Person, when set, attributes this one observation to a known person instead of the
 	// pipeline's identity (the console user). The browser relay sets it from the OS account of
 	// the browser process.
@@ -482,6 +488,9 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 		in.DedupKey = key
 		in.ContentDigest = digest
 		recorded := append(slices.Clip(atts), obs.Referenced...)
+		if obs.References != nil && text != "" {
+			recorded = append(recorded, obs.References(text)...)
+		}
 		in.Attachments = wireAttachments(recorded)
 		// The request kind is decided once, here, from the captured payload and the extracted
 		// text. It gates classification below and, downstream, the search index and the default

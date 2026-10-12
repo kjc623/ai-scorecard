@@ -3495,9 +3495,10 @@ RESET ROLE;
 
 -- T89  Attachment filenames reach the search index
 -- =====================================================================================
--- record_event indexes a prompt's attachment filenames at the attachment_names tier and above, once
--- per position however many routes report them, and never for a client-generated request or a
--- tenant whose search is disabled. ingest-api inserts into the index and cannot read it.
+-- record_event indexes a prompt's attachment filenames at the attachment_names tier and above, by
+-- the path where the device saw one, once per position however many routes report them, and never
+-- for a client-generated request or a tenant whose search is disabled. ingest-api inserts into the
+-- index and cannot read it.
 
 INSERT INTO ops.device (tenant_id, device_id, os, managed_state)
 VALUES ('55555555-5555-7555-8555-555555555555', '55555555-0000-7000-8000-000000000089', 'windows', 'managed');
@@ -3523,7 +3524,7 @@ BEGIN
     'source','ext.web_request',
     'dedup_key','sha256:' || repeat('89', 32),'content_digest','sha256:' || repeat('8a', 32),
     'attachments', jsonb_build_array(jsonb_build_object('name','Q3 forecast.xlsx','size_bytes',10),
-                                     jsonb_build_object('name','notes.pdf'))), now());
+                                     jsonb_build_object('name','notes.pdf','path','C:\Users\ana\Documents\notes.pdf'))), now());
   PERFORM set_config('sac_test.t89_submission', r.event_submission_id::text, false);
   -- The page-context route reports the same files and one more.
   SELECT * INTO r FROM ingest.record_event(base || jsonb_build_object(
@@ -3574,7 +3575,7 @@ BEGIN
     FROM ingest.search_text st
    WHERE st.submission_id = current_setting('sac_test.t89_submission')::uuid
      AND st.unit_kind = 'attachment_name' AND st.expires_at > now();
-  IF names IS DISTINCT FROM '0:Q3 forecast.xlsx, 1:notes.pdf, 2:board deck.pptx' THEN
+  IF names IS DISTINCT FROM '0:Q3 forecast.xlsx, 1:C:\Users\ana\Documents\notes.pdf, 2:board deck.pptx' THEN
     RAISE EXCEPTION 'FAIL T89 the indexed filenames are %', names;
   END IF;
   SELECT count(*) INTO n FROM ingest.search_text
@@ -3583,7 +3584,7 @@ BEGIN
   IF n <> 0 THEN
     RAISE EXCEPTION 'FAIL T89 % filenames were indexed for a client-generated request or a tenant without search', n;
   END IF;
-  RAISE NOTICE 'PASS T89 record_event indexes attachment filenames once each, only where the tenant searches them';
+  RAISE NOTICE 'PASS T89 record_event indexes attachment filenames, by path where known, once each, only where the tenant searches them';
 END $$;
 
 -- =====================================================================================

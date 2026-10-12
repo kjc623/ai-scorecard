@@ -13,9 +13,13 @@
  *
  * Every step is bounded and none can fail the submission: a tab that does not answer, a refused or
  * failed transfer, or a timeout leaves a descriptor without a digest (or none at all) and is counted.
+ *
+ * A descriptor also carries the path the file was uploaded from when the tab uploaded it in a form
+ * whose body the browser showed (see paths.js).
  */
 
 import { MAX_ATTACHMENT_BYTES } from '../messages.js';
+import { createUploadPaths } from './paths.js';
 
 export const CHECK_TIMEOUT_MS = 2_000;
 export const TRANSFER_TIMEOUT_MS = 120_000;
@@ -25,7 +29,13 @@ export const TRANSFER_TIMEOUT_MS = 120_000;
  * @param {import('../adapter.js').Adapter} opts.adapter
  * @param {{countError: (code: string) => void}} opts.counters
  */
-export function createAttachmentCollector({ adapter, counters, checkTimeoutMs = CHECK_TIMEOUT_MS, transferTimeoutMs = TRANSFER_TIMEOUT_MS }) {
+export function createAttachmentCollector({
+  adapter,
+  counters,
+  paths = createUploadPaths(),
+  checkTimeoutMs = CHECK_TIMEOUT_MS,
+  transferTimeoutMs = TRANSFER_TIMEOUT_MS,
+}) {
   /** One message to the frame's content script; null when it does not answer in time. */
   async function ask(tabId, frameId, message, timeoutMs) {
     let timer;
@@ -66,10 +76,15 @@ export function createAttachmentCollector({ adapter, counters, checkTimeoutMs = 
       counters.countError(!result ? 'native_timeout' : result.status === 'refused' ? 'core_refused' : result.reason || 'attachment_read_failed');
       attachments.push(describe(candidate));
     }
-    return { attachments, reachable: true };
+    return { attachments: paths.place(tabId, attachments), reachable: true };
   }
 
-  return { collect };
+  /** Note the paths of the files a request on the body lane uploads. */
+  function noteUploads(detail) {
+    paths.note(detail);
+  }
+
+  return { collect, noteUploads };
 }
 
 /** A descriptor for a file whose bytes were not transferred: what the page knows, and no digest. */

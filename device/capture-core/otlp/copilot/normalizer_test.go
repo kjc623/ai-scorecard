@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -465,6 +466,60 @@ func TestThePromptIsTheLatestUserMessage(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The files Copilot Chat attaches to a message, each sent inside an <attachment> tag with its path,
+// are named with their paths; a folder is not a file, and the digest is the text's alone.
+func TestTheAttachedFilesAreNamed(t *testing.T) {
+	text := "<attachments>\n<attachment id=\"app.ts\" filePath=\"/home/ana/proj/src/app.ts\">\nexport {}\n</attachment>\n" +
+		"<attachment id=\"Q&amp;A.md\" isSummarized=\"true\" filePath=\"C:\\Users\\ana\\Q&amp;A.md\">\nx\n</attachment>\n" +
+		"<attachment id=\"src\" folderPath=\"/home/ana/proj/src\" />\n</attachments>\nsummarise these"
+	escaped, err := json.Marshal(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := traceFixture(t, "copilot/vscode-documented/traces-content-on.json")
+	for _, rs := range req.GetResourceSpans() {
+		for _, ss := range rs.GetScopeSpans() {
+			for _, sp := range ss.GetSpans() {
+				for _, kv := range sp.GetAttributes() {
+					if v, ok := kv.GetValue().GetValue().(*commonpb.AnyValue_StringValue); ok && kv.GetKey() == attrInputMessages {
+						v.StringValue = strings.ReplaceAll(v.StringValue, canary, string(escaped[1:len(escaped)-1]))
+					}
+				}
+			}
+		}
+	}
+	h := newHarness(t, protocol.ModeM1)
+	h.sendSpans(t, req)
+	ps := 0
+	for _, e := range h.sink.all() {
+		var env struct {
+			Kind          string                          `json:"kind"`
+			SizeBytes     int                             `json:"size_bytes"`
+			ContentDigest string                          `json:"content_digest"`
+			Attachments   []protocol.AttachmentDescriptor `json:"attachments"`
+		}
+		if err := json.Unmarshal(e.Payload, &env); err != nil {
+			t.Fatal(err)
+		}
+		// A prompt whose messages end in a tool's turn is read from copilot_chat.user_request,
+		// which holds only what the person typed.
+		if env.Kind != "prompt" || env.SizeBytes == len(canary) {
+			continue
+		}
+		ps++
+		want := []protocol.AttachmentDescriptor{
+			{Name: "app.ts", Path: "/home/ana/proj/src/app.ts"},
+			{Name: "Q&A.md", Path: `C:\Users\ana\Q&A.md`},
+		}
+		if !reflect.DeepEqual(env.Attachments, want) || env.ContentDigest != dedup.ContentDigest(text, nil) {
+			t.Errorf("prompt envelope %s", e.Payload)
+		}
+	}
+	if ps == 0 {
+		t.Fatal("no prompt was read from a message with attachments")
 	}
 }
 

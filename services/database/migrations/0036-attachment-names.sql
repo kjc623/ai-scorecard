@@ -1,7 +1,8 @@
 -- Attachment filenames reach Search, and each person's usage counts the files they attached.
 --
 -- record_event indexes a prompt's attachment filenames from the envelope into ingest.search_text at
--- the attachment_names search tier and above; ingest-api may insert into the index but not read it.
+-- the attachment_names search tier and above, each by its path where the device saw one; ingest-api
+-- may insert into the index but not read it.
 -- The per-person aggregate sums the attachments of a person's prompts beside the prompts able to
 -- describe one, as the per-tool aggregate does, and is filled from the submissions already recorded.
 -- Filenames recorded before this change were never stored, so they cannot be indexed.
@@ -285,17 +286,19 @@ BEGIN
     v_outcome := 'inserted';
   END IF;
 
-  -- Step 3: index the prompt's attachment filenames at the attachment_names tier and above. No
-  -- other path carries them: the content a device uploads at M3 is the prompt text. A name already
+  -- Step 3: index the prompt's attachment filenames at the attachment_names tier and above, each by
+  -- the path the device saw it at when it saw one, so a search finds a file by its folder too. No
+  -- other path carries them: the content a device uploads at M3 is the prompt text. A file already
   -- indexed at a position of the submission keeps it.
   IF v_search IN ('attachment_names', 'full_text') AND v_kind = 'prompt'
      AND p_envelope->>'prompt_kind' IS DISTINCT FROM 'client_generated'
      AND jsonb_typeof(p_envelope->'attachments') = 'array' THEN
     INSERT INTO ingest.search_text (tenant_id, submission_id, unit_kind, unit_index, body, expires_at)
-    SELECT v_tenant, v_sub_id, 'attachment_name', a.ord - 1, a.value->>'name',
+    SELECT v_tenant, v_sub_id, 'attachment_name', f.ord - 1, f.body,
            p_received_at + make_interval(days => v_ttl)
-      FROM jsonb_array_elements(p_envelope->'attachments') WITH ORDINALITY AS a(value, ord)
-     WHERE length(a.value->>'name') BETWEEN 1 AND 65536
+      FROM (SELECT a.ord, coalesce(nullif(a.value->>'path', ''), a.value->>'name') AS body
+              FROM jsonb_array_elements(p_envelope->'attachments') WITH ORDINALITY AS a(value, ord)) AS f
+     WHERE length(f.body) BETWEEN 1 AND 65536
     ON CONFLICT DO NOTHING;
   END IF;
 
