@@ -3336,8 +3336,11 @@ END $$;
 SET ROLE sac_query;
 DO $$
 BEGIN
-  IF ops.tool_display_name('host:claude.ai') IS DISTINCT FROM 'claude.ai' THEN
+  IF ops.tool_display_name('host:chat.example-ai.invalid') IS DISTINCT FROM 'chat.example-ai.invalid' THEN
     RAISE EXCEPTION 'FAIL T86 a destination no app claims is not shown as its host';
+  END IF;
+  IF ops.tool_display_name('host:claude.ai') IS DISTINCT FROM 'Claude (web)' THEN
+    RAISE EXCEPTION 'FAIL T86 prompts stored under host:claude.ai are not Claude (web)';
   END IF;
   IF ops.tool_display_name('host:') IS DISTINCT FROM 'Unrecognised tool' THEN
     RAISE EXCEPTION 'FAIL T86 a destination with no host has a name';

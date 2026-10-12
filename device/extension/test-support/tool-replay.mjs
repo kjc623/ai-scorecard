@@ -92,6 +92,7 @@ export function webTools(catalog = bundleCatalog(), catalogue = toolCatalogue())
 /** The `requestBody` Chrome hands over: a form parsed, anything else as raw bytes. */
 function requestBodyOf(request) {
   if (request.form) return { formData: request.form };
+  if (request.base64 !== undefined) return { raw: [{ bytes: toArrayBuffer(Buffer.from(request.base64, 'base64')) }] };
   const text = request.json !== undefined ? JSON.stringify(request.json) : request.text;
   if (text === undefined) return null;
   return { raw: [{ bytes: toArrayBuffer(new TextEncoder().encode(text)) }] };

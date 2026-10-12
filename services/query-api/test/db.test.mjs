@@ -284,7 +284,8 @@ test('the tool display name resolves a catalogue entry, a site no app claims and
       const { rows: [expected] } = await client.query('SELECT display_name FROM ref.tool_catalogue WHERE tool_fingerprint = $1', [catalogued.tool_fingerprint]);
       assert.equal(await name(catalogued.tool_fingerprint), expected.display_name);
       assert.equal(await name('tls_never_seen_anywhere'), 'Unrecognised tool');
-      assert.equal(await name('host:claude.ai'), 'claude.ai', 'a destination no app claims is shown as its host');
+      assert.equal(await name('host:chat.example-ai.invalid'), 'chat.example-ai.invalid', 'a destination no app claims is shown as its host');
+      assert.equal(await name('host:claude.ai'), 'Claude (web)', 'a destination an app claims is shown as the app');
     },
   );
 });
