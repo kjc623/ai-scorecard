@@ -132,7 +132,8 @@ test('a sparkline draws every point to one scale and lists the values for a read
 test('the Tools screen is the share above the tiles, then the ranking, with the chart below and no per-bucket table', async () => {
   const { view } = await dashboardFor().load('tools', {});
   assert.deepEqual(view.lead.map((b) => [b.kind, b.title]), [['share', 'Applications']]);
-  assert.deepEqual(view.tiles.map((t) => t.label), ['Prompts', 'Blocked', 'Data sent']);
+  assert.deepEqual(view.tiles.map((t) => t.label), ['Prompts', 'Blocked', 'Data sent', 'Attachments']);
+  assert.equal(view.tiles[3].href, 'explore.html#events?attachments=yes', 'the attachments open the prompts that carried one');
   assert.deepEqual(view.blocks.map((b) => b.kind), ['ranking']);
   assert.deepEqual(view.tables, []);
   assert.equal(view.series[0].title, 'Prompts per day');
@@ -164,6 +165,9 @@ test('a tool\'s own screen folds its usage, lists who uses it in the API\'s orde
   const findings = view.tables.find((t) => t.title === 'Findings');
   assert.deepEqual(findings.rows.map((r) => r.row.rule), ['PAYMENT_CARD_PAN'], 'this tool\'s findings only');
   assert.equal(view.series[0].points[0].value.value, 812, 'the chart is this tool\'s series');
+  const attachments = view.tiles.find((t) => t.label === 'Attachments');
+  assert.equal(attachments.value.text, '30');
+  assert.equal(attachments.href, 'explore.html#events?tool=tls_b6681b043244c43f&attachments=yes', 'this tool\'s prompts that carried a file');
   const html = renderScreen(view, SHELL);
   assert.match(html, /<h2>Claude Code <span class="screen-badges">/);
   assert.match(html, /href="#person\?subject=u_9a02"/);

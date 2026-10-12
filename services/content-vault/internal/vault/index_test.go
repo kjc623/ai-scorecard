@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -73,6 +74,14 @@ func TestSearchText(t *testing.T) {
 		if err != nil || got != tc.want {
 			t.Errorf("searchText(%s, %q) = %q, %v; want %q", tc.form, tc.query, got, err, tc.want)
 		}
+	}
+}
+
+func TestNamePatterns(t *testing.T) {
+	got := namePatterns(`report "board pack" Q3_50% and`)
+	want := []string{`%board pack%`, `%Q3\_50\%%`, `%report%`}
+	if !slices.Equal(got, want) {
+		t.Fatalf("namePatterns = %q, want %q", got, want)
 	}
 }
 

@@ -227,13 +227,55 @@ test('no reachable File handle is `no_reachable_file`, which is what content_no_
 test('a dropped file is preferred over an input, because it is the element the user used', () => {
   const registry = createFileRegistry({ document: fakeDocument([[{ name: 'from-input.pdf', type: 'application/pdf', size: 10, lastModified: 1 }]]) });
   // Chrome's File is a Blob with a name; the registry reads name/type/size/lastModified and holds the object.
-  registry.noteDrop([{ name: 'dropped.pdf', type: 'application/pdf', size: 2, lastModified: 1 }]);
+  registry.note([{ name: 'dropped.pdf', type: 'application/pdf', size: 2, lastModified: 1 }], 'drop');
   const result = registry.collectCandidates();
   assert.equal(result.reason, 'drop_and_input', 'the drop is first in the list and the input tops it up');
   assert.equal(result.candidates.length, 2);
   assert.equal(result.candidates[0].name, 'dropped.pdf', 'the drop is the element the user actually used');
   assert.equal(result.candidates[0].source, 'drop');
   assert.equal(result.candidates[1].source, 'input');
+});
+
+test('a file chosen in an input the page has since cleared is still offered', () => {
+  // A chat page uploads the file as soon as it is chosen and clears the input, so the input is
+  // empty when the prompt is sent.
+  const registry = createFileRegistry({ document: fakeDocument([[]]) });
+  registry.note([{ name: 'q3-sales.xlsx', type: 'application/vnd.ms-excel', size: 4096, lastModified: 1 }], 'input');
+  const result = registry.collectCandidates();
+  assert.equal(result.reachable, true);
+  assert.equal(result.reason, 'input');
+  assert.deepEqual(result.candidates.map((c) => [c.name, c.source, c.size_bytes]), [['q3-sales.xlsx', 'input', 4096]]);
+});
+
+test('a file noted and still held by its input is offered once', () => {
+  const file = { name: 'plan.docx', type: '', size: 10, lastModified: 1 };
+  const registry = createFileRegistry({ document: fakeDocument([[file]]) });
+  // An input fires both input and change for one choice.
+  registry.note([file], 'input');
+  registry.note([file], 'input');
+  assert.deepEqual(registry.collectCandidates().candidates.map((c) => c.name), ['plan.docx']);
+});
+
+test('a noted file attaches to one submission: once transferred it is not offered again', () => {
+  const registry = createFileRegistry({ document: fakeDocument([]) });
+  const pasted = { name: 'image.png', type: 'image/png', size: 3, lastModified: 1 };
+  registry.note([pasted], 'paste');
+  const [candidate] = registry.collectCandidates().candidates;
+  assert.equal(candidate.source, 'paste');
+  registry.forget(candidate.ref_id);
+  assert.equal(registry.collectCandidates().reachable, false);
+  registry.note([pasted], 'paste');
+  assert.equal(registry.collectCandidates().reachable, false, 'noting an attached file again does not offer it');
+});
+
+test('files are offered newest first, and past the cap the oldest noted are let go', () => {
+  const registry = createFileRegistry({ document: fakeDocument([]) });
+  for (let i = 0; i < 40; i++) registry.note([{ name: `f${i}.pdf`, type: '', size: 1, lastModified: 1 }], i % 2 ? 'drop' : 'input');
+  const result = registry.collectCandidates();
+  assert.equal(result.candidates.length, 32);
+  assert.equal(result.candidates[0].name, 'f39.pdf');
+  assert.equal(result.candidates[31].name, 'f8.pdf');
+  assert.equal(result.reason, 'drop_and_input');
 });
 
 test('the reason names which path resolved the files, and the cap is honoured', () => {

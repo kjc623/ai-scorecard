@@ -108,11 +108,23 @@ test('a snippet is escaped: only the search highlight is markup', async () => {
   assert.match(html, /<em>x<\/em>/);
 });
 
+test('a hit on an attached file\'s name says so', async () => {
+  const { explorer } = explorerFor();
+  const state = { ...explorer.state, text: { status: 'ready', query: 'forecast', truncated: false, problem: null, hits: [
+    { submissionId: 's1', snippet: 'Q3 forecast.xlsx', fileName: true },
+    { submissionId: 's2', snippet: 'the <em>forecast</em> for Q3', fileName: false },
+  ] } };
+  const html = renderExploreText(state);
+  assert.match(html, /<h2>Prompts and files containing/);
+  assert.match(html, /data-submission="s1"[^>]*><span class="x-hit-kind">Attached file<\/span><span class="x-hit-snippet">Q3 forecast\.xlsx/);
+  assert.match(html, /data-submission="s2"[^>]*><span class="x-hit-snippet">/, 'a prompt hit carries no file label');
+});
+
 test('a search with no match says so, and a refused search shows its reason', async () => {
   const none = explorerFor();
   await none.explorer.searchText('zzzznotaword');
   assert.equal(none.explorer.state.text.status, 'ready');
-  assert.match(renderExploreText(none.explorer.state), /No uploaded prompt contains/);
+  assert.match(renderExploreText(none.explorer.state), /No uploaded prompt, and no attached file's name, contains/);
 
   const busy = explorerFor('busy');
   await busy.explorer.searchText('capital');
@@ -215,7 +227,7 @@ test('a rail filter the search cannot apply is named rather than silently ignore
   assert.match(html, /still filter the list only/);
   assert.match(html, /action/);
   assert.match(html, /id="x-text-page"/, 'the page-size control is offered');
-  assert.match(html, /Showing \d+ matching prompt/);
+  assert.match(html, /Showing \d+ match/);
 });
 
 // ── approved retrieval ───────────────────────────────────────────────────────────────────────

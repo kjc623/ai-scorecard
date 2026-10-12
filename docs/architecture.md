@@ -113,7 +113,8 @@ entry first and serves the content once, through a short-lived single-use URL th
 server forwards; an optional case reference and justification are recorded with it. Search over
 content is a per-tenant setting
 (`disabled`, `attachment_names`, `full_text`); with `full_text` content-vault indexes prompt text in
-`ingest.search_text` as it stores it.
+`ingest.search_text` as it stores it, and from `attachment_names` up `ingest.record_event()` indexes
+the attachment filenames a prompt event carries.
 
 ## Product rules
 

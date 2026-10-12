@@ -346,12 +346,13 @@ function exploreTextIgnored(text) {
 
 /**
  * The prompt-text search: its hits, or why there are none. It sits apart from the list because it
- * is a different read. A hit is a fragment and a reference; opening it reads the event.
+ * is a different read. A hit is a fragment of a prompt or the name of a file attached to one, and a
+ * reference; opening it reads the event.
  */
 export function renderExploreText(state) {
   const text = state.text;
   if (text.status === 'idle') return '';
-  const head = `<div class="x-text-head"><h2>Prompts containing <span class="x-mono">${escapeHtml(text.query)}</span></h2>`
+  const head = `<div class="x-text-head"><h2>Prompts and files containing <span class="x-mono">${escapeHtml(text.query)}</span></h2>`
     + `<div class="x-text-tools">${exploreTextPageSize(text)}`
     + '<button type="button" class="x-btn x-btn-quiet" data-act="text-clear">Back to the list</button></div></div>';
   const ignored = exploreTextIgnored(text);
@@ -362,15 +363,16 @@ export function renderExploreText(state) {
   }
   if (text.status === 'refused') return `<div class="x-text-panel">${head}${ignored}${exploreContentProblem(text.problem)}</div>`;
   if (text.hits.length === 0) {
-    return `<div class="x-text-panel">${head}${ignored}<p class="x-sub">No uploaded prompt contains every one of those words.</p></div>`;
+    return `<div class="x-text-panel">${head}${ignored}<p class="x-sub">No uploaded prompt, and no attached file's name, contains every one of those words.</p></div>`;
   }
   const rows = text.hits.map((hit) => {
     // The fragment is escaped whole; only the search's own highlight marks are put back.
     const snippet = escapeHtml(hit.snippet).replaceAll('&lt;em&gt;', '<em>').replaceAll('&lt;/em&gt;', '</em>');
+    const kind = hit.fileName ? '<span class="x-hit-kind">Attached file</span>' : '';
     return `<li><button type="button" class="x-hit" data-act="hit" data-submission="${escapeHtml(hit.submissionId)}" aria-pressed="${hit.submissionId === state.detail.submissionId}">`
-      + `<span class="x-hit-snippet">${snippet}</span>${exploreHitMeta(hit)}</button></li>`;
+      + `${kind}<span class="x-hit-snippet">${snippet}</span>${exploreHitMeta(hit)}</button></li>`;
   }).join('');
-  const count = `<p class="x-text-count x-sub">Showing ${escapeHtml(formatCount(text.hits.length))} matching prompt${text.hits.length === 1 ? '' : 's'}${text.nextCursor ? ', more available' : ''}.</p>`;
+  const count = `<p class="x-text-count x-sub">Showing ${escapeHtml(formatCount(text.hits.length))} match${text.hits.length === 1 ? '' : 'es'}${text.nextCursor ? ', more available' : ''}.</p>`;
   const foot = text.moreProblem
     ? exploreContentProblem(text.moreProblem)
     : (text.nextCursor

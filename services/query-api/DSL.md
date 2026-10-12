@@ -117,7 +117,7 @@ offered is `unknown_dimension` / `unknown_measure`, and the error lists what is 
 | `mart.agg_rule_period` | `bucket`, `rule` | `matches`, `blocked`, `warned`, `logged` |
 | `mart.agg_discovery_period` | `bucket`, `tool`, `discovery_type`, `item` (a local model's name, an inference connection's host, else empty) | `devices` (distinct within a bucket, so a lower bound across buckets) |
 | `mart.agg_agent_period` | `bucket`, `tool`, `model` (empty for the agent's actions, which name no model) | `requests`, `actions`, `input_tokens`, `output_tokens`, `users`, `tool_users` (the tool's people on any model; both distinct within a bucket, so a lower bound across buckets) |
-| `mart.agg_user_period` | `bucket`, `subject` | `submissions`, `bytes_total`, `tools_used`, `block_events` |
+| `mart.agg_user_period` | `bucket`, `subject` | `submissions`, `bytes_total`, `tools_used`, `block_events`, `attachments`, `content_prompts` |
 | `mart.v_team_member_period` | `bucket`, `team`, `subject` | `submissions` |
 | `mart.agg_device_period` | `bucket`, `device`, `collector` | `healthy_days`, `degraded_days`, `absent_days`, `tampered_days`, `spool_dropped` |
 | `mart.v_device_liveness` | `device`, `device_os`, `managed_state`, `region`, `liveness`, `collector` (set), `collector_state` (set) | — (a list) |

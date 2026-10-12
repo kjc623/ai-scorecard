@@ -18,7 +18,8 @@ credential.
   `mode_violation` for a collection-mode rule, otherwise `schema_violation`, with a JSON Pointer and
   the violated constraint, never the value. The body's tenant and device must match the certificate.
 - **Write.** One transaction per batch: the credential is re-checked, each accepted envelope goes to
-  `ingest.record_event()` exactly as sent (it decides inserted / merged / duplicate), rejections are
+  `ingest.record_event()` exactly as sent (it decides inserted / merged / duplicate, and indexes a
+  prompt's attachment filenames for search when the tenant's `content_search` tier allows), rejections are
   quarantined content-stripped in `ingest.rejected`, and `ops.device.last_seen_at` moves forward.
   Idempotency is the database's per-event key, so a retried batch reports `duplicate`.
 - **Responses.** A batch that parses returns 200 with one result per event. Batch-level failures use

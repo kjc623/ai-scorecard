@@ -156,7 +156,7 @@ VALUES ($1::uuid, $2::text, $3::text, $4::text, $5::text, nullif($6::text, ''),
 // fingerprint that counts as it (ops.tool_id), as the console's lists count tools. Parameters: $1
 // tenant, $2 search text, $3 unit kind (empty for both), $4 limit, $5 now, $6-$11 filters (an empty
 // text or a NULL instant adds no predicate), $12-$15 the cursor (all NULL on the first page), and
-// for the fuzzy form $16 the minimum similarity.
+// $16 the terms form's name patterns or the fuzzy form's minimum similarity.
 const searchTemplate = `
 SELECT st.submission_id::text, st.unit_kind, st.unit_index, %s, s.received_at
   FROM ingest.search_text st
@@ -179,12 +179,16 @@ SELECT st.submission_id::text, st.unit_kind, st.unit_index, %s, s.received_at
  LIMIT $4::int`
 
 var (
-	// Terms: the vault builds $2 as tsquery text from sanitised terms, so to_tsquery cannot fail.
+	// Terms: the vault builds $2 as tsquery text from sanitised terms, so to_tsquery cannot fail. An
+	// attachment name also matches when it contains every pattern in $16; the first, the longest,
+	// narrows through the partial trigram index.
 	sqlSearchTerms = fmt.Sprintf(searchTemplate,
 		`ts_headline('simple', st.body, to_tsquery('simple', $2::text),
                    'StartSel=<em>, StopSel=</em>, MaxFragments=1, MaxWords=24, MinWords=6, FragmentDelimiter= … '),
        ts_rank(st.tsv, to_tsquery('simple', $2::text))`,
-		`st.tsv @@ to_tsquery('simple', $2::text)`)
+		`(st.tsv @@ to_tsquery('simple', $2::text)
+        OR (st.unit_kind = 'attachment_name'
+            AND st.body ILIKE ($16::text[])[1] AND st.body ILIKE ALL ($16::text[])))`)
 	// Substring and fuzzy match attachment names only, through the partial trigram index; the
 	// literal unit_kind predicate is what lets the planner use it. $2 is an escaped LIKE pattern.
 	sqlSearchSubstring = fmt.Sprintf(searchTemplate,
@@ -358,6 +362,7 @@ func (t *sqlTx) Search(ctx context.Context, q SearchQuery) ([]SearchHit, error) 
 	switch q.Form {
 	case FormTerms:
 		stmt = sqlSearchTerms
+		args = append(args, q.Names)
 	case FormSubstring:
 		stmt = sqlSearchSubstring
 	case FormFuzzy:

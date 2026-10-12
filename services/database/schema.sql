@@ -1545,9 +1545,12 @@ CREATE INDEX rejected_expiry ON ingest.rejected (tenant_id, expires_at);
 
 -- The content search index: one row per prompt body (tenants whose content_search is full_text) and
 -- per attachment filename (attachment_names and above). Attachment contents are not indexed.
+-- record_event writes the filenames from the envelope as it records a prompt; content-vault writes
+-- the prompt body when the content is uploaded.
 --
 -- The index is derived from plaintext and is readable by whoever can read the table, so only
--- content-vault reads it; query-api asks content-vault for hits. Rows die with their submission
+-- content-vault reads it; query-api asks content-vault for hits. ingest-api may insert rows but not
+-- read them. Rows die with their submission
 -- (the foreign key cascades) and are swept by the expire job when the content they index expires.
 CREATE TABLE ingest.search_text (
   tenant_id     uuid NOT NULL REFERENCES ops.tenant(tenant_id),
@@ -1756,6 +1759,9 @@ CREATE TABLE mart.agg_user_period (
   -- The tools used in the bucket, each counted once however many fingerprints it was seen under.
   tools_used       bigint NOT NULL CHECK (tools_used >= 0),
   block_events     bigint NOT NULL DEFAULT 0 CHECK (block_events >= 0),
+  -- The files the person's prompts carried, beside the prompts able to describe one (M1 and above).
+  attachments      bigint NOT NULL DEFAULT 0 CHECK (attachments >= 0),
+  content_prompts  bigint NOT NULL DEFAULT 0 CHECK (content_prompts >= 0),
   PRIMARY KEY (tenant_id, bucket_start, bucket_size, user_ref)
 );
 
@@ -2403,6 +2409,8 @@ DECLARE
   v_weak          text;
   v_subject_name  text;
   v_user_ref      text;
+  v_search        text;
+  v_outcome       text;
   v_attachments   int := CASE WHEN jsonb_typeof(p_envelope->'attachments') = 'array'
                               THEN jsonb_array_length(p_envelope->'attachments') END;
 BEGIN
@@ -2428,8 +2436,9 @@ BEGIN
 
   -- The clear account name is stored only for a tenant whose device_identity is 'clear'; a device
   -- that still sends one to a 'hashed' tenant has it dropped here.
-  SELECT CASE WHEN t.device_identity = 'clear' THEN nullif(p_envelope->>'subject_name', '') END
-    INTO v_subject_name
+  SELECT CASE WHEN t.device_identity = 'clear' THEN nullif(p_envelope->>'subject_name', '') END,
+         t.content_search
+    INTO v_subject_name, v_search
     FROM ops.tenant t WHERE t.tenant_id = v_tenant;
 
   -- Store the person under their canonical ref. A ref with no alias (no SCIM, or not yet
@@ -2587,47 +2596,60 @@ BEGIN
                                      THEN coalesce(v_attachments, s.attachment_count)
                                      ELSE coalesce(s.attachment_count, v_attachments) END
      WHERE s.tenant_id = v_tenant AND s.submission_id = v_sub_id;
-
-    RETURN QUERY SELECT 'merged'::text, v_sub_id;
-    RETURN;
+    v_outcome := 'merged';
+  ELSE
+    INSERT INTO ingest.submission (
+      tenant_id, submission_id, dedup_key, dedup_weak_key, kind, prompt_kind, device_id, user_ref, subject_name,
+      tool_fingerprint, first_occurred_at, last_occurred_at, received_at, collection_mode, size_bytes,
+      content_digest, labels, classifier_version, confidence, policy_action, policy_rule_id,
+      decided_locally, winning_source, winning_fidelity, observed_routes, observation_count,
+      merge_confidence, content_state, expires_at, attachment_count
+    )
+    VALUES (
+      v_tenant,
+      gen_random_uuid(),
+      CASE WHEN v_is_exact THEN v_exact END,
+      v_weak,
+      v_kind,
+      nullif(p_envelope->>'prompt_kind', ''),
+      (p_envelope->>'device_id')::uuid,
+      v_user_ref,
+      v_subject_name,
+      p_envelope->>'tool_fingerprint',
+      v_occurred, v_occurred, p_received_at, v_mode,
+      (p_envelope->>'size_bytes')::bigint,
+      p_envelope->>'content_digest',
+      p_envelope->'labels',
+      p_envelope->>'classifier_version',
+      p_envelope->>'confidence',
+      p_envelope->'policy_decision'->>'action',
+      p_envelope->'policy_decision'->>'rule_id',
+      (p_envelope->'policy_decision'->>'decided_locally')::boolean,
+      v_source, v_fidelity, ARRAY[v_source], 1,
+      CASE WHEN v_is_exact THEN 'high' ELSE 'low' END,
+      CASE WHEN v_captured THEN 'local_only' ELSE 'not_captured' END,
+      p_received_at + make_interval(days => v_ttl),
+      v_attachments
+    )
+    RETURNING ingest.submission.submission_id INTO v_sub_id;
+    v_outcome := 'inserted';
   END IF;
 
-  INSERT INTO ingest.submission (
-    tenant_id, submission_id, dedup_key, dedup_weak_key, kind, prompt_kind, device_id, user_ref, subject_name,
-    tool_fingerprint, first_occurred_at, last_occurred_at, received_at, collection_mode, size_bytes,
-    content_digest, labels, classifier_version, confidence, policy_action, policy_rule_id,
-    decided_locally, winning_source, winning_fidelity, observed_routes, observation_count,
-    merge_confidence, content_state, expires_at, attachment_count
-  )
-  VALUES (
-    v_tenant,
-    gen_random_uuid(),
-    CASE WHEN v_is_exact THEN v_exact END,
-    v_weak,
-    v_kind,
-    nullif(p_envelope->>'prompt_kind', ''),
-    (p_envelope->>'device_id')::uuid,
-    v_user_ref,
-    v_subject_name,
-    p_envelope->>'tool_fingerprint',
-    v_occurred, v_occurred, p_received_at, v_mode,
-    (p_envelope->>'size_bytes')::bigint,
-    p_envelope->>'content_digest',
-    p_envelope->'labels',
-    p_envelope->>'classifier_version',
-    p_envelope->>'confidence',
-    p_envelope->'policy_decision'->>'action',
-    p_envelope->'policy_decision'->>'rule_id',
-    (p_envelope->'policy_decision'->>'decided_locally')::boolean,
-    v_source, v_fidelity, ARRAY[v_source], 1,
-    CASE WHEN v_is_exact THEN 'high' ELSE 'low' END,
-    CASE WHEN v_captured THEN 'local_only' ELSE 'not_captured' END,
-    p_received_at + make_interval(days => v_ttl),
-    v_attachments
-  )
-  RETURNING ingest.submission.submission_id INTO v_sub_id;
+  -- Step 3: index the prompt's attachment filenames at the attachment_names tier and above. No
+  -- other path carries them: the content a device uploads at M3 is the prompt text. A name already
+  -- indexed at a position of the submission keeps it.
+  IF v_search IN ('attachment_names', 'full_text') AND v_kind = 'prompt'
+     AND p_envelope->>'prompt_kind' IS DISTINCT FROM 'client_generated'
+     AND jsonb_typeof(p_envelope->'attachments') = 'array' THEN
+    INSERT INTO ingest.search_text (tenant_id, submission_id, unit_kind, unit_index, body, expires_at)
+    SELECT v_tenant, v_sub_id, 'attachment_name', a.ord - 1, a.value->>'name',
+           p_received_at + make_interval(days => v_ttl)
+      FROM jsonb_array_elements(p_envelope->'attachments') WITH ORDINALITY AS a(value, ord)
+     WHERE length(a.value->>'name') BETWEEN 1 AND 65536
+    ON CONFLICT DO NOTHING;
+  END IF;
 
-  RETURN QUERY SELECT 'inserted'::text, v_sub_id;
+  RETURN QUERY SELECT v_outcome, v_sub_id;
 END $$;
 
 
@@ -2728,6 +2750,8 @@ GRANT SELECT, INSERT ON ingest.observation TO sac_ingest;
 GRANT SELECT, INSERT, UPDATE ON ingest.submission TO sac_ingest;
 GRANT INSERT ON ingest.rejected TO sac_ingest;
 GRANT INSERT ON ops.audit TO sac_ingest;
+-- record_event indexes attachment filenames. Insert only: the index is read by content-vault alone.
+GRANT INSERT ON ingest.search_text TO sac_ingest;
 -- record_event runs with the caller's rights and resolves aliases as it writes.
 GRANT SELECT ON ops.user_ref_alias TO sac_ingest;
 GRANT EXECUTE ON FUNCTION ingest.record_event(jsonb, timestamptz) TO sac_ingest;

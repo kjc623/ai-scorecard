@@ -60,9 +60,17 @@ const CHAT_BODY = JSON.stringify({
   max_tokens: 512,
 });
 
-// The page posts a chat-shaped body when it loads and again on send(), and holds a file input the
-// check selects a file into.
-const PAGE = `<!doctype html><html><body><input id="attachment" type="file"><script>
+// The page posts a chat-shaped body when it loads and again on send(). It holds a file input the
+// check selects a file into, and a second one that behaves as a chat composer's does: it uploads a
+// chosen file at once and clears itself. An embedded frame runs the content script too.
+const PAGE = `<!doctype html><html><body><input id="attachment" type="file"><input id="composer" type="file">
+<iframe src="/widget"></iframe><script>
+document.getElementById('composer').addEventListener('change', async (event) => {
+  const file = event.target.files[0];
+  await fetch('/upload', { method: 'PUT', body: file });
+  event.target.value = '';
+  window.__uploaded = file.name;
+});
 window.send = () => {
   window.__result = 'pending';
   return fetch(${JSON.stringify(CHAT_PATH)}, { method: 'POST', headers: { 'content-type': 'application/json' }, body: ${JSON.stringify(CHAT_BODY)} })
@@ -77,8 +85,9 @@ function startServer() {
     const server = createServer((req, res) => {
       req.resume();
       req.on('end', () => {
-        res.writeHead(200, { 'content-type': req.url === '/' ? 'text/html' : 'application/json' });
-        res.end(req.url === '/' ? PAGE : '{"ok":true}');
+        const html = req.url === '/' ? PAGE : req.url === '/widget' ? '<!doctype html><p>widget</p>' : null;
+        res.writeHead(200, { 'content-type': html ? 'text/html' : 'application/json' });
+        res.end(html ?? '{"ok":true}');
       });
     });
     server.listen(0, '127.0.0.1', () => done(server));
@@ -171,7 +180,7 @@ try {
   const answer = await waitFor(async () => {
     const a = await worker.evaluate(`(async () => {
       const [tab] = await chrome.tabs.query({ url: ${JSON.stringify(`${origin}/*`)} });
-      return tab ? chrome.tabs.sendMessage(tab.id, { type: 'capture_upload_check' }) : null;
+      return tab ? chrome.tabs.sendMessage(tab.id, { type: 'capture_upload_check' }, { frameId: 0 }) : null;
     })()`);
     return a && !a.not_ready ? a : null;
   }, 10_000);
@@ -196,6 +205,23 @@ try {
     'a file attached in the page goes with the next submission',
     named?.name === 'in-browser-check.txt' && withFile.page_context_attachments === true,
     named ? `${named.name}, ${named.content_digest ? `digest ${named.content_digest.slice(0, 19)}` : 'not transferred: no agent is running'}` : 'no observation named the file',
+  );
+
+  // 8. A file chosen in an input the page clears once it has uploaded it still goes with the next
+  // submission, and the embedded frame, which holds no file, does not answer for the page.
+  const composed = join(work, 'composer-upload.txt');
+  writeFileSync(composed, 'COMPOSER-UPLOAD '.repeat(8));
+  await (await page.$('#composer')).uploadFile(composed);
+  const cleared = await waitFor(() => page.evaluate('window.__uploaded && document.getElementById("composer").files.length === 0'), 10_000);
+  await page.evaluate('window.send()');
+  const withUpload = await waitFor(
+    () => worker.evaluate(`globalThis.__observations.map((o) => o.payload).find((p) => p && p.attachments && p.attachments.some((a) => a.name === 'composer-upload.txt')) || null`),
+    15_000,
+  );
+  verdict(
+    'a file the page uploads and clears from its input goes with the next submission',
+    Boolean(cleared) && Boolean(withUpload),
+    `input ${cleared ? 'cleared by the page' : 'not cleared'}, ${withUpload ? 'the next submission named the file' : 'no observation named the file'}`,
   );
 } catch (err) {
   verdict('the browser run completes', false, err.message);

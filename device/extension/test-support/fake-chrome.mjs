@@ -134,11 +134,11 @@ export function createFakeChrome() {
     },
 
     tabs: {
-      async sendMessage(tabId, message) {
-        state.messages.push({ tabId, message });
+      async sendMessage(tabId, message, options) {
+        state.messages.push({ tabId, message, options });
         if (state.tabAnswers.has(tabId)) {
           const answer = state.tabAnswers.get(tabId);
-          return typeof answer === 'function' ? answer(message) : answer;
+          return typeof answer === 'function' ? answer(message, options) : answer;
         }
         const err = new Error('Could not establish connection. Receiving end does not exist.');
         state.lastError = { message: err.message };
@@ -251,6 +251,7 @@ export function chromeRequest({
   method = 'POST',
   type = 'xmlhttprequest',
   tabId = 1,
+  frameId = 0,
   headers = {},
   body = null,
   formData = null,
@@ -262,7 +263,7 @@ export function chromeRequest({
     method,
     type,
     tabId,
-    frameId: 0,
+    frameId,
     timeStamp: 1_700_000_000_000,
     initiator: 'https://example-ai.invalid/',
     requestHeaders,

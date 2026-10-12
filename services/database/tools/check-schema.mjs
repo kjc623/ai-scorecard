@@ -260,13 +260,22 @@ check('grants.parsed', grants.length > 30, `${grants.length} GRANT statements pa
 }
 
 // Stored content and the content search index: content-vault reads them; the expire job may delete
-// rows and read only non-content columns; nobody else holds anything.
-for (const [table, contentColumns] of [['ops.content', ['ciphertext', 'raw_digest']], ['ingest.search_text', ['body', 'tsv']]]) {
+// rows and read only non-content columns; ingest-api may insert index rows (attachment filenames)
+// without reading any; nobody else holds anything.
+for (const [table, contentColumns, inserters] of [
+  ['ops.content', ['ciphertext', 'raw_digest'], []],
+  ['ingest.search_text', ['body', 'tsv'], ['sac_ingest']],
+]) {
   const gs = grantsOn(table);
   const grantees = new Set(gs.flatMap((g) => g.grantees));
-  const stray = [...grantees].filter((r) => r !== 'sac_vault' && r !== 'sac_ops');
+  const stray = [...grantees].filter((r) => r !== 'sac_vault' && r !== 'sac_ops' && !inserters.includes(r));
   check(`grants.${table}.only-vault-and-jobs`, stray.length === 0,
     stray.length ? `${table} is granted to ${stray.join(', ')}` : `${table} granted only to ${[...grantees].join(', ')}`);
+  for (const role of inserters) {
+    const privs = gs.filter((g) => g.grantees.includes(role)).flatMap((g) => g.privileges);
+    check(`grants.${table}.${role}-inserts-only`, privs.length > 0 && privs.every((p) => p.name === 'INSERT'),
+      `${role} holds ${privs.map((p) => p.name).join(', ') || 'nothing'} on ${table}`);
+  }
   const jobPrivs = gs.filter((g) => g.grantees.includes('sac_ops')).flatMap((g) => g.privileges);
   const unreadable = jobPrivs.every((p) => p.name === 'DELETE' || (p.name === 'SELECT' && p.columns && !p.columns.some((c) => contentColumns.includes(c))));
   check(`grants.${table}.jobs-delete-without-reading`, unreadable && jobPrivs.some((p) => p.name === 'DELETE'),

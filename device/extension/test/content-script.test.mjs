@@ -65,7 +65,7 @@ function makeWorld({ core, files = [], drop = null, document: doc = null } = {})
   };
 
   const app = bootstrapContentScript(adapter, { document });
-  if (drop) app.registry.noteDrop(drop);
+  if (drop) app.registry.note(drop, 'drop');
 
   return {
     app,
@@ -371,22 +371,73 @@ test('an unknown message type is refused as a value, never thrown', async () => 
   assert.match(result.error, /unknown message type/);
 });
 
-test('the content script installs a drop listener at capture time', () => {
-  let installed = null;
-  const doc = {
-    querySelectorAll: () => [],
-    addEventListener: (type, fn, capture) => (installed = { type, capture }),
+/** A page whose events reach the listeners the content script installs, as Chrome dispatches them. */
+function eventDocument() {
+  const listeners = [];
+  const inputs = [];
+  return {
+    listeners,
+    inputs,
+    querySelectorAll: (s) => (s === 'input[type="file"]' ? inputs : []),
+    addEventListener: (type, fn, capture) => listeners.push({ type, fn, capture }),
+    dispatch(type, event) {
+      for (const l of listeners.filter((x) => x.type === type)) l.fn(event);
+    },
     createElement: () => makeElement(),
     body: { appendChild: () => {} },
     documentElement: {},
   };
+}
+
+function bootOn(doc) {
   const scope = {
     crypto: fakeCrypto(),
     performance: globalThis.performance,
     document: doc,
-    chrome: { runtime: { id: 'x', onMessage: { addListener: () => {} }, sendMessage: async () => ({}) } },
+    chrome: { runtime: { id: 'x', onMessage: { addListener: (fn) => (scope.handler = fn) }, sendMessage: async () => ({}) } },
   };
   bootstrapContentScript(createContentScriptAdapter(scope), { document: doc });
-  assert.equal(installed.type, 'drop', 'a dropped file never appears in an input, so the listener is required');
-  assert.equal(installed.capture, true, 'capture phase, so the page cannot stop it reaching us first');
+  return (message) => new Promise((resolve) => {
+    const returned = scope.handler(message, { tab: { id: 1 } }, resolve);
+    if (returned !== true) resolve(returned);
+  });
+}
+
+test('the content script notes files chosen, dropped or pasted, at capture time', () => {
+  const doc = eventDocument();
+  bootOn(doc);
+  assert.deepEqual(doc.listeners.map((l) => l.type).sort(), ['change', 'drop', 'input', 'paste'],
+    'a dropped or pasted file never appears in an input, and a chosen one may not stay there');
+  assert.ok(doc.listeners.every((l) => l.capture === true), 'capture phase, so the page cannot clear the input or stop the event first');
+});
+
+test('a file chosen in an input the page clears in its own handler is still offered at send', async () => {
+  const doc = eventDocument();
+  const ask = bootOn(doc);
+  const file = { name: 'q3-sales.xlsx', type: 'application/vnd.ms-excel', size: 4096, lastModified: 1 };
+  // The input sits in a shadow root: the event reaches the document retargeted to its host, and
+  // composedPath names the input itself.
+  const input = { localName: 'input', type: 'file', files: [file] };
+  doc.inputs.push(input);
+  const host = { localName: 'chat-composer' };
+  doc.dispatch('input', { target: host, composedPath: () => [input, host] });
+  doc.dispatch('change', { target: host, composedPath: () => [input, host] });
+  // The page uploads the file and clears its input so the same file can be chosen again.
+  input.files = [];
+
+  const answer = await ask({ type: 'capture_upload_check' });
+  assert.equal(answer.reachable, true);
+  assert.deepEqual(answer.candidates.map((c) => [c.name, c.source, c.size_bytes]), [['q3-sales.xlsx', 'input', 4096]]);
+});
+
+test('a pasted file is offered, and an event that is not a file choice notes nothing', async () => {
+  const doc = eventDocument();
+  const ask = bootOn(doc);
+  doc.dispatch('input', { target: { localName: 'textarea', type: 'textarea', files: undefined } });
+  doc.dispatch('paste', { clipboardData: { files: [] } });
+  assert.equal((await ask({ type: 'capture_upload_check' })).reachable, false);
+  doc.dispatch('paste', { clipboardData: { files: [{ name: 'image.png', type: 'image/png', size: 70, lastModified: 1 }] } });
+  const answer = await ask({ type: 'capture_upload_check' });
+  assert.deepEqual(answer.candidates.map((c) => [c.name, c.source]), [['image.png', 'paste']]);
+  assert.equal(answer.reason, 'paste');
 });

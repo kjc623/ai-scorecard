@@ -5,9 +5,10 @@ observes requests, decides locally whether one is a submission to a generative-A
 matched observations (and the files attached to them) to `capture-core` over native messaging; the
 agent builds, spools and sends the records. At M0 no request body is read: the body listener is not
 registered for a destination whose mode does not read content. At a mode that reads content, the
-files the user attached in the sending tab are transferred to `capture-core` (manifest, chunks,
-completion) before the observation that names them, so the agent can classify them on the device;
-the observation carries each file's name, media type, size and digest. Plain ES modules, no build step.
+files the user chose, dropped or pasted in the frame that sent the request, and has not sent with
+an earlier prompt, are transferred to `capture-core` (manifest, chunks, completion) before the
+observation that names them, so the agent can classify them on the device; the observation carries
+each file's name, media type, size and digest. Plain ES modules, no build step.
 
 ## How it runs in production
 

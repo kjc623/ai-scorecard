@@ -809,6 +809,8 @@ export const SOURCES = Object.freeze({
       bytes_total: measure('bytes_total', 'u.bytes_total'),
       tools_used: measure('tools_used', 'u.tools_used'),
       block_events: measure('block_events', 'u.block_events'),
+      attachments: measure('attachments', 'u.attachments'),
+      content_prompts: measure('content_prompts', 'u.content_prompts'),
     }),
     grain: Object.freeze(['bucket', 'subject']),
     order: Object.freeze([

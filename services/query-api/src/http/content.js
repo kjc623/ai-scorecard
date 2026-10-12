@@ -124,7 +124,8 @@ export function createContentForwarder({ vaultUrl, fetchImpl = globalThis.fetch,
       status: 200,
       body: {
         state: 'available',
-        hits: (answer.json?.hits ?? []).map((h) => ({ submission_id: h.submission_id, snippet: h.snippet, rank: h.rank })),
+        // unit_kind says whether the prompt's text or one of its attachment names matched.
+        hits: (answer.json?.hits ?? []).map((h) => ({ submission_id: h.submission_id, snippet: h.snippet, rank: h.rank, unit_kind: h.unit_kind })),
         truncated: Boolean(answer.json?.truncated),
         // The vault's opaque page position, passed through untouched: this service cannot read the
         // index, so it cannot invent or inspect a cursor.

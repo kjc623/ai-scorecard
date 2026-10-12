@@ -202,8 +202,9 @@ type SearchCursor struct {
 // SearchQuery is one read of the index. Every value is a bound parameter.
 type SearchQuery struct {
 	Form       SearchForm
-	Text       string // a tsquery built by the vault for FormTerms; lower-cased text otherwise
-	UnitKind   string // "" searches both kinds
+	Text       string   // a tsquery built by the vault for FormTerms; lower-cased text otherwise
+	Names      []string // FormTerms only: LIKE patterns an attachment name contains all of, longest first
+	UnitKind   string   // "" searches both kinds
 	Limit      int
 	MinSimilar float64 // FormFuzzy only
 	Filters    SearchFilters

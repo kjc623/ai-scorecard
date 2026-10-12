@@ -155,7 +155,8 @@ func TestRollupTeams(t *testing.T) {
 
 // TestRollupSensitive checks that a prompt is sensitive only when its enforcement rule matched on
 // a label the rule names, that each outcome is counted apart, that a class is flagged only when its
-// rule names it, that attachments are summed beside the prompts able to describe one, and that
+// rule names it, that attachments are summed beside the prompts able to describe one, per tool and
+// per person, and that
 // each rule's prompts are counted by outcome while a prompt no rule matched counts under none.
 func TestRollupSensitive(t *testing.T) {
 	tx := pgtest.Tx(t, pgtest.Open(t))
@@ -218,6 +219,10 @@ func TestRollupSensitive(t *testing.T) {
 		   FROM mart.v_tool_usage WHERE tenant_id = $1 AND tool_fingerprint = 'toolA' AND bucket_start = $2::timestamptz`,
 		"3|1|3|5", tenant, bucket)
 	pgtest.AsJobs(t, tx)
+	expect(t, tx, "user rows",
+		`SELECT string_agg(user_ref||'|'||attachments||'|'||content_prompts, ',' ORDER BY user_ref)
+		   FROM mart.agg_user_period WHERE tenant_id = $1 AND bucket_start = $2::timestamptz`,
+		"userA|3|2,userB|0|3,userC|0|0", tenant, bucket)
 	expect(t, tx, "class rows",
 		`SELECT string_agg(class_code||'|'||submissions||'|'||flagged||'|'||b||'|'||w||'|'||l, ',' ORDER BY class_code)
 		   FROM (SELECT class_code, sum(submissions) AS submissions, sum(flagged) AS flagged,

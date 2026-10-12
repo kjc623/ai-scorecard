@@ -72,6 +72,22 @@ test('an attached file is transferred to capture-core before the observation tha
   assert.deepEqual(tab.asked, ['capture_upload_check', 'capture_upload_send']);
 });
 
+test('only the frame that sent the request is asked for its files', async () => {
+  const h = await started({ version: 'b1', tenant_default_mode: 'm2' });
+  attachTab(h, TAB, [FILE]);
+  await h.fake.drive(
+    'body',
+    chromeRequest({ url: CHAT_URL, tabId: TAB, frameId: 3, headers: { 'content-type': 'application/json' }, body: JSON.stringify(CHAT_BODY) }),
+  );
+  await waitFor(() => observations(h).length === 1, { label: 'the observation' });
+  const asked = h.fake.state.messages.filter((m) => m.tabId === TAB);
+  assert.deepEqual(asked.map((m) => [m.message.type, m.options]), [
+    ['capture_upload_check', { frameId: 3 }],
+    ['capture_upload_send', { frameId: 3 }],
+  ], 'another frame of the tab, holding no file, cannot answer for the one that sent the prompt');
+  assert.equal(observations(h)[0].attachments[0].name, FILE.name);
+});
+
 test('a file attaches to one submission: the next one does not send it again', async () => {
   const h = await started({ version: 'b1', tenant_default_mode: 'm2' });
   attachTab(h, TAB, [FILE]);

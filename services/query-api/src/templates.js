@@ -338,7 +338,7 @@ export const TEMPLATES = Object.freeze({
         source: 'mart.agg_user_period',
         bucket: bucketOf(params, 'day'),
         dimensions: ['subject'],
-        measures: ['submissions', 'bytes_total', 'tools_used', 'block_events'],
+        measures: ['submissions', 'bytes_total', 'tools_used', 'block_events', 'attachments', 'content_prompts'],
         filters: [{ field: 'subject', op: 'eq', value: subject }],
         window: windowOf(params),
         limit: limitOf(params, 400, 400),

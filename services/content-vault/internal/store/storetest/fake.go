@@ -347,6 +347,12 @@ func (t *tx) Search(_ context.Context, q store.SearchQuery) ([]store.SearchHit, 
 		for _, word := range strings.Fields(needle) {
 			matched = matched && strings.Contains(strings.ToLower(u.Body), word)
 		}
+		if !matched && q.Form == store.FormTerms && u.UnitKind == store.UnitAttachmentName && len(q.Names) > 0 {
+			matched = true
+			for _, pattern := range q.Names {
+				matched = matched && strings.Contains(strings.ToLower(u.Body), strings.ToLower(unlike.Replace(strings.Trim(pattern, "%"))))
+			}
+		}
 		if !matched {
 			continue
 		}
@@ -362,6 +368,9 @@ func (t *tx) Search(_ context.Context, q store.SearchQuery) ([]store.SearchHit, 
 	}
 	return hits, nil
 }
+
+// unlike undoes the vault's LIKE escaping.
+var unlike = strings.NewReplacer(`\%`, "%", `\_`, "_", `\\`, `\`)
 
 // after reports whether a sorts before b in the newest-first order.
 func after(a, b store.SearchHit) bool {

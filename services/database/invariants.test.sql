@@ -3493,6 +3493,99 @@ BEGIN
 END $$;
 RESET ROLE;
 
+-- T89  Attachment filenames reach the search index
+-- =====================================================================================
+-- record_event indexes a prompt's attachment filenames at the attachment_names tier and above, once
+-- per position however many routes report them, and never for a client-generated request or a
+-- tenant whose search is disabled. ingest-api inserts into the index and cannot read it.
+
+INSERT INTO ops.device (tenant_id, device_id, os, managed_state)
+VALUES ('55555555-5555-7555-8555-555555555555', '55555555-0000-7000-8000-000000000089', 'windows', 'managed');
+
+SET ROLE sac_ingest;
+DO $$
+DECLARE
+  r record;
+  base jsonb := jsonb_build_object(
+    'schema_version','1.0',
+    'user_ref','u_t89','tool_fingerprint','genai.web.chat.v1:t89',
+    'direction','egress','kind','prompt','prompt_kind','user',
+    'occurred_at','2026-11-04T09:00:00Z','monotonic_offset_ms',1,
+    'collection_mode','m1','size_bytes',100,
+    'labels','[]'::jsonb,'classifier_version','test-2026.01','confidence','high',
+    'policy_decision', jsonb_build_object('rule_id','R','action','logged','decided_locally',true));
+BEGIN
+  PERFORM set_config('app.tenant_id', '55555555-5555-7555-8555-555555555555', false);
+  SELECT * INTO r FROM ingest.record_event(base || jsonb_build_object(
+    'event_id','e0000000-0000-7000-8000-000000000891',
+    'tenant_id','55555555-5555-7555-8555-555555555555',
+    'device_id','55555555-0000-7000-8000-000000000089',
+    'source','ext.web_request',
+    'dedup_key','sha256:' || repeat('89', 32),'content_digest','sha256:' || repeat('8a', 32),
+    'attachments', jsonb_build_array(jsonb_build_object('name','Q3 forecast.xlsx','size_bytes',10),
+                                     jsonb_build_object('name','notes.pdf'))), now());
+  PERFORM set_config('sac_test.t89_submission', r.event_submission_id::text, false);
+  -- The page-context route reports the same files and one more.
+  SELECT * INTO r FROM ingest.record_event(base || jsonb_build_object(
+    'event_id','e0000000-0000-7000-8000-000000000892',
+    'tenant_id','55555555-5555-7555-8555-555555555555',
+    'device_id','55555555-0000-7000-8000-000000000089',
+    'source','ext.page_context',
+    'dedup_key','sha256:' || repeat('89', 32),'content_digest','sha256:' || repeat('8a', 32),
+    'attachments', jsonb_build_array(jsonb_build_object('name','Q3 forecast.xlsx','size_bytes',10),
+                                     jsonb_build_object('name','notes.pdf'),
+                                     jsonb_build_object('name','board deck.pptx'))), now());
+  IF r.event_outcome <> 'merged' THEN
+    RAISE EXCEPTION 'FAIL T89 the second route''s observation was %, expected merged', r.event_outcome;
+  END IF;
+  SELECT * INTO r FROM ingest.record_event(base || jsonb_build_object(
+    'event_id','e0000000-0000-7000-8000-000000000893',
+    'tenant_id','55555555-5555-7555-8555-555555555555',
+    'device_id','55555555-0000-7000-8000-000000000089',
+    'source','ext.web_request','prompt_kind','client_generated',
+    'dedup_key','sha256:' || repeat('8b', 32),'content_digest','sha256:' || repeat('8c', 32),
+    'attachments', jsonb_build_array(jsonb_build_object('name','client.txt'))), now());
+  PERFORM set_config('sac_test.t89_client', r.event_submission_id::text, false);
+
+  PERFORM set_config('app.tenant_id', '11111111-1111-7111-8111-111111111111', false);
+  SELECT * INTO r FROM ingest.record_event(base || jsonb_build_object(
+    'event_id','e0000000-0000-7000-8000-000000000894',
+    'tenant_id','11111111-1111-7111-8111-111111111111',
+    'device_id','aaaaaaaa-0000-7000-8000-000000000001',
+    'source','ext.web_request',
+    'dedup_key','sha256:' || repeat('8d', 32),'content_digest','sha256:' || repeat('8e', 32),
+    'attachments', jsonb_build_array(jsonb_build_object('name','disabled.docx'))), now());
+  PERFORM set_config('sac_test.t89_disabled', r.event_submission_id::text, false);
+
+  BEGIN
+    PERFORM 1 FROM ingest.search_text;
+    RAISE EXCEPTION 'FAIL T89 ingest-api read the search index';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+END $$;
+RESET ROLE;
+
+DO $$
+DECLARE
+  names text;
+  n int;
+BEGIN
+  SELECT string_agg(st.unit_index || ':' || st.body, ', ' ORDER BY st.unit_index) INTO names
+    FROM ingest.search_text st
+   WHERE st.submission_id = current_setting('sac_test.t89_submission')::uuid
+     AND st.unit_kind = 'attachment_name' AND st.expires_at > now();
+  IF names IS DISTINCT FROM '0:Q3 forecast.xlsx, 1:notes.pdf, 2:board deck.pptx' THEN
+    RAISE EXCEPTION 'FAIL T89 the indexed filenames are %', names;
+  END IF;
+  SELECT count(*) INTO n FROM ingest.search_text
+   WHERE submission_id IN (current_setting('sac_test.t89_client')::uuid,
+                           current_setting('sac_test.t89_disabled')::uuid);
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T89 % filenames were indexed for a client-generated request or a tenant without search', n;
+  END IF;
+  RAISE NOTICE 'PASS T89 record_event indexes attachment filenames once each, only where the tenant searches them';
+END $$;
+
 -- =====================================================================================
 -- Report
 -- =====================================================================================

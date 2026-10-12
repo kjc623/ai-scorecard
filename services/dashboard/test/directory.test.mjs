@@ -110,6 +110,20 @@ test('a person\'s page is titled with their name and links to their prompts', ()
   assert.ok(html.includes(`href="explore.html#events?subject=${ADA}"`));
 });
 
+test('a person\'s page counts the files their prompts carried and opens those prompts', () => {
+  const rows = [
+    { bucket: '2026-09-29T00:00:00Z', subject: ADA, submissions: 4, tools_used: 1, block_events: 0, bytes_total: 10, attachments: 2, content_prompts: 4 },
+    { bucket: '2026-09-30T00:00:00Z', subject: ADA, submissions: 6, tools_used: 1, block_events: 0, bytes_total: 10, attachments: 1, content_prompts: 6 },
+  ];
+  const state = readState(envelope('ok', { data: rows, freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.agg_user_period' } }));
+  const view = personView(state, { subject: ADA, preset: 'd30' });
+  const attachments = view.tiles.find((t) => t.label === 'Attachments');
+  assert.deepEqual(attachments.value, { kind: 'number', text: '3' });
+  assert.equal(attachments.href, `explore.html#events?window=d30&subject=${ADA}&attachments=yes`);
+  const daily = view.tables.find((t) => t.title === 'Daily series');
+  assert.deepEqual(daily.rows.map((r) => r.row.attachments), [2, 1]);
+});
+
 test('a person\'s Tools used counts each tool once across the window, not the sum of the days', () => {
   const rows = [
     { bucket: '2026-09-29T00:00:00Z', subject: ADA, submissions: 4, tools_used: 2, block_events: 0, bytes_total: 10 },

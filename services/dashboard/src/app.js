@@ -190,7 +190,7 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
             } catch {
               person = null;
             }
-            return { view: personView(state, { subject, person }), shell: shell() };
+            return { view: personView(state, { subject, person, preset: ctx.preset }), shell: shell() };
           }
           const submissionId = params.filters?.submission_id;
           if (!submissionId) return { view: needsInputView({ id: 'event', title: 'Event detail', question: null, hint: 'Reached from a row that names an event.' }), shell: shell() };

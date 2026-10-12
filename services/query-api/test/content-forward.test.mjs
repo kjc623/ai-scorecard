@@ -32,7 +32,7 @@ test('a search carries the caller\'s bearer token, never a tenant from the body'
   const { calls, forwarder } = vault(() => ({ json: { state: 'available', hits: [{ submission_id: 's1', snippet: 'a <em>word</em>', rank: 0.1, unit_kind: 'prompt_body' }], truncated: false } }));
   const answer = await forwarder.handle(CONTENT_PATHS.SEARCH, PRINCIPAL, { query: 'word', tenant_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff', scope: 'everything' });
   assert.equal(answer.status, 200);
-  assert.deepEqual(answer.body.hits, [{ submission_id: 's1', snippet: 'a <em>word</em>', rank: 0.1 }]);
+  assert.deepEqual(answer.body.hits, [{ submission_id: 's1', snippet: 'a <em>word</em>', rank: 0.1, unit_kind: 'prompt_body' }]);
   assert.equal(calls.length, 1);
   assert.equal(calls[0].path, '/v1/content-search');
   assert.deepEqual(calls[0].headers, { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` }, 'the token is the only identity the vault is given');
