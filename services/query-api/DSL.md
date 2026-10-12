@@ -87,6 +87,7 @@ because their presence is an attempt rather than a typo:
 | `mart.agg_class_period` | aggregate | Q4 classes | PK |
 | `mart.agg_rule_period` | aggregate | the prompts each enforcement rule decided, for Insights | PK |
 | `mart.agg_discovery_period` | aggregate | what device discovery found: the devices that reported each tool by kind of finding and item, with each tool's name, `category`, sanction, `first_seen` under any of its fingerprints and `last_seen`; where the inventory scan stands on the fleet in `meta.extras.inventory_scan`, for Insights | PK + `(tenant, tool_fingerprint, bucket_size, bucket_start)` |
+| `mart.agg_agent_period` | aggregate | what coding agents report: each tool's model requests by model with the tokens they sent and received, the actions the agent took, and the people behind them, with each tool's name and sanction, for Insights | PK |
 | `mart.agg_user_period` | aggregate | Q6 one subject | PK + `(tenant, user_ref, bucket_start DESC, bucket_size)` |
 | `mart.v_team_member_period` | aggregate | the people behind each team's total | `mart.agg_user_period` PK |
 | `mart.agg_device_period` | aggregate | Q7 history | PK |
@@ -115,6 +116,7 @@ offered is `unknown_dimension` / `unknown_measure`, and the error lists what is 
 | `mart.agg_class_period` | `bucket`, `class`, `tool`, `severity`, `classifier_version` | `submissions`, `users`, `max_score`, `degraded_events`, `flagged`, `flagged_blocked`, `flagged_warned`, `flagged_logged` |
 | `mart.agg_rule_period` | `bucket`, `rule` | `matches`, `blocked`, `warned`, `logged` |
 | `mart.agg_discovery_period` | `bucket`, `tool`, `discovery_type`, `item` (a local model's name, an inference connection's host, else empty) | `devices` (distinct within a bucket, so a lower bound across buckets) |
+| `mart.agg_agent_period` | `bucket`, `tool`, `model` (empty for the agent's actions, which name no model) | `requests`, `actions`, `input_tokens`, `output_tokens`, `users`, `tool_users` (the tool's people on any model; both distinct within a bucket, so a lower bound across buckets) |
 | `mart.agg_user_period` | `bucket`, `subject` | `submissions`, `bytes_total`, `tools_used`, `block_events` |
 | `mart.v_team_member_period` | `bucket`, `team`, `subject` | `submissions` |
 | `mart.agg_device_period` | `bucket`, `device`, `collector` | `healthy_days`, `degraded_days`, `absent_days`, `tampered_days`, `spool_dropped` |

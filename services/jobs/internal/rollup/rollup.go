@@ -65,6 +65,7 @@ func Aggregates(bucketSize string) ([]Aggregate, error) {
 		{Name: "mart.agg_team_period", SQL: fmt.Sprintf(teamPeriodSQL, trunc)},
 		{Name: "mart.agg_user_period", SQL: fmt.Sprintf(userPeriodSQL, trunc)},
 		{Name: "mart.agg_discovery_period", SQL: fmt.Sprintf(discoveryPeriodSQL, trunc)},
+		{Name: "mart.agg_agent_period", SQL: fmt.Sprintf(agentPeriodSQL, trunc)},
 	}, nil
 }
 
@@ -347,6 +348,51 @@ SELECT $1, src.bucket_start, %[1]s, src.tool_fingerprint, src.discovery_type, sr
   FROM src
 ON CONFLICT (tenant_id, bucket_start, bucket_size, tool_fingerprint, discovery_type, item) DO UPDATE
   SET devices = EXCLUDED.devices, last_seen = EXCLUDED.last_seen`
+
+// agentPeriodSQL is what coding agents report: per tool and model, the model requests and their
+// tokens, the actions the agent took, and the people behind them, beside the people behind the tool
+// on any model. A tool call names no model, so it counts under the empty model, as does a request
+// whose model the agent did not report.
+var agentPeriodSQL = `
+WITH activity AS (
+  SELECT date_trunc(%[1]s, o.received_at) AS bucket_start, o.tool_fingerprint, coalesce(o.model, '') AS model,
+         o.activity_type, o.input_tokens, o.output_tokens, o.user_ref
+    FROM ingest.observation o
+   WHERE o.tenant_id = $1 AND o.received_at >= $2 AND o.received_at < $3 AND o.kind = 'agent_activity'
+),
+tools AS (
+  SELECT bucket_start, tool_fingerprint, count(DISTINCT user_ref) AS tool_users
+    FROM activity
+   GROUP BY 1, 2
+),
+src AS (
+  SELECT a.bucket_start, a.tool_fingerprint, a.model,
+         count(*) FILTER (WHERE a.activity_type = 'model_request') AS requests,
+         count(*) FILTER (WHERE a.activity_type = 'tool_call') AS actions,
+         coalesce(sum(a.input_tokens), 0) AS input_tokens,
+         coalesce(sum(a.output_tokens), 0) AS output_tokens,
+         count(DISTINCT a.user_ref) AS users,
+         min(t.tool_users) AS tool_users
+    FROM activity a
+    JOIN tools t USING (bucket_start, tool_fingerprint)
+   GROUP BY 1, 2, 3
+),
+gone AS (
+  DELETE FROM mart.agg_agent_period m
+   WHERE m.tenant_id = $1 AND m.bucket_size = %[1]s
+     AND m.bucket_start >= $2 AND m.bucket_start < $3
+     AND NOT EXISTS (SELECT 1 FROM src
+                      WHERE src.bucket_start = m.bucket_start AND src.tool_fingerprint = m.tool_fingerprint
+                        AND src.model = m.model)
+)
+INSERT INTO mart.agg_agent_period (tenant_id, bucket_start, bucket_size, tool_fingerprint, model,
+  requests, actions, input_tokens, output_tokens, users, tool_users)
+SELECT $1, src.bucket_start, %[1]s, src.tool_fingerprint, src.model, src.requests, src.actions,
+       src.input_tokens, src.output_tokens, src.users, src.tool_users
+  FROM src
+ON CONFLICT (tenant_id, bucket_start, bucket_size, tool_fingerprint, model) DO UPDATE
+  SET requests = EXCLUDED.requests, actions = EXCLUDED.actions, input_tokens = EXCLUDED.input_tokens,
+      output_tokens = EXCLUDED.output_tokens, users = EXCLUDED.users, tool_users = EXCLUDED.tool_users`
 
 // orgPeriodSQL is usage by department. It is empty for a tenant with no directory sync, because
 // department and population live in ops.user_dim and a person with no row there cannot be
