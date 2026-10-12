@@ -29,6 +29,7 @@ import {
 } from './messages.js';
 import { classifyWithResponse, CANDIDATE_FLOOR, predicateRequest } from './predicate.js';
 import { toolFingerprint } from './tool-fingerprint.js';
+import { knownSubmission } from './submission.js';
 import { COOLDOWN_ERROR_CODE } from './native.js';
 
 /** Bounded: a service worker can be killed at any time, and an unanswered candidate must not accumulate. */
@@ -132,9 +133,15 @@ export function createPipeline({
     // A file upload is not itself a submission, but it is where the browser names the file's path.
     if (attachments) attachments.noteUploads(detail);
 
-    // Shape classification comes before the mode is consulted for content.
+    // Shape classification comes before the mode is consulted for content. The tool's mode is keyed
+    // by its fingerprint, which comes from the destination alone, so one tool keeps one fingerprint
+    // whatever its own mode is and whatever the request carries. A catalogued web app's own prompt
+    // request is a submission whatever its shape, and what it holds is the typed text alone.
+    const tool = toolOf(url);
     const request = shapeInput(detail, body, tab_context);
-    const shape = predicateRequest(request);
+    const prompt = knownSubmission(tool, detail, body);
+    const shape = prompt === null ? predicateRequest(request) : { ...predicateRequest(request), match: true };
+    const held = prompt === null ? body : { ...body, bytes: new TextEncoder().encode(prompt), decode: { encoding: 'utf8', text: prompt } };
 
     // A request above the candidate floor but below the threshold is held, not emitted, so its
     // response contract can settle it once the response arrives.
@@ -156,11 +163,8 @@ export function createPipeline({
       return { cancel: false, queued: false, skipped: true, observation: null, mode: MODE.M0, candidate: null };
     }
 
-    // The mode decides what may be read, and only then is anything read. The tool's mode is keyed by
-    // its fingerprint, which comes from the destination alone, so one tool keeps one fingerprint
-    // whatever its own mode is and whatever the request carries.
-    const tool = toolOf(url);
-    const gate = readBodyForMode(await resolveMode({ host, tool_fingerprint: tool }), body);
+    // The mode decides what may be read, and only then is anything read.
+    const gate = readBodyForMode(await resolveMode({ host, tool_fingerprint: tool }), held);
     const mode = gate.mode;
 
     const decision = await decide({
@@ -177,7 +181,7 @@ export function createPipeline({
     if (gate.bytes && modeReadsContent(mode)) {
       // The digest is over the bytes as sent, for text and binary alike.
       contentDigest = await sha256Prefixed(adapter.crypto, gate.bytes);
-      contentIsBinary = body.decode.encoding === 'binary';
+      contentIsBinary = held.decode.encoding === 'binary';
       // observationBody base64-encodes the bytes for the wire.
       contentBytes = gate.bytes;
     }

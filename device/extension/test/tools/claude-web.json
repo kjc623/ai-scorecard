@@ -61,8 +61,7 @@
   "expect": {
     "events": 1,
     "observed": true,
-    "attributed": false,
-    "prompt": false,
-    "why": "claude.ai has no app or extension fingerprint in the catalogue (its domain is listed under Claude Desktop), and a JSON body is handed over whole, so the stored prompt is the payload rather than its prompt field"
+    "attributed": true,
+    "prompt": true
   }
 }
