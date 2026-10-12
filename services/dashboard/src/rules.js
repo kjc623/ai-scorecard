@@ -14,8 +14,8 @@
 import { buildPeopleDocument, buildRuleMatchesDocument, windowFor } from './dsl.js';
 
 /** What an enforcement rule does to a submission it matches. */
-export const RULE_ACTIONS = Object.freeze(['allow', 'warn', 'block']);
-export const RULE_ACTION_LABELS = Object.freeze({ allow: 'Allow', warn: 'Warn', block: 'Block' });
+export const RULE_ACTIONS = Object.freeze(['allow', 'warn', 'block', 'redirect']);
+export const RULE_ACTION_LABELS = Object.freeze({ allow: 'Allow', warn: 'Warn', block: 'Block', redirect: 'Redirect' });
 
 /** The app catalog's categories by display name, in the order the editor offers those the catalog's apps fall in. */
 export const RULE_CATEGORIES = Object.freeze([
@@ -77,17 +77,18 @@ function httpsLink(link) {
 
 /**
  * Why a rule cannot be kept as written, or null. `others` is the rest of the list, whose ids it must
- * not repeat. A warn or block shows its message to the person, so it needs one; an allow may have
- * none.
+ * not repeat. A warn, block or redirect shows its message to the person, so it needs one; an allow
+ * may have none. A redirect sends the person to its link, so it needs one too.
  */
 export function ruleProblem(rule, others = []) {
   const problem = (message) => Object.freeze({ code: 'invalid_rule', message });
   if (!RULE_ID.test(rule.rule_id)) return problem('The name must start with a lower-case letter and use only lower-case letters, digits, "_", "." or "-" (at most 128).');
   if (others.some((r) => r.rule_id === rule.rule_id)) return problem(`Another rule is already called ${rule.rule_id}.`);
-  if (!RULE_ACTIONS.includes(rule.action)) return problem('Choose allow, warn or block.');
+  if (!RULE_ACTIONS.includes(rule.action)) return problem('Choose allow, warn, block or redirect.');
   const length = [...rule.message].length;
-  if (rule.action !== 'allow' && rule.message.trim() === '') return problem('A warn or block rule needs a message for the person it stops.');
+  if (rule.action !== 'allow' && rule.message.trim() === '') return problem('A warn, block or redirect rule needs a message for the person it stops.');
   if (length > MAX_RULE_MESSAGE) return problem(`The message is ${length} characters; at most ${MAX_RULE_MESSAGE}.`);
+  if (rule.action === 'redirect' && rule.link === '') return problem('A redirect rule needs a link to send the person to.');
   if (rule.link !== '' && !httpsLink(rule.link)) return problem('The link must be an https:// address.');
   if (rule.users.length > MAX_RULE_USERS) return problem(`A rule names at most ${MAX_RULE_USERS} people, groups, departments, units and teams.`);
   return null;

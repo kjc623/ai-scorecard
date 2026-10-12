@@ -15,7 +15,7 @@
  */
 
 import { ExtError } from './adapter.js';
-import { CONFIRMATION_WINDOW_MS, DECISION, DEFAULT_RULE_ID, REASON, decideSync, decideWithConfirmation, degradedDetail } from './enforce.js';
+import { CONFIRMATION_WINDOW_MS, DECISION, DEFAULT_RULE_ID, REASON, decideNavigation, decideSync, decideWithConfirmation, degradedDetail } from './enforce.js';
 import { sha256Prefixed } from './codec.js';
 import {
   COUNTER,
@@ -36,6 +36,9 @@ export const MAX_CANDIDATES = 256;
 
 /** How many queued observations one drain pass attempts. */
 export const DRAIN_BATCH = 20;
+
+/** The extension's own page a redirect rule shows, with the rule's message and link. */
+export const SPLASH_PAGE = 'splash/redirect.html';
 
 export function createPipeline({
   adapter,
@@ -58,6 +61,15 @@ export function createPipeline({
   function nextClientId() {
     sequence += 1;
     return `c${sequence}`;
+  }
+
+  /**
+   * The splash page for a redirect rule. It carries the rule's id and the host the person tried to
+   * open, never the message or link: the page reads those from the bundle in force, so a page that
+   * opens the splash itself cannot make it say anything a rule does not.
+   */
+  function splashUrl(ruleId, host) {
+    return `${adapter.getURL(SPLASH_PAGE)}?rule=${encodeURIComponent(ruleId)}&from=${encodeURIComponent(host)}`;
   }
 
   /** The tool a request went to, named from its destination by the catalog in force. */
@@ -237,6 +249,10 @@ export function createPipeline({
 
     const isSocket = detail.type === 'websocket' || /^wss?:/i.test(url);
     if (isSocket) return captureHandshake({ detail, host, shape });
+    if (detail.type === 'main_frame') {
+      const redirected = redirectNavigation({ detail, host, shape });
+      if (redirected) return redirected;
+    }
 
     // Without a body, "match" cannot be decided; the metadata subset of the evidence decides
     // whether an identity-and-volume observation is worth emitting.
@@ -278,6 +294,51 @@ export function createPipeline({
     );
     emit(observation);
     return { cancel: Boolean(decision.cancel), queued: true, skipped: false, observation, mode: gate.mode, candidate: observation, decision };
+  }
+
+  /**
+   * Opening a web app a redirect rule matches: the tab goes to the splash page instead, and the
+   * visit is recorded as the rule's `blocked` decision, as a blocked prompt is, with no content.
+   * Any other navigation is left to the metadata path.
+   */
+  function redirectNavigation({ detail, host, shape }) {
+    const tool = toolOf(detail.url);
+    const rule = decideNavigation(policy.rules(), { url: detail.url, tool_fingerprint: tool });
+    if (!rule) return null;
+    const resolution = policy.modeFor({ host, tool_fingerprint: tool });
+    const decision = { action: DECISION.BLOCKED, rule_id: rule.rule_id, decided_locally: true };
+    const observation = decorate(
+      observationBody({
+        client_id: nextClientId(),
+        route: ROUTE.EXT_WEB_REQUEST,
+        tool_fingerprint: tool,
+        occurred_at: new Date(clock()).toISOString(),
+        monotonic_offset_ms: Math.max(0, Math.round(monotonic())),
+        size_bytes: 0,
+        has_content: false,
+        decision,
+      }),
+      {
+        mode: resolution.mode,
+        gate: { mode: resolution.mode, resolution, bytes: null, unread_reason: 'page_navigation' },
+        shape,
+        host,
+        unread_reason: 'page_navigation',
+        decision: { reason: REASON.RULE_REDIRECT },
+        detail,
+      },
+    );
+    emit(observation);
+    return {
+      cancel: false,
+      redirect_url: splashUrl(rule.rule_id, host),
+      queued: true,
+      skipped: false,
+      observation,
+      mode: resolution.mode,
+      candidate: observation,
+      decision: { decision, reason: REASON.RULE_REDIRECT, rule_id: rule.rule_id },
+    };
   }
 
   /** A WebSocket handshake is observed; the frames after it are not visible to webRequest. */
@@ -424,6 +485,16 @@ export function createPipeline({
       request_id: input.request_id,
     });
     const sync = decideSync(base);
+    if (sync.reason === REASON.RULE_REDIRECT) {
+      // The prompt is cancelled now and its tab sent to the splash page; a redirect that could not
+      // be shown is counted.
+      void Promise.resolve()
+        .then(() => adapter.showRedirect({ tab_id: input.tab_id, url: splashUrl(sync.rule_id, input.host) }))
+        .then((r) => r && r.shown)
+        .catch(() => false)
+        .then((shown) => shown || counters.countError('redirect_unavailable'));
+      return sync;
+    }
     if (sync.reason === REASON.RULE_BLOCK) {
       // The request is cancelled now; the overlay only tells the user why, and a block nobody was
       // told about is counted.

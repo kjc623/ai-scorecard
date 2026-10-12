@@ -785,13 +785,16 @@ func validRules(in []ruleJSON) ([]store.EnforcementRule, error) {
 		}
 		seen[rule.RuleID] = true
 		if !slices.Contains(store.RuleActions, rule.Action) {
-			return nil, refuse(i, "action", "action must be allow, warn or block")
+			return nil, refuse(i, "action", "action must be allow, warn, block or redirect")
 		}
 		if utf8.RuneCountInString(rule.Message) > maxRuleMessage {
 			return nil, refuse(i, "message", fmt.Sprintf("message is longer than %d characters", maxRuleMessage))
 		}
 		if rule.Link != "" && !httpsURL(rule.Link) {
 			return nil, refuse(i, "link", "link must be an https:// URL")
+		}
+		if rule.Action == "redirect" && rule.Link == "" {
+			return nil, refuse(i, "link", "a redirect rule needs a link to send the person to")
 		}
 		m := rule.Match
 		for _, list := range []struct {

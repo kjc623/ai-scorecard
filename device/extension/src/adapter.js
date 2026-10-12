@@ -97,6 +97,7 @@
  * @property {(n: number) => string[]} randomUUIDs       `n` v4 UUIDs
  * @property {(spec: WarnSpec) => Promise<WarnAnswer>} warnUser  renders the warn confirmation
  * @property {(spec: WarnSpec) => Promise<{shown: boolean}>} showBlocked  renders the block notice
+ * @property {(spec: {tab_id: number, url: string}) => Promise<{shown: boolean}>} showRedirect  opens a redirect rule's splash page in the tab
  */
 
 /**

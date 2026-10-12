@@ -18,7 +18,7 @@ function fixture(t) {
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const { publicKey, privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const root = join(dir, 'extension');
-  for (const entry of ['background', 'content', 'src', 'test']) cpSync(join(PKG, entry), join(root, entry), { recursive: true });
+  for (const entry of ['background', 'content', 'splash', 'src', 'test']) cpSync(join(PKG, entry), join(root, entry), { recursive: true });
   const manifest = JSON.parse(readFileSync(join(PKG, 'manifest.json'), 'utf8'));
   manifest.key = publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
   writeFileSync(join(root, 'manifest.json'), JSON.stringify(manifest));
@@ -56,7 +56,7 @@ test('the CRX is signed under the pinned id and carries the release version and 
   const packaged = JSON.parse(entries.get('manifest.json'));
   assert.equal(packaged.version, '2.5.7');
   assert.equal(packaged.update_url, UPDATE_URL, 'an installed extension checks for updates at its own update_url');
-  assert.ok(entries.has('background/service-worker.js') && entries.has('content/content-boot.js') && entries.has('src/native.js'));
+  assert.ok(entries.has('background/service-worker.js') && entries.has('content/content-boot.js') && entries.has('src/native.js') && entries.has('splash/redirect.html'));
   assert.deepEqual([...entries.keys()].filter((n) => n.startsWith('test/')), [], 'tests are not packaged');
 
   const again = await buildCrx({ keyPem: key, version: '2.5.7', updateUrl: UPDATE_URL, outDir: join(dir, 'again'), root });

@@ -6,7 +6,10 @@
  *     evaluators pass the same cases (device/integration/testdata/enforce/cases.json).
  *   - Every decision carries `decided_locally: true`. `block` records `blocked` and cancels the
  *     request through webRequestBlocking (the caller turns `{cancel: true}` into the blocking
- *     response); `warn` records `warned` once the user confirms; `allow` records `logged`.
+ *     response); `redirect` does the same and sends the tab to the splash page; `warn` records
+ *     `warned` once the user confirms; `allow` records `logged`.
+ *   - Opening a catalogued web app is a navigation, not a prompt: `decideNavigation` answers whether
+ *     a `redirect` rule sends it to the splash page instead.
  *   - Decision failure fails open: an evaluation error or an exhausted budget lets the request
  *     proceed as `logged`, marked degraded, and the failure is counted. A broken evaluator must
  *     not become a broken browser.
@@ -14,7 +17,7 @@
  * A blocked request is still an event: the caller emits its decision.
  */
 
-import { DETAIL } from './messages.js';
+import { DETAIL, ROUTE } from './messages.js';
 
 /** The budget for reaching a verdict. */
 export const DECISION_BUDGET_MS = 300;
@@ -29,7 +32,7 @@ export const CONFIRMATION_WINDOW_MS = 20_000;
 export const DEFAULT_RULE_ID = 'policy.default';
 
 /** policy.RuleAction: what a rule asks for. */
-export const RULE_ACTION = Object.freeze({ ALLOW: 'allow', WARN: 'warn', BLOCK: 'block' });
+export const RULE_ACTION = Object.freeze({ ALLOW: 'allow', WARN: 'warn', BLOCK: 'block', REDIRECT: 'redirect' });
 
 /** The values a rule's sanction list holds. */
 export const SANCTION = Object.freeze({ SANCTIONED: 'sanctioned', UNSANCTIONED: 'unsanctioned' });
@@ -40,6 +43,7 @@ export const DECISION = Object.freeze({ BLOCKED: 'blocked', WARNED: 'warned', LO
 /** The closed reason vocabulary for this module. Every outcome names itself. */
 export const REASON = Object.freeze({
   RULE_BLOCK: 'rule_block',
+  RULE_REDIRECT: 'rule_redirect',
   RULE_WARN: 'rule_warn',
   RULE_ALLOW: 'rule_allow',
   NO_RULE: 'no_rule',
@@ -214,6 +218,8 @@ export function decideSync(input) {
   switch (d.action) {
     case RULE_ACTION.BLOCK:
       return decide(DECISION.BLOCKED, d.rule_id, REASON.RULE_BLOCK, { ...rule, cancel: true });
+    case RULE_ACTION.REDIRECT:
+      return decide(DECISION.BLOCKED, d.rule_id, REASON.RULE_REDIRECT, { ...rule, cancel: true, redirect: true });
     case RULE_ACTION.WARN:
       return decide(DECISION.WARNED, d.rule_id, REASON.RULE_WARN, { ...rule, needs_confirmation: true });
     case RULE_ACTION.ALLOW:
@@ -225,6 +231,39 @@ export function decideSync(input) {
         error: `unknown_action:${String(d.action)}`,
         elapsed_ms: elapsed,
       });
+  }
+}
+
+/**
+ * Whether opening `url` in a tab is redirected to the splash page: only a web app the catalog names
+ * (`app:<key>`), so a rule matching on sanction or route alone never redirects the whole web, and
+ * never a page on the host the rule's link goes to, which would send the person round in a loop.
+ * The labels of a page not yet opened are unknown. An evaluation error lets the page open.
+ *
+ * @param {object|null} bundle  the bundle in force
+ * @param {{url: string, tool_fingerprint: string}} input
+ * @returns {{rule_id: string, message: string, link: string}|null}  the redirect rule, or null
+ */
+export function decideNavigation(bundle, input) {
+  if (typeof input.tool_fingerprint !== 'string' || !input.tool_fingerprint.startsWith('app:')) return null;
+  let d;
+  try {
+    d = evaluate(bundle, { route: ROUTE.EXT_WEB_REQUEST, tool_fingerprint: input.tool_fingerprint, labels: [], labels_known: false });
+  } catch {
+    return null;
+  }
+  if (d.action !== RULE_ACTION.REDIRECT || !d.link.startsWith('https://')) return null;
+  const host = hostname(input.url);
+  const target = hostname(d.link);
+  if (host === '' || target === '' || host === target || host.endsWith(`.${target}`)) return null;
+  return { rule_id: d.rule_id, message: d.message, link: d.link };
+}
+
+function hostname(url) {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return '';
   }
 }
 

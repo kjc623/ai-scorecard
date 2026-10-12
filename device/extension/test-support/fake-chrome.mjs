@@ -30,6 +30,7 @@ export function createFakeChrome() {
     messageHandlers: [],
     tabAnswers: new Map(),
     tabQueries: [],
+    tabUpdates: [],
     lastError: undefined,
     /** Every `connectNative` attempt, whether or not it succeeded. */
     connectAttempts: 0,
@@ -143,6 +144,10 @@ export function createFakeChrome() {
         const err = new Error('Could not establish connection. Receiving end does not exist.');
         state.lastError = { message: err.message };
         throw err;
+      },
+      async update(tabId, props) {
+        state.tabUpdates.push({ tabId, ...props });
+        return { id: tabId, ...props };
       },
       async query(q) {
         state.tabQueries.push(q);

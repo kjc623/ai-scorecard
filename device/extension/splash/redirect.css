@@ -1,0 +1,86 @@
+/* redirect.css — the splash page a redirect rule shows. The dashboard's sign-in page look, with its
+   tokens copied here because the extension cannot load the dashboard's stylesheets: the warm ground
+   and its two glows, a panel set into a tray, one serif for the title. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #f6f5f1;
+  --tray: rgb(17 17 17 / .035);
+  --panel: #ffffff;
+  --ink: #131312;
+  --text: #2f3437;
+  --ink-soft: #6c6b66;
+  --ink-faint: #a3a19b;
+  --line: rgb(17 17 17 / .08);
+  --line-strong: rgb(17 17 17 / .16);
+  --hi: rgb(255 255 255 / .9);
+  --glow-a: rgb(75 71 201 / .07);
+  --glow-b: rgb(202 138 4 / .06);
+  --on-ink: #ffffff;
+  --shadow: 0 1px 1px rgb(17 17 17 / .03), 0 12px 32px -16px rgb(17 17 17 / .12);
+  --hatch: repeating-linear-gradient(45deg, #e9e8e2 0 6px, #f6f5f1 6px 12px);
+  --sans: "Geist", "Plus Jakarta Sans", "Segoe UI Variable Display", "Segoe UI Variable Text", "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+  --serif: "Lyon Text", "Newsreader", "Instrument Serif", "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d0d0c; --tray: rgb(255 255 255 / .035); --panel: #171716;
+    --ink: #f3f1ec; --text: #d6d4cf; --ink-soft: #9a9893; --ink-faint: #66645f;
+    --line: rgb(255 255 255 / .08); --line-strong: rgb(255 255 255 / .16); --hi: rgb(255 255 255 / .07);
+    --glow-a: rgb(124 116 255 / .13); --glow-b: rgb(229 193 107 / .06); --on-ink: #131312;
+    --shadow: 0 1px 1px rgb(0 0 0 / .2), 0 20px 40px -24px rgb(0 0 0 / .7);
+    --hatch: repeating-linear-gradient(45deg, #262624 0 6px, #1a1a19 6px 12px);
+  }
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100dvh; background: var(--bg); color: var(--text);
+  font: 14.5px/1.55 var(--sans); -webkit-font-smoothing: antialiased;
+}
+body::before {
+  content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+  background:
+    radial-gradient(60rem 36rem at 78% -8%, var(--glow-a), transparent 62%),
+    radial-gradient(48rem 30rem at 8% 108%, var(--glow-b), transparent 60%);
+}
+
+.sp {
+  position: relative; z-index: 1; width: min(480px, 100%); margin: 0 auto;
+  padding: max(10vh, 32px) 16px 48px; display: grid; gap: 18px;
+}
+.sp-brand { display: flex; align-items: center; justify-content: center; gap: 10px; padding-bottom: 8px; }
+.sp-mark { width: 22px; height: 22px; border-radius: 7px; background: var(--hatch); border: 1px solid var(--line-strong); }
+.sp-name { font-size: 14.5px; font-weight: 600; color: var(--ink); letter-spacing: -0.01em; }
+
+.sp-card { padding: 6px; border-radius: 22px; background: var(--tray); border: 1px solid var(--line); }
+.sp-core {
+  display: grid; gap: 14px; padding: 30px 30px 28px; border-radius: 16px; background: var(--panel);
+  box-shadow: inset 0 1px 0 var(--hi), var(--shadow);
+}
+.sp-eyebrow { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-soft); }
+.sp-title { margin: -4px 0 0; font: 400 40px/1.04 var(--serif); letter-spacing: -0.025em; color: var(--ink); }
+.sp-from { margin: -4px 0 0; color: var(--ink-soft); overflow-wrap: anywhere; }
+.sp-from:empty, .sp-message:empty, .sp-link:empty { display: none; }
+.sp-message { margin: 0; color: var(--ink); font-size: 16px; white-space: pre-line; overflow-wrap: anywhere; }
+
+.sp-btn {
+  display: inline-flex; align-items: center; justify-content: center; height: 42px; padding: 0 18px;
+  width: 100%; margin-top: 4px; border-radius: 12px; background: var(--ink); color: var(--on-ink);
+  font: 600 14px var(--sans); text-decoration: none; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  transition: opacity .3s var(--ease), transform .3s var(--ease);
+}
+.sp-btn[hidden] { display: none; }
+.sp-btn:hover { opacity: .88; }
+.sp-btn:active { transform: scale(.985); }
+.sp-btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+.sp-link { margin: -6px 0 0; font-size: 12.5px; color: var(--ink-faint); text-align: center; overflow-wrap: anywhere; }
+.sp-foot { margin: 0; text-align: center; font-size: 12.5px; color: var(--ink-faint); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .sp > * { animation: rise .8s var(--ease) both; }
+  .sp > :nth-child(2) { animation-delay: .05s; }
+  .sp > :nth-child(3) { animation-delay: .1s; }
+}
+@keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }

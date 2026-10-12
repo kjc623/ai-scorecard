@@ -813,7 +813,7 @@ function exposedTable(classes, { emptyText }) {
 
 const RULE_MATCHES = Object.freeze(['matches', 'blocked', 'warned', 'logged']);
 /** A rule's action, keyed by the outcome it produces so it takes that outcome's colour. */
-const RULE_ACTION_KEYS = Object.freeze({ allow: 'allowed', warn: 'warned', block: 'blocked' });
+const RULE_ACTION_KEYS = Object.freeze({ allow: 'allowed', warn: 'warned', block: 'blocked', redirect: 'blocked' });
 const CATEGORY_TEXT = Object.freeze(Object.fromEntries(RULE_CATEGORIES.map((c) => [c.key, c.label])));
 const ROUTE_TEXT = Object.freeze(Object.fromEntries(RULE_ROUTES.map((r) => [r.key, r.label])));
 

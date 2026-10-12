@@ -482,7 +482,7 @@ CREATE TABLE ops.enforcement_rule (
   tenant_id   uuid NOT NULL REFERENCES ops.tenant(tenant_id),
   position    int NOT NULL CHECK (position >= 0),
   rule_id     text NOT NULL CHECK (rule_id ~ '^[a-z][a-z0-9_.-]{0,127}$'),
-  action      text NOT NULL CHECK (action IN ('allow','warn','block')),
+  action      text NOT NULL CHECK (action IN ('allow','warn','block','redirect')),
   match       jsonb NOT NULL DEFAULT '{}'::jsonb,
   message     text NOT NULL DEFAULT '' CHECK (char_length(message) <= 280),
   link        text CHECK (link LIKE 'https://_%'),
@@ -496,6 +496,8 @@ CREATE TABLE ops.enforcement_rule (
   enabled     boolean NOT NULL DEFAULT true,
   PRIMARY KEY (tenant_id, rule_id),
   CONSTRAINT enforcement_rule_position_unique UNIQUE (tenant_id, position),
+  -- A redirect sends the person to the rule's link, so it has one.
+  CONSTRAINT enforcement_rule_redirect_link CHECK (action <> 'redirect' OR link IS NOT NULL),
   CONSTRAINT enforcement_rule_users_shape CHECK (
     jsonb_typeof(users) = 'array'
     AND NOT jsonb_path_exists(users, 'strict $[*] ? (@.type() != "string")')

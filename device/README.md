@@ -193,7 +193,8 @@ prompt as written and a `PreToolUse` call's `tool_input` as compact JSON, and an
 Code's JSON output with exit code 0: a block with the rule's message and link, a warning as a
 `systemMessage`, and no output to allow. Codex's adapter does the same for `UserPromptSubmit`: a
 block is `{"decision": "block", "reason": ...}` (the rule's id when it has no message, since Codex
-ignores a block without a reason).
+ignores a block without a reason). A `redirect` rule has no page to show a command-line tool or a
+desktop app, so the relay and the TLS proxy stop the prompt as a block, with its message and link.
 
 A prompt event also carries the files the prompt names, by name, path and size: each word that
 reads as a path (Claude Code's `@src/app.go`, the path Codex's file search writes, a quoted path or

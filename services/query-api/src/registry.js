@@ -758,7 +758,7 @@ export const SOURCES = Object.freeze({
     dimensions: Object.freeze({
       rule: dim('rule', 'er.rule_id', 'text', { ...RULE_CARD }),
       position: dim('position', 'er.position', 'number', { ...RULE_CARD }),
-      action: dim('action', 'er.action', 'text', { ...ACTION_CARD, values: ['allow', 'warn', 'block'] }),
+      action: dim('action', 'er.action', 'text', { cardinality: 4, values: ['allow', 'warn', 'block', 'redirect'] }),
     }),
     measures: Object.freeze({}),
     grain: Object.freeze(['rule']),

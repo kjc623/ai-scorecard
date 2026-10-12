@@ -82,6 +82,8 @@ func TestRecordedAction(t *testing.T) {
 		want       string
 	}{
 		{policy.RuleBlock, true, protocol.ActionBlocked},
+		{policy.RuleRedirect, true, protocol.ActionBlocked},
+		{policy.RuleRedirect, false, protocol.ActionLogged},
 		{policy.RuleWarn, true, protocol.ActionWarned},
 		{policy.RuleAllow, true, protocol.ActionLogged},
 		{policy.RuleBlock, false, protocol.ActionLogged},

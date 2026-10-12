@@ -102,10 +102,10 @@ func category(b *policy.Bundle, tool string) string {
 func RecordedAction(d Decision, canEnforce bool) protocol.Decision {
 	action := protocol.ActionLogged
 	if canEnforce {
-		switch d.Action {
-		case policy.RuleBlock:
+		switch {
+		case d.Action.Stops():
 			action = protocol.ActionBlocked
-		case policy.RuleWarn:
+		case d.Action == policy.RuleWarn:
 			action = protocol.ActionWarned
 		}
 	}
