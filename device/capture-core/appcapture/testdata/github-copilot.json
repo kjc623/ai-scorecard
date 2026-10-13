@@ -1,0 +1,24 @@
+{
+  "app_key": "github_copilot",
+  "route": "otlp",
+  "source": {
+    "kind": "documented",
+    "from": "otlp/testdata/privacy/copilot/traces-vscode-agent-turn.json, an agent-mode turn written from VS Code's Copilot monitoring documentation, as the machine policies make the extension export it",
+    "checked": "2026-10-12"
+  },
+  "typed": "Check the medical records of SAC-CANARY-7f3a",
+  "otlp": {
+    "signal": "traces",
+    "export_file": "otlp/testdata/privacy/copilot/traces-vscode-agent-turn.json",
+    "placeholders": {
+      "{{CANARY}}": "SAC-CANARY-7f3a",
+      "{{DROPPED_CANARY}}": "SAC-DROPPED-7f3a"
+    },
+    "sender": "C:\\Users\\console\\AppData\\Local\\Programs\\Microsoft VS Code\\Code.exe"
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

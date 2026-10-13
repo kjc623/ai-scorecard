@@ -901,7 +901,7 @@ func (p *Provider) newRuling(req *http.Request) *ruling {
 	_, generic := parser.(parsers.Generic)
 	return &ruling{
 		bundles:    p.bundle,
-		tool:       toolFingerprint(req.Host, req.URL.Path),
+		tool:       ToolFingerprint(req.Host, req.URL.Path),
 		parser:     parser,
 		extract:    targets.Registry().For(req.Host, req.URL.Path),
 		canEnforce: !generic && !p.killSwitchActive(),
@@ -1164,11 +1164,12 @@ func splitHostPort(hostport string) (string, int) {
 	return host, port
 }
 
-// toolFingerprint is behaviour-derived, not a brand name: the schema requires a fingerprint and
+// ToolFingerprint names the tool behind a request to host and path, as the catalogue's tls rows
+// list it. It is behaviour-derived, not a brand name: the schema requires a fingerprint and
 // discovery must classify behaviour rather than match a curated list. The host and path shape
 // are the observable signals available at this vantage point, hashed so the value stays stable
 // and bounded.
-func toolFingerprint(host, path string) string {
+func ToolFingerprint(host, path string) string {
 	h := sha256Sum([]byte("tls|" + strings.ToLower(host) + "|" + strings.Trim(path, "/")))
 	return fmt.Sprintf("tls_%x", h[:8])
 }

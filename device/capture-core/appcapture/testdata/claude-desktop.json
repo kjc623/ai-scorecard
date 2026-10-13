@@ -1,0 +1,23 @@
+{
+  "app_key": "claude_desktop",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "the PerformAction request claude.ai's web app sends, captured on the test VM (device/extension/test/tools/claude-web.json); the desktop app loads the same web app",
+    "checked": "2026-10-13"
+  },
+  "typed": "sundial-check-claude-web",
+  "tls": {
+    "process": "claude.exe",
+    "host": "claude.ai",
+    "path": "/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/PerformAction",
+    "media_type": "application/proto",
+    "body_base64": "CnoKGQoVc2Vzc18wMDAwMDAwMDAwMDAwMDAwEAESJDAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMRgDOgwIARABGAEwAUABUAFyBWVuLVVTeiAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABKlAQokMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAyEiQwMDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDMaGHN1bmRpYWwtY2hlY2stY2xhdWRlLXdlYjoSEhBjbGF1ZGUtbW9kZWwtMC0wQgoKCAgBOAFQAHABYhNBbWVyaWNhL0xvc19BbmdlbGVzagVlbi1VU5ABAQ=="
+  },
+  "expect": {
+    "captured": false,
+    "attributed": false,
+    "prompt": false,
+    "why": "claude.ai is an inference_domain of Claude Desktop and Claude (web) with no tls row, so it is not in the interception set and is tunnelled blind; were it decrypted, the generic parser reads no text from a protobuf body and no catalogue row names the request"
+  }
+}

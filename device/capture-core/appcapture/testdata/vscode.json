@@ -1,0 +1,16 @@
+{
+  "app_key": "vscode",
+  "route": "none",
+  "source": {
+    "kind": "documented",
+    "from": "the vscode rows of ref.app_signal in services/database/schema.sql; no request is replayed",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary vscode AKIAIOSFODNN7EXAMPLE",
+  "expect": {
+    "captured": false,
+    "attributed": false,
+    "prompt": false,
+    "why": "VS Code is the editor: a prompt typed in it belongs to an extension (github-copilot, claude-code-vscode, continue), and no route names one app:vscode"
+  }
+}

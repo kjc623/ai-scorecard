@@ -1,0 +1,23 @@
+{
+  "app_key": "anthropic_api",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "parsers/anthropic/testdata/documented/messages-string.json, written from Anthropic's Messages API reference; sent by a script through the anthropic SDK",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary anthropic-api AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "python.exe",
+    "host": "api.anthropic.com",
+    "path": "/v1/messages",
+    "media_type": "application/json",
+    "body_file": "parsers/anthropic/testdata/documented/messages-string.json"
+  },
+  "expect": {
+    "captured": true,
+    "attributed": false,
+    "prompt": true,
+    "why": "api.anthropic.com/v1/messages is catalogued only as Claude Code (tls_b6681b043244c43f, app_key claude_code), so a script calling the Messages API is named Claude Code"
+  }
+}

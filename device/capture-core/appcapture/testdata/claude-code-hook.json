@@ -1,0 +1,20 @@
+{
+  "app_key": "claude_code",
+  "route": "hook",
+  "source": {
+    "kind": "documented",
+    "from": "hooks/testdata/claude-code/documented/user-prompt-submit.json, written from Claude Code's hooks reference",
+    "checked": "2026-10-12"
+  },
+  "typed": "Deploy with key AKIAIOSFODNN7EXAMPLE to the \"staging\" bucket <now>",
+  "hook": {
+    "tool": "claude_code",
+    "event": "UserPromptSubmit",
+    "stdin_file": "hooks/testdata/claude-code/documented/user-prompt-submit.json"
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "app_key": "llama_cpp",
+  "route": "loopback",
+  "source": {
+    "kind": "documented",
+    "from": "llama-server's OpenAI-compatible chat completions endpoint (llama.cpp tools/server/README.md: POST /v1/chat/completions); the body is the OpenAI chat shape with one user message",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary llama-cpp AKIAIOSFODNN7EXAMPLE",
+  "loopback": {
+    "port": 8080,
+    "path": "/v1/chat/completions",
+    "media_type": "application/json",
+    "body": {
+      "model": "local-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": "sac canary llama-cpp AKIAIOSFODNN7EXAMPLE"
+        }
+      ]
+    }
+  },
+  "expect": {
+    "captured": false,
+    "attributed": false,
+    "prompt": false,
+    "why": "control-api's broker covers Ollama only (loopbackRuntimes), so the bundle's loopback section holds no port 8080 and llama-server is reached directly; llama.cpp's listen_port signal serves discovery only"
+  }
+}

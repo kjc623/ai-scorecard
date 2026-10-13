@@ -1,0 +1,32 @@
+{
+  "app_key": "cohere_api",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "Cohere's Chat API reference (docs.cohere.com/reference/chat: POST /v2/chat, model and messages) on the base URL the Python SDK uses (cohere-python src/cohere/environment.py, ClientEnvironment.PRODUCTION = https://api.cohere.com)",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary cohere-api AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "python.exe",
+    "host": "api.cohere.com",
+    "path": "/v2/chat",
+    "media_type": "application/json",
+    "body": {
+      "model": "command-a-plus-05-2026",
+      "messages": [
+        {
+          "role": "user",
+          "content": "sac canary cohere-api AKIAIOSFODNN7EXAMPLE"
+        }
+      ],
+      "stream": false
+    }
+  },
+  "expect": {
+    "captured": false,
+    "attributed": false,
+    "prompt": false,
+    "why": "the SDK sends to api.cohere.com/v2/chat, but the catalogue's tls row (tls_4fb4f5cb98d7a1c3) and inference_domain name the old host api.cohere.ai and /v1/chat, so api.cohere.com is not in the interception set and is tunnelled blind"
+  }
+}

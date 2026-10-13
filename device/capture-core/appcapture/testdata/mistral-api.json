@@ -1,0 +1,30 @@
+{
+  "app_key": "mistral_api",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "Mistral's API reference (docs.mistral.ai/api: POST https://api.mistral.ai/v1/chat/completions), an OpenAI-compatible chat completions endpoint; the body is the OpenAI chat shape with one user message, written from that reference",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary mistral-api AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "python.exe",
+    "host": "api.mistral.ai",
+    "path": "/v1/chat/completions",
+    "media_type": "application/json",
+    "body": {
+      "model": "mistral-large-latest",
+      "messages": [
+        {
+          "role": "user",
+          "content": "sac canary mistral-api AKIAIOSFODNN7EXAMPLE"
+        }
+      ]
+    }
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}
