@@ -32,9 +32,8 @@
     }
   },
   "expect": {
-    "captured": false,
-    "attributed": false,
-    "prompt": false,
-    "why": "cloudcode-pa.googleapis.com has no tls row, so it is not in the interception set and is tunnelled blind; the catalogue names no host for Gemini CLI at all"
+    "captured": true,
+    "attributed": true,
+    "prompt": true
   }
 }

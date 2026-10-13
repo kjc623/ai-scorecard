@@ -9,6 +9,7 @@ package policy
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"path"
@@ -470,6 +471,45 @@ func (b *Bundle) AppByDomain(host string) []string {
 		return nil
 	}
 	return b.appsWith("", SignalInferenceDomain, func(v string) bool { return hostMatches(h, v) })
+}
+
+// AppForHost returns the app a request to host belongs to when nothing about its sender names one:
+// of the apps the catalog knows by their inference domains alone, the one whose domain covers host,
+// an exact host before a domain and a longer domain before a shorter one, the catalog's order
+// breaking a tie. An app with any other signal is a program, which can share a domain with a
+// service (ChatGPT's desktop app and chatgpt.com), so a host alone never names it. The browser
+// extension and the console name a host by the same rule.
+func (b *Bundle) AppForHost(host string) (string, bool) {
+	h := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	if b == nil || h == "" {
+		return "", false
+	}
+	best, bestRank := "", -1
+	for _, a := range b.Catalog {
+		if len(a.Signals) == 0 || slices.ContainsFunc(a.Signals, func(s CatalogSignal) bool { return s.Kind != SignalInferenceDomain }) {
+			continue
+		}
+		for _, s := range a.Signals {
+			if rank := domainRank(h, s.Value); rank > bestRank {
+				best, bestRank = a.AppKey, rank
+			}
+		}
+	}
+	return best, bestRank >= 0
+}
+
+// domainRank is how closely an inference domain covers host: -1 when it does not, higher when
+// closer, an exact host highest.
+func domainRank(host, pattern string) int {
+	p := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(pattern)), "*")
+	switch {
+	case p == "" || !hostMatches(host, p):
+		return -1
+	case strings.HasPrefix(p, "."):
+		return len(p)
+	default:
+		return math.MaxInt
+	}
 }
 
 // AppByExtensionID returns the apps with the IDE extension id, compared case-insensitively as the

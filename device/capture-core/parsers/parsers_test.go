@@ -34,6 +34,8 @@ func TestGenericPromptAndInput(t *testing.T) {
 		`{"prompt":"p","messages":[{"role":"user","content":"m"}]}`: "p",
 		`{"input":"i"}`: "i",
 		`{"input":[{"type":"input_text","text":"a"},{"type":"input_text","text":"b"}]}`: "a b",
+		// Bedrock's Converse: a content block holds its text with no type.
+		`{"messages":[{"role":"user","content":[{"text":"a"},{"image":{"format":"png"}},{"text":"b"}]}]}`: "a b",
 	}
 	for body, want := range cases {
 		res, err := Generic{}.Parse([]byte(body), "application/json")

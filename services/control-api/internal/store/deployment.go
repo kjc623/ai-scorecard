@@ -107,11 +107,20 @@ SELECT status, ingest_enabled, ceiling_mode, coalesce(collection_mode, ceiling_m
   FROM ops.tenant
  WHERE tenant_id = $1::uuid`
 
-	// SQLInterceptionHosts is the tool catalogue's TLS hosts: what the device may decrypt.
+	// SQLInterceptionHosts is what the device may decrypt: the tool catalogue's TLS hosts, and the
+	// inference domains of the catalog's inference APIs, whose requests are prompts wherever they
+	// come from. A domain with a leading dot covers every host under it.
 	SQLInterceptionHosts = `
-SELECT DISTINCT lower(evidence->>'host') AS host
-  FROM ref.tool_catalogue
- WHERE signal_kind = 'tls' AND coalesce(evidence->>'host', '') <> ''
+SELECT host FROM (
+  SELECT lower(evidence->>'host') AS host
+    FROM ref.tool_catalogue
+   WHERE signal_kind = 'tls' AND coalesce(evidence->>'host', '') <> ''
+  UNION
+  SELECT lower(btrim(s.value))
+    FROM ref.app_signal s
+    JOIN ref.app a ON a.app_key = s.app_key
+   WHERE a.category = 'inference_api' AND s.kind = 'inference_domain'
+) h
  ORDER BY host`
 
 	// SQLScopeOverrides is the tenant's narrower per-tool modes, as tool key -> mode.

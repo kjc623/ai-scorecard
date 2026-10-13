@@ -242,7 +242,8 @@ func replay(ctx context.Context, b *policy.Bundle, fx fixture) (replayed, error)
 
 // replayTLS takes the TLS proxy's decisions for a CONNECT to the host from the process: a host
 // outside the interception set, and an app whose native collector is on, are tunnelled blind;
-// anything else is decrypted and its body extracted by the destination's parser.
+// anything else is decrypted, named as the proxy names it, and its body extracted by the
+// destination's parser.
 func replayTLS(b *policy.Bundle, in *tlsInput) (replayed, error) {
 	body, err := in.bytes()
 	if err != nil {
@@ -255,7 +256,8 @@ func replayTLS(b *policy.Bundle, in *tlsInput) (replayed, error) {
 		return replayed{gate: fmt.Sprintf("%s is %s, whose native collector is on, so it is tunnelled blind", in.Process, app)}, nil
 	}
 	text, _, xerr := targets.Registry().For(in.Host, in.Path).Extract(body, in.MediaType)
-	return replayed{records: []record{{tlsproxy.ToolFingerprint(in.Host, in.Path), body, text, xerr}}}, nil
+	tool := tlsproxy.Tool(b, func(base string) (string, bool) { return appByExe(b, base) }, in.Process, in.Host, in.Path)
+	return replayed{records: []record{{tool, body, text, xerr}}}, nil
 }
 
 // replayLoopback takes the loopback broker's view of a request to a local port: only a port the

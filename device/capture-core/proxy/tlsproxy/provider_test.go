@@ -978,6 +978,57 @@ func TestTLSNativelyCoveredToolIsBlindTunnelled(t *testing.T) {
 	if got := tunnelled() - before; got != 1 {
 		t.Fatalf("blind_tunnelled rose by %d, want 1", got)
 	}
+
+	// The process that sent a request names it when the catalog knows its executable.
+	obs := pipe.observations()
+	if got, want := obs[0].ToolFingerprint, ToolFingerprint("127.0.0.1", "/v1/chat/completions"); got != want {
+		t.Errorf("python.exe's request is named %q, want the destination's %q", got, want)
+	}
+	if got := obs[1].ToolFingerprint; got != "app:claude_code" {
+		t.Errorf("claude.exe's request is named %q, want app:claude_code", got)
+	}
+}
+
+// A request is named by the app that sent it, unless that app is an editor; else by the app the
+// catalog knows by the host alone; else by its host and path.
+func TestToolNamesTheSenderThenTheHost(t *testing.T) {
+	bundle := &policy.Bundle{Catalog: []policy.CatalogApp{
+		{AppKey: "anthropic_api", Category: "inference_api", Signals: []policy.CatalogSignal{
+			{Platform: "any", Kind: policy.SignalInferenceDomain, Value: "api.anthropic.com"}}},
+		{AppKey: "claude_code", Category: "coding_agent", Signals: []policy.CatalogSignal{
+			{Platform: "any", Kind: policy.SignalInferenceDomain, Value: "api.anthropic.com"},
+			{Platform: "windows", Kind: policy.SignalWindowsExe, Value: "claude.exe"}}},
+		{AppKey: "azure_ai_foundry", Category: "inference_api", Signals: []policy.CatalogSignal{
+			{Platform: "any", Kind: policy.SignalInferenceDomain, Value: ".openai.azure.com"}}},
+		{AppKey: "vscode", Category: "ide", Signals: []policy.CatalogSignal{
+			{Platform: "windows", Kind: policy.SignalWindowsExe, Value: "Code.exe"}}},
+	}}
+	appByExe := func(base string) (string, bool) {
+		keys := bundle.AppByExe("windows", base)
+		if len(keys) == 0 {
+			return "", false
+		}
+		return keys[0], true
+	}
+	for _, tc := range []struct {
+		name, process, host, path, want string
+	}{
+		{"the sender's executable", `C:\Users\a\.local\bin\claude.exe`, "api.anthropic.com", "/v1/messages", "app:claude_code"},
+		{"the sender's executable on any host", "claude.exe", "api.githubcopilot.com", "/chat/completions", "app:claude_code"},
+		{"a script, by its host", "python.exe", "api.anthropic.com", "/v1/messages", "app:anthropic_api"},
+		{"a host under a domain", "python.exe", "contoso.openai.azure.com", "/openai/deployments/d/chat/completions", "app:azure_ai_foundry"},
+		{"a host with its port", "python.exe", "contoso.openai.azure.com:443", "/x", "app:azure_ai_foundry"},
+		{"an editor, by its host", "Code.exe", "api.anthropic.com", "/v1/messages", "app:anthropic_api"},
+		{"an editor to an unnamed host", "Code.exe", "api.githubcopilot.com", "/chat/completions", ToolFingerprint("api.githubcopilot.com", "/chat/completions")},
+		{"an unnamed host", "unknown", "api2.cursor.sh", "/aiserver.v1.ChatService/StreamChat", ToolFingerprint("api2.cursor.sh", "/aiserver.v1.ChatService/StreamChat")},
+	} {
+		if got := Tool(bundle, appByExe, tc.process, tc.host, tc.path); got != tc.want {
+			t.Errorf("%s: Tool = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if got, want := Tool(nil, nil, "claude.exe", "api.anthropic.com", "/v1/messages"), ToolFingerprint("api.anthropic.com", "/v1/messages"); got != want {
+		t.Errorf("with no bundle: Tool = %q, want %q", got, want)
+	}
 }
 
 // fakeProcessTable stands in for the operating system's connection owners: each client connection,

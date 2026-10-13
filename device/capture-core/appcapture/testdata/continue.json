@@ -18,6 +18,6 @@
     "captured": true,
     "attributed": false,
     "prompt": true,
-    "why": "Continue sends to the provider its config names, and the request is named by that provider's tls row (here tls_f32477ff734d70d1, openai_api); Continue runs in Code.exe and has no host of its own, so nothing names it"
+    "why": "Continue runs in Code.exe, an editor's process, which names no request, so the request is named by the host its config sends to (here api.openai.com, app:openai_api); Continue has no host of its own"
   }
 }

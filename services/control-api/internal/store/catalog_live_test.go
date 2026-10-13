@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"reflect"
+	"slices"
 	"sort"
 	"testing"
 
@@ -11,8 +12,8 @@ import (
 )
 
 // TestAppCatalogAgainstPostgres reads the seeded catalog as sac_control: the policy read carries
-// every app of ref.app with its signals, apps by key and signals by platform, kind and value; the
-// Settings read names the categories those apps fall in.
+// every app of ref.app with its signals, apps by key and signals by platform, kind and value, and
+// the hosts the device may decrypt; the Settings read names the categories those apps fall in.
 func TestAppCatalogAgainstPostgres(t *testing.T) {
 	owner := pgtest.Open(t)
 	st := store.NewSQL(pgtest.OpenAs(t, "sac_control"))
@@ -66,6 +67,21 @@ func TestAppCatalogAgainstPostgres(t *testing.T) {
 			if a.Category != "ide" || !reflect.DeepEqual(a.Signals, want) {
 				t.Fatalf("vscode = %+v", a)
 			}
+		}
+	}
+
+	// The device decrypts the tls rows' hosts and the inference APIs' domains, and no other app's.
+	if !sort.StringsAreSorted(in.InterceptionHosts) {
+		t.Fatalf("interception hosts out of order: %v", in.InterceptionHosts)
+	}
+	for _, h := range []string{"api.githubcopilot.com", "cloudcode-pa.googleapis.com", "api.cohere.com", ".openai.azure.com", ".bedrock-runtime.us-east-1.amazonaws.com"} {
+		if !slices.Contains(in.InterceptionHosts, h) {
+			t.Errorf("interception hosts lack %s: %v", h, in.InterceptionHosts)
+		}
+	}
+	for _, h := range []string{"claude.ai", ".claude.ai", ".chatgpt.com", ".perplexity.ai"} {
+		if slices.Contains(in.InterceptionHosts, h) {
+			t.Errorf("interception hosts hold %s, a web app's domain", h)
 		}
 	}
 
