@@ -188,6 +188,6 @@ func confirmed(c rules.Candidate, text string) bool {
 // TestRulesCannotReachTheSystem pins the package's whole dependency set.
 func TestRulesCannotReachTheSystem(t *testing.T) {
 	importcheck.AssertClosed(t, ".",
-		"bytes", "encoding/json", "errors", "fmt", "io", "regexp", "strings", "time", "unicode/utf8",
+		"bytes", "embed", "encoding/json", "errors", "fmt", "io", "regexp", "strings", "time", "unicode/utf8",
 		"github.com/shadow-ai-capture/device/classifier-host/validators")
 }
