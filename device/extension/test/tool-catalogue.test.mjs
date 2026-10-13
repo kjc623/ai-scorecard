@@ -34,8 +34,37 @@ test('every web tool is named at each of its hosts, including one no row lists',
     ['Gemini (web)', 'https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate'],
     ['Perplexity (web)', 'https://www.perplexity.ai/rest/sse/perplexity_ask'],
     ['Perplexity (web)', 'https://perplexity.ai/rest/sse/perplexity_ask'],
+    ['Microsoft Copilot', 'https://copilot.microsoft.com/c/api/chat'],
+    ['Microsoft Copilot', 'https://www.copilot.microsoft.com/'],
+    ['Microsoft 365 Copilot', 'https://copilot.cloud.microsoft/chat'],
+    ['Microsoft 365 Copilot', 'https://m365.cloud.microsoft/chat'],
   ]) {
     assert.equal(named(url), name, url);
+  }
+});
+
+test('the Microsoft 365 Copilot socket host carries no name of its own: substrate.office.com is shared', () => {
+  // The chat turn on wss://substrate.office.com is attributed by the socket recipe, not by the host,
+  // because Office shares substrate.office.com across services. A plain request there stays unnamed,
+  // so nothing else on that host is mislabelled Copilot.
+  assert.equal(toolFingerprint(catalog, 'https://substrate.office.com/m365Copilot/Chathub'), 'host:substrate.office.com');
+  assert.equal(named('https://substrate.office.com/m365Copilot/Chathub'), null);
+});
+
+test('the Copilot endpoints decrypted at the proxy are named, GitHub and Microsoft kept apart', () => {
+  // tls rows are the proxy's view: ToolFingerprint(host, path) in device/capture-core/proxy/tlsproxy.
+  // copilot.microsoft.com is consumer Microsoft Copilot, not GitHub Copilot; the GitHub Business and
+  // Enterprise plan hosts are GitHub Copilot, named like the individual plan's host.
+  for (const [host, path, name, app_key] of [
+    ['copilot.microsoft.com', '/chat/completions', 'Microsoft Copilot', 'microsoft_copilot'],
+    ['api.githubcopilot.com', '/chat/completions', 'GitHub Copilot', 'github_copilot'],
+    ['api.business.githubcopilot.com', '/chat/completions', 'GitHub Copilot', 'github_copilot'],
+    ['api.enterprise.githubcopilot.com', '/chat/completions', 'GitHub Copilot', 'github_copilot'],
+  ]) {
+    const row = catalogue.get(tls(host, path));
+    assert.ok(row, `${host} has a tls row`);
+    assert.equal(row.display_name, name, host);
+    assert.equal(row.app_key, app_key, host);
   }
 });
 
@@ -71,6 +100,12 @@ test('every tf2 row is the fingerprint of the host its evidence names', () => {
     assert.equal(tf2(row.evidence.host), fingerprint, `${row.display_name} at ${row.evidence.host}`);
   }
 });
+
+/** "tls_" + first 8 bytes of sha256("tls|host|path"), the proxy's ToolFingerprint for a decrypted request. */
+function tls(host, path) {
+  const digest = createHash('sha256').update(`tls|${host.toLowerCase()}|${path.replace(/^\/+|\/+$/g, '')}`).digest('hex');
+  return `tls_${digest.slice(0, 16)}`;
+}
 
 /** "tf2:" + base32(sha256(canonical({v: 2, host}))): the fingerprint of a prompt stored by its host. */
 function tf2(host) {

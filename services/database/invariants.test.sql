@@ -3039,8 +3039,8 @@ DECLARE
   missing text;
 BEGIN
   SELECT count(*) INTO n FROM ref.app;
-  IF n <> 34 THEN
-    RAISE EXCEPTION 'FAIL T82 ref.app holds % apps, want the 34 seed apps', n;
+  IF n <> 36 THEN
+    RAISE EXCEPTION 'FAIL T82 ref.app holds % apps, want the 36 seed apps', n;
   END IF;
   SELECT string_agg(a.app_key, ', ') INTO missing
     FROM ref.app a

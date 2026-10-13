@@ -30,6 +30,7 @@ import {
 import { classifyWithResponse, CANDIDATE_FLOOR, predicateRequest } from './predicate.js';
 import { toolFingerprint } from './tool-fingerprint.js';
 import { knownSubmission } from './submission.js';
+import { socketSubmission } from './socket-submission.js';
 import { COOLDOWN_ERROR_CODE } from './native.js';
 
 /** Bounded: a service worker can be killed at any time, and an unanswered candidate must not accumulate. */
@@ -387,6 +388,70 @@ export function createPipeline({
   }
 
   /**
+   * One outgoing WebSocket frame the main-world hook read from a Copilot socket. A chat turn becomes
+   * one observation, named by the socket's app and carrying the typed prompt; any other frame (a
+   * handshake, a ping, a metrics or a stop frame) is recognised as not a turn and dropped.
+   *
+   * The frames are not observable to `webRequest`, so this is the socket's only prompt route. The
+   * send has already left the page by the time the frame arrives, so the turn is recorded, never
+   * enforced: a block or warn rule cannot cancel a frame that is already on the wire.
+   */
+  async function captureWebSocketFrame({ url, data, tabId = -1, frameId = undefined }) {
+    const sub = socketSubmission(url, data);
+    if (!sub) return { queued: false, skipped: true, observation: null };
+
+    counters.inc(COUNTER.OBSERVED);
+    const host = hostOf(url);
+    const tool = `app:${sub.app_key}`;
+    const bytes = new TextEncoder().encode(sub.prompt);
+    const gate = readBodyForMode(await resolveMode({ host, tool_fingerprint: tool }), { bytes });
+    const mode = gate.mode;
+
+    let contentDigest;
+    let contentBytes;
+    if (gate.bytes && modeReadsContent(mode)) {
+      contentDigest = await sha256Prefixed(adapter.crypto, gate.bytes);
+      contentBytes = gate.bytes;
+    }
+
+    // The frame is already sent, so the decision is a record, not an action: logged under the
+    // default rule. A rule that would warn or block a Copilot prompt belongs on a route that sees
+    // the request before it leaves (the proxy), not on a frame read after the fact.
+    const decision = { rule_id: DEFAULT_RULE_ID, action: DECISION.LOGGED, decided_locally: true };
+
+    const detail = { requestId: `ws-${nextClientId()}`, tabId, frameId, url };
+    const observation = decorate(
+      observationBody({
+        client_id: nextClientId(),
+        route: ROUTE.EXT_PAGE_CONTEXT,
+        tool_fingerprint: tool,
+        occurred_at: new Date(clock()).toISOString(),
+        monotonic_offset_ms: Math.max(0, Math.round(monotonic())),
+        size_bytes: bytes.byteLength,
+        has_content: Boolean(contentBytes),
+        content: contentBytes,
+        content_digest: contentDigest,
+        decision,
+      }),
+      {
+        mode,
+        gate,
+        shape: { structure: 'websocket_frame', signals: [] },
+        host,
+        unread_reason: gate.unread_reason,
+        decision: { reason: 'websocket_frame' },
+        detail,
+      },
+    );
+
+    const emitted =
+      attachments && modeReadsContent(mode) && Number.isInteger(tabId) && tabId >= 0
+        ? attachThenEmit(observation, tabId, frameId)
+        : Promise.resolve(emit(observation));
+    return { queued: true, skipped: false, observation, mode, emitted };
+  }
+
+  /**
    * A response for a request held as a candidate. The response contract is what separates a draft
    * save from a chat call on the same origin, and it exists only after the request has gone.
    *
@@ -626,6 +691,7 @@ export function createPipeline({
   return {
     captureWithBody,
     captureMetadata,
+    captureWebSocketFrame,
     onResponse,
     drainQueue,
   };

@@ -1,0 +1,23 @@
+{
+  "tool": "Microsoft Copilot (web)",
+  "app_key": "microsoft_copilot",
+  "source": {
+    "kind": "documented",
+    "from": "the consumer Copilot chat socket wss://copilot.microsoft.com/c/api/chat: a turn is one JSON frame { event: 'send', content: [{ type: 'text', text }] }, preceded by option frames that are not a turn",
+    "checked": "2026-10-13"
+  },
+  "typed": "draft a reply to the vendor about the renewal",
+  "socket": {
+    "url": "wss://copilot.microsoft.com/c/api/chat?source=web",
+    "frames": [
+      { "event": "setOptions", "optionsSets": ["copilot"], "supportedCards": ["image", "video"] },
+      { "event": "send", "conversationId": "7f1c0b2a-0000-4000-8000-000000000001", "mode": "chat", "content": [{ "type": "text", "text": "draft a reply to the vendor about the renewal" }] }
+    ]
+  },
+  "expect": {
+    "events": 1,
+    "observed": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

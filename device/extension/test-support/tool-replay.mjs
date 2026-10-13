@@ -25,9 +25,11 @@ import { toArrayBuffer } from './fake-chrome.mjs';
 import { TYPE } from '../src/messages.js';
 import { predicateRequest } from '../src/predicate.js';
 import { normaliseBody } from '../src/request-body.js';
+import { SOCKET_SUBMISSIONS } from '../src/socket-submission.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const FIXTURES = join(HERE, '..', 'test', 'tools');
+export const SOCKET_FIXTURES = join(HERE, '..', 'test', 'sockets');
 const SCHEMA = join(HERE, '..', '..', '..', 'services', 'database', 'schema.sql');
 
 /** Every fixture, by file name. */
@@ -78,13 +80,27 @@ export function toolCatalogue(source = schemaSource()) {
 }
 
 /**
- * The web tools: the chat assistants known by their inference domains alone, the apps a person uses
- * in the browser itself, app_key -> display name.
+ * The web tools whose prompt the extension reads from the request body: the chat assistants known
+ * by their inference domains alone, minus those whose prompt rides a WebSocket instead (the
+ * Copilot sockets, covered by socketTools and the socket replay). app_key -> display name.
  */
 export function webTools(catalog = bundleCatalog(), catalogue = toolCatalogue()) {
   const out = new Map();
   for (const app of catalog) {
+    if (Object.hasOwn(SOCKET_SUBMISSIONS, app.app_key)) continue;
     if (app.category === 'chat_assistant' && app.signals.length && app.signals.every((s) => s.kind === 'inference_domain')) out.set(app.app_key, catalogue.get(`app:${app.app_key}`).display_name);
+  }
+  return out;
+}
+
+/**
+ * The web tools whose prompt the extension reads from a WebSocket frame: the catalogue apps a
+ * socket recipe recognises. app_key -> display name.
+ */
+export function socketTools(catalog = bundleCatalog(), catalogue = toolCatalogue()) {
+  const out = new Map();
+  for (const app of catalog) {
+    if (Object.hasOwn(SOCKET_SUBMISSIONS, app.app_key)) out.set(app.app_key, catalogue.get(`app:${app.app_key}`).display_name);
   }
   return out;
 }
@@ -159,6 +175,46 @@ export async function replay(fixture, { catalogue = toolCatalogue(), catalog = b
     events,
     score: shape.score,
     signals: shape.signals.map((s) => s.id),
+  };
+}
+
+/**
+ * Replay one socket fixture: hand its frames to the worker the way the main-world hook does (a
+ * `capture_ws_frame` message per frame), and report what reached capture-core, in the same shape
+ * `replay()` returns for a request fixture.
+ */
+export async function replaySocket(fixture, { catalogue = toolCatalogue(), catalog = bundleCatalog() } = {}) {
+  const h = createHarness();
+  await h.app.start();
+  h.app.applyPolicy({ policy_version: 'replay', bundle: { version: 'replay', tenant_default_mode: 'm3', catalog } });
+  await settle();
+  h.core.received.length = 0;
+
+  // The worker's own runtime.onMessage listener, registered before the content script's.
+  const worker = h.fake.state.messageHandlers[0];
+  for (const frame of fixture.socket.frames) {
+    const data = typeof frame === 'string' ? frame : JSON.stringify(frame);
+    await worker({ type: 'capture_ws_frame', url: fixture.socket.url, data }, { tab: { id: 1 } }, () => {});
+    await settle();
+  }
+
+  const events = h.core.received
+    .filter((m) => m.type === TYPE.OBSERVATION)
+    .map((m) => {
+      const entry = catalogue.get(m.body.tool_fingerprint);
+      return {
+        route: m.body.route,
+        fingerprint: m.body.tool_fingerprint,
+        named: entry ? entry.display_name : null,
+        app_key: entry ? entry.app_key : null,
+        content: m.body.content ? Buffer.from(m.body.content, 'base64').toString('utf8') : null,
+      };
+    });
+  return {
+    observed: events.length > 0,
+    attributed: events.length > 0 && events.every((e) => e.app_key === fixture.app_key),
+    prompt: events.length > 0 && events.every((e) => e.content === fixture.typed),
+    events,
   };
 }
 
