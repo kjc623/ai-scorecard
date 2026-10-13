@@ -734,10 +734,10 @@ func (s *service) proxyConfig(b *policy.Bundle, ca *tlsproxy.CA, trustRoot core.
 		BodyCap:    bodyCapFrom(b),
 		CA:         ca,
 		TrustRoot:  trustRoot,
-		AppByExe:   s.appByExe,
 	}
 	if owner := platform.connOwner; owner != nil {
 		cfg.Process = func(conn net.Conn) string { return clientProcessName(owner, conn) }
+		cfg.App = func(conn net.Conn) (string, bool) { return s.clientApp(owner, conn) }
 		cfg.Person = func(conn net.Conn) (core.Person, error) { return s.clientPerson(owner, conn) }
 		cfg.Session = func(conn net.Conn) (uint32, error) {
 			p, err := owner(conn)

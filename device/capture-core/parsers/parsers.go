@@ -24,6 +24,10 @@ var ErrUnknownShape = errors.New("parsers: the body is in no shape this parser k
 // may still name the files the body carries.
 var ErrNoText = errors.New("parsers: no user-authored segment identifiable in this body")
 
+// ErrNotPrompt is returned for a request its target sends on a prompt's path for something else,
+// such as another action of the same method. The proxy carries it and records nothing.
+var ErrNotPrompt = errors.New("parsers: the request is not a prompt")
+
 // Result is what a parser read from one request body. Requests only: a response is never parsed.
 type Result struct {
 	Text        string
@@ -44,6 +48,12 @@ type Parser interface {
 	// clients display: the HTTP status, the Content-Type and the body. The body carries the
 	// message, followed by link when there is one.
 	BlockResponse(message, link string) (status int, contentType string, body []byte)
+}
+
+// HostOwner is a parser whose target sends prompts to its hosts on no path but the ones it
+// matches, so a request to one of those hosts that no parser matches is no prompt.
+type HostOwner interface {
+	OwnsHost(host string) bool
 }
 
 // BlockText is the text a block response shows: the rule's message, then its link.
@@ -85,6 +95,34 @@ func (r *Registry) Lookup(host, path string) Parser {
 		}
 	}
 	return r.fallback
+}
+
+// MayCarryPrompt reports whether a request to host and path can carry a prompt: false when a
+// parser owns the host and none matches the path.
+func (r *Registry) MayCarryPrompt(host, path string) bool {
+	host = normaliseHost(host)
+	owned := false
+	for _, p := range r.parsers {
+		if p.Match(host, path) {
+			return true
+		}
+		if o, ok := p.(HostOwner); ok && o.OwnsHost(host) {
+			owned = true
+		}
+	}
+	return !owned
+}
+
+// NotPrompt reports whether the parser of a request to host and path reads body as no prompt. Only
+// a parser that owns its host, and so knows each request its target sends there, says so; one that
+// panics has not.
+func (r *Registry) NotPrompt(host, path string, body []byte, mediaType string) bool {
+	p := r.Lookup(host, path)
+	if _, owner := p.(HostOwner); !owner {
+		return false
+	}
+	_, panicked, err := parseIsolated(p, body, mediaType)
+	return !panicked && errors.Is(err, ErrNotPrompt)
 }
 
 // For returns the extraction of one request to host and path, the form in which a route hands

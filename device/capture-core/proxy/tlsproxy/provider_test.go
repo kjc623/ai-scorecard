@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -903,7 +904,6 @@ func TestTLSNativelyCoveredToolIsBlindTunnelled(t *testing.T) {
 		process = name
 		mu.Unlock()
 	}
-	var looked []string
 	bundle := bundleIntercepting(upPort)
 	bundle.Endpoint = policy.EndpointPolicy{
 		OTel:  policy.EndpointOTel{Enabled: true, HTTPListen: "127.0.0.1:47318", GRPCListen: "127.0.0.1:47317"},
@@ -925,11 +925,10 @@ func TestTLSNativelyCoveredToolIsBlindTunnelled(t *testing.T) {
 			defer mu.Unlock()
 			return process
 		},
-		AppByExe: func(base string) (string, bool) {
+		App: func(net.Conn) (string, bool) {
 			mu.Lock()
-			looked = append(looked, base)
-			mu.Unlock()
-			if base == "claude.exe" {
+			defer mu.Unlock()
+			if strings.EqualFold(process, "claude.exe") {
 				return "claude_code", true
 			}
 			return "", false
@@ -953,11 +952,6 @@ func TestTLSNativelyCoveredToolIsBlindTunnelled(t *testing.T) {
 	if len(pipe.observations()) != 0 {
 		t.Fatal("a natively covered tool's request was decrypted and observed")
 	}
-	mu.Lock()
-	if len(looked) == 0 || looked[len(looked)-1] != "claude.exe" {
-		t.Fatalf("looked up %v, want the lower-case image name", looked)
-	}
-	mu.Unlock()
 
 	// Another process to the same destination is decrypted.
 	setProcess("python.exe")
@@ -979,7 +973,7 @@ func TestTLSNativelyCoveredToolIsBlindTunnelled(t *testing.T) {
 		t.Fatalf("blind_tunnelled rose by %d, want 1", got)
 	}
 
-	// The process that sent a request names it when the catalog knows its executable.
+	// The app of the process that sent a request names it.
 	obs := pipe.observations()
 	if got, want := obs[0].ToolFingerprint, ToolFingerprint("127.0.0.1", "/v1/chat/completions"); got != want {
 		t.Errorf("python.exe's request is named %q, want the destination's %q", got, want)
@@ -1003,30 +997,23 @@ func TestToolNamesTheSenderThenTheHost(t *testing.T) {
 		{AppKey: "vscode", Category: "ide", Signals: []policy.CatalogSignal{
 			{Platform: "windows", Kind: policy.SignalWindowsExe, Value: "Code.exe"}}},
 	}}
-	appByExe := func(base string) (string, bool) {
-		keys := bundle.AppByExe("windows", base)
-		if len(keys) == 0 {
-			return "", false
-		}
-		return keys[0], true
-	}
 	for _, tc := range []struct {
-		name, process, host, path, want string
+		name, sender, host, path, want string
 	}{
-		{"the sender's executable", `C:\Users\a\.local\bin\claude.exe`, "api.anthropic.com", "/v1/messages", "app:claude_code"},
-		{"the sender's executable on any host", "claude.exe", "api.githubcopilot.com", "/chat/completions", "app:claude_code"},
-		{"a script, by its host", "python.exe", "api.anthropic.com", "/v1/messages", "app:anthropic_api"},
-		{"a host under a domain", "python.exe", "contoso.openai.azure.com", "/openai/deployments/d/chat/completions", "app:azure_ai_foundry"},
-		{"a host with its port", "python.exe", "contoso.openai.azure.com:443", "/x", "app:azure_ai_foundry"},
-		{"an editor, by its host", "Code.exe", "api.anthropic.com", "/v1/messages", "app:anthropic_api"},
-		{"an editor to an unnamed host", "Code.exe", "api.githubcopilot.com", "/chat/completions", ToolFingerprint("api.githubcopilot.com", "/chat/completions")},
-		{"an unnamed host", "unknown", "api2.cursor.sh", "/aiserver.v1.ChatService/StreamChat", ToolFingerprint("api2.cursor.sh", "/aiserver.v1.ChatService/StreamChat")},
+		{"the sender", "claude_code", "api.anthropic.com", "/v1/messages", "app:claude_code"},
+		{"the sender on any host", "claude_code", "api.githubcopilot.com", "/chat/completions", "app:claude_code"},
+		{"a script, by its host", "", "api.anthropic.com", "/v1/messages", "app:anthropic_api"},
+		{"a host under a domain", "", "contoso.openai.azure.com", "/openai/deployments/d/chat/completions", "app:azure_ai_foundry"},
+		{"a host with its port", "", "contoso.openai.azure.com:443", "/x", "app:azure_ai_foundry"},
+		{"an editor, by its host", "vscode", "api.anthropic.com", "/v1/messages", "app:anthropic_api"},
+		{"an editor to an unnamed host", "vscode", "api.githubcopilot.com", "/chat/completions", ToolFingerprint("api.githubcopilot.com", "/chat/completions")},
+		{"an unnamed host", "", "api2.cursor.sh", "/aiserver.v1.ChatService/StreamChat", ToolFingerprint("api2.cursor.sh", "/aiserver.v1.ChatService/StreamChat")},
 	} {
-		if got := Tool(bundle, appByExe, tc.process, tc.host, tc.path); got != tc.want {
+		if got := Tool(bundle, tc.sender, tc.host, tc.path); got != tc.want {
 			t.Errorf("%s: Tool = %q, want %q", tc.name, got, tc.want)
 		}
 	}
-	if got, want := Tool(nil, nil, "claude.exe", "api.anthropic.com", "/v1/messages"), ToolFingerprint("api.anthropic.com", "/v1/messages"); got != want {
+	if got, want := Tool(nil, "", "api.anthropic.com", "/v1/messages"), ToolFingerprint("api.anthropic.com", "/v1/messages"); got != want {
 		t.Errorf("with no bundle: Tool = %q, want %q", got, want)
 	}
 }
@@ -1424,5 +1411,134 @@ func TestTLSStopWithoutStartRemovesTheRoot(t *testing.T) {
 	}
 	if trustRoot.removes != 1 || len(trustRoot.installed) != 0 {
 		t.Fatalf("removes %d, installed %d bytes; want one removal and nothing installed", trustRoot.removes, len(trustRoot.installed))
+	}
+}
+
+// sendThroughTunnel writes one request for host and path with the body's bytes and returns the
+// response body.
+func sendThroughTunnel(t *testing.T, conn *tls.Conn, host, path, contentType string, body []byte) string {
+	t.Helper()
+	head := fmt.Sprintf("POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n", path, host, contentType, len(body))
+	if _, err := conn.Write(append([]byte(head), body...)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodPost})
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	got, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	return string(got)
+}
+
+// A response that keeps streaming is carried whole however long it takes; one that stalls for four
+// dial timeouts is cut.
+func TestTLSStreamsAResponseForAsLongAsItFlows(t *testing.T) {
+	const dial = 50 * time.Millisecond // so a stall is cut after 200ms
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gap := 100 * time.Millisecond
+		if r.URL.Path == "/stall" {
+			gap = 600 * time.Millisecond
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for i := range 6 {
+			fmt.Fprintf(w, "data: %d\n\n", i)
+			w.(http.Flusher).Flush()
+			select {
+			case <-time.After(gap):
+			case <-r.Context().Done():
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
+	target := fmt.Sprintf("127.0.0.1:%d", upPort)
+	p := newProviderForTest(t, Config{
+		Listen:        "127.0.0.1:0",
+		Bundles:       func() *policy.Bundle { return bundleIntercepting(upPort) },
+		Pipeline:      &fakePipeline{mode: protocol.ModeM1},
+		UpstreamRoots: upstreamPool(upstream), CanaryHost: "127.0.0.1", CanaryPort: upPort,
+		DialTimeout: dial,
+	})
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	conn, _ := dialThroughProxy(t, p.ListenAddr(), target, &tls.Config{ServerName: "127.0.0.1", RootCAs: p.CA().Pool()})
+	start := time.Now()
+	got := sendThroughTunnel(t, conn, "127.0.0.1", "/flow", "application/json", []byte(`{"messages":[{"role":"user","content":"hi"}]}`))
+	conn.Close()
+	if !strings.Contains(got, "data: 5") || time.Since(start) < 4*dial {
+		t.Fatalf("after %s the stream read %q, want all six events over more than %s", time.Since(start), got, 4*dial)
+	}
+
+	conn, _ = dialThroughProxy(t, p.ListenAddr(), target, &tls.Config{ServerName: "127.0.0.1", RootCAs: p.CA().Pool()})
+	head := fmt.Sprintf("POST /stall HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}")
+	if _, err := conn.Write([]byte(head)); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	start = time.Now()
+	all, _ := io.ReadAll(conn)
+	conn.Close()
+	if strings.Contains(string(all), "data: 5") || time.Since(start) > time.Second {
+		t.Fatalf("after %s a stream that stalled past the idle deadline read %q, want it cut", time.Since(start), all)
+	}
+}
+
+// Of claude.ai's requests the proxy records its prompts alone: another path on the host, and another
+// action of the prompt's method, are carried and not recorded.
+func TestTLSRecordsOnlyAnOwnedHostsPrompts(t *testing.T) {
+	var forwarded atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwarded.Add(1)
+		_, _ = w.Write([]byte(`ok`))
+	}))
+	defer upstream.Close()
+	upPort := upstream.Listener.Addr().(*net.TCPAddr).Port
+	target := fmt.Sprintf("127.0.0.1:%d", upPort)
+	pipe := &fakePipeline{mode: protocol.ModeM1, extract: true}
+	p := newProviderForTest(t, Config{
+		Listen:        "127.0.0.1:0",
+		Bundles:       func() *policy.Bundle { return bundleIntercepting(upPort) },
+		Pipeline:      pipe,
+		UpstreamRoots: upstreamPool(upstream), CanaryHost: "127.0.0.1", CanaryPort: upPort,
+	})
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	rpc := "/claudeai-rpc/anthropic.bard.api.v1alpha.ConversationService/PerformAction"
+	for _, req := range []struct {
+		path, contentType string
+		body              []byte
+	}{
+		{"/api/v2/rum", "text/plain", []byte(`{"events":[]}`)},
+		{rpc, "application/proto", []byte{0x0a, 0x01, 'x', 0x7a, 0x01, 'y'}}, // another action
+		{rpc, "application/proto", []byte{0x12, 0x04, 0x1a, 0x02, 'h', 'i'}}, // a message, "hi"
+	} {
+		conn, _ := dialThroughProxy(t, p.ListenAddr(), target, &tls.Config{ServerName: "127.0.0.1", RootCAs: p.CA().Pool()})
+		if got := sendThroughTunnel(t, conn, "claude.ai", req.path, req.contentType, req.body); got != "ok" {
+			t.Fatalf("%s: response %q", req.path, got)
+		}
+		conn.Close()
+	}
+	if got := forwarded.Load(); got != 3 {
+		t.Fatalf("forwarded %d requests, want all 3", got)
+	}
+	waitFor(t, 2*time.Second, "the prompt's observation", func() bool { return len(pipe.observations()) == 1 })
+	time.Sleep(50 * time.Millisecond)
+	obs := pipe.observations()
+	if len(obs) != 1 {
+		t.Fatalf("%d observations, want the prompt's alone", len(obs))
+	}
+	if text, _, err := obs[0].Extract.Extract([]byte{0x12, 0x04, 0x1a, 0x02, 'h', 'i'}, obs[0].MediaType); err != nil || text != "hi" {
+		t.Fatalf("the prompt reads %q, %v", text, err)
+	}
+	if got := p.Counters().Cumulative()[protocol.CounterSkippedNotGenerative]; got != 2 {
+		t.Fatalf("skipped_not_generative = %d, want 2", got)
 	}
 }

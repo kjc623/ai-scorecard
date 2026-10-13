@@ -410,16 +410,19 @@ func (s *Server) handlePAC(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(Render(spec))
 }
 
-// interceptHosts is the bundle's interception scope: tenant hosts then seed hosts.
+// interceptHosts is the hosts the PAC sends to proxy.tls: the bundle's interception scope (tenant
+// hosts then seed hosts), then the desktop apps' own hosts, which the proxy decrypts for the app
+// they belong to and carries as they are for every other process.
 func (s *Server) interceptHosts() []string {
 	b := s.cfg.Bundles()
 	if b == nil {
 		return nil
 	}
-	out := make([]string, 0, len(b.Interception.TenantHosts)+len(b.Interception.SeedHosts))
+	desktop := b.DesktopAppHosts()
+	out := make([]string, 0, len(b.Interception.TenantHosts)+len(b.Interception.SeedHosts)+len(desktop))
 	out = append(out, b.Interception.TenantHosts...)
 	out = append(out, b.Interception.SeedHosts...)
-	return out
+	return append(out, desktop...)
 }
 
 // loopbackListen rewrites a host:port to bind on 127.0.0.1 with the same port, so the PAC is never
