@@ -3,7 +3,7 @@
   "name": "Shadow AI Capture",
   "version": "1",
   "description": "Observe generative-AI submissions and report matched observations to capture-core. Policy-installed; requests are never changed.",
-  "minimum_chrome_version": "110",
+  "minimum_chrome_version": "111",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2Flbjwg0s8yZO+lXkQvAL2QL4mhGTK2aLAOkQb7lM2GCUpZuy5exdPcVwU13lv4fOHqfal9dYKlGeyovdmHWUVOLNIs1IQW/ckQiTdQCoiwOVwNpYOgwXKWMZwP1jDAsUTIN4K83BxfmQzOv4BROHos8k9Mh1IxKPrO7KPyguJy47W40D78Z/bIoa5ABGO2H5BKeLfihFLdPX+SIfJymrlFu8DSXC+3/kSswpg2GnRWOTN5CyTmsr0hLcAiXS+JmKp8UCU4y9/ZFI5naWR1ksa7ZKqNCwPx6NUxfUI8pYCCGHSHd+eO/AJgMDmV2+DY2nht67XV7MM7Z5BPsHf+iiQIDAQAB",
   "background": {
     "service_worker": "background/service-worker.js",
@@ -29,18 +29,27 @@
       ],
       "run_at": "document_start",
       "all_frames": true
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content/ws-hook.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": true,
+      "world": "MAIN"
     }
   ],
   "web_accessible_resources": [
     {
       "resources": [
         "content/content-script.js",
-        "content/ws-hook.js",
         "src/adapter.js",
         "src/chrome-adapter.js",
         "src/codec.js",
         "src/messages.js",
-        "src/socket-submission.js",
         "src/attachments/files.js",
         "src/attachments/sender.js"
       ],

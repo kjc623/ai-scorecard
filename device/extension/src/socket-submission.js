@@ -13,7 +13,7 @@
  * stop frame), yields null and nothing is observed.
  */
 
-/** The hosts the main-world hook wraps `send` for. Kept in step with the recipes below. */
+/** The socket hosts the recipes below read. content/ws-hook.js posts frames for these; its test drives each one. */
 export const SOCKET_HOSTS = Object.freeze(['copilot.microsoft.com', 'substrate.office.com']);
 
 /** The SignalR record separator: one WebSocket message may carry several frames, each ending in it. */
@@ -69,12 +69,6 @@ export function socketSubmission(url, data) {
     }
   }
   return null;
-}
-
-/** Whether a socket to this host is one the main-world hook should wrap. */
-export function isCapturedSocketHost(host) {
-  const h = String(host || '').toLowerCase().replace(/\.$/, '');
-  return SOCKET_HOSTS.some((known) => h === known || h.endsWith(`.${known}`));
 }
 
 /** The classic consumer frame: the text parts of a `send` event's content array. */

@@ -20,30 +20,13 @@ export function createContentScriptAdapterForThisWorld() {
   return createContentScriptAdapter(globalThis);
 }
 
-export function bootstrapContentScript(adapter, { document = adapter.document, window = null, wsNonce = '' } = {}) {
+export function bootstrapContentScript(adapter, { document = adapter.document } = {}) {
   const registry = createFileRegistry({ document });
   const sender = createAttachmentSender({
     bridge: adapter.messages,
     crypto: adapter.crypto,
     newIds: () => adapter.randomUUIDs(1),
   });
-
-  // The main-world WebSocket hook (content/ws-hook.js) posts each outgoing Copilot socket frame
-  // here; relay it to the service worker, which owns the native channel and the mode gate. Only a
-  // message from this window carrying this load's nonce is relayed, so a frame the hook did not send
-  // is ignored. Nothing is read as content in this world.
-  if (window && typeof window.addEventListener === 'function') {
-    window.addEventListener('message', (event) => {
-      const msg = event && event.data;
-      if (event.source !== window || !msg || msg.source !== 'sac-ws' || msg.nonce !== wsNonce) return;
-      if (typeof msg.url !== 'string' || typeof msg.data !== 'string') return;
-      try {
-        void adapter.messages.sendMessage({ type: 'capture_ws_frame', url: msg.url, data: msg.data });
-      } catch {
-        /* the worker may be restarting; the next frame carries the same turn */
-      }
-    });
-  }
 
   // 1. Each file as the user hands it over. The listeners run in the capture phase, before the
   // page's own handlers can clear the input. `input` crosses shadow roots and `change` does not;
