@@ -24,9 +24,8 @@
     }
   },
   "expect": {
-    "captured": false,
-    "attributed": false,
-    "prompt": false,
-    "why": "the SDK sends to api.cohere.com/v2/chat, but the catalogue's tls row (tls_4fb4f5cb98d7a1c3) and inference_domain name the old host api.cohere.ai and /v1/chat, so api.cohere.com is not in the interception set and is tunnelled blind"
+    "captured": true,
+    "attributed": true,
+    "prompt": true
   }
 }

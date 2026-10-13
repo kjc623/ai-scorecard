@@ -16,8 +16,7 @@
   },
   "expect": {
     "captured": true,
-    "attributed": false,
-    "prompt": true,
-    "why": "the TLS fingerprint hashes the whole path, model and method included, so no request matches the catalogue's one Gemini API row, generativelanguage.googleapis.com/v1beta/models (tls_0320fa08a4f64851)"
+    "attributed": true,
+    "prompt": true
   }
 }

@@ -172,6 +172,55 @@ func TestCatalogLookups(t *testing.T) {
 	if nilBundle.AppByExe("windows", "Code.exe") != nil || nilBundle.AppsByPort(11434) != nil || nilBundle.Category("vscode") != "" {
 		t.Fatal("a nil bundle matched an app")
 	}
+	if _, ok := nilBundle.AppForHost("api.anthropic.com"); ok {
+		t.Fatal("a nil bundle named a host")
+	}
+}
+
+// A host is named by the app the catalog knows by its domains alone: an exact host before a domain,
+// a longer domain before a shorter one, the catalog's order breaking a tie.
+func TestCatalogAppForHost(t *testing.T) {
+	v, priv := newKeyPair(t, "policy-key-1")
+	section := `[
+  {"app_key": "chatgpt_desktop", "category": "chat_assistant", "signals": [
+    {"platform": "any", "kind": "inference_domain", "value": "chatgpt.com"},
+    {"platform": "windows", "kind": "windows_exe", "value": "ChatGPT.exe"}]},
+  {"app_key": "chatgpt_web", "category": "chat_assistant", "signals": [
+    {"platform": "any", "kind": "inference_domain", "value": ".chatgpt.com"}]},
+  {"app_key": "claude_web", "category": "chat_assistant", "signals": [
+    {"platform": "any", "kind": "inference_domain", "value": ".claude.ai"}]},
+  {"app_key": "first", "category": "inference_api", "signals": [
+    {"platform": "any", "kind": "inference_domain", "value": ".example.invalid"}]},
+  {"app_key": "longer", "category": "inference_api", "signals": [
+    {"platform": "any", "kind": "inference_domain", "value": ".api.example.invalid"}]},
+  {"app_key": "exact", "category": "inference_api", "signals": [
+    {"platform": "any", "kind": "inference_domain", "value": "eu.api.example.invalid"}]},
+  {"app_key": "second", "category": "inference_api", "signals": [
+    {"platform": "any", "kind": "inference_domain", "value": "*.example.invalid"}]},
+  {"app_key": "silent", "category": "ide", "signals": []}
+]`
+	b, err := v.Open(signWithMembers(t, priv, "100", map[string]string{"catalog": section}), nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	for host, want := range map[string]string{
+		"chatgpt.com":              "chatgpt_web",
+		"CHATGPT.com.":             "chatgpt_web",
+		"claude.ai":                "claude_web",
+		"a.claude.ai":              "claude_web",
+		"eu.api.example.invalid":   "exact",
+		"us.api.example.invalid":   "longer",
+		"api.example.invalid":      "longer",
+		"other.example.invalid":    "first",
+		"notclaude.ai":             "",
+		"api.example.invalid.test": "",
+		"":                         "",
+	} {
+		got, ok := b.AppForHost(host)
+		if got != want || ok != (want != "") {
+			t.Errorf("AppForHost(%q) = %q, %v; want %q", host, got, ok, want)
+		}
+	}
 }
 
 // Installed-app lookups: an uninstall name matches alone or as the leading words of the entry's

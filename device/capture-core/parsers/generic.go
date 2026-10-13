@@ -125,8 +125,9 @@ func (p contentPart) fileName() string {
 }
 
 // decodeContent accepts both the string form and the content-part array form, because both are
-// in the wild and both address the same authored text. It returns the names of the files the
-// parts attach whether or not they carry text.
+// in the wild and both address the same authored text. A part is text by its type or, with no
+// type, by the text it holds, as Amazon Bedrock's Converse content blocks are. It returns the names
+// of the files the parts attach whether or not they carry text.
 func decodeContent(raw json.RawMessage) (string, []dedup.Attachment, bool) {
 	if len(raw) == 0 {
 		return "", nil, false
@@ -142,7 +143,7 @@ func decodeContent(raw json.RawMessage) (string, []dedup.Attachment, bool) {
 	var out string
 	var files []dedup.Attachment
 	for _, p := range parts {
-		if p.Type == "text" || p.Type == "input_text" {
+		if p.Type == "text" || p.Type == "input_text" || (p.Type == "" && p.Text != "") {
 			if out != "" {
 				out += " "
 			}

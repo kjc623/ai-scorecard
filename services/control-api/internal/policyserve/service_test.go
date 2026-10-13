@@ -175,6 +175,29 @@ func TestServesASignedBundleComposedFromTheTenant(t *testing.T) {
 // TestComposeCarriesRequestedModeAndOverrides: the requested collection mode (which may be below the
 // ceiling) is the bundle's tenant_default_mode, and each narrower per-tool override rides in
 // tool_modes and the stored scope matrix, so the ceiling trigger sees it.
+// The canary is a host the device can probe, never a domain that covers several.
+func TestCanaryIsAHostNotADomain(t *testing.T) {
+	r := newRig(t, func(c *policyserve.Config) { c.PreferredCanary = "api.mistral.ai" })
+	r.store.SetCatalogueHosts(".bedrock-runtime.us-east-1.amazonaws.com", ".openai.azure.com", "api.openai.com", "chatgpt.com")
+	rec := r.get(t, "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body)
+	}
+	var resp protocol.PolicyResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := payloadOf(t, resp.SignedBundle)
+	ic := p["interception"].(map[string]any)
+	hosts, _ := json.Marshal(ic["seed_hosts"])
+	if string(hosts) != `[".bedrock-runtime.us-east-1.amazonaws.com",".openai.azure.com","api.openai.com","chatgpt.com"]` {
+		t.Fatalf("seed_hosts = %s", hosts)
+	}
+	if ic["proxy_canary"] != "api.openai.com:443" {
+		t.Fatalf("proxy_canary = %v, want the first host", ic["proxy_canary"])
+	}
+}
+
 func TestComposeCarriesRequestedModeAndOverrides(t *testing.T) {
 	r := newRig(t, nil)
 	r.store.SeedCollectionMode(tenantA, "m2")

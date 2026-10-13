@@ -88,12 +88,13 @@ type Config struct {
 
 	// Process names the image of the client process behind a connection (its path, or its base
 	// name), for the per-process exclusion of clients that pin certificates and of tools covered by a
-	// native collector. It is a seam because process attribution is platform-specific; "unknown"
-	// names a client that could not be attributed.
+	// native collector, and to name the app that sent a request. It is a seam because process
+	// attribution is platform-specific; "unknown" names a client that could not be attributed.
 	Process func(conn net.Conn) string
 
 	// AppByExe names the catalog app whose executable has this lower-case image base name. nil
-	// matches nothing, so no connection is excluded as a native collector's.
+	// matches nothing, so no connection is excluded as a native collector's and no request is named
+	// by its sender.
 	AppByExe func(base string) (appKey string, ok bool)
 
 	// Person names the owner of the process behind a connection, whom an intercepted request is
@@ -768,7 +769,7 @@ func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, pro
 		return
 	}
 
-	r := p.newRuling(req)
+	r := p.newRuling(req, process, bundle)
 
 	// The mode is applied before content is read.
 	var buf *bodyBuffer
@@ -896,12 +897,12 @@ type ruling struct {
 	decision   enforce.Decision
 }
 
-func (p *Provider) newRuling(req *http.Request) *ruling {
+func (p *Provider) newRuling(req *http.Request, process string, bundle *policy.Bundle) *ruling {
 	parser := targets.Registry().Lookup(req.Host, req.URL.Path)
 	_, generic := parser.(parsers.Generic)
 	return &ruling{
 		bundles:    p.bundle,
-		tool:       ToolFingerprint(req.Host, req.URL.Path),
+		tool:       Tool(bundle, p.cfg.AppByExe, process, req.Host, req.URL.Path),
 		parser:     parser,
 		extract:    targets.Registry().For(req.Host, req.URL.Path),
 		canEnforce: !generic && !p.killSwitchActive(),
@@ -1162,6 +1163,24 @@ func splitHostPort(hostport string) (string, int) {
 		port = 443
 	}
 	return host, port
+}
+
+// Tool names the tool behind a request that process sent to host and path. The catalog app whose
+// executable sent it names it, unless that app is an editor, whose process also carries its
+// extensions' requests; else the app the catalog knows by the inference domains alone that the host
+// belongs to; else the fingerprint of the host and path. appByExe is Config.AppByExe.
+func Tool(b *policy.Bundle, appByExe func(base string) (string, bool), process, host, path string) string {
+	if appByExe != nil {
+		if app, ok := appByExe(imageBase(process)); ok && b.Category(app) != "ide" {
+			return "app:" + app
+		}
+	}
+	if name, _ := splitHostPort(host); name != "" {
+		if app, ok := b.AppForHost(name); ok {
+			return "app:" + app
+		}
+	}
+	return ToolFingerprint(host, path)
 }
 
 // ToolFingerprint names the tool behind a request to host and path, as the catalogue's tls rows

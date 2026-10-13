@@ -20,6 +20,8 @@ func TestRegistryChoosesByHostAndPath(t *testing.T) {
 		{"api.openai.com", "/v1/responses", openai.Parser{}},
 		{"generativelanguage.googleapis.com", "/v1beta/models/gemini-flash-latest:streamGenerateContent", gemini.Parser{}},
 		{"generativelanguage.googleapis.com", "/upload/v1beta/files", gemini.Upload{}},
+		{"cloudcode-pa.googleapis.com", "/v1internal:streamGenerateContent", gemini.CodeAssist{}},
+		{"cloudcode-pa.googleapis.com", "/v1internal:loadCodeAssist", parsers.Generic{}},
 		// Claude Desktop's and ChatGPT Desktop's backends have no parser yet.
 		{"claude.ai", "/api/organizations/o/chat_conversations/c/completion", parsers.Generic{}},
 		{"chatgpt.com", "/backend-api/conversation", parsers.Generic{}},

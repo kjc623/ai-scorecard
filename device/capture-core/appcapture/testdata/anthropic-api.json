@@ -16,8 +16,7 @@
   },
   "expect": {
     "captured": true,
-    "attributed": false,
-    "prompt": true,
-    "why": "api.anthropic.com/v1/messages is catalogued only as Claude Code (tls_b6681b043244c43f, app_key claude_code), so a script calling the Messages API is named Claude Code"
+    "attributed": true,
+    "prompt": true
   }
 }

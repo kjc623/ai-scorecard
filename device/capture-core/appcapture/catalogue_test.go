@@ -21,8 +21,9 @@ type catalogue struct {
 	apps []policy.CatalogApp
 	// toolApp is each tool_catalogue fingerprint's app_key, with every app's own app:<key> row.
 	toolApp map[string]string
-	// tlsHosts is the distinct hosts of the tls rows, the bundle's interception seed.
-	tlsHosts []string
+	// interceptionHosts is the bundle's interception seed, as SQLInterceptionHosts selects it: the
+	// distinct hosts of the tls rows and the inference domains of the inference APIs.
+	interceptionHosts []string
 	// webApps is the chat assistants known by their inference domains alone, the apps a person uses
 	// in the browser itself, which the extension's replay covers.
 	webApps map[string]bool
@@ -73,8 +74,8 @@ func loadCatalogue(t *testing.T) catalogue {
 			if err := json.Unmarshal([]byte(m[3]), &ev); err != nil {
 				t.Fatalf("tool_catalogue row %s: %v", m[1], err)
 			}
-			if h := strings.ToLower(ev.Host); h != "" && !slices.Contains(c.tlsHosts, h) {
-				c.tlsHosts = append(c.tlsHosts, h)
+			if h := strings.ToLower(ev.Host); h != "" && !slices.Contains(c.interceptionHosts, h) {
+				c.interceptionHosts = append(c.interceptionHosts, h)
 			}
 		}
 	}
@@ -82,13 +83,17 @@ func loadCatalogue(t *testing.T) catalogue {
 		web := a.Category == "chat_assistant" && len(a.Signals) > 0
 		for _, sig := range a.Signals {
 			web = web && sig.Kind == policy.SignalInferenceDomain
+			h := strings.ToLower(strings.TrimSpace(sig.Value))
+			if a.Category == "inference_api" && sig.Kind == policy.SignalInferenceDomain && !slices.Contains(c.interceptionHosts, h) {
+				c.interceptionHosts = append(c.interceptionHosts, h)
+			}
 		}
 		c.webApps[a.AppKey] = web
 	}
-	if len(c.apps) == 0 || len(c.tlsHosts) == 0 {
+	if len(c.apps) == 0 || len(c.interceptionHosts) == 0 {
 		t.Fatal("schema.sql's catalogue seed did not parse")
 	}
-	slices.Sort(c.tlsHosts)
+	slices.Sort(c.interceptionHosts)
 	return c
 }
 
@@ -105,7 +110,7 @@ func (c catalogue) bundle(t *testing.T) *policy.Bundle {
 	b := &policy.Bundle{
 		Version:       "replay",
 		TenantDefault: protocol.ModeM3,
-		Interception:  policy.Interception{Enabled: true, SeedHosts: c.tlsHosts, Ports: []int{443}},
+		Interception:  policy.Interception{Enabled: true, SeedHosts: c.interceptionHosts, Ports: []int{443}},
 		Endpoint: policy.EndpointPolicy{
 			OTel:  policy.EndpointOTel{Enabled: true},
 			Hooks: policy.EndpointHooks{Enabled: true},

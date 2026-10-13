@@ -29,9 +29,8 @@
     }
   },
   "expect": {
-    "captured": false,
-    "attributed": false,
-    "prompt": false,
-    "why": "Amazon Bedrock has inference_domain signals and no tls row, and the interception set is the tls rows' hosts (SQLInterceptionHosts), so bedrock-runtime is tunnelled blind"
+    "captured": true,
+    "attributed": true,
+    "prompt": true
   }
 }

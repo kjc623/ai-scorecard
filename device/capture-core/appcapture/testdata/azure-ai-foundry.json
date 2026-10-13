@@ -15,9 +15,8 @@
     "body_file": "parsers/openai/testdata/documented/chat-string.json"
   },
   "expect": {
-    "captured": false,
-    "attributed": false,
-    "prompt": false,
-    "why": "Azure AI Foundry has inference_domain suffixes and no tls row, and the interception set is the tls rows' hosts (SQLInterceptionHosts), so *.openai.azure.com is tunnelled blind"
+    "captured": true,
+    "attributed": true,
+    "prompt": true
   }
 }

@@ -18,6 +18,6 @@
     "captured": false,
     "attributed": false,
     "prompt": false,
-    "why": "claude.ai is an inference_domain of Claude Desktop and Claude (web) with no tls row, so it is not in the interception set and is tunnelled blind; were it decrypted, the generic parser reads no text from a protobuf body and no catalogue row names the request"
+    "why": "claude.ai is not in the interception set (no tls row names it, and it is no inference API's domain), so it is tunnelled blind; were it decrypted, claude.exe is Claude Code's executable, so it would be tunnelled blind while Claude Code's native collector is on and named Claude Code otherwise, and the generic parser reads no text from a protobuf body"
   }
 }
