@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -83,13 +86,13 @@ func TestConnectAndPullAgainstPostgres(t *testing.T) {
 	}
 
 	// A Microsoft provider is read through the tenant's Entra connection.
-	if _, err := st.Connect(ctx, tenant, Microsoft365Copilot, "", nil, connect); !errors.Is(err, ErrNoEntra) {
+	if _, err := st.Connect(ctx, tenant, Microsoft365Copilot, "", nil, "", connect); !errors.Is(err, ErrNoEntra) {
 		t.Fatalf("Connect Copilot without Entra = %v", err)
 	}
-	if _, err := st.Connect(ctx, tenant, "no_such_provider", "x", []byte("k"), connect); !errors.Is(err, ErrNotFound) {
+	if _, err := st.Connect(ctx, tenant, "no_such_provider", "x", []byte("k"), "", connect); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Connect an unknown provider = %v", err)
 	}
-	id, err := st.Connect(ctx, tenant, ClaudeEnterprise, "org-1", []byte("sealed-1"), connect)
+	id, err := st.Connect(ctx, tenant, ClaudeEnterprise, "org-1", []byte("sealed-1"), "", connect)
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
@@ -193,7 +196,7 @@ func TestConnectAndPullAgainstPostgres(t *testing.T) {
 	}
 
 	// Reconnecting to the same account resumes; to another, starts over.
-	if _, err := st.Connect(ctx, tenant, ClaudeEnterprise, "org-1", []byte("sealed-2"), connect); err != nil {
+	if _, err := st.Connect(ctx, tenant, ClaudeEnterprise, "org-1", []byte("sealed-2"), "", connect); err != nil {
 		t.Fatal(err)
 	}
 	row()
@@ -201,7 +204,7 @@ func TestConnectAndPullAgainstPostgres(t *testing.T) {
 		t.Fatalf("a new key for the same account reset the cursor to %q", cursor)
 	}
 	var cur sql.NullString
-	if again, err := st.Connect(ctx, tenant, ClaudeEnterprise, "org-2", []byte("sealed-3"), connect); err != nil || again != id {
+	if again, err := st.Connect(ctx, tenant, ClaudeEnterprise, "org-2", []byte("sealed-3"), "", connect); err != nil || again != id {
 		t.Fatalf("Connect another account = %q %v", again, err)
 	}
 	if err := db.QueryRowContext(ctx, `SELECT cursor FROM ops.provider_connection WHERE tenant_id = $1::uuid AND connection_id = $2::uuid`,
@@ -283,5 +286,130 @@ func TestConnectAndPullAgainstPostgres(t *testing.T) {
 	}
 	if _, ok, err := st.Target(ctx, other, id); err != nil || ok {
 		t.Fatalf("another tenant reads the connection as a target: %v %v", ok, err)
+	}
+}
+
+// The intake against Postgres: a token resolves its connection's tenant before any is known, a
+// delivery is recorded under the connection and counted on it, and the token stops opening it when
+// it is replaced or the connection is disconnected.
+func TestIntakeAgainstPostgres(t *testing.T) {
+	db := pgtest.Open(t)
+	ctx := context.Background()
+	tenant := pgtest.UUID(t)
+	if _, err := db.ExecContext(ctx, `INSERT INTO ops.tenant
+	  (tenant_id, name, status, residency_region, ceiling_mode, collection_mode, content_search, device_identity)
+	  VALUES ($1::uuid, $2, 'active', 'eu-west', 'm1', 'm1', 'disabled', 'clear')`, tenant, "intake-live-"+tenant[:8]); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	t.Cleanup(func() {
+		for _, q := range []string{
+			`UPDATE ops.provider_connection SET status = 'disabled', intake_token_hash = NULL WHERE tenant_id = $1::uuid`,
+			`UPDATE ops.tenant SET status = 'closed', ingest_enabled = false, read_enabled = false,
+			        status_reason = 'intake live test', status_changed_by = 'test', status_changed_at = now()
+			  WHERE tenant_id = $1::uuid`,
+		} {
+			if _, err := db.ExecContext(context.Background(), q, tenant); err != nil {
+				t.Logf("cleanup %q: %v", q, err)
+			}
+		}
+	})
+
+	control := pgtest.OpenAs(t, "sac_control")
+	st := NewSQL(control)
+	connect := Audit{Actor: "admin@live.test", Action: "provider.connect", ObjectType: "provider_connection",
+		At: time.Now().UTC(), Detail: map[string]any{"provider": PerplexityEnterprise, "intake_token": "issued"}}
+	token, hash, err := NewIntakeToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := st.Connect(ctx, tenant, PerplexityEnterprise, "", nil, hash, connect)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	for _, c := range []struct{ provider, connection, hash, want string }{
+		{PerplexityEnterprise, id, hash, tenant},
+		{AmazonBedrock, id, hash, ""},
+		{PerplexityEnterprise, id, HashIntakeToken(token + "x"), ""},
+		{PerplexityEnterprise, pgtest.UUID(t), hash, ""},
+		{PerplexityEnterprise, "not-a-uuid", hash, ""},
+	} {
+		if got, err := st.IntakeTenant(ctx, c.provider, c.connection, c.hash); err != nil || got != c.want {
+			t.Errorf("IntakeTenant(%s, %s) = %q %v, want %q", c.provider, c.connection, got, err, c.want)
+		}
+	}
+	if open, err := st.IntakeOpen(ctx, tenant, id); err != nil || !open {
+		t.Fatalf("IntakeOpen = %v %v", open, err)
+	}
+	// The runner never pulls an intake.
+	if _, ok, err := st.Target(ctx, tenant, id); err != nil || ok {
+		t.Fatalf("an intake connection is a pull target: %v %v", ok, err)
+	}
+
+	in, err := NewIntake(map[string]IntakeSource{PerplexityEnterprise: {Transport: &Webhook{}, Decode: DecodePerplexityEvent}},
+		st, &Recorder{Store: st, Classifier: &fakeClassifier{}, Vault: &fakeVault{}}, fakeKeys{}, "https://app.live.test",
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	in.Register(mux)
+	deliver := func(bearer string) int {
+		event := `{"uuid":"` + id + `-q1","timestamp":"` + time.Now().UTC().Add(-time.Minute).Format(time.RFC3339) + `",
+		  "event_type":"query","user_email":"ada@contoso.example","metadata":{"query_str":"draft the Q3 board update"}}`
+		req := httptest.NewRequest(http.MethodPost, IntakePathPrefix+PerplexityEnterprise+"/"+id, strings.NewReader(event))
+		req.Header.Set("Authorization", "Bearer "+bearer)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := deliver(token); code != http.StatusNoContent {
+		t.Fatalf("delivery = %d", code)
+	}
+	if code := deliver(token); code != http.StatusNoContent {
+		t.Fatalf("the delivery sent again = %d", code)
+	}
+	var n int
+	var status, apps string
+	var read, added int64
+	if err := db.QueryRowContext(ctx, `SELECT count(*), string_agg(ops.tool_id(tool_fingerprint), ',') FROM ingest.submission
+	  WHERE tenant_id = $1::uuid AND connection_id = $2::uuid AND observed_routes = ARRAY['provider.api']`, tenant, id).Scan(&n, &apps); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT last_status, records_read, records_new FROM ops.provider_connection
+	  WHERE tenant_id = $1::uuid AND connection_id = $2::uuid`, tenant, id).Scan(&status, &read, &added); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || apps != "app:perplexity_web" || status != "ok" || read != 2 || added != 1 {
+		t.Fatalf("%d submissions under %q; connection %s read %d new %d", n, apps, status, read, added)
+	}
+
+	// Connecting again issues a new token; the old one no longer opens the connection.
+	next, nextHash, _ := NewIntakeToken()
+	if again, err := st.Connect(ctx, tenant, PerplexityEnterprise, "", nil, nextHash, connect); err != nil || again != id {
+		t.Fatalf("Connect again = %q %v", again, err)
+	}
+	if code := deliver(token); code != http.StatusUnauthorized {
+		t.Fatalf("the replaced token = %d", code)
+	}
+	if code := deliver(next); code != http.StatusNoContent {
+		t.Fatalf("the new token = %d", code)
+	}
+
+	disconnect := Audit{Actor: "admin@live.test", Action: "provider.disconnect", ObjectType: "provider_connection",
+		At: time.Now().UTC(), Detail: map[string]any{"provider": PerplexityEnterprise}}
+	if err := st.Disconnect(ctx, tenant, PerplexityEnterprise, disconnect); err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+	var stored sql.NullString
+	if err := db.QueryRowContext(ctx, `SELECT intake_token_hash FROM ops.provider_connection WHERE tenant_id = $1::uuid AND connection_id = $2::uuid`,
+		tenant, id).Scan(&stored); err != nil || stored.Valid {
+		t.Fatalf("after Disconnect the hash is %v (%v)", stored, err)
+	}
+	if code := deliver(next); code != http.StatusUnauthorized {
+		t.Fatalf("a disconnected intake = %d", code)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM ops.audit WHERE tenant_id = $1::uuid AND detail::text LIKE '%' || $2 || '%'`,
+		tenant, IntakeTokenPrefix).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("%d audits carry a token (%v)", n, err)
 	}
 }

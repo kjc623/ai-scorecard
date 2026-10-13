@@ -17,10 +17,13 @@
 //     with no credential: the browsers' extension downloader fetches them, without a session;
 //   * forwards /scim/v2/* to control-api with the identity provider's own bearer token and
 //     nothing else, for a deployment where this server is the only public origin;
+//   * forwards a provider's log deliveries, POST /intake/v1/*, to control-api as they stream in,
+//     with the headers that carry the connection's token and nothing else;
 //   * refuses a state-changing /v1 or /admin/v1 request that did not come from this origin.
 //
 // Every page and read needs a session except the sign-in pages and their two stylesheets,
-// /onboard/*, /scim/v2/*, the minted retrieval URL, the two extension downloads and the two probes.
+// /onboard/*, /scim/v2/*, /intake/v1/*, the minted retrieval URL, the two extension downloads and
+// the two probes.
 
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
@@ -65,6 +68,9 @@ const MAX_BODY_BYTES = 256 * 1024;
 const EXTENSION_PREFIX = '/v1/extension/';
 const EXTENSION_PATHS = new Set([`${EXTENSION_PREFIX}updates.xml`, `${EXTENSION_PREFIX}shadow-ai-capture.crx`]);
 const EXTENSION_HEADERS = Object.freeze(['content-type', 'content-length', 'cache-control']);
+const INTAKE_PREFIX = '/intake/v1/';
+/** What control-api's intake reads from a delivery: the token in one of its forms, and the body's encoding. */
+const INTAKE_HEADERS = Object.freeze(['authorization', 'content-type', 'content-encoding', 'x-amz-firehose-access-key', 'x-amz-firehose-request-id']);
 /** The sign-in page's own assets. Everything else served from disk needs a session. */
 const PUBLIC_ASSETS = new Set(['/styles.css', '/signin.css']);
 /** What this server serves from disk: the pages, their stylesheets, and the modules they import. */
@@ -534,6 +540,29 @@ export function createDashboardServer(config) {
     return relayBody(req, res, upstream);
   }
 
+  /**
+   * Forward one log delivery to control-api: path, query, the intake's headers and the body as it
+   * arrives, so control-api applies its own size limit; never a cookie. Back come the status, the
+   * content type and the body, each in the form the sender expects.
+   */
+  async function forwardIntake(req, res, url) {
+    const headers = { 'accept-encoding': 'identity' };
+    for (const name of INTAKE_HEADERS) {
+      if (req.headers[name] !== undefined) headers[name] = String(req.headers[name]);
+    }
+    let upstream;
+    try {
+      upstream = await fetchImpl(`${cfg.controlUrl}${url.pathname}${url.search}`, { method: 'POST', headers, body: Readable.toWeb(req), duplex: 'half', redirect: 'manual', signal: AbortSignal.timeout(60_000) });
+    } catch {
+      return void res.writeHead(503, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' }).end('unavailable');
+    }
+    const out = { 'cache-control': 'no-store' };
+    const type = upstream.headers.get('content-type');
+    if (type !== null) out['content-type'] = type;
+    res.writeHead(upstream.status, out);
+    return relayBody(req, res, upstream);
+  }
+
   /** Forward one minted retrieval URL straight to the vault: the grant is the capability, so no principal is added. */
   async function forwardRetrieval(req, res, target) {
     let upstream;
@@ -597,6 +626,10 @@ export function createDashboardServer(config) {
     if (path === '/login') return handleLogin(res, url);
     if (path === '/onboard' || path.startsWith('/onboard/')) return forwardOnboard(req, res, url);
     if (path === '/scim/v2' || path.startsWith('/scim/v2/')) return forwardScim(req, res, url);
+    if (path.startsWith(INTAKE_PREFIX)) {
+      if (req.method !== 'POST') return void res.writeHead(405, { allow: 'POST' }).end();
+      return forwardIntake(req, res, url);
+    }
     if (path === '/v1/extension' || path.startsWith(EXTENSION_PREFIX)) {
       if (!EXTENSION_PATHS.has(path)) return void res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }).end('not found');
       if (req.method !== 'GET' && req.method !== 'HEAD') return void res.writeHead(405, { allow: 'GET, HEAD' }).end();

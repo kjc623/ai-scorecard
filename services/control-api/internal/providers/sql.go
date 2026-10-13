@@ -18,12 +18,13 @@ const (
 
 	sqlTenantIDs = `SELECT t::text FROM ops.tenant_ids() AS t`
 
-	// sqlTargets is the tenant's active connections, or the one $2 names, while its ingest is open,
-	// with the Entra directory a Microsoft connection reads.
+	// sqlTargets is the tenant's active connections control-api pulls, or the one $2 names, while its
+	// ingest is open, with the Entra directory a Microsoft connection reads.
 	sqlTargets = `
 SELECT c.connection_id::text, c.provider, coalesce(c.account, ''), c.credential_enc,
        coalesce(c.cursor, ''), coalesce(e.entra_tenant_id, '')
   FROM ops.provider_connection c
+  JOIN ref.provider p ON p.provider = c.provider AND p.credential <> 'intake'
   JOIN ops.tenant t ON t.tenant_id = c.tenant_id
   LEFT JOIN ops.identity_connection e
     ON e.tenant_id = c.tenant_id AND e.provider = 'entra' AND e.status = 'active'
@@ -49,6 +50,26 @@ UPDATE ops.provider_connection
        records_read      = records_read + $5::bigint,
        records_new       = records_new + $6::bigint,
        cursor            = coalesce(nullif($7::text, ''), cursor)
+ WHERE tenant_id = $1::uuid AND connection_id = $2::uuid`
+
+	// sqlIntakeTenant resolves an intake delivery's tenant before any is known (a definer function).
+	sqlIntakeTenant = `SELECT coalesce(ops.tenant_for_intake($1::text, $2::uuid, $3::text)::text, '')`
+
+	sqlIntakeOpen = `
+SELECT EXISTS (SELECT 1
+                 FROM ops.provider_connection c
+                 JOIN ops.tenant t ON t.tenant_id = c.tenant_id
+                WHERE c.tenant_id = $1::uuid AND c.connection_id = $2::uuid AND c.status = 'active'
+                  AND t.ingest_enabled AND t.status <> 'closed')`
+
+	sqlDelivered = `
+UPDATE ops.provider_connection
+   SET last_started_at   = $3::timestamptz,
+       last_completed_at = $3::timestamptz,
+       last_status       = CASE WHEN $4::text = '' THEN 'ok' ELSE 'failed' END,
+       last_error        = nullif($4::text, ''),
+       records_read      = records_read + $5::bigint,
+       records_new       = records_new + $6::bigint
  WHERE tenant_id = $1::uuid AND connection_id = $2::uuid`
 
 	sqlPolicy = `
@@ -105,26 +126,29 @@ SELECT EXISTS (SELECT 1 FROM ops.identity_connection
 
 	sqlProviderCredential = `SELECT credential FROM ref.provider WHERE provider = $1::text`
 
-	// sqlConnect connects a provider, or reconnects it with a new key. A connection to another
-	// account starts over; one to the same account resumes where it stopped.
+	// sqlConnect connects a provider, or reconnects it with a new key or intake token. A connection
+	// to another account starts over; one to the same account resumes where it stopped.
 	sqlConnect = `
-INSERT INTO ops.provider_connection (tenant_id, provider, account, credential_enc, created_by, updated_by)
-VALUES ($1::uuid, $2::text, nullif($3::text, ''), $4::bytea, $5::text, $5::text)
+INSERT INTO ops.provider_connection (tenant_id, provider, account, credential_enc, intake_token_hash,
+                                     created_by, updated_by)
+VALUES ($1::uuid, $2::text, nullif($3::text, ''), $4::bytea, nullif($6::text, ''), $5::text, $5::text)
 ON CONFLICT (tenant_id, provider) DO UPDATE
-   SET account        = EXCLUDED.account,
-       credential_enc = EXCLUDED.credential_enc,
-       status         = 'active',
-       cursor         = CASE WHEN ops.provider_connection.account IS NOT DISTINCT FROM EXCLUDED.account
-                             THEN ops.provider_connection.cursor END,
-       updated_by     = EXCLUDED.updated_by,
-       updated_at     = now()
+   SET account           = EXCLUDED.account,
+       credential_enc    = EXCLUDED.credential_enc,
+       intake_token_hash = EXCLUDED.intake_token_hash,
+       status            = 'active',
+       cursor            = CASE WHEN ops.provider_connection.account IS NOT DISTINCT FROM EXCLUDED.account
+                                THEN ops.provider_connection.cursor END,
+       updated_by        = EXCLUDED.updated_by,
+       updated_at        = now()
 RETURNING connection_id::text`
 
-	// sqlDisconnect stops a connection and forgets its key. The row stays: the observations it made
-	// name it.
+	// sqlDisconnect stops a connection and forgets its key or intake token. The row stays: the
+	// observations it made name it.
 	sqlDisconnect = `
 UPDATE ops.provider_connection
-   SET status = 'disabled', credential_enc = NULL, updated_by = $3::text, updated_at = now()
+   SET status = 'disabled', credential_enc = NULL, intake_token_hash = NULL, updated_by = $3::text,
+       updated_at = now()
  WHERE tenant_id = $1::uuid AND provider = $2::text AND status = 'active'
 RETURNING connection_id::text`
 
@@ -140,7 +164,8 @@ VALUES ($1::uuid, 'user', $2::text, $3::text, $4::text, NULLIF($5::text, ''), $6
 
 // Statements is every statement the store issues, for the live test.
 var Statements = []string{
-	sqlSetTenant, sqlTenantIDs, sqlTargets, sqlLock, sqlUnlock, sqlStarted, sqlFinished, sqlPolicy,
+	sqlSetTenant, sqlTenantIDs, sqlTargets, sqlLock, sqlUnlock, sqlStarted, sqlFinished, sqlIntakeTenant,
+	sqlIntakeOpen, sqlDelivered, sqlPolicy,
 	sqlCustomLabels, sqlRecord, sqlContentPending, sqlInsertGrant, sqlAddContentUsage, sqlTenantExists,
 	sqlProviders, sqlEntraConnected, sqlProviderCredential, sqlConnect, sqlDisconnect, sqlConnection,
 	sqlAudit,
@@ -250,6 +275,35 @@ func (s *SQLStore) Started(ctx context.Context, tenantID, connectionID string, a
 func (s *SQLStore) Finished(ctx context.Context, tenantID, connectionID string, at time.Time, r Result) error {
 	return s.inTenant(ctx, tenantID, func(tx *sql.Tx) error {
 		_, err := tx.ExecContext(ctx, sqlFinished, tenantID, connectionID, at, r.Error, int64(r.Read), int64(r.New), r.Cursor)
+		return err
+	})
+}
+
+// IntakeTenant implements IntakeStore.
+func (s *SQLStore) IntakeTenant(ctx context.Context, provider, connectionID, tokenHash string) (string, error) {
+	if !store.IsUUID(connectionID) {
+		return "", nil
+	}
+	var tenant string
+	if err := s.db.QueryRowContext(ctx, sqlIntakeTenant, provider, connectionID, tokenHash).Scan(&tenant); err != nil {
+		return "", fmt.Errorf("providers: resolve intake: %w", err)
+	}
+	return tenant, nil
+}
+
+// IntakeOpen implements IntakeStore.
+func (s *SQLStore) IntakeOpen(ctx context.Context, tenantID, connectionID string) (bool, error) {
+	var open bool
+	err := s.inTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		return tx.QueryRowContext(ctx, sqlIntakeOpen, tenantID, connectionID).Scan(&open)
+	})
+	return open, err
+}
+
+// Delivered implements IntakeStore.
+func (s *SQLStore) Delivered(ctx context.Context, tenantID, connectionID string, at time.Time, r Result) error {
+	return s.inTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		_, err := tx.ExecContext(ctx, sqlDelivered, tenantID, connectionID, at, r.Error, int64(r.Read), int64(r.New))
 		return err
 	})
 }
@@ -402,7 +456,7 @@ func (s *SQLStore) EntraConnected(ctx context.Context, tenantID string) (bool, e
 }
 
 // Connect implements AdminStore.
-func (s *SQLStore) Connect(ctx context.Context, tenantID, provider, account string, sealedKey []byte, a Audit) (string, error) {
+func (s *SQLStore) Connect(ctx context.Context, tenantID, provider, account string, sealedKey []byte, tokenHash string, a Audit) (string, error) {
 	var id string
 	err := s.inTenant(ctx, tenantID, func(tx *sql.Tx) error {
 		if err := s.tenantExists(ctx, tx, tenantID); err != nil {
@@ -425,7 +479,7 @@ func (s *SQLStore) Connect(ctx context.Context, tenantID, provider, account stri
 				return ErrNoEntra
 			}
 		}
-		if err := tx.QueryRowContext(ctx, sqlConnect, tenantID, provider, account, sealedKey, a.Actor).Scan(&id); err != nil {
+		if err := tx.QueryRowContext(ctx, sqlConnect, tenantID, provider, account, sealedKey, a.Actor, tokenHash).Scan(&id); err != nil {
 			return err
 		}
 		a.ObjectID = id

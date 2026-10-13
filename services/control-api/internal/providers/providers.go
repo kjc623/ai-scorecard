@@ -1,15 +1,18 @@
 // Package providers reads AI providers' own records of the prompts a tenant's people sent, from the
-// providers' admin APIs, and records each one as a device's capture is recorded: classified under
-// the tenant's collection mode, attributed to the person by user_ref, filed under the tool it was
-// sent with, and, at M3, stored in content-vault.
+// providers' admin APIs or from the logs they write in the customer's cloud, and records each one
+// as a device's capture is recorded: classified under the tenant's collection mode, attributed to
+// the person by user_ref, filed under the tool it was sent with, and, at M3, stored in
+// content-vault.
 //
 // A tenant connects a provider (ops.provider_connection, one of ref.provider) on the console's
 // Integrations page: with a key its admin issued, or, for Microsoft, with the consent the tenant
-// already gave the vendor's Entra application. The runner pulls every active connection on a
-// schedule and on demand. A provider's adapter (Source) reads the records after the connection's
-// cursor; the recorder writes each through ingest.record_provider_event, whose event id derives from
-// the provider's own id for the record, so a record read twice is recorded once. A record of a
-// prompt a device also captured merges into the device's submission, so the prompt counts once.
+// already gave the vendor's Entra application, or, for a provider with no API to read, with an
+// intake token the page issues, which the customer's cloud presents when it forwards the
+// provider's log (intake.go). The runner pulls every other active connection on a schedule and on
+// demand: a provider's adapter (Source) reads the records after the connection's cursor. The
+// recorder writes each record through ingest.record_provider_event, whose event id derives from the
+// provider's own id for the record, so a record read twice is recorded once. A record of a prompt a
+// device also captured merges into the device's submission, so the prompt counts once.
 //
 // A provider's record is never enforced: it is read after the prompt was sent, so its policy
 // decision is the default rule, logged, decided by the server.
@@ -25,11 +28,22 @@ import (
 	"github.com/shadow-ai-capture/device/protocol/canon"
 )
 
-// The providers this package has an adapter for, as ref.provider names them.
+// The providers this package has an adapter for, as ref.provider names them: those it pulls, and
+// those whose log it receives.
 const (
-	Microsoft365Copilot = "microsoft_365_copilot"
-	ChatGPTEnterprise   = "chatgpt_enterprise"
-	ClaudeEnterprise    = "claude_enterprise"
+	Microsoft365Copilot  = "microsoft_365_copilot"
+	ChatGPTEnterprise    = "chatgpt_enterprise"
+	ClaudeEnterprise     = "claude_enterprise"
+	GeminiCodeAssist     = "gemini_code_assist"
+	AmazonBedrock        = "amazon_bedrock"
+	PerplexityEnterprise = "perplexity_enterprise"
+)
+
+// How a provider's records reach the product (ref.provider.credential).
+const (
+	CredentialEntraApp = "entra_app"
+	CredentialAPIKey   = "api_key"
+	CredentialIntake   = "intake"
 )
 
 // The closed set of ops.provider_connection.last_error codes.
@@ -55,10 +69,12 @@ type Record struct {
 	OccurredAt time.Time
 	// App is the ref.app key of the tool the prompt was sent with.
 	App string
-	// UPN is the person's sign-in name or email address, ObjectID their Entra object id; a record
-	// carries at least one.
+	// UPN is the person's sign-in name or email address, ObjectID their Entra object id. Account is
+	// a provider-side principal no directory row names (an AWS role), for a record with neither. A
+	// record carries at least one.
 	UPN      string
 	ObjectID string
+	Account  string
 	// Text is the prompt as the provider received it.
 	Text string
 	// Attachments are the files sent with the prompt, as the provider describes them. A provider

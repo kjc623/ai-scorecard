@@ -3039,8 +3039,8 @@ DECLARE
   missing text;
 BEGIN
   SELECT count(*) INTO n FROM ref.app;
-  IF n <> 36 THEN
-    RAISE EXCEPTION 'FAIL T82 ref.app holds % apps, want the 36 seed apps', n;
+  IF n <> 37 THEN
+    RAISE EXCEPTION 'FAIL T82 ref.app holds % apps, want the 37 seed apps', n;
   END IF;
   SELECT string_agg(a.app_key, ', ') INTO missing
     FROM ref.app a
@@ -3900,6 +3900,86 @@ BEGIN
   END IF;
   RAISE NOTICE 'PASS T93 query-api names a record''s provider without its credential; ingest-api and other tenants see no connection; every provider files under catalogued tools';
 END $$;
+
+-- =====================================================================================
+-- T94  Provider intake: a delivery's token resolves its connection's tenant, and nothing else
+-- =====================================================================================
+-- A provider with no API to read sends its log to control-api's intake with the token the
+-- connection holds as a hash. Before any tenant is known, ops.tenant_for_intake answers for the
+-- active connection to that provider holding that token only; no other role reads the hash.
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+DO $$
+BEGIN
+  INSERT INTO ops.provider_connection (tenant_id, connection_id, provider, intake_token_hash, created_by, updated_by)
+  VALUES ('11111111-1111-7111-8111-111111111111', 'c0000000-0000-7000-8000-000000000094',
+          'gemini_code_assist', 'sha256:' || repeat('94', 32), 'test', 'test'),
+         ('11111111-1111-7111-8111-111111111111', 'c0000000-0000-7000-8000-000000000095',
+          'amazon_bedrock', 'sha256:' || repeat('95', 32), 'test', 'test');
+  UPDATE ops.provider_connection SET status = 'disabled', updated_by = 'test'
+   WHERE connection_id = 'c0000000-0000-7000-8000-000000000095';
+  BEGIN
+    INSERT INTO ops.provider_connection (tenant_id, provider, credential_enc, intake_token_hash, created_by, updated_by)
+    VALUES ('11111111-1111-7111-8111-111111111111', 'perplexity_enterprise', '\x00'::bytea,
+            'sha256:' || repeat('96', 32), 'test', 'test');
+    RAISE EXCEPTION 'FAIL T94 a connection held both a key and an intake token';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    INSERT INTO ops.provider_connection (tenant_id, provider, intake_token_hash, created_by, updated_by)
+    VALUES ('11111111-1111-7111-8111-111111111111', 'perplexity_enterprise', 'sacintake_in-clear', 'test', 'test');
+    RAISE EXCEPTION 'FAIL T94 an intake token was stored in clear';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+END $$;
+SET app.tenant_id = '22222222-2222-7222-8222-222222222222';
+DO $$
+DECLARE
+  t uuid;
+BEGIN
+  t := ops.tenant_for_intake('gemini_code_assist', 'c0000000-0000-7000-8000-000000000094', 'sha256:' || repeat('94', 32));
+  IF t IS DISTINCT FROM '11111111-1111-7111-8111-111111111111' THEN
+    RAISE EXCEPTION 'FAIL T94 the intake token resolved %, want tenant A', t;
+  END IF;
+  IF ops.tenant_for_intake('amazon_bedrock', 'c0000000-0000-7000-8000-000000000094', 'sha256:' || repeat('94', 32)) IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T94 the token resolved for another provider';
+  END IF;
+  IF ops.tenant_for_intake('gemini_code_assist', 'c0000000-0000-7000-8000-000000000094', 'sha256:' || repeat('00', 32)) IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T94 another token resolved the connection';
+  END IF;
+  IF ops.tenant_for_intake('amazon_bedrock', 'c0000000-0000-7000-8000-000000000095', 'sha256:' || repeat('95', 32)) IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T94 a disabled connection''s token resolved';
+  END IF;
+END $$;
+RESET ROLE;
+SET ROLE sac_query;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+DO $$
+BEGIN
+  BEGIN
+    PERFORM c.intake_token_hash FROM ops.provider_connection c;
+    RAISE EXCEPTION 'FAIL T94 query-api read an intake token hash';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  BEGIN
+    PERFORM ops.tenant_for_intake('gemini_code_assist', 'c0000000-0000-7000-8000-000000000094', 'sha256:' || repeat('94', 32));
+    RAISE EXCEPTION 'FAIL T94 query-api resolved an intake token';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+END $$;
+RESET ROLE;
+SET ROLE sac_recorder;
+DO $$
+BEGIN
+  BEGIN
+    PERFORM c.intake_token_hash FROM ops.provider_connection c;
+    RAISE EXCEPTION 'FAIL T94 sac_recorder read an intake token hash';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  RAISE NOTICE 'PASS T94 an intake token resolves the tenant of its provider''s active connection only, is stored as a hash, and no other role reads it';
+END $$;
+RESET ROLE;
 
 -- =====================================================================================
 -- Report

@@ -7,7 +7,8 @@ names, from the release this deployment runs), and the browser extension's updat
 relying party for every customer identity provider, sessions, the short-lived product access tokens
 query-api and content-vault verify, onboarding, the directory (SCIM provisioning, or a read of the
 customer's Microsoft Entra ID through Microsoft Graph) and teams, and the admin API. For tenants:
-the pull of AI providers' own records of their people's prompts, from the providers' admin APIs.
+the pull of AI providers' own records of their people's prompts, from the providers' admin APIs,
+and the intake of those records from the logs of providers that have no API to read.
 Devices authenticate with the certificate Application Gateway forwards in `X-Client-Cert`, verified
 here against the device CA and matched to the device's live credential on every request.
 
@@ -22,6 +23,7 @@ here against the device CA and matched to the device's live credential on every 
 | `/internal/v1/auth/{begin,complete,token,revoke}` | dashboard server | `Bearer SAC_INTERNAL_TOKEN` |
 | `/admin/v1/*` | dashboard server | product token, audience `sac-control`, role `admin` |
 | `/scim/v2/*` | customer identity provider | SCIM bearer token |
+| `POST /intake/v1/{provider}/{connection}` | the customer's cloud, delivering a provider's log | the connection's intake token |
 | `/onboard/*`, `/.well-known/{jwks.json,openid-configuration}` | browser, verifiers | invite token / none |
 | `GET /healthz`, `GET /readyz` | platform | none (`/readyz` includes a database round trip) |
 
@@ -71,6 +73,32 @@ provider's record is never enforced. A failed pass records one of a closed set o
 uses the database login, `SAC_DIRECTORY_KEY`, `SAC_CONTENT_VAULT_URL` and, for Microsoft 365
 Copilot, the Entra application (`SAC_ENTRA_CLIENT_ID`).
 
+### The log intake
+
+Some providers have no API to read, but write their record of each prompt to a log in the
+customer's own cloud. The customer forwards that log to the connection's intake URL,
+`{SAC_PUBLIC_URL}/intake/v1/{provider}/{connection}`, which Front Door, or the dashboard server
+where it is the only public origin, passes to control-api untouched. Connecting such a provider
+issues the connection's intake token, shown once beside the URL; it is stored only as its SHA-256
+(`ops.provider_connection.intake_token_hash`), `ops.tenant_for_intake` resolves a delivery's tenant
+from it before any tenant is known, and connecting again replaces it. Every delivery presents it:
+
+| Provider | Log | Delivered by | The token is | Filed under |
+|---|---|---|---|---|
+| Gemini Code Assist | the Gemini for Google Cloud request log, with prompt logging turned on | a Cloud Logging sink to a Pub/Sub topic, and a push subscription to the URL with authentication on | the push subscription's audience, so Google's signed ID token carries it | `gemini_code_assist`, and requests from the Gemini CLI `gemini_cli` |
+| Amazon Bedrock | model invocation logging to CloudWatch Logs | a subscription filter to an Amazon Data Firehose stream whose destination is an HTTP endpoint at the URL, GZIP on | the endpoint's access key | `aws_bedrock` |
+| Perplexity Enterprise | the audit log | its webhook, at the URL | the bearer token | `perplexity_web` |
+
+A delivery is recorded before it is answered, in the form its sender expects, so a sender that does
+not hear success sends it again and the event ids derived from the provider's own ids record it
+once. One delivery is at most 16 MiB as sent and 64 MiB inflated. An entry that is not the
+provider's log is passed over and counted; a delivery its transport cannot read is refused and
+recorded on the connection as `delivery_malformed`. A Bedrock request by an assumed role whose
+session name, or an IAM user whose name, is an email address is attributed to that person;
+otherwise to the role or user, as an account. A Bedrock request body over 100 KB is logged only to
+S3 and arrives without its text. The intake reads no setting of its own beyond
+`SAC_PUBLIC_URL`.
+
 ## Configuration
 
 | Variable | Meaning |
@@ -80,7 +108,7 @@ Copilot, the Entra application (`SAC_ENTRA_CLIENT_ID`).
 | `SAC_AUTH_ISSUER` | `iss` of product and service tokens; verifiers fetch `{issuer}/.well-known/jwks.json` |
 | `SAC_SESSION_SIGNING_KEY_FILE` | P-256 key file that signs tokens; further PEM blocks are published for rotation |
 | `SAC_INTERNAL_TOKEN` | the dashboard server's credential for `/internal/v1/auth/*` (at least 32 characters) |
-| `SAC_PUBLIC_URL` | browser origin: sign-in returns to `{SAC_PUBLIC_URL}/callback`; onboarding and SCIM URLs; the extension manifest's CRX URL |
+| `SAC_PUBLIC_URL` | browser origin: sign-in returns to `{SAC_PUBLIC_URL}/callback`; onboarding, SCIM and provider intake URLs; the extension manifest's CRX URL |
 | `SAC_AUTH_REDIRECT_URIS` | optional further exact sign-in redirect URIs (the lab's second dashboard origin) |
 | `SAC_DIRECTORY_KEY` | base64 32-byte key that seals stored secrets and the tenant user-reference keys |
 | `SAC_PUBLIC_DEVICE_ENDPOINT` | device origin written into tenant packages |

@@ -268,9 +268,10 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 		return nil, nil, nil, err
 	}
 
-	// The provider pull reads the AI providers' admin APIs a tenant connected, classifies each prompt
-	// with the rules and model the product ships, and stores its content as a device's upload is
-	// stored. Microsoft 365 Copilot is read with the vendor's Entra app, so only where there is one.
+	// The provider pull reads the AI providers' admin APIs a tenant connected, and the intake receives
+	// the logs a tenant's cloud forwards for the providers with no API to read. Both classify each
+	// prompt with the rules and model the product ships, and store its content as a device's upload
+	// is stored. Microsoft 365 Copilot is read with the vendor's Entra app, so only where there is one.
 	rel, err := release.Builtin()
 	if err != nil {
 		return nil, nil, nil, err
@@ -291,13 +292,21 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 		sources[providers.Microsoft365Copilot] = copilot
 	}
 	providerStore := providers.NewSQL(db)
-	providerPull, err := providers.NewRunner(sources, providerStore,
-		&providers.Recorder{Store: providerStore, Classifier: classifier, Vault: vault}, cipher, userRefKeys, logger)
+	recorder := &providers.Recorder{Store: providerStore, Classifier: classifier, Vault: vault}
+	providerPull, err := providers.NewRunner(sources, providerStore, recorder, cipher, userRefKeys, logger)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	loops = append(loops, providerPull.Run)
-	providerHandler, err := providers.NewHandler(providerStore, adminAuthenticator(verifier), cipher, providerPull, logger)
+	intake, err := providers.NewIntake(map[string]providers.IntakeSource{
+		providers.GeminiCodeAssist:     {Transport: providers.NewPubSub(nil), Decode: providers.DecodeGeminiCodeAssist},
+		providers.AmazonBedrock:        {Transport: &providers.Firehose{}, Decode: providers.CloudWatchLogs(providers.DecodeBedrockInvocation)},
+		providers.PerplexityEnterprise: {Transport: &providers.Webhook{}, Decode: providers.DecodePerplexityEvent},
+	}, providerStore, recorder, userRefKeys, cfg.PublicURL, logger)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	providerHandler, err := providers.NewHandler(providerStore, adminAuthenticator(verifier), cipher, providerPull, intake, logger)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -308,6 +317,7 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 		Settings:   settingsHandler,
 		Directory:  directoryHandler,
 		Providers:  providerHandler,
+		Intake:     intake,
 		Extensions: deploy.NewExtensions(cfg.AgentReleaseDir, cfg.PublicURL, logger),
 		Agents:     deploy.NewAgents(cfg.AgentReleaseDir, logger),
 		SCIM:       scim.NewHandler(scimSvc, "/scim/v2", logger),

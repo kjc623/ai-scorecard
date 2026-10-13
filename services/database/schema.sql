@@ -189,18 +189,21 @@ CREATE TABLE ref.retention_class (
   description       text NOT NULL
 );
 
--- The AI providers whose own admin API the product reads a tenant's usage from, with that tenant's
--- consent: the provider's record of what its people sent, pulled by control-api rather than
--- observed on a device. The console's Integrations page lists every row, so a provider is offered
--- by adding it here and its adapter to control-api. `credential` is how the product authenticates:
--- the vendor's Entra application under the customer's admin consent, or a key the customer's admin
--- issued, which the page asks for by credential_label. A provider whose key does not name what it
--- reads asks for that too, by account_label. `apps` is the ref.app keys its records are filed under.
+-- The AI providers whose own record of what a tenant's people sent the product collects, with that
+-- tenant's consent, rather than observing it on a device. The console's Integrations page lists
+-- every row, so a provider is offered by adding it here and its adapter to control-api.
+-- `credential` is how the record reaches the product. control-api pulls a provider's admin API
+-- with the vendor's Entra application under the customer's admin consent (entra_app), or with a
+-- key the customer's admin issued, which the page asks for by credential_label (api_key). A
+-- provider with no such API writes its record to a log in the customer's own cloud, which the
+-- customer forwards to control-api's intake with a token the product issues (intake). A provider
+-- whose key does not name what it reads asks for that too, by account_label. `apps` is the ref.app
+-- keys its records are filed under.
 CREATE TABLE ref.provider (
   provider          text PRIMARY KEY CHECK (provider ~ '^[a-z][a-z0-9_]{1,63}$'),
   display_name      text NOT NULL,
   vendor            text NOT NULL,
-  credential        text NOT NULL CHECK (credential IN ('entra_app','api_key')),
+  credential        text NOT NULL CHECK (credential IN ('entra_app','api_key','intake')),
   source_url        text NOT NULL,
   apps              text[] NOT NULL CHECK (cardinality(apps) > 0),
   credential_label  text,
@@ -402,12 +405,12 @@ CREATE TABLE ops.collector_state (
 
 CREATE INDEX collector_state_by_state ON ops.collector_state (tenant_id, state);
 
--- A tenant's consented link to one provider's admin API (ref.provider), the collection path that
--- needs no device: control-api reads the provider's records of what the tenant's people sent and
--- records each as an observation whose origin is this connection. One row per provider; it is
--- disabled, never deleted, so the observations it made keep naming it. The row is the path's health:
--- each pass records when it ran and how it ended, and last_error is a closed code, never a
--- provider's response body.
+-- A tenant's consented link to one provider (ref.provider), the collection path that needs no
+-- device: control-api reads the provider's records of what the tenant's people sent, from its admin
+-- API or from the deliveries of its intake, and records each as an observation whose origin is this
+-- connection. One row per provider; it is disabled, never deleted, so the observations it made keep
+-- naming it. The row is the path's health: each pass or delivery records when it ran and how it
+-- ended, and last_error is a closed code, never a provider's response body.
 CREATE TABLE ops.provider_connection (
   tenant_id          uuid NOT NULL REFERENCES ops.tenant(tenant_id),
   connection_id      uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -433,9 +436,15 @@ CREATE TABLE ops.provider_connection (
   -- Records the passes have read, and those among them the tenant did not already hold.
   records_read       bigint NOT NULL DEFAULT 0 CHECK (records_read >= 0),
   records_new        bigint NOT NULL DEFAULT 0 CHECK (records_new >= 0),
+  -- The token an intake's deliveries present (sacintake_ prefix, 256-bit random tail), stored as
+  -- its hash and shown once when issued. NULL for a provider control-api pulls, and once disabled.
+  intake_token_hash  text UNIQUE
+                       CONSTRAINT provider_connection_intake_token_is_sha256
+                       CHECK (intake_token_hash ~ '^sha256:[0-9a-f]{64}$'),
   PRIMARY KEY (tenant_id, connection_id),
   UNIQUE (tenant_id, provider),
-  CONSTRAINT provider_connection_failure_has_code CHECK ((last_status = 'failed') = (last_error IS NOT NULL))
+  CONSTRAINT provider_connection_failure_has_code CHECK ((last_status = 'failed') = (last_error IS NOT NULL)),
+  CONSTRAINT provider_connection_one_secret CHECK (credential_enc IS NULL OR intake_token_hash IS NULL)
 );
 
 -- The signed policy bundle. A device that fails to verify a new bundle keeps the last version it
@@ -1334,6 +1343,20 @@ $$;
 
 COMMENT ON FUNCTION ops.tenant_for_scim_token(text) IS
   'The tenant an unrevoked SCIM bearer belongs to, or NULL.';
+
+CREATE FUNCTION ops.tenant_for_intake(p_provider text, p_connection uuid, p_hash text)
+RETURNS uuid
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  SELECT c.tenant_id
+    FROM ops.provider_connection c
+   WHERE c.connection_id = p_connection
+     AND c.provider = p_provider
+     AND c.intake_token_hash = p_hash
+     AND c.status = 'active'
+$$;
+
+COMMENT ON FUNCTION ops.tenant_for_intake(text, uuid, text) IS
+  'The tenant whose active connection to p_provider, p_connection, holds the intake token whose hash is p_hash, or NULL.';
 
 -- Every tenant id, for the scheduled jobs, which run per tenant and cannot list ops.tenant under
 -- forced row-level security.
@@ -2872,6 +2895,7 @@ CREATE POLICY pre_tenant_lookup ON ops.tenant_email_domain FOR SELECT TO sac_res
 CREATE POLICY pre_tenant_lookup ON ops.onboarding_invite   FOR SELECT TO sac_resolver USING (true);
 CREATE POLICY pre_tenant_lookup ON ops.auth_session        FOR SELECT TO sac_resolver USING (true);
 CREATE POLICY pre_tenant_lookup ON ops.scim_token          FOR SELECT TO sac_resolver USING (true);
+CREATE POLICY pre_tenant_lookup ON ops.provider_connection FOR SELECT TO sac_resolver USING (true);
 CREATE POLICY pre_tenant_lookup ON ops.tenant              FOR SELECT TO sac_resolver USING (true);
 
 -- ops.auth_signin has no tenant. It is forced with a policy for the one role that drives sign-in,
@@ -2979,18 +3003,21 @@ GRANT SELECT ON ops.identity_connection, ops.tenant_email_domain, ops.onboarding
       ops.auth_session, ops.scim_token
   TO sac_resolver;
 GRANT SELECT (tenant_id) ON ops.tenant TO sac_resolver;
+GRANT SELECT (tenant_id, connection_id, provider, intake_token_hash, status) ON ops.provider_connection
+  TO sac_resolver;
 
 -- Functions are executable by PUBLIC unless revoked, and these cross tenants. The privileges are
 -- set while the applying role still owns the functions; a change of owner keeps them.
 REVOKE EXECUTE ON FUNCTION ops.identity_connection_for_entra(text), ops.identity_connection_for_issuer(text),
       ops.identity_connection_by_id(uuid), ops.tenant_for_email_domain(text),
       ops.onboarding_invite_by_hash(text), ops.auth_session_by_hash(bytea),
+      ops.tenant_for_intake(text, uuid, text),
       ops.tenant_for_scim_token(text), ops.tenant_ids()
   FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION ops.identity_connection_for_entra(text), ops.identity_connection_for_issuer(text),
       ops.identity_connection_by_id(uuid), ops.tenant_for_email_domain(text),
       ops.onboarding_invite_by_hash(text), ops.auth_session_by_hash(bytea),
-      ops.tenant_for_scim_token(text)
+      ops.tenant_for_scim_token(text), ops.tenant_for_intake(text, uuid, text)
   TO sac_control;
 -- control-api's directory pull visits every tenant, as the jobs do.
 GRANT EXECUTE ON FUNCTION ops.tenant_ids() TO sac_ops, sac_control;
@@ -3007,6 +3034,7 @@ ALTER FUNCTION ops.tenant_for_email_domain(text)        OWNER TO sac_resolver;
 ALTER FUNCTION ops.onboarding_invite_by_hash(text)      OWNER TO sac_resolver;
 ALTER FUNCTION ops.auth_session_by_hash(bytea)          OWNER TO sac_resolver;
 ALTER FUNCTION ops.tenant_for_scim_token(text)          OWNER TO sac_resolver;
+ALTER FUNCTION ops.tenant_for_intake(text, uuid, text)  OWNER TO sac_resolver;
 ALTER FUNCTION ops.tenant_ids()                         OWNER TO sac_resolver;
 REVOKE CREATE ON SCHEMA ops FROM sac_resolver;
 REVOKE sac_resolver FROM CURRENT_USER;
@@ -3166,7 +3194,7 @@ INSERT INTO ref.route_fidelity (source, fidelity_rank, yields_content, descripti
   ('tool.otel',        15, true,  'The tool''s own OpenTelemetry export, received on the device. Structured by the tool; prompt text is present only when the tool is configured to export it.'),
   ('cli.shim',         20, true,  'Call-site capture from a managed shell environment. Structured arguments rather than a parsed HTTP body, so no reconstruction is involved.'),
   ('proxy.loopback',   30, true,  'Local inference broker observing plaintext HTTP on the loopback interface. Nothing is decrypted and no framing is guessed; coverage is narrow.'),
-  ('provider.api',     35, true,  'The provider''s own record of the prompt, read from its admin API under the tenant''s consent (ops.provider_connection). The text the provider received, exactly; it does not see what the device composed, decided or attached.'),
+  ('provider.api',     35, true,  'The provider''s own record of the prompt, read from its admin API or delivered from its log under the tenant''s consent (ops.provider_connection). The text the provider received, exactly; it does not see what the device composed, decided or attached.'),
   ('ext.web_request',  40, true,  'Extension reading the request body as sent. Accurate for the wire form, which may differ from the composed form in encoding and whitespace.'),
   ('proxy.tls',        50, true,  'Egress proxy terminating TLS and reading the HTTP body. The prompt is reconstructed from a provider-specific serialisation, so encoding differences can defeat canonicalisation.'),
   ('ext.dom',          60, true,  'DOM-derived observation, used where the request is not observable. Best-effort: some browser UIs render outside normal DOM structures.'),
@@ -3249,6 +3277,8 @@ INSERT INTO ref.app (app_key, display_name, vendor, category, source_url) VALUES
    'https://api-docs.deepseek.com'),
   ('gemini_cli',         'Gemini CLI', 'google', 'coding_agent',
    'https://github.com/google-gemini/gemini-cli'),
+  ('gemini_code_assist', 'Gemini Code Assist', 'google', 'ide_assistant',
+   'https://marketplace.visualstudio.com/items?itemName=Google.geminicodeassist'),
   ('gemini_web',         'Gemini (web)', 'google', 'chat_assistant',
    'https://gemini.google.com'),
   ('github_copilot',     'GitHub Copilot', 'github', 'ide_assistant',
@@ -3363,6 +3393,8 @@ INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES
   ('deepseek_api',        'any',       'inference_domain',        'api.deepseek.com'),
   ('gemini_cli',          'any',       'cli_binary',              'gemini'),
   ('gemini_cli',          'any',       'npm_package',             '@google/gemini-cli'),
+  ('gemini_code_assist',  'any',       'ide_extension_id',        'google.geminicodeassist'),
+  ('gemini_code_assist',  'any',       'ide_extension_id',        'com.google.tools.ij.aiplugin'),
   ('gemini_web',          'any',       'inference_domain',        '.gemini.google.com'),
   ('github_copilot',      'any',       'ide_extension_id',        'github.copilot-chat'),
   ('google_ai_api',       'any',       'inference_domain',        '.aiplatform.googleapis.com'),
@@ -3465,8 +3497,9 @@ INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_k
 INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_kind, evidence, app_key)
 SELECT 'app:' || app_key, display_name, vendor, 'endpoint', '{}', app_key FROM ref.app;
 
--- The providers whose admin API returns each prompt a tenant's people sent. source_url is the
--- documentation of the endpoint control-api reads.
+-- The providers whose admin API returns each prompt a tenant's people sent, and those that log each
+-- prompt in the customer's cloud. source_url is the documentation of the endpoint control-api reads,
+-- or of the log the customer forwards.
 INSERT INTO ref.provider (provider, display_name, vendor, credential, source_url, apps, credential_label, account_label) VALUES
   ('microsoft_365_copilot', 'Microsoft 365 Copilot', 'microsoft', 'entra_app',
    'https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/api/ai-services/interaction-export/aiinteractionhistory-getallenterpriseinteractions',
@@ -3476,7 +3509,16 @@ INSERT INTO ref.provider (provider, display_name, vendor, credential, source_url
    '{chatgpt_web}', 'Compliance API key', 'Workspace ID'),
   ('claude_enterprise', 'Claude Enterprise', 'anthropic', 'api_key',
    'https://platform.claude.com/docs/en/manage-claude/compliance-api',
-   '{claude_web,claude_desktop,claude_code}', 'Compliance API key', 'Organization ID');
+   '{claude_web,claude_desktop,claude_code}', 'Compliance API key', 'Organization ID'),
+  ('gemini_code_assist', 'Gemini Code Assist', 'google', 'intake',
+   'https://docs.cloud.google.com/gemini/docs/log-gemini',
+   '{gemini_code_assist,gemini_cli}', NULL, NULL),
+  ('amazon_bedrock', 'Amazon Bedrock', 'amazon', 'intake',
+   'https://docs.aws.amazon.com/bedrock/latest/userguide/model-invocation-logging.html',
+   '{aws_bedrock}', NULL, NULL),
+  ('perplexity_enterprise', 'Perplexity Enterprise', 'perplexity', 'intake',
+   'https://intercom.help/perplexity-ai/en/articles/11652747-audit-logs',
+   '{perplexity_web}', NULL, NULL);
 
 
 -- =====================================================================================

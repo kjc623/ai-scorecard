@@ -8,6 +8,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
+import { gzipSync } from 'node:zlib';
+import { randomBytes } from 'node:crypto';
 
 import { configFromEnv, createDashboardServer, parseAddr } from '../server/server.mjs';
 
@@ -40,7 +42,7 @@ async function fakeControl() {
   const server = createServer(async (req, res) => {
     const body = await readAll(req);
     const url = new URL(req.url, 'http://control');
-    const call = { method: req.method, path: url.pathname, search: url.search, headers: req.headers, body: body.toString('utf8') };
+    const call = { method: req.method, path: url.pathname, search: url.search, headers: req.headers, body: body.toString('utf8'), raw: body };
     state.calls.push(call);
     const json = (status, value) => {
       res.writeHead(status, { 'content-type': 'application/json' });
@@ -90,6 +92,10 @@ async function fakeControl() {
     if (url.pathname.startsWith('/scim/v2/')) {
       res.writeHead(201, { 'content-type': 'application/scim+json', location: 'https://console.example.test/scim/v2/Users/1', 'set-cookie': 'leak=1' });
       return res.end(JSON.stringify({ id: '1' }));
+    }
+    if (url.pathname.startsWith('/intake/v1/')) {
+      res.writeHead(200, { 'content-type': 'application/json', 'set-cookie': 'leak=1', 'x-upstream-only': '1' });
+      return res.end(JSON.stringify({ requestId: req.headers['x-amz-firehose-request-id'], timestamp: 1, errorMessage: '' }));
     }
     if (url.pathname.startsWith('/onboard/')) {
       res.writeHead(302, { location: 'https://login.microsoftonline.com/organizations/v2.0/adminconsent?client_id=x', 'set-cookie': 'onboard_state=abc; HttpOnly; Path=/onboard' });
@@ -400,6 +406,47 @@ test('/scim/v2/* goes to control-api with the provider\'s bearer token and no co
   assert.equal(seen.body, '{"userName":"a@b.test"}');
   assert.equal(seen.headers.authorization, 'Bearer sacscim_t.s', 'the provider\'s token is the credential');
   assert.equal(seen.headers.cookie, undefined, 'no cookie is passed on');
+  assert.equal(query.calls.length, 0);
+});
+
+test('a provider\'s log delivery streams to control-api with only the intake\'s headers, and its answer comes back', async (t) => {
+  const { port, control, query } = await lab(t);
+  const path = '/intake/v1/amazon_bedrock/6ba7b810-9dad-11d1-80b4-00c04fd430c8';
+  const body = gzipSync(randomBytes(400 * 1024));
+  const res = await send(port, path, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json', 'content-encoding': 'gzip', 'x-amz-firehose-access-key': 'sacintake_token',
+      'x-amz-firehose-request-id': 'req-1', 'x-amz-firehose-source-arn': 'arn:aws:firehose:eu-west-1:1:deliverystream/s',
+      cookie: 'sac_session=mine; other=1', 'content-length': String(body.length),
+    },
+    body,
+  });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers['content-type'], 'application/json');
+  assert.equal(res.headers['cache-control'], 'no-store');
+  assert.equal(res.json().requestId, 'req-1', 'the sender reads its own answer');
+  assert.equal(res.headers['set-cookie'], undefined, 'no upstream cookie is relayed');
+  assert.equal(res.headers['x-upstream-only'], undefined);
+  const seen = control.state.calls.at(-1);
+  assert.equal(seen.method, 'POST');
+  assert.equal(seen.path, path);
+  assert.deepEqual(seen.raw, body, 'the body arrives byte for byte, larger than this server buffers');
+  assert.equal(seen.headers['x-amz-firehose-access-key'], 'sacintake_token', 'the connection\'s token is the credential');
+  assert.equal(seen.headers['x-amz-firehose-request-id'], 'req-1');
+  assert.equal(seen.headers['content-encoding'], 'gzip');
+  assert.equal(seen.headers['x-amz-firehose-source-arn'], undefined, 'nothing the intake does not read is passed on');
+  assert.equal(seen.headers.cookie, undefined, 'no cookie is passed on');
+
+  const pubsub = await send(port, '/intake/v1/gemini_code_assist/6ba7b810-9dad-11d1-80b4-00c04fd430c8', { method: 'POST', headers: { authorization: 'Bearer id.token.sig', 'content-type': 'application/json' }, body: '{"message":{}}' });
+  assert.equal(pubsub.status, 200);
+  assert.equal(control.state.calls.at(-1).headers.authorization, 'Bearer id.token.sig', 'a push subscription\'s ID token is passed on');
+
+  const calls = control.state.calls.length;
+  const get = await send(port, path, { headers: { cookie: 'sac_session=mine' } });
+  assert.equal(get.status, 405);
+  assert.equal(get.headers.allow, 'POST');
+  assert.equal(control.state.calls.length, calls, 'only a delivery is forwarded');
   assert.equal(query.calls.length, 0);
 });
 

@@ -639,7 +639,7 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   }
 
   function integrationsController() {
-    integrations ??= createIntegrations({ admin: adminApi, onChange: paintIntegrations });
+    integrations ??= createIntegrations({ admin: adminApi, onChange: paintIntegrations, copy: (text) => copyToClipboard(document, text) });
     return integrations;
   }
 

@@ -9,7 +9,7 @@ this file describes what is deployed and how to deploy and check it.
 |---|---|
 | VNet (`modules/network.bicep`) | Subnets for the Container Apps environment, PostgreSQL, private endpoints and Application Gateway. An NSG on the environment subnet admits only the gateway subnet and the environment itself |
 | Application Gateway WAF_v2 (`application-gateway.bicep`) | The device edge on `deviceFqdn`: mutual TLS, client certificate forwarded in `X-Client-Cert`, only the device API routed (WAF allow-list; anything else goes to an empty pool) |
-| Front Door Premium + WAF (`frontdoor.bicep`) | The browser edge on `analystFqdn` (managed certificate): `/*` → dashboard, `/scim/v2/*`, `/onboard/*`, `/.well-known/*` → control-api, through a Private Link origin |
+| Front Door Premium + WAF (`frontdoor.bicep`) | The browser edge on `analystFqdn` (managed certificate): `/*` → dashboard, `/scim/v2/*`, `/onboard/*`, `/.well-known/*` and the provider intake `/intake/v1/*` → control-api, through a Private Link origin. The managed rules do not inspect an intake delivery, which carries people's prompts and is authenticated by control-api |
 | Container Apps environment (`container-apps-env.bicep`) | Internal load balancer, workload profiles, logs to Log Analytics |
 | Apps (`container-app.bicep`) | `ingest-api`, `control-api`, `dashboard` (external ingress, VNet only); `query-api`, `content-vault` (internal ingress) |
 | Jobs (`container-app-job.bicep`) | `aggregate` (every 5 minutes), `expire` (daily), `migrate` and `tenant-admin` (started on demand) |

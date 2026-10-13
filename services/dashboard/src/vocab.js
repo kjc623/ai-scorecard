@@ -46,9 +46,10 @@ export const ADMIN_SCIM_TOKENS_ENDPOINT = '/admin/v1/scim/tokens';
 export const ADMIN_DIRECTORY_ENDPOINT = '/admin/v1/directory';
 export const ADMIN_TEAMS_ENDPOINT = '/admin/v1/teams';
 /**
- * The AI providers whose admin APIs the product reads, and the tenant's connection to each. A
- * provider is connected or its key replaced with PUT /<provider>, disconnected with DELETE
- * /<provider>, and pulled at once with POST /<provider>/run.
+ * The AI providers whose records the product reads, and the tenant's connection to each. A
+ * provider is connected, or its key or intake token replaced, with PUT /<provider>, disconnected
+ * with DELETE /<provider>, and a provider with an admin API pulled at once with POST
+ * /<provider>/run.
  */
 export const ADMIN_PROVIDERS_ENDPOINT = '/admin/v1/providers';
 

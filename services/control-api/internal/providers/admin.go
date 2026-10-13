@@ -27,16 +27,19 @@ var (
 
 // Provider is one provider as the Integrations page lists it, with the tenant's connection to it.
 type Provider struct {
-	Provider        string           `json:"provider"`
-	DisplayName     string           `json:"display_name"`
-	Vendor          string           `json:"vendor"`
-	Credential      string           `json:"credential"`
-	CredentialLabel string           `json:"credential_label"`
-	AccountLabel    string           `json:"account_label"`
-	SourceURL       string           `json:"source_url"`
-	Tools           []Tool           `json:"tools"`
-	Available       bool             `json:"available"`
-	Connection      *ConnectionState `json:"connection"`
+	Provider        string `json:"provider"`
+	DisplayName     string `json:"display_name"`
+	Vendor          string `json:"vendor"`
+	Credential      string `json:"credential"`
+	CredentialLabel string `json:"credential_label"`
+	AccountLabel    string `json:"account_label"`
+	SourceURL       string `json:"source_url"`
+	Tools           []Tool `json:"tools"`
+	Available       bool   `json:"available"`
+	// Intake is what the customer sets up to send an intake provider's log (Transport.Kind); empty
+	// for a provider control-api pulls.
+	Intake     string           `json:"intake"`
+	Connection *ConnectionState `json:"connection"`
 }
 
 // Tool is a catalogued tool a provider's records are filed under.
@@ -60,6 +63,8 @@ type ConnectionState struct {
 	LastError       string     `json:"last_error"`
 	RecordsRead     int64      `json:"records_read"`
 	RecordsNew      int64      `json:"records_new"`
+	// IntakeURL is where an active intake connection's deliveries are sent; empty otherwise.
+	IntakeURL string `json:"intake_url"`
 }
 
 // Audit is one write's audit row.
@@ -77,10 +82,12 @@ type Audit struct {
 type AdminStore interface {
 	Providers(ctx context.Context, tenantID string) ([]Provider, error)
 	EntraConnected(ctx context.Context, tenantID string) (bool, error)
-	// Connect connects a provider, or reconnects it, and returns the connection's id: ErrNotFound
-	// for an unknown provider, ErrNoEntra for Microsoft's without an active Entra connection.
-	Connect(ctx context.Context, tenantID, provider, account string, sealedKey []byte, a Audit) (string, error)
-	// Disconnect stops an active connection and forgets its key; ErrNotFound when there is none.
+	// Connect connects a provider, or reconnects it, with a sealed key or an intake token's hash,
+	// and returns the connection's id: ErrNotFound for an unknown provider, ErrNoEntra for
+	// Microsoft's without an active Entra connection.
+	Connect(ctx context.Context, tenantID, provider, account string, sealedKey []byte, tokenHash string, a Audit) (string, error)
+	// Disconnect stops an active connection and forgets its key or intake token; ErrNotFound when
+	// there is none.
 	Disconnect(ctx context.Context, tenantID, provider string, a Audit) error
 	// Connection returns the connection to a provider and whether it is active; ErrNotFound when
 	// the tenant has none.
@@ -99,28 +106,36 @@ type Pull interface {
 	Trigger(tenantID, connectionID string) bool
 }
 
+// Intakes is the intake as the page shows it. *Intake implements it.
+type Intakes interface {
+	Available(provider string) bool
+	Kind(provider string) string
+	URL(provider, connectionID string) string
+}
+
 // Handler serves the Integrations page's API: every provider, and the tenant's connection to each.
 // Every route requires a product access token carrying the admin role; the tenant is the token's.
 // Every write is audited with the admin as actor, in the write's own transaction, and no response
-// or audit row carries a key.
+// or audit row carries a key. An intake token is returned once, by the write that issues it.
 type Handler struct {
 	store  AdminStore
 	auth   deploy.Authenticator
 	sealer Sealer
 	pull   Pull
+	intake Intakes
 	now    func() time.Time
 	logger *slog.Logger
 }
 
 // NewHandler builds the handler. Every argument but the logger is required.
-func NewHandler(st AdminStore, auth deploy.Authenticator, sealer Sealer, pull Pull, logger *slog.Logger) (*Handler, error) {
-	if st == nil || auth == nil || sealer == nil || pull == nil {
-		return nil, errors.New("providers: a store, an authenticator, a sealer and the pull are required")
+func NewHandler(st AdminStore, auth deploy.Authenticator, sealer Sealer, pull Pull, intake Intakes, logger *slog.Logger) (*Handler, error) {
+	if st == nil || auth == nil || sealer == nil || pull == nil || intake == nil {
+		return nil, errors.New("providers: a store, an authenticator, a sealer, the pull and the intake are required")
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handler{store: st, auth: auth, sealer: sealer, pull: pull, now: time.Now, logger: logger}, nil
+	return &Handler{store: st, auth: auth, sealer: sealer, pull: pull, intake: intake, now: time.Now, logger: logger}, nil
 }
 
 // Register adds the routes to mux.
@@ -161,7 +176,15 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range list {
-		list[i].Available = h.pull.Available(list[i].Provider)
+		p := &list[i]
+		p.Available = h.available(*p)
+		if p.Credential != CredentialIntake {
+			continue
+		}
+		p.Intake = h.intake.Kind(p.Provider)
+		if c := p.Connection; c != nil && c.Status == "active" && p.Available {
+			c.IntakeURL = h.intake.URL(p.Provider, c.ConnectionID)
+		}
 	}
 	h.writeJSON(w, http.StatusOK, listJSON{EntraConnected: entra, Providers: list})
 }
@@ -185,13 +208,22 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	account, key := strings.TrimSpace(req.Account), strings.TrimSpace(req.Key)
-	if prov.Credential == "entra_app" {
+	switch prov.Credential {
+	case CredentialEntraApp:
 		if account != "" || key != "" {
 			h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest,
 				prov.DisplayName+" is read with the consent the tenant gave in Microsoft Entra; it takes no key or account"))
 			return
 		}
-	} else {
+	case CredentialIntake:
+		if account != "" || key != "" {
+			h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest,
+				prov.DisplayName+" sends its log with a token this page issues; it takes no key or account"))
+			return
+		}
+		h.connectIntake(w, r, p, prov)
+		return
+	default:
 		if key == "" || len(key) > maxKeyLen || strings.ContainsAny(key, " \t\r\n") {
 			h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest,
 				fmt.Sprintf("the %s is required, without spaces", strings.ToLower(prov.CredentialLabel))))
@@ -212,7 +244,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	a := h.audit(p, "provider.connect", map[string]any{"provider": prov.Provider, "account": account})
-	id, err := h.store.Connect(r.Context(), p.Tenant, prov.Provider, account, sealed, a)
+	id, err := h.store.Connect(r.Context(), p.Tenant, prov.Provider, account, sealed, "", a)
 	if errors.Is(err, ErrNoEntra) {
 		h.fail(w, apierr.New(http.StatusConflict, apierr.CodeNoEntraConnection,
 			"reading "+prov.DisplayName+" needs an active Microsoft Entra connection for this tenant"))
@@ -224,6 +256,24 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	queued := h.pull.Trigger(p.Tenant, id)
 	h.logger.Info("control: provider connected", "tenant", p.Tenant, "provider", prov.Provider, "connection", id)
 	h.writeJSON(w, http.StatusOK, map[string]any{"connection_id": id, "queued": queued})
+}
+
+// connectIntake connects an intake provider with a new token, or replaces the token of its
+// connection, which the old one stops opening. The token is in this answer and nowhere else.
+func (h *Handler) connectIntake(w http.ResponseWriter, r *http.Request, p deploy.Principal, prov Provider) {
+	token, hash, err := NewIntakeToken()
+	if err != nil {
+		h.fail(w, apierr.Internal(err))
+		return
+	}
+	a := h.audit(p, "provider.connect", map[string]any{"provider": prov.Provider, "intake_token": "issued"})
+	id, err := h.store.Connect(r.Context(), p.Tenant, prov.Provider, "", nil, hash, a)
+	if h.storeFailed(w, err, "connect provider") {
+		return
+	}
+	h.logger.Info("control: provider intake token issued", "tenant", p.Tenant, "provider", prov.Provider, "connection", id)
+	h.writeJSON(w, http.StatusOK, map[string]any{"connection_id": id, "queued": false,
+		"intake_url": h.intake.URL(prov.Provider, id), "intake_token": token})
 }
 
 func (h *Handler) handleDisconnect(w http.ResponseWriter, r *http.Request) {
@@ -256,6 +306,11 @@ func (h *Handler) handleRun(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if prov.Credential == CredentialIntake {
+		h.fail(w, apierr.New(http.StatusConflict, apierr.CodeInvalidRequest,
+			prov.DisplayName+" sends its log as it is written; there is nothing to pull"))
+		return
+	}
 	id, active, err := h.store.Connection(r.Context(), p.Tenant, prov.Provider)
 	if errors.Is(err, ErrNotFound) || err == nil && !active {
 		h.fail(w, apierr.New(http.StatusConflict, apierr.CodeInvalidRequest, "connect "+prov.DisplayName+" first"))
@@ -284,12 +339,20 @@ func (h *Handler) provider(w http.ResponseWriter, r *http.Request, p deploy.Prin
 		h.fail(w, apierr.New(http.StatusNotFound, apierr.CodeNotFound, "no such provider"))
 		return Provider{}, false
 	}
-	if !h.pull.Available(name) && r.Method != http.MethodDelete {
+	if !h.available(list[i]) && r.Method != http.MethodDelete {
 		h.fail(w, apierr.New(http.StatusServiceUnavailable, apierr.CodeUnavailable,
 			"this deployment cannot read "+list[i].DisplayName))
 		return Provider{}, false
 	}
 	return list[i], true
+}
+
+// available reports whether this deployment reads p: pulls it, or receives its intake.
+func (h *Handler) available(p Provider) bool {
+	if p.Credential == CredentialIntake {
+		return h.intake.Available(p.Provider)
+	}
+	return h.pull.Available(p.Provider)
 }
 
 func (h *Handler) admin(w http.ResponseWriter, r *http.Request) (deploy.Principal, bool) {

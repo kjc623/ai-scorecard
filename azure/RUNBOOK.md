@@ -98,6 +98,11 @@ Entra create a non-gallery enterprise application for provisioning with Tenant U
 `https://<analyst-fqdn>/scim/v2` and the token, map `objectId → externalId`, scope it to assigned
 users and groups, and start provisioning.
 
+AI providers: **Settings → Integrations**. Gemini Code Assist, Amazon Bedrock and Perplexity
+Enterprise have no API to read; connecting one shows an intake URL on the analyst hostname, which
+Front Door routes to control-api, and a token, shown once, which the customer's cloud sends the
+provider's log with (control-api README, *The log intake*).
+
 ## 7. Devices (Intune)
 
 1. Dashboard → **Settings → Devices → Install the agent → Download Intune package** (the generic MSI wrapped with the

@@ -150,8 +150,8 @@ func (r *Recorder) Record(ctx context.Context, c Connection, p Policy, userRefKe
 		"policy_decision":     protocol.Decision{RuleID: DefaultRuleID, Action: protocol.ActionLogged},
 	}
 	// record_event keeps the name only for a tenant whose device_identity is clear.
-	if rec.UPN != "" {
-		env["subject_name"] = rec.UPN
+	if name := subjectName(rec); name != "" {
+		env["subject_name"] = name
 	}
 	if mode.ReadsContent() {
 		if err := r.classify(ctx, p, mode, rec, env); err != nil {
@@ -263,7 +263,7 @@ func dedupKey(connectionID, recordID string) string {
 }
 
 // userRef derives the person's user_ref as a device does: from the UPN when the record has one,
-// else from the Entra object id.
+// else from the Entra object id, else from the provider-side account.
 func userRef(key []byte, rec Record) (string, error) {
 	if upn := strings.TrimSpace(rec.UPN); upn != "" {
 		return protocol.DeriveUserRef(key, protocol.UserRefUPN, upn)
@@ -271,7 +271,26 @@ func userRef(key []byte, rec Record) (string, error) {
 	if oid := strings.TrimSpace(rec.ObjectID); oid != "" {
 		return protocol.DeriveUserRef(key, protocol.UserRefOID, oid)
 	}
+	if acct := strings.TrimSpace(rec.Account); acct != "" {
+		return protocol.DeriveUserRef(key, protocol.UserRefAccount, acct)
+	}
 	return "", errors.New("the record names no person")
+}
+
+// maxSubjectNameRunes is the envelope's cap on subject_name.
+const maxSubjectNameRunes = 200
+
+// subjectName is the clear name of whoever sent the record: the UPN, else the account, as a device
+// names a local account.
+func subjectName(rec Record) string {
+	name := strings.TrimSpace(rec.UPN)
+	if name == "" && strings.TrimSpace(rec.ObjectID) == "" {
+		name = strings.TrimSpace(rec.Account)
+	}
+	if utf8.RuneCountInString(name) > maxSubjectNameRunes {
+		name = string([]rune(name)[:maxSubjectNameRunes])
+	}
+	return name
 }
 
 // classifyTerms is the custom labels' words and customer names as the classifier takes them.

@@ -1,21 +1,22 @@
 // integrations-render.js — Settings → Integrations, state to HTML. Pure: no DOM, no I/O, no state.
 //
 // One card per provider the admin api lists, drawn from its row alone: its name, vendor and tools,
-// how it is connected (a key and an account, or the tenant's Entra consent) and the labels its
-// fields carry. The same rules as the other settings pages: a count the server did not send is
-// "not reported", never 0, a failed pull says which failure it was and who can fix it, and every
-// string from an API is escaped. The key field is never given a value.
+// how it is connected (a key and an account, the tenant's Entra consent, or an intake token) and
+// the labels its fields carry. The same rules as the other settings pages: a count the server did
+// not send is "not reported", never 0, a failed pull or delivery says which failure it was and who
+// can fix it, and every string from an API is escaped. The key field is never given a value; an
+// intake token appears only in the card of the action that issued it.
 
 import { escapeHtml, renderPageHead } from './render.js';
 import { formatCount } from './format.js';
 import { depButton, depCard, depChip, depInstant, depProblem } from './deployment-render.js';
-import { PULL_ERRORS, connectKind, isConnected } from './integrations.js';
+import { DELIVERY_ERRORS, INTAKE_SETUP, PULL_ERRORS, connectKind, isConnected } from './integrations.js';
 
 function intHeader(head) {
   return renderPageHead({
     title: 'Integrations',
     ...head,
-    subtitle: 'Connect the AI providers whose admin APIs Sundial can read. Sundial then reads each provider\'s own record of the prompts your people sent, every hour, with no device in between.',
+    subtitle: 'Connect the AI providers whose records Sundial can read: from a provider\'s admin API every hour, or from the log a provider writes in your cloud, which your cloud sends to Sundial as it is written. Either way Sundial reads each provider\'s own record of the prompts your people sent, with no device in between.',
   });
 }
 
@@ -55,6 +56,11 @@ function intLastPull(c) {
   return '<span class="v-absent">not run yet</span>';
 }
 
+function intLastDelivery(c) {
+  if (c.last_completed_at) return `${depInstant(c.last_completed_at)}${c.last_status ? ` ${depChip(c.last_status)}` : ''}`;
+  return '<span class="v-absent">none yet</span>';
+}
+
 function intRecords(c) {
   if (c.records_read === null) return '<span class="v-absent">not reported</span>';
   return `<span class="v-number">${escapeHtml(formatCount(c.records_read))}</span>`
@@ -64,11 +70,13 @@ function intRecords(c) {
 function intFacts(provider) {
   const c = provider.connection;
   const rows = [['Covers', provider.tools.length > 0 ? escapeHtml(provider.tools.map((t) => t.name).join(', ')) : '<span class="v-absent">no tool listed</span>']];
+  const intake = provider.credential === 'intake';
   if (isConnected(provider)) {
     if (c.account) rows.push([provider.account_label ?? 'Account', `<code>${escapeHtml(c.account)}</code>`]);
+    if (intake) rows.push(['Endpoint', c.intake_url ? `<code class="dp-url">${escapeHtml(c.intake_url)}</code>` : '<span class="v-absent">not reported</span>']);
     rows.push(['Connected', `${depInstant(c.created_at, 'not reported')}${by(c.created_by)}`]);
     if (c.updated_at && c.updated_at !== c.created_at) rows.push(['Last changed', `${depInstant(c.updated_at)}${by(c.updated_by)}`]);
-    rows.push(['Last pull', intLastPull(c)]);
+    rows.push(intake ? ['Last delivery', intLastDelivery(c)] : ['Last pull', intLastPull(c)]);
     rows.push(['Records read', intRecords(c)]);
   } else if (c) {
     rows.push(['Disconnected', `${depInstant(c.updated_at, 'not reported')}${by(c.updated_by)}`]);
@@ -79,16 +87,24 @@ function intFacts(provider) {
 function intPullFailed(provider) {
   const c = provider.connection;
   if (!isConnected(provider) || c.last_status !== 'failed') return '';
-  return `<p class="dp-problem" role="alert"><strong>The last pull failed.</strong> ${escapeHtml(PULL_ERRORS[c.last_error] ?? 'The provider could not be read.')}`
+  const [what, words] = provider.credential === 'intake'
+    ? ['delivery', DELIVERY_ERRORS[c.last_error] ?? 'The delivery could not be recorded.']
+    : ['pull', PULL_ERRORS[c.last_error] ?? 'The provider could not be read.'];
+  return `<p class="dp-problem" role="alert"><strong>The last ${what} failed.</strong> ${escapeHtml(words)}`
     + (c.last_error ? ` <code>${escapeHtml(c.last_error)}</code>` : '') + '</p>';
 }
 
 /** What the admin's last action on this provider did. */
 function intOutcome(provider, action) {
-  const sentence = {
+  const forgotten = { api_key: ' and has forgotten its key', intake: ' and has forgotten its token' }[provider.credential] ?? '';
+  const sentence = provider.credential === 'intake' ? {
+    connect: 'Connected. Sundial now receives what is sent with the token below.',
+    replace: 'Token replaced. The previous token no longer works.',
+    disconnect: `Disconnected. Sundial no longer receives ${provider.display_name}${forgotten}.`,
+  }[action.done] : {
     connect: action.queued ? 'Connected. The first pull has started: it reads the last 7 days.' : 'Connected. The first pull runs within the hour and reads the last 7 days.',
     replace: action.queued ? 'Key replaced. A pull has started with it.' : 'Key replaced. The next pull uses it.',
-    disconnect: `Disconnected. Sundial no longer reads ${provider.display_name}${provider.credential === 'api_key' ? ' and has forgotten its key' : ''}.`,
+    disconnect: `Disconnected. Sundial no longer reads ${provider.display_name}${forgotten}.`,
     run: action.queued ? 'A pull has started.' : 'A pull is already running.',
   }[action.done];
   if (!sentence) return '';
@@ -103,6 +119,32 @@ function intConsentNote(state, provider) {
       + 'It is linked from the onboarding link your vendor sent; its state is on <a href="#directory">Identity Providers</a>.</p>';
   }
   return `<p class="dp-note">${escapeHtml(provider.display_name)} is read with the consent your organisation gave the Sundial application in Microsoft Entra ID: there is no key to paste.</p>`;
+}
+
+function intCopied(action, what) {
+  if (action.copied?.what !== what) return '';
+  return action.copied.ok
+    ? '<span class="dp-copied" role="status">Copied</span>'
+    : '<span class="dp-copied dp-copied-no" role="status">This browser did not allow copying: select the text and copy it.</span>';
+}
+
+/** The endpoint and the token an intake connection was just given: the only time the token is shown. */
+function intIssued(provider, action) {
+  const issued = action.issued;
+  if (!issued) return '';
+  const id = escapeHtml(provider.provider);
+  return '<div class="dp-secret">'
+    + '<p><strong>Copy this token now. It will not be shown again.</strong> Sundial keeps only a hash of it. If it is lost, replace it.</p>'
+    + (issued.url
+      ? `<label class="dp-label" for="int-url-${id}">Endpoint</label><div class="dp-secret-row">`
+        + `<input class="dp-input dp-mono" id="int-url-${id}" readonly value="${escapeHtml(issued.url)}">`
+        + depButton('Copy endpoint', { int: 'copy', what: 'url' }) + '</div>' + intCopied(action, 'url')
+      : '')
+    + `<label class="dp-label" for="int-token-${id}">Token</label><div class="dp-secret-row">`
+    + `<input class="dp-input dp-mono" id="int-token-${id}" readonly value="${escapeHtml(issued.token)}">`
+    + depButton('Copy token', { int: 'copy', what: 'token' }, { kind: 'primary' }) + '</div>' + intCopied(action, 'token')
+    + `<div class="dp-actions">${depButton('I have copied it', { int: 'cancel' }, { kind: 'quiet' })}</div>`
+    + '</div>';
 }
 
 function intForm(state, provider) {
@@ -130,16 +172,28 @@ function intActions(state, provider, mine) {
   const connected = isConnected(provider);
   const busy = Boolean(state.action.pending);
   if (mine?.confirm) {
-    return `<div class="dp-actions"><span class="dp-confirm">Stop reading ${escapeHtml(provider.display_name)}${provider.credential === 'api_key' ? ' and forget its key' : ''}? `
+    const [verb, forget] = provider.credential === 'intake' ? ['receiving', ' and forget its token'] : ['reading', provider.credential === 'api_key' ? ' and forget its key' : ''];
+    return `<div class="dp-actions"><span class="dp-confirm">Stop ${verb} ${escapeHtml(provider.display_name)}${forget}? `
       + depButton('Disconnect', { int: 'confirm-disconnect', provider: id }, { kind: 'danger', small: true })
+      + depButton('Cancel', { int: 'cancel' }, { kind: 'quiet', small: true }) + '</span></div>';
+  }
+  if (mine?.replace) {
+    return `<div class="dp-actions"><span class="dp-confirm">Issue a new token? The current one stops working at once, so what ${escapeHtml(provider.display_name)} sends is refused until its sender has the new one. `
+      + depButton('Replace token', { int: 'confirm-replace', provider: id }, { kind: 'danger', small: true })
       + depButton('Cancel', { int: 'cancel' }, { kind: 'quiet', small: true }) + '</span></div>';
   }
   if (mine?.form) return intForm(state, provider);
   const buttons = [];
-  if (connected && kind) buttons.push(depButton(mine?.pending === 'run' ? 'Starting…' : 'Pull now', { int: 'run', provider: id }, { kind: 'primary', disabled: busy }));
+  if (connected && (kind === 'key' || kind === 'consent')) buttons.push(depButton(mine?.pending === 'run' ? 'Starting…' : 'Pull now', { int: 'run', provider: id }, { kind: 'primary', disabled: busy }));
   if (kind === 'key') buttons.push(depButton(connected ? 'Replace key' : 'Connect', { int: 'open', provider: id }, { kind: connected ? '' : 'primary', disabled: busy }));
   if (kind === 'consent' && !connected) {
     buttons.push(depButton(mine?.pending === 'connect' ? 'Connecting…' : 'Connect', { int: 'connect', provider: id }, { kind: 'primary', disabled: busy || !state.data.entra_connected }));
+  }
+  if (kind === 'intake') {
+    const pending = mine?.pending === 'connect';
+    buttons.push(connected
+      ? depButton(pending ? 'Replacing…' : 'Replace token', { int: 'replace', provider: id }, { disabled: busy })
+      : depButton(pending ? 'Connecting…' : 'Connect', { int: 'connect', provider: id }, { kind: 'primary', disabled: busy }));
   }
   if (connected) buttons.push(depButton(mine?.pending === 'disconnect' ? 'Disconnecting…' : 'Disconnect', { int: 'disconnect', provider: id }, { kind: 'quiet', disabled: busy }));
   return buttons.length > 0 ? `<div class="dp-actions">${buttons.join('')}</div>` : '';
@@ -149,13 +203,16 @@ function intCard(state, provider) {
   const mine = state.action.provider === provider.provider ? state.action : null;
   const kind = connectKind(provider);
   const docs = kind && provider.source_url
-    ? `<p class="dp-note"><a href="${escapeHtml(provider.source_url)}" target="_blank" rel="noopener noreferrer">${kind === 'key' ? 'How to issue a key' : 'How it is read'}</a></p>`
+    ? `<p class="dp-note"><a href="${escapeHtml(provider.source_url)}" target="_blank" rel="noopener noreferrer">${{ key: 'How to issue a key', consent: 'How it is read', intake: 'How to turn on its log' }[kind]}</a></p>`
     : '';
+  const setup = kind === 'intake' && INTAKE_SETUP[provider.intake] ? `<p class="dp-note">${escapeHtml(INTAKE_SETUP[provider.intake])}</p>` : '';
   const body = intFacts(provider)
     + intPullFailed(provider)
     + (kind ? '' : '<p class="dp-note">Not available on this deployment.</p>')
     + (kind === 'consent' ? intConsentNote(state, provider) : '')
     + (mine ? intOutcome(provider, mine) : '')
+    + (mine ? intIssued(provider, mine) : '')
+    + setup
     + intActions(state, provider, mine)
     + (mine ? depProblem(mine.problem) : '')
     + docs;
@@ -172,9 +229,10 @@ function intProviders(state) {
 }
 
 const INT_NOTES = Object.freeze([
-  'Every connection, replaced key, disconnection and pull you start is written to the audit trail under your name.',
+  'Every connection, replaced key or token, disconnection and pull you start is written to the audit trail under your name.',
   'A key is sent once, when you connect, and kept sealed. Sundial never shows it again: to change it, replace it with a new one.',
-  'Sundial pulls each connected provider every hour and right after it is connected. A connection\'s first pull reads the last 7 days.',
+  'Sundial pulls each provider connected with a key or consent every hour and right after it is connected. A connection\'s first pull reads the last 7 days.',
+  'A provider with no admin API writes its log in your cloud, and your cloud sends it to the endpoint shown with the token issued when you connect. Sundial keeps only a hash of the token and shows it once.',
   'A prompt a device also captured is counted once: the provider\'s record joins the device\'s.',
 ]);
 

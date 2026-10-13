@@ -28,8 +28,8 @@ func TestAppCatalogAgainstPostgres(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(in.Catalog) != apps || apps != 36 {
-		t.Fatalf("the policy read has %d apps, ref.app %d; want the 36 seed apps", len(in.Catalog), apps)
+	if len(in.Catalog) != apps || apps != 37 {
+		t.Fatalf("the policy read has %d apps, ref.app %d; want the 37 seed apps", len(in.Catalog), apps)
 	}
 	n := 0
 	for i, a := range in.Catalog {
