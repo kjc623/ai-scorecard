@@ -83,11 +83,13 @@ type Tenant struct {
 	ReadEnabled   bool
 }
 
-// Grant is a per-event content upload grant (ops.grant).
+// Grant is a per-event content upload grant (ops.grant). Its origin is exactly one of a device and
+// a provider connection; the other is "".
 type Grant struct {
 	GrantID      string
 	EventID      string
 	DeviceID     string
+	ConnectionID string // ops.provider_connection.connection_id
 	SubmissionID string // "" when the event's submission was not known at grant time
 	Decision     string // pending | granted | denied | expired | voided
 	ExpiresAt    time.Time

@@ -29,25 +29,32 @@ SELECT coalesce(
            (SELECT a.user_ref FROM ops.user_ref_alias a
              WHERE a.tenant_id = ops.current_tenant() AND a.alias_ref = $1::text), $1::text)) AS display_name`;
 
-/** The subject's events (the deduplicated submissions), newest first. Metadata only. */
+/**
+ * The subject's events (the deduplicated submissions), newest first. Metadata only. Each names its
+ * origin: the device, or the provider whose admin API recorded it.
+ */
 export const SUBJECT_SUBMISSIONS_SQL = `
 SELECT s.submission_id::text AS submission_id, s.received_at, s.first_occurred_at, s.last_occurred_at,
        s.user_ref AS subject, s.tool_fingerprint AS tool, ops.tool_display_name(s.tool_fingerprint) AS tool_name,
-       s.device_id::text AS device, s.collection_mode AS mode, s.policy_action AS action,
+       s.device_id::text AS device, p.display_name AS provider, s.collection_mode AS mode, s.policy_action AS action,
        s.content_state AS content_state, s.winning_source AS route, s.kind AS detection_basis,
        s.prompt_kind, s.merge_confidence, s.confidence, s.observation_count, s.size_bytes,
        s.labels, s.observed_routes
   FROM ingest.submission s
+  LEFT JOIN ops.provider_connection pc ON pc.tenant_id = s.tenant_id AND pc.connection_id = s.connection_id
+  LEFT JOIN ref.provider p ON p.provider = pc.provider
  WHERE s.tenant_id = ops.current_tenant() AND s.user_ref = $1::text
  ORDER BY s.received_at DESC, s.submission_id DESC
  LIMIT $2::int`;
 
-/** The subject's observations (one row per route), newest first. Metadata only. */
+/** The subject's observations (one row per route), newest first, each with its origin. Metadata only. */
 export const SUBJECT_OBSERVATIONS_SQL = `
-SELECT o.event_id::text AS event_id, o.device_id::text AS device, o.subject_name, o.tool_fingerprint AS tool,
-       o.direction, o.kind, o.occurred_at, o.received_at, o.source, o.confidence,
+SELECT o.event_id::text AS event_id, o.device_id::text AS device, p.display_name AS provider, o.subject_name,
+       o.tool_fingerprint AS tool, o.direction, o.kind, o.occurred_at, o.received_at, o.source, o.confidence,
        o.collection_mode AS mode, o.size_bytes, o.labels, o.classifier_version
   FROM ingest.observation o
+  LEFT JOIN ops.provider_connection pc ON pc.tenant_id = o.tenant_id AND pc.connection_id = o.connection_id
+  LEFT JOIN ref.provider p ON p.provider = pc.provider
  WHERE o.tenant_id = ops.current_tenant() AND o.user_ref = $1::text
  ORDER BY o.received_at DESC, o.event_id DESC
  LIMIT $2::int`;
@@ -122,12 +129,12 @@ export function validateSubjectRequest(body) {
 const ARCHIVE_COLUMNS = Object.freeze({
   submissions: Object.freeze([
     'submission_id', 'received_at', 'first_occurred_at', 'last_occurred_at', 'subject', 'tool',
-    'tool_name', 'device', 'mode', 'action', 'content_state', 'route', 'detection_basis',
+    'tool_name', 'device', 'provider', 'mode', 'action', 'content_state', 'route', 'detection_basis',
     'prompt_kind', 'merge_confidence', 'confidence', 'observation_count', 'size_bytes', 'labels',
     'observed_routes',
   ]),
   observations: Object.freeze([
-    'event_id', 'device', 'subject_name', 'tool', 'direction', 'kind', 'occurred_at', 'received_at',
+    'event_id', 'device', 'provider', 'subject_name', 'tool', 'direction', 'kind', 'occurred_at', 'received_at',
     'source', 'confidence', 'mode', 'size_bytes', 'labels', 'classifier_version',
   ]),
   findings: Object.freeze([

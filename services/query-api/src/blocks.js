@@ -318,8 +318,9 @@ export function peopleStatement(query) {
 
 /**
  * Late flush: a device that was offline and flushes its spool spikes received time, not behaviour.
- * Both clocks are on `ingest.submission`, so rows where `received_at - first_occurred_at` exceeds
- * an hour annotate the series as a flush.
+ * Both clocks are on `ingest.submission`, so a device's rows where `received_at - first_occurred_at`
+ * exceeds an hour annotate the series as a flush. A provider's records are read on a schedule and
+ * always arrive late, so they are not counted as flushed.
  *
  * @param {string} subject
  * @param {{from:string,to:string}} window
@@ -329,7 +330,8 @@ export function flushCheckStatement(subject, window) {
     id: 'flush_check',
     text: [
       'SELECT count(*)::bigint AS rows_in_window,',
-      "       count(*) FILTER (WHERE s.received_at - s.first_occurred_at > interval '1 hour')::bigint AS late_flush_rows",
+      "       count(*) FILTER (WHERE s.device_id IS NOT NULL",
+      "                          AND s.received_at - s.first_occurred_at > interval '1 hour')::bigint AS late_flush_rows",
       '  FROM ingest.submission s',
       ' WHERE s.tenant_id = ops.current_tenant()',
       '   AND s.user_ref = $1::text',

@@ -24,6 +24,7 @@ const (
 	grantID      = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
 	submissionID = "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"
 	deviceID     = "3c4d5e6f-7a8b-4c9d-8e1f-2a3b4c5d6e7f"
+	connectionID = "5f6a7b8c-9d0e-4f1a-8b2c-3d4e5f6a7b8c"
 )
 
 var t0 = time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
@@ -129,9 +130,45 @@ func TestUploadStoresEncryptedContent(t *testing.T) {
 	if len(audit) != 1 || audit[0].Action != vault.ActionContentStored || audit[0].ActorType != "device" || audit[0].ActorID != deviceID {
 		t.Fatalf("audit = %+v", audit)
 	}
+	if _, ok := audit[0].Detail["connection_id"]; ok {
+		t.Fatal("a device's upload is audited with a provider connection")
+	}
 	if strings.Contains(strings.ToLower(audit[0].Detail["raw_digest"].(string)), "q3") {
 		t.Fatal("the audit row carries content")
 	}
+}
+
+func TestAProviderRecordIsStoredUnderItsConnection(t *testing.T) {
+	r := newRig(t, store.SearchFullText)
+	g := r.store.Grant(tenantID, grantID)
+	g.DeviceID, g.ConnectionID = "", connectionID
+	r.store.PutGrant(tenantID, g)
+	content := []byte("draft the Contoso renewal letter")
+	res, err := r.svc.Upload(ctx, upload(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := r.store.Content(tenantID); len(c) != 1 || c[0].ObjectID != res.ObjectID || c[0].SubmissionID != submissionID {
+		t.Fatalf("stored = %+v", c)
+	}
+	if rows := r.store.SearchRows(tenantID); len(rows) != 1 || rows[0].Body != string(content) {
+		t.Fatalf("index rows = %+v, want the provider's prompt text", rows)
+	}
+	if s := r.store.Submission(tenantID, submissionID); s.ContentState != "uploaded" {
+		t.Fatalf("submission content_state = %q, want uploaded", s.ContentState)
+	}
+	audit := r.store.Audit()
+	if len(audit) != 1 || audit[0].Action != vault.ActionContentStored || audit[0].ActorType != "service" ||
+		audit[0].ActorID != "provider-connection:"+connectionID || audit[0].Detail["connection_id"] != connectionID {
+		t.Fatalf("audit = %+v, want the provider connection as the actor", audit)
+	}
+
+	again, err := r.svc.Upload(ctx, upload(content))
+	if err != nil || !again.Replayed || again.ObjectID != res.ObjectID {
+		t.Fatalf("retry = %+v, %v; want the stored object replayed", again, err)
+	}
+	_, err = r.svc.Upload(ctx, upload([]byte("another text")))
+	wantDenial(t, err, vault.ReasonAlreadyStored)
 }
 
 func TestARetryOfTheSameUploadSucceedsWithoutWriting(t *testing.T) {

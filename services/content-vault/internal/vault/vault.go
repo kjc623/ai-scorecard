@@ -82,7 +82,7 @@ type UploadRequest struct {
 	TenantID  string
 	EventID   string
 	GrantID   string
-	RawDigest string // protocol.RawDigest of Content, as the device declared it
+	RawDigest string // protocol.RawDigest of Content, as its uploader declared it
 	Content   []byte
 }
 
@@ -158,7 +158,7 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (UploadResult, 
 		if err != nil {
 			return err
 		}
-		if err := tx.AppendAudit(ctx, store.AuditEntry{
+		audit := store.AuditEntry{
 			ActorType: "device", ActorID: g.DeviceID, Action: ActionContentStored,
 			ObjectType: "content", ObjectID: c.ObjectID, OccurredAt: now,
 			Detail: map[string]any{
@@ -167,7 +167,13 @@ func (s *Service) Upload(ctx context.Context, req UploadRequest) (UploadResult, 
 				"key_version": c.KeyVersion, "expires_at": c.ExpiresAt.Format(time.RFC3339),
 				"indexed_prompt": prompt, "indexed_attachment_names": names, "via": "control-api",
 			},
-		}); err != nil {
+		}
+		// A provider's record has no device: control-api read it from the provider's admin API.
+		if g.ConnectionID != "" {
+			audit.ActorType, audit.ActorID = "service", "provider-connection:"+g.ConnectionID
+			audit.Detail["connection_id"] = g.ConnectionID
+		}
+		if err := tx.AppendAudit(ctx, audit); err != nil {
 			return err
 		}
 		res = UploadResult{
