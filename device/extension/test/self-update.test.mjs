@@ -7,6 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+import { HEALTH_ALARM } from '../background/service-worker.js';
 import { createHarness, settle } from '../test-support/harness.mjs';
 import { versionNewer } from '../src/self-update.js';
 import { TYPE } from '../src/messages.js';
@@ -33,6 +34,23 @@ test('an agent newer than the extension makes it ask the browser for an update, 
   await h.app.requestPolicySync();
   await settle();
   assert.equal(h.fake.state.updateChecks, 1, 'the same release is not asked for again, so the browser does not throttle');
+});
+
+test('when capture-core restarts as a newer release, the update is asked for as the channel comes back', async () => {
+  const h = createHarness({ version: '1.0.27', core: { agentVersion: '1.0.27' }, connectCooldownMs: 0 });
+  h.fake.state.updateCheckStatus = 'update_available';
+  await h.app.start();
+  await settle();
+  assert.equal(h.fake.state.updateChecks, 0);
+
+  h.core.setAgentVersion('1.0.28');
+  h.fake.state.nativePorts.at(-1).__die();
+  await settle();
+  // An idle browser has nothing queued, so the health report is the only message on the new port.
+  h.fake.state.alarmHandlers[0]({ name: HEALTH_ALARM });
+  await settle();
+  assert.equal(h.fake.state.updateChecks, 1, 'asked on reconnect, not at the next policy sync alarm');
+  assert.equal(h.app.selfUpdate.lastStatus, 'update_available');
 });
 
 test('an agent at the same, an older or a development version asks for nothing', async () => {

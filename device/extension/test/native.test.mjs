@@ -206,6 +206,15 @@ test('an unsolicited core message is reported, never silently consumed', () => {
   assert.ok(events.some((e) => e.kind === 'unsolicited' && e.type === CORE_TYPE.POLICY_BUNDLE));
 });
 
+test('the answer to a one-way message shows the channel works', async () => {
+  const fake = createFakeChrome();
+  const { client, events } = clientOn(fake, { handle: async (m) => ({ type: CORE_TYPE.ACK, version: 1, id: m.id, body: {} }) });
+  client.sendOneWay(TYPE.HEALTH, { a: 1 });
+  assert.ok(!events.some((e) => e.kind === 'connected'), 'an open port is not a working channel');
+  await settle();
+  assert.equal(events.filter((e) => e.kind === 'connected').length, 1);
+});
+
 test('a version mismatch is reported as such rather than parsed as a valid message', () => {
   const fake = createFakeChrome();
   const { client, events } = clientOn(fake, { handle: () => null });

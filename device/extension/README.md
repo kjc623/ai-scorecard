@@ -28,7 +28,9 @@ certificate request the extension downloader cannot answer), and the browsers in
 without `update_url` the browser looks for updates in its own store. The browser checks every few hours on its own; sooner,
 the extension follows the agent: `capture-core` names its release version in each `policy_bundle`
 answer, and an extension of an older release asks the browser to check now
-(`runtime.requestUpdateCheck`, once per agent version). A downloaded update installs only when the
+(`runtime.requestUpdateCheck`, once per agent version). A policy sync also runs each time the
+channel comes back, so once `capture-core` restarts into a new release the extension asks within a
+minute, the period of its health report. A downloaded update installs only when the
 service worker stops, which the open native port prevents, so on `runtime.onUpdateAvailable` the
 extension hands its queue to `capture-core` and reloads. The installers register the native
 messaging host `com.shadowaicapture.capture_core` for the extension's id, which `manifest.json`'s
