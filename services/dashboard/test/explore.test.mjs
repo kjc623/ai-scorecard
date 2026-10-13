@@ -248,6 +248,11 @@ test('both clocks are shown and the device clock is marked', async () => {
   assert.match(html, /x-device-clock/);
   assert.match(html, /possibly skewed/);
   assert.match(html, /before receipt/, 'a late flush is named as one');
+  const column = { key: 'first_occurred_at', kind: 'device-clock' };
+  const late = { first_occurred_at: '2026-10-12T09:00:00Z', received_at: '2026-10-12T12:00:00Z' };
+  assert.match(renderExploreValue(late, column), /before receipt/);
+  assert.doesNotMatch(renderExploreValue({ ...late, provider: 'ChatGPT Enterprise' }, column), /before receipt/,
+    'a provider\'s record is read on a schedule, not flushed from a spool');
 });
 
 // ── detail ───────────────────────────────────────────────────────────────────────────────────

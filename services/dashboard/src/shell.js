@@ -18,7 +18,7 @@ export const SECTIONS = Object.freeze([
   section('search', 'Search', 'search', [['explore', 'Search']], { href: 'explore.html' }),
   section('policy', 'Policy', 'rules', [['rules', 'Rules'], ['labels', 'Labels'], ['sanction', 'Tools'], ['activity', 'Activity']]),
   section('archive', 'Archive', 'archive', [['insights', 'Insights']], { foot: true }),
-  section('settings', 'Settings', 'settings', [['settings', 'Collection'], ['devices', 'Devices'], ['directory', 'Identity Providers'], ['audit', 'Audit trail']], { foot: true }),
+  section('settings', 'Settings', 'settings', [['settings', 'Collection'], ['devices', 'Devices'], ['directory', 'Identity Providers'], ['integrations', 'Integrations'], ['audit', 'Audit trail']], { foot: true }),
 ]);
 
 function section(id, label, icon, pages, { href = null, foot = false } = {}) {

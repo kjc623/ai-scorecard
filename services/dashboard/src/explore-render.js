@@ -66,7 +66,8 @@ export function renderExploreValue(row, column, { full = false } = {}) {
     case 'server-clock':
       return `<time class="x-time" datetime="${escapeHtml(raw)}">${escapeHtml(formatInstant(raw))}</time>`;
     case 'device-clock': {
-      const lag = row.received_at ? Date.parse(row.received_at) - Date.parse(raw) : 0;
+      // A provider's record is read on a schedule, so it always arrives after it happened.
+      const lag = row.received_at && !providerOf(row) ? Date.parse(row.received_at) - Date.parse(raw) : 0;
       const late = lag > LATE_FLUSH_MS
         ? ` <span class="x-lag" title="Received long after the device clock said it happened: a spool flush, not a burst of activity">${escapeHtml(formatDuration(raw, row.received_at))} before receipt</span>`
         : '';
@@ -273,6 +274,11 @@ export function renderExploreResults(state) {
     + `${exploreHead(dataset)}<tbody>${body}</tbody></table><div class="x-more">${foot}</div>`;
 }
 
+/** The provider whose admin API recorded an event, or null for an event a device observed. */
+function providerOf(row) {
+  return typeof row?.provider === 'string' && row.provider !== '' ? row.provider : null;
+}
+
 function exploreFacts(pairs) {
   return `<dl class="x-facts">${pairs.map(([label, html]) => `<div><dt>${escapeHtml(label)}</dt><dd>${html}</dd></div>`).join('')}</dl>`;
 }
@@ -306,17 +312,22 @@ function exploreContentProblem(problem) {
     + (problem?.code ? `<p class="x-state-code">${escapeHtml(problem.code)}</p>` : '') + '</div>';
 }
 
-/** Who typed a matching prompt, on which device, into which tool. A part the answer lacks is left out. */
+/**
+ * Who typed a matching prompt, on which device or through which provider, into which tool. A part
+ * the answer lacks is left out.
+ */
 function exploreHitMeta(hit) {
   // Prefer the device hostname to the UUID: an analyst places a machine by its name, and the UUID
-  // is still the identity behind the "open the event" action.
-  const device = typeof hit.hostname === 'string' && hit.hostname !== '' ? hit.hostname : hit.device;
+  // is still the identity behind the "open the event" action. A prompt read from a provider's admin
+  // API has no device, and is placed by the provider instead.
+  const provider = providerOf(hit);
+  const where = provider ? `via ${provider}` : typeof hit.hostname === 'string' && hit.hostname !== '' ? hit.hostname : hit.device;
   // The tool is named by its resolved display name when the read path supplied one; the raw
   // fingerprint is the fallback, so an unrecognised tool is still identifiable.
   const tool = typeof hit.tool_name === 'string' && hit.tool_name !== '' ? hit.tool_name : hit.tool;
   // The account name the device reported, then the directory's own (current) display name beside it,
   // so a stale as-of-submission name is distinguishable from the directory's. Either can be absent.
-  const parts = [hit.subject, hit.directory_name, device, tool].filter((part) => typeof part === 'string' && part !== '');
+  const parts = [hit.subject, hit.directory_name, where, tool].filter((part) => typeof part === 'string' && part !== '');
   if (parts.length === 0) return `<span class="x-mono x-sub">${escapeHtml(hit.submissionId)}</span>`;
   return `<span class="x-hit-meta x-mono">${parts.map((part) => `<span>${escapeHtml(part)}</span>`).join('<span class="x-hit-sep" aria-hidden="true">|</span>')}</span>`;
 }
@@ -458,6 +469,7 @@ function exploreRecord(detail, dataset, state) {
     tool: first.tool_fingerprint ?? detail.row?.tool,
     tool_name: first.tool_name ?? detail.row?.tool_name,
     device: detail.row?.device,
+    provider: providerOf(first) ?? providerOf(detail.row),
     department: detail.row?.department,
     mode: first.collection_mode,
     action: first.policy_action,
@@ -485,7 +497,9 @@ function exploreRecord(detail, dataset, state) {
     + '<section><h3>Who and where</h3>' + exploreFacts([
       ['User', `${renderExploreValue(head, col('subject', 'person'))}${exploreFilterButton(dataset, 'subject', head.subject)}`],
       ['Tool', `${renderExploreValue(head, col('tool', 'mono'))}${exploreFilterButton(dataset, 'tool', head.tool)}`],
-      ['Device', `${renderExploreValue(head, col('device', 'id'), { full: true })}${exploreFilterButton(dataset, 'device', head.device)}`],
+      head.provider
+        ? ['Provider', `<span>via ${escapeHtml(head.provider)}</span> <span class="x-sub">its own record, read from its admin API</span>`]
+        : ['Device', `${renderExploreValue(head, col('device', 'id'), { full: true })}${exploreFilterButton(dataset, 'device', head.device)}`],
       ...(head.department ? [['Department', `<span>${escapeHtml(head.department)}</span>${exploreFilterButton(dataset, 'department', head.department)}`]] : []),
     ]) + '</section>'
     + '<section><h3>What was decided</h3>' + exploreFacts([

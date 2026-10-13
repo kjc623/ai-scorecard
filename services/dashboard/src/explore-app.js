@@ -379,7 +379,7 @@ export function createExplorer({ api, content = null, export: exportApi = null, 
       fileName: h.unit_kind === 'attachment_name',
       subject: h.subject ?? null, directory_name: h.directory_name ?? null,
       device: h.device ?? null, tool: h.tool ?? null, tool_name: h.tool_name ?? null,
-      hostname: h.hostname ?? null,
+      hostname: h.hostname ?? null, provider: h.provider ?? null,
     });
   }
 

@@ -45,6 +45,12 @@ export const ADMIN_KEYS_ENDPOINT = '/admin/v1/deployment/keys';
 export const ADMIN_SCIM_TOKENS_ENDPOINT = '/admin/v1/scim/tokens';
 export const ADMIN_DIRECTORY_ENDPOINT = '/admin/v1/directory';
 export const ADMIN_TEAMS_ENDPOINT = '/admin/v1/teams';
+/**
+ * The AI providers whose admin APIs the product reads, and the tenant's connection to each. A
+ * provider is connected or its key replaced with PUT /<provider>, disconnected with DELETE
+ * /<provider>, and pulled at once with POST /<provider>/run.
+ */
+export const ADMIN_PROVIDERS_ENDPOINT = '/admin/v1/providers';
 
 /**
  * The admin API behind Settings → Collection and Policy. control-api's, admin-only and audited,

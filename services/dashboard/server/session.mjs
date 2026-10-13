@@ -44,6 +44,7 @@ const PAGE_CAPABILITY = Object.freeze({
   settings: 'settings',
   devices: 'device',
   directory: 'settings',
+  integrations: 'settings',
   audit: 'audit',
 });
 
