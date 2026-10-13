@@ -6,7 +6,12 @@ matched observations (and the files attached to them) to `capture-core` over nat
 agent builds, spools and sends the records. A request to a web app the catalog names whose own
 prompt request is known (Claude, Gemini and Perplexity, `src/submission.js`; ChatGPT's form sends a
 `prompt` field) is a submission whatever its shape, and only the typed text is taken from it; any
-other request is judged by its shape (`src/predicate.js`). At M0 no request body is read: the body listener is not
+other request is judged by its shape (`src/predicate.js`). Microsoft Copilot and Microsoft 365
+Copilot send the prompt over a WebSocket, whose frames `webRequest` never sees: `content/ws-hook.js`,
+declared in the page's own (MAIN) world at `document_start`, wraps `WebSocket.prototype.send` before
+the page runs and posts each text frame sent on an open socket to those hosts to `content-boot.js`,
+which relays it to the worker; `src/socket-submission.js` reads the typed text, and the turn is
+recorded, never blocked, because the frame has already been sent. At M0 no request body is read: the body listener is not
 registered for a destination whose mode does not read content. At a mode that reads content, the
 files the user chose, dropped or pasted in the frame that sent the request, and has not sent with
 an earlier prompt, are transferred to `capture-core` (manifest, chunks, completion) before the

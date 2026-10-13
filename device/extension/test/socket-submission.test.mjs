@@ -12,7 +12,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { socketSubmission, isCapturedSocketHost, SOCKET_HOSTS } from '../src/socket-submission.js';
+import { socketSubmission } from '../src/socket-submission.js';
 
 const RS = '\u001e';
 const CLASSIC = 'wss://copilot.microsoft.com/c/api/chat?source=web';
@@ -73,18 +73,4 @@ test('a bad or empty frame, and a socket no recipe names, are read as nothing', 
   assert.equal(socketSubmission('wss://copilot.microsoft.com/other/path', JSON.stringify({ event: 'send', content: [{ type: 'text', text: 'x' }] })), null, 'wrong path');
   assert.equal(socketSubmission('not a url', 'x'), null);
   assert.equal(socketSubmission(CLASSIC, { event: 'send' }), null, 'a non-string frame is a binary frame, not a chat turn');
-});
-
-test('the host guard covers each known socket host and its subdomains, and nothing else', () => {
-  for (const host of SOCKET_HOSTS) {
-    assert.ok(isCapturedSocketHost(host), host);
-    assert.ok(isCapturedSocketHost(`sub.${host}`), `sub.${host}`);
-    assert.ok(isCapturedSocketHost(host.toUpperCase()), host.toUpperCase());
-    assert.ok(isCapturedSocketHost(`${host}.`), `${host}.`);
-  }
-  assert.ok(!isCapturedSocketHost('copilot.microsoft.com.evil.invalid'));
-  assert.ok(!isCapturedSocketHost('notcopilot.microsoft.com'), 'a look-alike that is not a subdomain is not covered');
-  assert.ok(!isCapturedSocketHost('example.com'));
-  assert.ok(!isCapturedSocketHost(''));
-  assert.ok(!isCapturedSocketHost(null));
 });

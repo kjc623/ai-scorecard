@@ -31,19 +31,32 @@
     return true;
   });
 
-  // Inject the main-world WebSocket hook, which reads the Copilot sockets' outgoing frames the
-  // request lanes cannot see. A per-load nonce marks its messages, so the content script relays only
-  // frames this hook sent. A page that blocks the injection simply yields no socket frames.
-  const wsNonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  try {
-    const hook = document.createElement('script');
-    hook.type = 'module';
-    hook.src = chrome.runtime.getURL('content/ws-hook.js');
-    hook.dataset.sacNonce = wsNonce;
-    hook.addEventListener('load', () => hook.remove());
-    (document.head || document.documentElement).appendChild(hook);
-  } catch (e) {
-    /* a page that forbids script injection yields no socket frames; the request lanes still run */
+  // Relay the Copilot socket frames the main-world hook (content/ws-hook.js) posts to the service
+  // worker, which owns the native channel and the mode gate. The listener is registered here, at
+  // `document_start`, so a prompt the page sends as soon as its socket opens is not lost while the
+  // modules below load. Only a message from this window carrying the nonce this script shares with
+  // the hook is relayed. Nothing is read as content in this world.
+  const root = document.documentElement;
+  let wsNonce = root && root.dataset ? root.dataset.sacWsNonce || '' : '';
+  if (wsNonce) {
+    delete root.dataset.sacWsNonce;
+  } else if (root && root.dataset) {
+    wsNonce = Array.from(crypto.getRandomValues(new Uint32Array(4)), (n) => n.toString(36)).join('');
+    root.dataset.sacWsNonce = wsNonce;
+  }
+  if (wsNonce) {
+    window.addEventListener('message', (event) => {
+      const msg = event.data;
+      if (event.source !== window || !msg || msg.source !== 'sac-ws' || msg.nonce !== wsNonce) return;
+      if (typeof msg.url !== 'string' || typeof msg.data !== 'string') return;
+      // A worker that cannot be reached, or an extension updated since this page loaded, loses this
+      // frame; the page is never affected.
+      try {
+        chrome.runtime.sendMessage({ type: 'capture_ws_frame', url: msg.url, data: msg.data }).catch(() => {});
+      } catch {
+        /* the extension context is gone */
+      }
+    });
   }
 
   import(chrome.runtime.getURL('content/content-script.js'))
@@ -58,7 +71,7 @@
           },
         },
       };
-      cs.bootstrapContentScript(adapter, { document, window, wsNonce });
+      cs.bootstrapContentScript(adapter, { document });
     })
     .catch((e) => {
       loadFailure = String((e && e.message) || e);

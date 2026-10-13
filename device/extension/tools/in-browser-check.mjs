@@ -3,7 +3,9 @@
 //
 //   node tools/in-browser-check.mjs        # SAC_BROWSER names the browser; otherwise a known path
 //
-// The checks drive a page served from 127.0.0.1 by this script; no other destination is contacted.
+// The checks drive pages served from 127.0.0.1 by this script; no other destination is contacted.
+// The socket check serves its page and sockets under the Copilot hosts' names, which the browser is
+// told resolve to 127.0.0.1, and with no proxy, so those names never leave the machine either.
 // They need no installed agent: with no native messaging host registered the channel is absent, and
 // on a device with the agent installed it connects, and each check holds either way. An unpacked
 // extension is never granted webRequestBlocking (only a policy-installed one is), so cancelling a
@@ -18,6 +20,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import puppeteer from 'puppeteer-core';
+import { WebSocketServer } from 'ws';
 
 import { extensionId } from './extension-id.mjs';
 
@@ -83,16 +86,47 @@ window.send = () => {
 window.send();
 </script></body></html>`;
 
+// Microsoft Copilot and Microsoft 365 Copilot send the typed prompt over a WebSocket, whose frames
+// webRequest never sees. This page opens both sockets as the real pages do and sends each prompt the
+// moment its socket opens, after a frame that is not a chat turn, under a strict CSP that enforces
+// Trusted Types. The M365 socket is on another host than the page, as it is in Office on the web.
+const CONSUMER_PROMPT = 'In-browser check: the consumer Copilot prompt';
+const M365_PROMPT = 'In-browser check: the Microsoft 365 Copilot prompt';
+const SOCKET_CSP = "default-src 'self'; script-src 'nonce-in-browser-check'; connect-src ws: wss:; require-trusted-types-for 'script'; trusted-types 'none'";
+const socketPage = (port) => `<!doctype html><html><head><script nonce="in-browser-check">
+window.__sent = 0;
+const consumer = new WebSocket('ws://copilot.microsoft.com:${port}/c/api/chat?api-version=2');
+consumer.onopen = () => {
+  consumer.send(JSON.stringify({ event: 'setOptions', supportedCards: ['image'] }));
+  consumer.send(JSON.stringify({ event: 'send', conversationId: 'check', content: [{ type: 'text', text: ${JSON.stringify(CONSUMER_PROMPT)} }], mode: 'chat' }));
+  window.__sent += 1;
+};
+const m365 = new WebSocket('ws://substrate.office.com:${port}/m365Copilot/Chathub/user@tenant?clientRequestId=check');
+m365.onopen = () => {
+  m365.send('{"protocol":"json","version":1}\\u001e');
+  m365.send(JSON.stringify({ type: 4, target: 'chat', invocationId: '0', arguments: [{ source: 'officeweb', message: { author: 'user', text: ${JSON.stringify(M365_PROMPT)} } }] }) + '\\u001e');
+  window.__sent += 1;
+};
+</script></head><body>copilot</body></html>`;
+
 function startServer() {
   return new Promise((done) => {
     const server = createServer((req, res) => {
       req.resume();
       req.on('end', () => {
+        if (req.url === '/copilot') {
+          res.writeHead(200, { 'content-type': 'text/html', 'content-security-policy': SOCKET_CSP });
+          res.end(socketPage(server.address().port));
+          return;
+        }
         const html = req.url === '/' ? PAGE : req.url === '/widget' ? '<!doctype html><p>widget</p>' : null;
         res.writeHead(200, { 'content-type': html ? 'text/html' : 'application/json' });
         res.end(html ?? '{"ok":true}');
       });
     });
+    // Every frame the page sends reaches the server, whatever the extension does with it.
+    server.frames = [];
+    new WebSocketServer({ server }).on('connection', (socket) => socket.on('message', (data) => server.frames.push(String(data))));
     server.listen(0, '127.0.0.1', () => done(server));
   });
 }
@@ -106,7 +140,14 @@ if (!executablePath) {
 const server = await startServer();
 const origin = `http://127.0.0.1:${server.address().port}`;
 const work = mkdtempSync(join(tmpdir(), 'sac-in-browser-'));
-const browser = await puppeteer.launch({ executablePath, headless: true, pipe: true, enableExtensions: [PKG], userDataDir: join(work, 'profile') });
+const browser = await puppeteer.launch({
+  executablePath,
+  headless: true,
+  pipe: true,
+  enableExtensions: [PKG],
+  userDataDir: join(work, 'profile'),
+  args: ['--host-resolver-rules=MAP copilot.microsoft.com 127.0.0.1, MAP substrate.office.com 127.0.0.1', '--no-proxy-server'],
+});
 try {
   console.log(`browser: ${executablePath} (${await browser.version()})`);
 
@@ -227,6 +268,28 @@ try {
     'a file the page uploads and clears from its input goes with the next submission, with its path',
     Boolean(cleared) && [composed, realpathSync(composed)].includes(uploaded?.path),
     `input ${cleared ? 'cleared by the page' : 'not cleared'}, ${uploaded ? `the next submission named the file${uploaded.path ? ` at ${uploaded.path}` : ' without its path'}` : 'no observation named the file'}`,
+  );
+
+  // 9. A prompt sent on a Copilot socket the moment it opens is observed, named by its app and,
+  // at this mode, carries its content; the frame that is not a chat turn is not observed, and the
+  // page's own frames all reach the server.
+  const port = server.address().port;
+  const before = await worker.evaluate('globalThis.__observations.length');
+  const copilot = await browser.newPage();
+  await copilot.goto(`http://copilot.microsoft.com:${port}/copilot`);
+  const sockets = await waitFor(() => copilot.evaluate('window.__sent === 2'), 10_000);
+  const turns =
+    (await waitFor(async () => {
+      const found = await worker.evaluate(
+        `globalThis.__observations.slice(${before}).map((o) => o.payload).filter((p) => p && p.route === 'ext.page_context')`,
+      );
+      return found.length >= 2 ? found : null;
+    }, 10_000)) || [];
+  const turnOf = (tool, prompt) => turns.filter((p) => p.tool_fingerprint === tool && p.has_content && p.size_bytes === Buffer.byteLength(prompt));
+  verdict(
+    'a Copilot prompt sent as its socket opens is observed and named, under a strict CSP',
+    Boolean(sockets) && turns.length === 2 && turnOf('app:microsoft_copilot', CONSUMER_PROMPT).length === 1 && turnOf('app:m365_copilot', M365_PROMPT).length === 1 && server.frames.length === 4,
+    `${sockets ? 'both sockets sent' : 'the page did not send'}; ${turns.map((p) => `${p.tool_fingerprint} ${p.size_bytes} bytes${p.has_content ? ' with content' : ''}`).join(', ') || 'no socket turn observed'}; the server received ${server.frames.length} of 4 frames`,
   );
 } catch (err) {
   verdict('the browser run completes', false, err.message);

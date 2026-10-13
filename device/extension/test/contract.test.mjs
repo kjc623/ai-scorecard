@@ -58,15 +58,27 @@ test('the permission list is exactly the minimum, with no permission present tha
 
 test('broad observation is declared as a host permission', () => {
   assert.deepEqual(manifest.host_permissions, ['<all_urls>']);
-  assert.ok(Array.isArray(manifest.content_scripts) && manifest.content_scripts.length === 1);
-  assert.deepEqual(manifest.content_scripts[0].matches, ['<all_urls>']);
-  assert.equal(manifest.content_scripts[0].all_frames, true);
-  assert.equal(manifest.content_scripts[0].run_at, 'document_start', 'the drop listener must be installed before the page runs');
+  assert.ok(Array.isArray(manifest.content_scripts) && manifest.content_scripts.length === 2);
+  for (const cs of manifest.content_scripts) {
+    assert.deepEqual(cs.matches, ['<all_urls>']);
+    assert.equal(cs.all_frames, true);
+    assert.equal(cs.run_at, 'document_start', 'the drop listener and the socket hook must be installed before the page runs');
+  }
 });
 
-test('the content script is isolated-world only: it must not run in the page (MAIN)', () => {
+test('the content script is isolated-world; the page world holds only the socket hook, which cannot reach the extension', () => {
   const cs = manifest.content_scripts[0];
   assert.equal(cs.world === undefined || cs.world === 'ISOLATED', true, 'a page must not be able to reach the extension');
+  const main = manifest.content_scripts[1];
+  assert.equal(main.world, 'MAIN');
+  assert.deepEqual(main.js, ['content/ws-hook.js']);
+  // A main-world script has no extension API, and this one must not try: it only posts frames to
+  // the isolated world, which decides what reaches the worker.
+  const source = readFileSync(join(HERE, 'content', 'ws-hook.js'), 'utf8');
+  assert.equal(/\bchrome\.|\bbrowser\./.test(source), false, 'the page-world hook must not use an extension API');
+  assert.equal(/^\s*(import|export)\s|import\(/m.test(source), false, 'a declared content script is a classic script and loads nothing');
+  const war = (manifest.web_accessible_resources || []).flatMap((w) => w.resources || []);
+  assert.equal(war.includes('content/ws-hook.js'), false, 'the hook is declared, not fetched by the page');
 });
 
 test('the declared content script is a classic script, and contains no static import', () => {
