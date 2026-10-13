@@ -134,6 +134,7 @@ func TestWireMountsEverySurface(t *testing.T) {
 		{http.MethodGet, "/v1/extension/updates.xml", http.StatusNotFound},
 		{http.MethodPost, "/internal/v1/auth/begin", http.StatusUnauthorized},
 		{http.MethodGet, "/admin/v1/deployment", http.StatusUnauthorized},
+		{http.MethodGet, "/admin/v1/providers", http.StatusUnauthorized},
 		{http.MethodGet, "/scim/v2/Users", http.StatusUnauthorized},
 		{http.MethodGet, "/onboard/sacinv_not-a-token", http.StatusNotFound},
 	} {

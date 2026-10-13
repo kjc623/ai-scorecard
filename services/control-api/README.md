@@ -6,7 +6,8 @@ content-vault, the agent's own updates (the release build's signed statement and
 names, from the release this deployment runs), and the browser extension's update manifest and CRX. For people: the OpenID Connect
 relying party for every customer identity provider, sessions, the short-lived product access tokens
 query-api and content-vault verify, onboarding, the directory (SCIM provisioning, or a read of the
-customer's Microsoft Entra ID through Microsoft Graph) and teams, and the admin API.
+customer's Microsoft Entra ID through Microsoft Graph) and teams, and the admin API. For tenants:
+the pull of AI providers' own records of their people's prompts, from the providers' admin APIs.
 Devices authenticate with the certificate Application Gateway forwards in `X-Client-Cert`, verified
 here against the device CA and matched to the device's live credential on every request.
 
@@ -44,6 +45,31 @@ Teams (`/admin/v1/teams`, `internal/directoryadmin`) are made in the console fro
 an admin picks and groups, departments, organisational units and other teams they include;
 `ops.v_team_member` resolves each to its current members, and `jobs aggregate` rolls usage up per
 team. A team cannot include a team that already includes it.
+
+## Provider integrations
+
+`internal/providers` reads the prompts a tenant's people sent an AI provider from that provider's
+admin API, so a prompt sent from a device without the agent is still seen. An admin connects each
+provider on the console's Settings → Integrations page (`/admin/v1/providers`), which lists every
+row of `ref.provider` with the tools its records are filed under and the tenant's connection to it:
+
+| Provider | Credential | Read from | Filed under |
+|---|---|---|---|
+| ChatGPT Enterprise | the workspace ID and a Compliance API key: an Admin key with the Conversation messages permission, which a workspace owner grants | the Compliance Logs Platform's `CONVERSATION_MESSAGE` log files | `chatgpt_web` |
+| Claude Enterprise | the organization ID and a Compliance API key (`read:compliance_user_data`) | the Compliance API's chats and Claude Code and Cowork sessions | `claude_web`, `claude_code`, `claude_desktop` |
+| Microsoft 365 Copilot | none: the vendor Entra application, with `AiEnterpriseInteraction.Read.All` consented in the customer's tenant and an active Entra connection | Microsoft Graph's `getAllEnterpriseInteractions`, per licensed person | `m365_copilot` |
+
+A key is sealed under `SAC_DIRECTORY_KEY` and never returned or audited; disconnecting forgets it.
+Each active connection is pulled an hour apart, right after it is connected and on demand (Pull now),
+from where the last pass stopped; the first pass reads the last 7 days. Every record of a person's
+prompt is classified with the rules and model the agent ships, under the tenant's collection mode,
+attributed by the user reference a device derives from the same UPN or object id, and recorded
+through `ingest.record_provider_event` with the route `provider.api`; at M3 its text is stored in
+content-vault. A record of a prompt a device also captured merges into the device's submission. A
+provider's record is never enforced. A failed pass records one of a closed set of codes
+(`ops.provider_connection.last_error`), which the page explains. No setting turns the pull on: it
+uses the database login, `SAC_DIRECTORY_KEY`, `SAC_CONTENT_VAULT_URL` and, for Microsoft 365
+Copilot, the Entra application (`SAC_ENTRA_CLIENT_ID`).
 
 ## Configuration
 

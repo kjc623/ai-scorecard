@@ -20,6 +20,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/shadow-ai-capture/device/classifier-host/classify"
+	"github.com/shadow-ai-capture/device/classifier-host/release"
 	"github.com/shadow-ai-capture/platform/postgres"
 
 	"github.com/shadow-ai-capture/control-api/internal/content"
@@ -36,6 +38,7 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/intune"
 	"github.com/shadow-ai-capture/control-api/internal/onboard"
 	"github.com/shadow-ai-capture/control-api/internal/policyserve"
+	"github.com/shadow-ai-capture/control-api/internal/providers"
 	"github.com/shadow-ai-capture/control-api/internal/scim"
 	"github.com/shadow-ai-capture/control-api/internal/session"
 	"github.com/shadow-ai-capture/control-api/internal/settings"
@@ -76,14 +79,14 @@ func serve(logger *slog.Logger) error {
 	}
 	defer db.Close()
 
-	srv, issuer, directorySync, err := wire(cfg, db, logger)
+	srv, issuer, loops, err := wire(cfg, db, logger)
 	if err != nil {
 		return err
 	}
 	syncCtx, stopSync := context.WithCancel(context.Background())
 	defer stopSync()
-	if directorySync != nil {
-		go directorySync.Run(syncCtx)
+	for _, run := range loops {
+		go run(syncCtx)
 	}
 	httpServer := &http.Server{
 		Addr:              cfg.HTTPAddr,
@@ -113,9 +116,10 @@ func serve(logger *slog.Logger) error {
 	return httpServer.Shutdown(ctx)
 }
 
-// wire builds every service over the database and mounts it on one server. The directory pull's
-// runner is nil on a deployment with no Entra application.
-func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *session.Issuer, *graphsync.Runner, error) {
+// wire builds every service over the database and mounts it on one server. It also returns the
+// background loops serve runs: the provider pull, and the directory pull on a deployment with an
+// Entra application.
+func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *session.Issuer, []func(context.Context), error) {
 	st := store.NewSQL(db)
 
 	ca, err := deviceca.New(cfg.CACertPEM, cfg.CAKeyPEM)
@@ -193,7 +197,8 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	contentSvc, err := content.New(content.NewSQL(db), content.NewHTTPVault(cfg.ContentVaultURL, issuer))
+	vault := content.NewHTTPVault(cfg.ContentVaultURL, issuer)
+	contentSvc, err := content.New(content.NewSQL(db), vault)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -244,19 +249,55 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 
 	// The directory pull reads Graph with the vendor's Entra app and writes through the SCIM service.
 	dirCfg := directoryadmin.Config{Logger: logger}
-	var runner *graphsync.Runner
+	var loops []func(context.Context)
+	var graph *graphsync.Client
 	if app != nil {
-		graph, err := graphsync.NewClient(app, nil)
+		graph, err = graphsync.NewClient(app, nil)
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		runner, err = graphsync.NewRunner(&graphsync.Syncer{Directory: graph, Provisioner: scimSvc, Logger: logger}, graphsync.NewSQL(db), logger)
+		runner, err := graphsync.NewRunner(&graphsync.Syncer{Directory: graph, Provisioner: scimSvc, Logger: logger}, graphsync.NewSQL(db), logger)
 		if err != nil {
 			return nil, nil, nil, err
 		}
 		dirCfg.Directory, dirCfg.Groups, dirCfg.Sync = graph, scimSvc, runner
+		loops = append(loops, runner.Run)
 	}
 	directoryHandler, err := directoryadmin.NewHandler(directoryadmin.NewSQL(db), adminAuthenticator(verifier), dirCfg)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	// The provider pull reads the AI providers' admin APIs a tenant connected, classifies each prompt
+	// with the rules and model the product ships, and stores its content as a device's upload is
+	// stored. Microsoft 365 Copilot is read with the vendor's Entra app, so only where there is one.
+	rel, err := release.Builtin()
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	classifier, err := classify.New(classify.Options{Release: rel})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	sources := map[string]providers.Source{
+		providers.ChatGPTEnterprise: providers.NewChatGPT(nil),
+		providers.ClaudeEnterprise:  providers.NewClaude(nil),
+	}
+	if app != nil {
+		copilot, err := providers.NewCopilot(app, graph, nil)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		sources[providers.Microsoft365Copilot] = copilot
+	}
+	providerStore := providers.NewSQL(db)
+	providerPull, err := providers.NewRunner(sources, providerStore,
+		&providers.Recorder{Store: providerStore, Classifier: classifier, Vault: vault}, cipher, userRefKeys, logger)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	loops = append(loops, providerPull.Run)
+	providerHandler, err := providers.NewHandler(providerStore, adminAuthenticator(verifier), cipher, providerPull, logger)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -266,6 +307,7 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 		Admin:      admin,
 		Settings:   settingsHandler,
 		Directory:  directoryHandler,
+		Providers:  providerHandler,
 		Extensions: deploy.NewExtensions(cfg.AgentReleaseDir, cfg.PublicURL, logger),
 		Agents:     deploy.NewAgents(cfg.AgentReleaseDir, logger),
 		SCIM:       scim.NewHandler(scimSvc, "/scim/v2", logger),
@@ -275,7 +317,7 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 			"/.well-known/":      issuer.WellKnownHandler(),
 		},
 		Logger: logger,
-	}, issuer, runner, nil
+	}, issuer, loops, nil
 }
 
 // adminAuthenticator resolves an admin request's principal from its product access token

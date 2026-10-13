@@ -1,8 +1,11 @@
 # Architecture
 
 Shadow AI Capture records what employees send to generative AI tools from company-managed devices
-and makes it queryable by the company's security team. Customers have not bought enterprise AI, so no
-vendor API exists to pull usage from: if the device does not observe it, the data does not exist.
+and makes it queryable by the company's security team. Most of the tools people use have no API a
+customer can pull usage from: if the device does not observe it, the data does not exist. Where a
+customer has bought an enterprise plan whose admin API reports its people's prompts (ChatGPT
+Enterprise, Claude Enterprise, Microsoft 365 Copilot), that record is a second source, which also
+sees prompts sent from devices without the agent.
 
 The design turns on one property: **content is interpreted where it is observed and, by default,
 does not leave the device.** Classification labels, a digest and dimensions cross the network; the
@@ -35,7 +38,7 @@ prompt itself crosses only when the backend grants the upload of that one event.
 | `device/extension` | Device browsers (Chrome, Edge) | Observes requests to AI tools, extracts the prompt and the files attached to it, warns or blocks inline, and hands both to capture-core through the native messaging host |
 | `device/installer` | Build | The Windows MSI (and macOS/Linux packages) that install the agent and register the native messaging host |
 | `services/ingest-api` | Container app | The one write path for events: authenticates the device certificate, validates each envelope against the contract, writes through `ingest.record_event` |
-| `services/control-api` | Container app | Device enrolment and certificates, signed policy delivery, content grants and upload, analyst sign-in and sessions, SCIM, tenant onboarding, tenant packages and extension updates |
+| `services/control-api` | Container app | Device enrolment and certificates, signed policy delivery, content grants and upload, analyst sign-in and sessions, SCIM, tenant onboarding, tenant packages and extension updates, and the pull of AI providers' records of prompts |
 | `services/content-vault` | Container app (internal) | The only component that can decrypt prompt content; stores it encrypted in PostgreSQL and serves approved retrievals and content search |
 | `services/query-api` | Container app (internal) | The one read path: a closed query DSL compiled to parameterised SQL |
 | `services/dashboard` | Container app | The analyst web app and its server: sign-in session, and the only forwarder of browser requests into the environment |
@@ -82,6 +85,23 @@ The device resolves the mode before it reads anything.
 6. **Content (M3 only).** For a delivered M3 event the device asks control-api for a grant. A granted
    event's prompt is sent once to `/v1/content`; control-api checks the grant and hands the content to
    content-vault, which encrypts it and stores it.
+
+## A provider's record, end to end
+
+1. **Connect.** An admin connects a provider on Settings → Integrations: ChatGPT Enterprise and
+   Claude Enterprise with a compliance key their admin issued (sealed in `ops.provider_connection`),
+   Microsoft 365 Copilot with the consent the tenant gave the vendor's Entra application.
+2. **Pull.** control-api reads each connection an hour apart and on demand, from where its last pass
+   stopped, and keeps each person's prompts: their text, attachments' names, the person's UPN or
+   object id, and the tool (ChatGPT, Claude on the web, Claude Code, Claude Desktop, Microsoft 365
+   Copilot).
+3. **Record.** It classifies the text with the rules and model the agent ships, under the tenant's
+   collection mode, derives the person's user reference as a device would, and writes the event
+   through `ingest.record_provider_event` with the route `provider.api` and the connection, not a
+   device, as its origin. A prompt a device also captured (same text, person and tool within ten
+   minutes) merges into the device's submission, so it counts once. At M3 control-api grants itself
+   the upload and hands the text to content-vault. A provider's record is never enforced: it is read
+   after the prompt was sent.
 
 ## Data
 

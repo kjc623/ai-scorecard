@@ -23,7 +23,7 @@ export const INPUTS = {
   agent: ['device/'],
   'ingest-api': ['services/ingest-api/', 'device/protocol/', 'contracts/generated/go/', 'services/platform/', 'fly/ingest-api/'],
   'content-vault': ['services/content-vault/', 'device/protocol/', 'services/platform/', 'fly/content-vault/'],
-  'control-api': ['services/control-api/', 'device/protocol/', 'services/platform/', 'fly/control-api/'],
+  'control-api': ['services/control-api/', 'device/protocol/', 'device/classifier-host/', 'services/platform/', 'fly/control-api/'],
   'query-api': ['services/query-api/', 'fly/query-api/'],
   dashboard: ['services/dashboard/', 'fly/dashboard/'],
   jobs: ['services/jobs/', 'services/platform/', 'fly/jobs/'],

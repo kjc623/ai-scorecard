@@ -3,8 +3,9 @@
 //
 // One application serves sign-in (internal/identity redeems authorization codes with it) and the
 // Graph application permissions the product asks for: DeviceManagementManagedDevices.Read.All for
-// the enrolment path's Intune check, and User.Read.All and GroupMember.Read.All for the directory
-// pull (internal/graphsync). The customer grants them by admin consent during onboarding.
+// the enrolment path's Intune check, User.Read.All and GroupMember.Read.All for the directory pull
+// (internal/graphsync), and AiEnterpriseInteraction.Read.All for the Microsoft 365 Copilot pull
+// (internal/providers). The customer grants them by admin consent during onboarding.
 //
 // Two credentials, exactly one configured:
 //
