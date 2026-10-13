@@ -5,9 +5,12 @@ go 1.27.0
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/go-jose/go-jose/v4 v4.1.5
+	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0
+	github.com/shadow-ai-capture/device/classifier-host v0.0.0
 	github.com/shadow-ai-capture/device/protocol v0.0.0
 	github.com/shadow-ai-capture/platform v0.0.0
+	golang.org/x/net v0.59.0
 )
 
 require (
@@ -15,11 +18,13 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.17.0 // indirect
-	golang.org/x/text v0.29.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 )
 
 replace (
+	github.com/shadow-ai-capture/device/classifier-host => ../../device/classifier-host
 	github.com/shadow-ai-capture/device/protocol => ../../device/protocol
 	github.com/shadow-ai-capture/platform => ../platform
 )

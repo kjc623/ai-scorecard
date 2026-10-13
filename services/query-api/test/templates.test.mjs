@@ -138,6 +138,7 @@ test('q6 is subject-scoped, always audited, and carries the flush check', () => 
   assert.ok(p.audit.decision.reasons.includes('filters_on_subject'));
   const flush = p.statements.find((s) => s.id === 'flush_check');
   assert.ok(flush.text.includes("interval '1 hour'"));
+  assert.ok(flush.text.includes('s.device_id IS NOT NULL'), 'only a device flushes a spool');
   assert.deepEqual(flush.params, ['user_ref_0001', '2026-09-01T00:00:00.000Z', '2026-09-08T00:00:00.000Z']);
 });
 

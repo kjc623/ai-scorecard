@@ -11,6 +11,7 @@ import (
 
 	"github.com/shadow-ai-capture/device/classifier-host/internal/testrig"
 	"github.com/shadow-ai-capture/device/classifier-host/release"
+	"github.com/shadow-ai-capture/device/classifier-host/rules"
 )
 
 func write(t *testing.T, priv ed25519.PrivateKey) string {
@@ -134,5 +135,18 @@ func TestWriteRefusesContentThatDoesNotCompile(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("a refused release left files behind: %v", err)
+	}
+}
+
+func TestBuiltinIsTheShippedRulesAndModel(t *testing.T) {
+	rel, err := release.Builtin()
+	if err != nil {
+		t.Fatalf("builtin: %v", err)
+	}
+	if rel.Rules.Version()+"+"+rel.Model.Version() != rel.Version {
+		t.Fatalf("version %q, rules %q, model %q", rel.Version, rel.Rules.Version(), rel.Model.Version())
+	}
+	if string(testrig.Rules(t)) != string(rules.BuiltinRules) || string(testrig.Model(t)) != string(rules.BuiltinModel) {
+		t.Fatal("the embedded rules or model differ from the files in rules/")
 	}
 }

@@ -1196,7 +1196,8 @@ export const SOURCES = Object.freeze({
     dimensions: Object.freeze({
       subject: dim('subject', 's.user_ref', 'text', { ...USER_CARD }),
       tool: dim('tool', 'ops.tool_id(s.tool_fingerprint)', 'text', { startsWith: true, fingerprints: 's.tool_fingerprint', ...TOOL_CARD }),
-      device: dim('device', 's.device_id', 'uuid', { ...DEVICE_CARD }),
+      // NULL for a provider's record, which no device observed.
+      device: dim('device', 's.device_id', 'uuid', { nullable: true, ...DEVICE_CARD }),
       mode: dim('mode', 's.collection_mode', 'text', { ...MODE_CARD, values: ['m0', 'm1', 'm2', 'm3'] }),
       action: dim('action', 's.policy_action', 'text', {
         nullable: true,
@@ -1304,7 +1305,11 @@ export const SOURCES = Object.freeze({
       // resolved at read time; the event's own fingerprint is in its detail.
       'ops.tool_id(s.tool_fingerprint) AS "tool"',
       'ops.tool_display_name(s.tool_fingerprint) AS "tool_name"',
+      // Where the event came from: the device that observed it, or the provider whose admin API
+      // recorded it, named as the console names the provider. Exactly one is set.
       's.device_id AS "device"',
+      '(SELECT p.display_name FROM ops.provider_connection pc JOIN ref.provider p ON p.provider = pc.provider' +
+        ' WHERE pc.tenant_id = s.tenant_id AND pc.connection_id = s.connection_id) AS "provider"',
       's.collection_mode AS "mode"',
       's.policy_action AS "action"',
       's.policy_rule_id AS policy_rule_id',

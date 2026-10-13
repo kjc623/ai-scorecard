@@ -57,6 +57,18 @@ test('the CSV carries metadata columns and no prompt text', () => {
   assert.ok(!/prompt_text|content_excerpt|content_bytes/.test(lines[0]));
 });
 
+test("the events CSV names each event's origin: its device, or the provider that recorded it", () => {
+  const csv = listExportCsv('ingest.submission', [
+    { submission_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', device: '35beae1b-e366-465a-8517-58df42c88bdc', provider: null },
+    { submission_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', device: null, provider: 'ChatGPT Enterprise' },
+  ]);
+  const [header, fromDevice, fromProvider] = csv.trim().split('\r\n').map((line) => line.split(','));
+  const at = (name) => header.indexOf(name);
+  assert.equal(at('provider'), at('device') + 1, 'the provider column follows the device column');
+  assert.deepEqual([fromDevice[at('device')], fromDevice[at('provider')]], ['35beae1b-e366-465a-8517-58df42c88bdc', '']);
+  assert.deepEqual([fromProvider[at('device')], fromProvider[at('provider')]], ['', 'ChatGPT Enterprise']);
+});
+
 test('rowsToCsv quotes values that contain commas, quotes or newlines', () => {
   const csv = rowsToCsv(['a', 'b'], [{ a: 'x,y', b: 'he said "hi"' }, { a: 'line\nbreak', b: null }]);
   const lines = csv.trim().split('\r\n');

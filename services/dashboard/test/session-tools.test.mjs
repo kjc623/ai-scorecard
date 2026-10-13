@@ -41,10 +41,10 @@ test('each role maps to the pages it may open', () => {
   for (const role of ['analyst', 'content_reader']) {
     assert.ok(pagesFor(role).includes('person'), `${role} may open Users`);
     assert.ok(pagesFor(role).includes('explore'), `${role} may open Search`);
-    for (const id of ['labels', 'settings', 'directory']) assert.equal(pagesFor(role).includes(id), false, `${role} may not open ${id}`);
+    for (const id of ['labels', 'settings', 'directory', 'integrations']) assert.equal(pagesFor(role).includes(id), false, `${role} may not open ${id}`);
   }
   assert.ok(pagesFor('admin').includes('audit'), 'admin reads the audit trail');
-  for (const id of ['labels', 'settings', 'directory']) assert.ok(pagesFor('admin').includes(id), `admin opens ${id}`);
+  for (const id of ['labels', 'settings', 'directory', 'integrations']) assert.ok(pagesFor('admin').includes(id), `admin opens ${id}`);
   for (const id of ['person', 'explore', 'devices', 'rules', 'sanction']) assert.ok(pagesFor('admin').includes(id), `admin opens ${id}`);
   assert.equal(pagesFor('admin').includes('deployment'), false, 'Deployment is a section of Devices and Identity Providers, not a page');
   assert.equal(pagesFor('viewer').includes('audit'), false);

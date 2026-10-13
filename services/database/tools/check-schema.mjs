@@ -47,7 +47,11 @@ const schemaCode = strip(schema);
 const testsCode = strip(tests);
 
 const RUNTIME_ROLES = ['sac_ingest', 'sac_control', 'sac_vault', 'sac_query', 'sac_ops'];
-const ROLES = [...RUNTIME_ROLES, 'sac_resolver'];
+// The definer owners: sac_resolver owns the cross-tenant lookups, sac_recorder the provider write
+// path. Each definer's owner is named here; any other owner fails.
+const DEFINER_OWNERS = { 'ingest.record_provider_event': 'sac_recorder' };
+const DEFAULT_DEFINER_OWNER = 'sac_resolver';
+const ROLES = [...RUNTIME_ROLES, 'sac_resolver', 'sac_recorder'];
 
 // -------------------------------------------------------------------------------------
 // 1. Row-level security
@@ -264,7 +268,7 @@ check('grants.parsed', grants.length > 30, `${grants.length} GRANT statements pa
 // without reading any; nobody else holds anything.
 for (const [table, contentColumns, inserters] of [
   ['ops.content', ['ciphertext', 'raw_digest'], []],
-  ['ingest.search_text', ['body', 'tsv'], ['sac_ingest']],
+  ['ingest.search_text', ['body', 'tsv'], ['sac_ingest', 'sac_recorder']],
 ]) {
   const gs = grantsOn(table);
   const grantees = new Set(gs.flatMap((g) => g.grantees));
@@ -313,12 +317,15 @@ check('grants.nothing-to-public', !grants.some((g) => g.grantees.includes('PUBLI
     publicExec.length ? `still executable by PUBLIC: ${publicExec.map((d) => d.sig).join(', ')}` : 'EXECUTE is revoked from PUBLIC on every definer');
 
   // A definer's reach is its owner's: a NOLOGIN role that neither bypasses row-level security nor is
-  // a runtime role (sac_resolver and its SELECT-only policies).
+  // a runtime role (sac_resolver and its SELECT-only policies, sac_recorder and record_event's grants).
   const ownerStmts = [...schemaCode.matchAll(/ALTER FUNCTION\s+([a-z_]+\.[a-z_]+)\s*\([^)]*\)\s+OWNER TO\s+(\w+)\s*;/g)];
   const owners = new Map(ownerStmts.map((m) => [m[1], m[2]]));
-  const badOwner = secdef.filter((d) => owners.get(d.name) !== 'sac_resolver');
-  check('secdef.owned-by-resolver', badOwner.length === 0,
-    badOwner.length ? `not owned by sac_resolver: ${badOwner.map((d) => `${d.name} (${owners.get(d.name) ?? 'the applying role'})`).join(', ')}` : 'every definer is owned by sac_resolver');
+  const wantOwner = (name) => DEFINER_OWNERS[name] ?? DEFAULT_DEFINER_OWNER;
+  const badOwner = secdef.filter((d) => owners.get(d.name) !== wantOwner(d.name));
+  check('secdef.owned-by-definer-role', badOwner.length === 0,
+    badOwner.length
+      ? `not owned by their definer role: ${badOwner.map((d) => `${d.name} (${owners.get(d.name) ?? 'the applying role'}, want ${wantOwner(d.name)})`).join(', ')}`
+      : 'every definer is owned by sac_resolver, and record_provider_event by sac_recorder');
 
   // Privileges must be set while the applying role still owns the functions: afterwards it can no
   // longer change them, and PUBLIC would keep EXECUTE.
@@ -326,20 +333,31 @@ check('grants.nothing-to-public', !grants.some((g) => g.grantees.includes('PUBLI
   check('secdef.privileges-set-before-handover', firstRevoke < firstAlter,
     firstRevoke < firstAlter ? 'EXECUTE is revoked from PUBLIC before ownership moves' : 'ownership moves before EXECUTE is revoked from PUBLIC, so the revoke cannot apply');
 
-  // The hand-over needs the applying role to be a member of sac_resolver and sac_resolver to have
-  // CREATE on ops; both are taken back afterwards.
-  const handover = [
-    [/GRANT\s+sac_resolver\s+TO\s+CURRENT_USER\s*;/, /REVOKE\s+sac_resolver\s+FROM\s+CURRENT_USER\s*;/],
-    [/GRANT\s+CREATE\s+ON\s+SCHEMA\s+ops\s+TO\s+sac_resolver\s*;/, /REVOKE\s+CREATE\s+ON\s+SCHEMA\s+ops\s+FROM\s+sac_resolver\s*;/],
+  // Each hand-over needs the applying role to be a member of the owner and the owner to have CREATE
+  // on the functions' schema; both are granted before that owner's first ALTER and taken back after
+  // its last.
+  const handovers = [
+    ['sac_resolver', 'ops'],
+    ['sac_recorder', 'ingest'],
   ];
-  const lastAlter = ownerStmts.length ? Math.max(...ownerStmts.map((m) => m.index)) : -1;
-  const handoverOk = handover.every(([g, r]) => {
-    const gi = schemaCode.search(g);
-    const ri = schemaCode.search(r);
-    return gi >= 0 && ri > lastAlter && gi < firstAlter;
+  const broken = handovers.filter(([role, schema]) => {
+    const alters = ownerStmts.filter((m) => m[2] === role).map((m) => m.index);
+    if (alters.length === 0) return true;
+    const first = Math.min(...alters);
+    const last = Math.max(...alters);
+    return [
+      [new RegExp(`GRANT\\s+${role}\\s+TO\\s+CURRENT_USER\\s*;`), new RegExp(`REVOKE\\s+${role}\\s+FROM\\s+CURRENT_USER\\s*;`)],
+      [new RegExp(`GRANT\\s+CREATE\\s+ON\\s+SCHEMA\\s+${schema}\\s+TO\\s+${role}\\s*;`), new RegExp(`REVOKE\\s+CREATE\\s+ON\\s+SCHEMA\\s+${schema}\\s+FROM\\s+${role}\\s*;`)],
+    ].some(([g, r]) => {
+      const gi = schemaCode.search(g);
+      const ri = schemaCode.search(r);
+      return !(gi >= 0 && gi < first && ri > last);
+    });
   });
-  check('secdef.handover-revoked', handoverOk,
-    handoverOk ? 'sac_resolver keeps no members and no CREATE on ops after the hand-over' : 'the sac_resolver membership or CREATE on ops is not taken back after the ownership hand-over');
+  check('secdef.handover-revoked', broken.length === 0,
+    broken.length === 0
+      ? 'sac_resolver and sac_recorder keep no members and no CREATE after their hand-overs'
+      : `the membership or CREATE of ${broken.map(([r]) => r).join(', ')} is not taken back after its ownership hand-over`);
 
   const recordEvent = defs.find((d) => d.name === 'ingest.record_event');
   check('secdef.record-event-is-invoker', recordEvent && !/SECURITY DEFINER/.test(recordEvent.tail),

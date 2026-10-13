@@ -31,6 +31,7 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/enrol"
 	"github.com/shadow-ai-capture/control-api/internal/health"
 	"github.com/shadow-ai-capture/control-api/internal/policyserve"
+	"github.com/shadow-ai-capture/control-api/internal/providers"
 	"github.com/shadow-ai-capture/control-api/internal/settings"
 	"github.com/shadow-ai-capture/control-api/internal/store"
 )
@@ -54,6 +55,9 @@ type Server struct {
 	Settings *settings.Handler
 	// Directory is the directory pull and teams admin API (/admin/v1/directory*, /admin/v1/teams*).
 	Directory *directoryadmin.Handler
+	// Providers is the Integrations page's API: the AI providers' admin APIs a tenant connects
+	// (/admin/v1/providers*).
+	Providers *providers.Handler
 	// Extensions serves the browser extension's update manifest and CRX.
 	Extensions *deploy.Extensions
 	// Agents serves enrolled devices the signed agent release and its package.
@@ -104,6 +108,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.Directory != nil {
 		s.Directory.Register(mux)
+	}
+	if s.Providers != nil {
+		s.Providers.Register(mux)
 	}
 	if s.SCIM != nil {
 		mux.Handle("/scim/v2", s.SCIM)

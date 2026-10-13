@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { validateSubjectRequest, buildSubjectArchive } from '../src/subject.js';
+import { validateSubjectRequest, buildSubjectArchive, SUBJECT_SUBMISSIONS_SQL, SUBJECT_OBSERVATIONS_SQL } from '../src/subject.js';
 import { rejection } from './helpers.mjs';
 
 test('a subject request body is validated; unknown keys and a tenant are refused', () => {
@@ -41,4 +41,30 @@ test('the archive packs a manifest, three CSVs and one file per prompt', () => {
   // The prompt header names its event and the plaintext bytes travel after it.
   assert.ok(text.includes('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'));
   assert.ok(text.includes('the prompt'));
+});
+
+test("the archive names each event's and observation's origin: its device, or the provider that recorded it", () => {
+  const archive = buildSubjectArchive({
+    subjectRef: 'u_4f21',
+    canonicalRef: 'u_4f21',
+    displayName: null,
+    generatedAt: '2026-10-05T00:00:00Z',
+    submissions: [{ submission_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', device: null, provider: 'Claude Enterprise' }],
+    observations: [{ event_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', device: null, provider: 'Claude Enterprise' }],
+    findings: [],
+    prompts: [],
+  });
+  const text = archive.toString('latin1');
+  assert.ok(text.includes(',tool_name,device,provider,mode,'), 'events.csv has a provider column beside the device');
+  assert.ok(text.includes('event_id,device,provider,subject_name,'), 'observations.csv has a provider column beside the device');
+  assert.ok(text.includes('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa,,,,,,,,Claude Enterprise,'), 'an event with no device names its provider');
+  assert.ok(text.includes('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb,,Claude Enterprise,'), 'an observation with no device names its provider');
+
+  // The provider is reached through the row's connection of the same tenant, by its display name.
+  assert.match(SUBJECT_SUBMISSIONS_SQL, /LEFT JOIN ops\.provider_connection pc ON pc\.tenant_id = s\.tenant_id AND pc\.connection_id = s\.connection_id/);
+  assert.match(SUBJECT_OBSERVATIONS_SQL, /LEFT JOIN ops\.provider_connection pc ON pc\.tenant_id = o\.tenant_id AND pc\.connection_id = o\.connection_id/);
+  for (const sql of [SUBJECT_SUBMISSIONS_SQL, SUBJECT_OBSERVATIONS_SQL]) {
+    assert.match(sql, /LEFT JOIN ref\.provider p ON p\.provider = pc\.provider/);
+    assert.match(sql, /p\.display_name AS provider/);
+  }
 });

@@ -475,7 +475,9 @@ once through it: that sign-in makes you the organisation's first administrator. 
 (<code>openid</code>, <code>profile</code>, <code>email</code>, <code>offline_access</code>), to read Intune managed
 devices (<code>DeviceManagementManagedDevices.Read.All</code>), which lets device enrolment check that a device is yours,
 and to read your people and groups (<code>User.Read.All</code>, <code>GroupMember.Read.All</code>), which the product
-does only once an admin turns on reading the directory; SCIM provisioning works without it.</p>
+does only once an admin turns on reading the directory; SCIM provisioning works without it. It also asks to read the
+prompts your people send Microsoft 365 Copilot (<code>AiEnterpriseInteraction.Read.All</code>), which the product does
+only once an admin connects Microsoft 365 Copilot on its Integrations page.</p>
 <form method="post" action="/onboard/{{.Invite}}/entra"><button type="submit">Connect Microsoft Entra ID</button></form>
 </section>{{end}}
 <section><h2>Another OpenID Connect provider</h2>

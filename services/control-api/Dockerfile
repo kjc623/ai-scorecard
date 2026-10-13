@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 #
 # control-api. The build context is the repository root, because the module replaces
-# device/protocol and platform with their paths in the repository:
+# device/protocol, device/classifier-host and platform with their paths in the repository:
 #
 #   docker build -f services/control-api/Dockerfile \
 #     --build-context agent-release=<dir with release.json, agent-release.json, ShadowAICapture.msi, shadow-ai-capture.crx> \
@@ -18,6 +18,7 @@ FROM ${GO_IMAGE} AS build
 ENV CGO_ENABLED=0
 WORKDIR /src
 COPY device/protocol/ device/protocol/
+COPY device/classifier-host/ device/classifier-host/
 COPY services/platform/ services/platform/
 COPY services/control-api/go.mod services/control-api/go.sum services/control-api/
 WORKDIR /src/services/control-api

@@ -11,7 +11,7 @@ import { postureView } from '../src/views.js';
 import { RULE_MATCH_ROWS, RULE_ROWS, TOOL_ROWS, fixtureTransport } from './fixtures.mjs';
 import { COMPLETE, FRESH, envelope, fakeDocument } from './helpers.mjs';
 
-const EVERY_PAGE = ['posture', 'tools', 'teams', 'person', 'explore', 'rules', 'labels', 'sanction', 'activity', 'insights', 'settings', 'devices', 'directory', 'audit'];
+const EVERY_PAGE = ['posture', 'tools', 'teams', 'person', 'explore', 'rules', 'labels', 'sanction', 'activity', 'insights', 'settings', 'devices', 'directory', 'integrations', 'audit'];
 
 /** A booted dashboard with the requests it sent and a way to fire the events a browser would. */
 async function booted(hash, { pages = EVERY_PAGE } = {}) {

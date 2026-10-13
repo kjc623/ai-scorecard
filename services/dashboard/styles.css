@@ -614,9 +614,9 @@ td.dp-action { text-align: right; white-space: nowrap; }
   .dp-skel { animation: dp-pulse 1.2s var(--ease) infinite alternate; }
 }
 @keyframes dp-pulse { from { opacity: .55; } to { opacity: 1; } }
-.v-vocab-active { background: var(--ok-bg); color: var(--ok); }
+.v-vocab-active, .v-vocab-ok { background: var(--ok-bg); color: var(--ok); }
 .v-vocab-pending { background: var(--warn-bg); color: var(--warn); }
-.v-vocab-disabled, .v-vocab-expired { background: var(--bad-bg); color: var(--bad); }
+.v-vocab-disabled, .v-vocab-expired, .v-vocab-failed { background: var(--bad-bg); color: var(--bad); }
 
 
 /* ── motion: everything arrives once, in order, by transform and opacity only ─────────────── */

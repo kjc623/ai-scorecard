@@ -10,6 +10,7 @@ import { plan } from '../src/plan.js';
 import { compile, effectiveOrderKeys } from '../src/compile.js';
 import { validate } from '../src/validate.js';
 import { guard } from '../src/guard.js';
+import { SOURCES } from '../src/registry.js';
 import { baseDoc, NOW } from './helpers.mjs';
 
 function read(doc, ctx = {}) {
@@ -219,6 +220,21 @@ test('prompt_kind filters through coalesce, so a NULL row reads as unknown and n
   // would hide every pre-decision row too. The coalesce is what prevents that.
   assert.ok(!neRead.text.includes('s.prompt_kind <> $'), 'a bare <> over the nullable column drops NULL rows');
   assert.ok(!neRead.text.includes('client_generated'), 'the value stays bound');
+});
+
+test("the event list names each event's origin: its device, or the provider through the tenant's connection", () => {
+  const events = (filters) => read({ query_version: '1', source: 'ingest.submission', filters, window: { ...baseDoc().window }, limit: 10 });
+  const statement = events([]);
+  assert.ok(statement.text.includes('s.device_id AS "device"'));
+  // A device's event has no connection, so the subquery finds nothing and its provider is NULL.
+  assert.match(
+    statement.text,
+    /\(SELECT p\.display_name FROM ops\.provider_connection pc JOIN ref\.provider p ON p\.provider = pc\.provider WHERE pc\.tenant_id = s\.tenant_id AND pc\.connection_id = s\.connection_id\) AS "provider"/,
+  );
+
+  // A provider's record has no device: `device` admits NULL, and is_null finds those records.
+  assert.equal(SOURCES['ingest.submission'].dimensions.device.nullable, true);
+  assert.ok(events([{ field: 'device', op: 'is_null' }]).text.includes('s.device_id IS NULL'));
 });
 
 test('a keyset cursor becomes an expanded predicate over the mixed-direction total order', () => {

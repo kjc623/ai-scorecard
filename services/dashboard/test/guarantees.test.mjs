@@ -297,8 +297,11 @@ test('every write this client can make goes to control-api\'s admin API, which a
   await admin.setContentSearch('attachment_names');
   await admin.setToolSanction('tls_x', 'unsanctioned');
   await admin.setKillSwitch('proxy.tls', true, 'app_breakage');
+  await admin.connectProvider('chatgpt_enterprise', { account: 'ws', key: 'k' });
+  await admin.runProvider('chatgpt_enterprise');
+  await admin.disconnectProvider('chatgpt_enterprise');
   const writes = sent.filter((s) => s.method !== 'GET');
-  assert.equal(writes.length, 11);
+  assert.equal(writes.length, 14);
   for (const w of writes) assert.ok(w.path.startsWith('/admin/v1/'), `${w.method} ${w.path} is not an admin endpoint`);
 });
 
@@ -373,7 +376,7 @@ test('the only endpoints the pages call are the query endpoint, the two content 
     ['/admin/v1/', 'settings'], ['/admin/v1/', 'settings/collection-mode'], ['/admin/v1/', 'settings/scope-override'],
     ['/admin/v1/', 'settings/retention'], ['/admin/v1/', 'settings/content-search'], ['/admin/v1/', 'settings/tools'],
     ['/admin/v1/', 'settings/endpoint'], ['/admin/v1/', 'settings/tls-inspection'], ['/admin/v1/', 'settings/rules'], ['/admin/v1/', 'settings/custom-labels'],
-    ['/admin/v1/', 'settings/kill-switch'], ['/admin/v1/', 'directory'], ['/admin/v1/', 'teams'],
+    ['/admin/v1/', 'settings/kill-switch'], ['/admin/v1/', 'directory'], ['/admin/v1/', 'teams'], ['/admin/v1/', 'providers'],
   ].map((parts) => parts.join(''));
   const others = files.map((rel) => readFileSync(join(ROOT, rel), 'utf8')).join('\n');
   const urls = [...others.matchAll(/['"](\/(?:admin\/)?v1\/[a-z/-]+)['"]/g)].map((m) => m[1]);

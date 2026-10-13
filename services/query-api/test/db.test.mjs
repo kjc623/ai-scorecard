@@ -15,6 +15,8 @@ import { plan, executePlan } from '../src/plan.js';
 import { SOURCES, SOURCE_IDS } from '../src/registry.js';
 import { TEMPLATE_NAMES } from '../src/templates.js';
 import { TYPES } from '../src/db.js';
+import { SUBJECT_SUBMISSIONS_SQL, SUBJECT_OBSERVATIONS_SQL } from '../src/subject.js';
+import { HIT_DETAILS_SQL } from '../src/http/server.js';
 
 const DSN = process.env.SAC_TEST_PG_DSN ?? '';
 const SKIP = DSN === ''
@@ -85,6 +87,42 @@ async function seedSubmissions(client, rows) {
       [id, weakKey, promptKind, DEVICE, labels, receivedAt, action, attachments],
     );
   }
+}
+
+const CONNECTION = '00000000-0000-4000-8000-0000000000c1';
+
+/**
+ * The tenant's ChatGPT Enterprise connection and one prompt it recorded, which no device observed:
+ * its submission and its observation, both with the connection as their origin, read two hours
+ * after it was written.
+ */
+async function seedProviderRecord(client, submissionId, eventId) {
+  const hex = eventId.replace(/-/g, '').padEnd(64, '0');
+  await client.query(
+    "INSERT INTO ops.provider_connection (tenant_id, connection_id, provider, account, created_by, updated_by) VALUES (ops.current_tenant(), $1, 'chatgpt_enterprise', 'ws-db-test', 'db-test', 'db-test')",
+    [CONNECTION],
+  );
+  await client.query(
+    `INSERT INTO ingest.submission
+       (tenant_id, submission_id, dedup_key, dedup_weak_key, kind, prompt_kind, connection_id, user_ref, tool_fingerprint,
+        first_occurred_at, last_occurred_at, received_at, collection_mode, content_digest, labels, policy_action,
+        winning_source, winning_fidelity, observed_routes, content_state, expires_at)
+     VALUES (ops.current_tenant(), $1, $2, $3, 'prompt', 'user', $4, 'user_ref_0001', 'app:chatgpt_web',
+             '2026-09-02T11:00:00Z', '2026-09-02T11:00:00Z', '2026-09-02T13:00:00Z', 'm1', $5, '[]'::jsonb, 'logged',
+             'provider.api', 35, ARRAY['provider.api'], 'not_captured', '2026-12-01T00:00:00Z')`,
+    [submissionId, `sha256:${hex}`, `sha256:${hex.replace(/0/g, '1')}`, CONNECTION, `sha256:${hex.replace(/0/g, '2')}`],
+  );
+  await client.query(
+    `INSERT INTO ingest.observation
+       (tenant_id, event_id, connection_id, user_ref, tool_fingerprint, direction, kind, prompt_kind, occurred_at,
+        received_at, monotonic_offset_ms, source, confidence, collection_mode, size_bytes, content_digest, labels,
+        classifier_version, policy_decision, dedup_key, schema_version, expires_at)
+     VALUES (ops.current_tenant(), $1, $2, 'user_ref_0001', 'app:chatgpt_web', 'egress', 'prompt', 'user', '2026-09-02T11:00:00Z',
+             '2026-09-02T13:00:00Z', 0, 'provider.api', 'high', 'm1', 42, $3, '[]'::jsonb,
+             'rules-1.0.0/model-1.0.0', '{"rule_id":"policy.default","action":"logged","decided_locally":false}'::jsonb,
+             $4, '1.0', '2026-12-01T00:00:00Z')`,
+    [eventId, CONNECTION, `sha256:${hex.replace(/0/g, '2')}`, `sha256:${hex}`],
+  );
 }
 
 const TEMPLATE_PARAMS = Object.freeze({
@@ -252,6 +290,48 @@ test('prompt_kind_not excludes client_generated and keeps undecided rows', { ski
         .statements.find((s) => s.id === 'read');
       const kinds = (await client.query(read.text, read.params)).rows.map((r) => r.prompt_kind ?? null).sort();
       assert.deepEqual(kinds, [null, 'user'].sort());
+    },
+  );
+});
+
+test("every read that names an event's device names the provider that recorded it instead when no device did", { skip: SKIP }, async () => {
+  const fromDevice = '00000000-0000-4000-8000-0000000000e1';
+  const fromProvider = '00000000-0000-4000-8000-0000000000e2';
+  const providerEvent = '00000000-0000-4000-8000-0000000000f2';
+  await scratch(
+    async (client) => {
+      await seedSubmissions(client, [submissionRow(fromDevice, { receivedAt: '2026-09-02T10:00:00Z' })]);
+      await seedProviderRecord(client, fromProvider, providerEvent);
+    },
+    async (client, tenant) => {
+      const origins = (rows, id) => Object.fromEntries(rows.map((r) => [r[id], [r.device ?? null, r.provider ?? null]]));
+      const ctx = { now: NOW, tenant, actorId: 'db-test', cursorKey: KEY };
+
+      const list = await executePlan(plan({ query_version: '1', template: 'q8_activity', params: { window: WINDOW } }, ctx), { ...ctx, client: nested(client) });
+      assert.deepEqual(origins(list.data, 'submission_id'), { [fromDevice]: [DEVICE, null], [fromProvider]: [null, 'ChatGPT Enterprise'] }, 'the event list');
+
+      const noDevice = plan({ query_version: '1', source: 'ingest.submission', filters: [{ field: 'device', op: 'is_null' }], window: WINDOW, limit: 10 }, ctx)
+        .statements.find((s) => s.id === 'read');
+      assert.deepEqual((await client.query(noDevice.text, noDevice.params)).rows.map((r) => r.submission_id), [fromProvider], 'device is_null finds the provider\'s record');
+
+      const hits = (await client.query(HIT_DETAILS_SQL, [tenant, [fromDevice, fromProvider]])).rows;
+      assert.deepEqual(origins(hits, 'submission_id'), { [fromDevice]: [DEVICE, null], [fromProvider]: [null, 'ChatGPT Enterprise'] }, 'the search hits');
+      assert.equal(hits.find((h) => h.submission_id === fromProvider).hostname, null);
+
+      const events = (await client.query(SUBJECT_SUBMISSIONS_SQL, ['user_ref_0001', 10])).rows;
+      assert.deepEqual(origins(events, 'submission_id'), { [fromDevice]: [DEVICE, null], [fromProvider]: [null, 'ChatGPT Enterprise'] }, 'the subject export\'s events');
+      const observations = (await client.query(SUBJECT_OBSERVATIONS_SQL, ['user_ref_0001', 10])).rows;
+      assert.deepEqual(origins(observations, 'event_id'), { [providerEvent]: [null, 'ChatGPT Enterprise'] }, 'the subject export\'s observations');
+
+      // The person's series counts the provider's late record, but not as a device's spool flush.
+      const flush = plan({ query_version: '1', template: 'q6_subject_series', params: { window: WINDOW, subject: 'user_ref_0001' } }, ctx)
+        .statements.find((s) => s.id === 'flush_check');
+      const [counts] = (await client.query(flush.text, flush.params)).rows;
+      assert.deepEqual([Number(counts.rows_in_window), Number(counts.late_flush_rows)], [2, 0], 'the late-flush check');
+
+      // Another tenant's session sees neither the record nor the connection that names its provider.
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [randomUUID()]);
+      assert.equal((await client.query(HIT_DETAILS_SQL, [tenant, [fromProvider]])).rows.length, 0);
     },
   );
 });

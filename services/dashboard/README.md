@@ -13,7 +13,8 @@ layout lands on the page that holds it now.
   groups, departments and units the identity provider synced, and other teams) and Users (everyone
   the directory or a device has named, with their teams and prompts, and each person's page).
 - **Search** (`explore.html`): an analyst lists events and findings, searches prompt text, and
-  reads an event's stored prompt.
+  reads an event's stored prompt. An event read from a provider's admin API names the provider
+  where a device would be.
 - **Policy**: Rules (the enforcement rules, read top to bottom like a firewall's rulebase: each rule
   for the people, groups, departments, units or teams it names, the tools and the labels it checks,
   its action and the prompts it decided over 30 days; everyone reads them, and an admin edits them
@@ -32,8 +33,11 @@ layout lands on the page that holds it now.
 - **Settings**: Collection (the collection mode, prompt storage, retention, per-tool overrides, TLS
   inspection, the kill switch and the endpoint collectors), Devices (each device with the mode it
   applied, and each of its collectors with its state and cause; an admin installs the agent below
-  the list), Identity Providers (the directory read, sign-in and SCIM provisioning) and Audit trail
-  (filtered by actor, action, object type and case). A viewer's Settings is Devices alone.
+  the list), Identity Providers (the directory read, sign-in and SCIM provisioning), Integrations
+  (every AI provider whose admin API the product reads, as control-api lists them: an admin
+  connects each with its key and account or the tenant's Entra consent, replaces its key, pulls it
+  now or disconnects it, and sees its last pull and the records read) and Audit trail (filtered by
+  actor, action, object type and case). A viewer's Settings is Devices alone.
 
 It has two halves and no dependencies:
 

@@ -13,7 +13,8 @@ import (
 // A content object is the bytes the device captured for one request: the prompt text where the
 // device could identify what the person typed, the request body as observed where it could not,
 // or a JSON object with a "prompt" string and an "attachments" list whose entries carry a "name"
-// and, where the device saw it, a "path".
+// and, where the device saw it, a "path". For a provider's record it is the prompt text the
+// provider recorded.
 //
 // Search is for finding what a person typed, so the index holds the typed text (prompt_body) and
 // the attachment names (attachment_name), each by its path where it has one. A client wraps typed text in context of its own (Claude

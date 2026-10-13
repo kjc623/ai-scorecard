@@ -151,6 +151,12 @@ The event and finding lists carry the person's names beside the reference in `su
 device identity is hashed) and `directory_name` is the directory's current display name (NULL when the
 directory has not named the person). Both are joined at read time; the reference stays the identity.
 
+The event list names where each event came from, and exactly one of the two is set: `device`, the
+device that observed it, or `provider`, the display name of the AI provider whose admin API recorded
+it (`ref.provider`, through the tenant's `ops.provider_connection`). A provider's record of a prompt a
+device also captured is merged into the device's event, which keeps its `device` and lists
+`provider.api` in `observed_routes`.
+
 **`mart.agg_user_period` requires a subject filter** (`subject eq` or `subject in`). Its row grain
 *is* a person, so a read without one would be a list of people, which the product never offers. The
 refusal is `unsupported_query_shape / subject_scope_required` and the fix is in `error.detail.fix`.

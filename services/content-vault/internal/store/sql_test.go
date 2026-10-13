@@ -100,6 +100,18 @@ func (l *live) exec(tx *sql.Tx, query string, args ...any) {
 
 type world struct {
 	tenant, device string
+	// connection, when set, is the provider connection the world's submissions and grants come from
+	// in place of its device.
+	connection string
+}
+
+// origin is the device and the provider connection a submission or grant names: exactly one is
+// non-nil.
+func (w world) origin() (device, connection any) {
+	if w.connection != "" {
+		return nil, w.connection
+	}
+	return w.device, nil
 }
 
 // seedTenant creates a tenant at M3 with the given search tier, a device, and content retention
@@ -116,27 +128,46 @@ func (l *live) seedTenant(tier string) world {
 	return w
 }
 
-// seedSubmission creates a prompt submission and returns its id.
+// seedConnection connects the tenant to a provider and returns the world with its submissions and
+// grants coming from that connection.
+func (l *live) seedConnection(w world, provider string) world {
+	w.connection = newID()
+	l.as(w.tenant, func(tx *sql.Tx) {
+		l.exec(tx, `INSERT INTO ops.provider_connection (tenant_id, connection_id, provider, account, credential_enc, created_by, updated_by)
+		            VALUES ($1, $2, $3, 'org-1', '\x00'::bytea, 'test', 'test')`, w.tenant, w.connection, provider)
+	})
+	return w
+}
+
+// seedSubmission creates a prompt submission and returns its id. A world's device captured it, or
+// its provider connection recorded it.
 func (l *live) seedSubmission(w world, promptKind, labels string, receivedAt time.Time) string {
 	id := newID()
+	device, connection := w.origin()
+	route, fidelity := "ext.page_context", 10
+	if connection != nil {
+		route, fidelity = "provider.api", 35
+	}
 	l.as(w.tenant, func(tx *sql.Tx) {
 		l.exec(tx, `INSERT INTO ingest.submission (tenant_id, submission_id, dedup_weak_key, kind, prompt_kind, device_id,
-		              user_ref, tool_fingerprint, first_occurred_at, last_occurred_at, received_at, collection_mode,
-		              labels, winning_source, winning_fidelity, observed_routes, expires_at)
-		            VALUES ($1, $2, $3, 'prompt', $4, $5, 'user-ref-1', 'tool-a', $6, $6, $6, 'm3',
-		                    $7::jsonb, 'ext.page_context', 10, '{ext.page_context}', $6::timestamptz + interval '90 days')`,
-			w.tenant, id, digest(), promptKind, w.device, receivedAt, labels)
+		              connection_id, user_ref, tool_fingerprint, first_occurred_at, last_occurred_at, received_at,
+		              collection_mode, labels, winning_source, winning_fidelity, observed_routes, expires_at)
+		            VALUES ($1, $2, $3, 'prompt', $4, $5, $6, 'user-ref-1', 'tool-a', $7, $7, $7, 'm3',
+		                    $8::jsonb, $9, $10, ARRAY[$9::text], $7::timestamptz + interval '90 days')`,
+			w.tenant, id, digest(), promptKind, device, connection, receivedAt, labels, route, fidelity)
 	})
 	return id
 }
 
-// seedGrant creates a granted upload grant for an event.
+// seedGrant creates a granted upload grant for an event, from the world's device or provider
+// connection.
 func (l *live) seedGrant(w world, eventID, submissionID string) string {
 	id := newID()
+	device, connection := w.origin()
 	l.as(w.tenant, func(tx *sql.Tx) {
-		l.exec(tx, `INSERT INTO ops.grant (tenant_id, grant_id, event_id, submission_id, device_id, decided_at, decision, expires_at)
-		            VALUES ($1, $2, $3, nullif($4, '')::uuid, $5, now(), 'granted', now() + interval '10 minutes')`,
-			w.tenant, id, eventID, submissionID, w.device)
+		l.exec(tx, `INSERT INTO ops.grant (tenant_id, grant_id, event_id, submission_id, device_id, connection_id, decided_at, decision, expires_at)
+		            VALUES ($1, $2, $3, nullif($4, '')::uuid, $5, $6, now(), 'granted', now() + interval '10 minutes')`,
+			w.tenant, id, eventID, submissionID, device, connection)
 	})
 	return id
 }
@@ -219,6 +250,76 @@ func TestLiveUploadRetrieveRedeem(t *testing.T) {
 	}
 	if _, err := l.svc.Retrieve(ctx, vault.RetrieveRequest{TenantID: w.tenant, EventID: newID(), Principal: "alice@example.com"}); !isDenial(err, vault.ReasonNoContentObject) {
 		t.Fatalf("retrieval with no content = %v", err)
+	}
+}
+
+// A provider's record has no device: its grant is claimed, its content stored, indexed and
+// audited under its connection, and a search by device does not find it.
+func TestLiveProviderRecord(t *testing.T) {
+	l := newLive(t)
+	ctx := context.Background()
+	w := l.seedConnection(l.seedTenant("full_text"), "claude_enterprise")
+	sub := l.seedSubmission(w, "user", `[]`, time.Now().Add(-time.Minute))
+	event := newID()
+	grant := l.seedGrant(w, event, sub)
+	content := []byte("draft the Contoso renewal letter")
+
+	res, err := l.upload(w, event, grant, content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IndexedPrompt != 1 || res.Replayed {
+		t.Fatalf("upload = %+v", res)
+	}
+	err = store.New(l.vault).InTenant(ctx, w.tenant, func(tx store.Tx) error {
+		g, err := tx.Grant(ctx, grant)
+		if err != nil || g.DeviceID != "" || g.ConnectionID != w.connection || g.UsedAt.IsZero() {
+			t.Errorf("grant = %+v, %v; want used, from the connection and no device", g, err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.as(w.tenant, func(tx *sql.Tx) {
+		var actorType, actorID, connection, state string
+		if err := tx.QueryRowContext(ctx, `SELECT actor_type, actor_id, detail->>'connection_id'
+		    FROM ops.audit WHERE tenant_id = $1 AND action = $2`, w.tenant, vault.ActionContentStored).Scan(&actorType, &actorID, &connection); err != nil {
+			t.Fatal(err)
+		}
+		if actorType != "service" || actorID != "provider-connection:"+w.connection || connection != w.connection {
+			t.Fatalf("audit actor = %s %s, connection %s", actorType, actorID, connection)
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT content_state FROM ingest.submission WHERE tenant_id = $1 AND submission_id = $2`, w.tenant, sub).Scan(&state); err != nil || state != "uploaded" {
+			t.Fatalf("submission content_state = %q, %v; want uploaded", state, err)
+		}
+	})
+
+	again, err := l.upload(w, event, grant, content)
+	if err != nil || !again.Replayed || again.ObjectID != res.ObjectID {
+		t.Fatalf("retry = %+v, %v; want the stored object replayed", again, err)
+	}
+	if _, err := l.upload(w, newID(), grant, content); !isDenial(err, vault.ReasonGrantUnknown) {
+		t.Fatalf("the provider grant used for another event = %v", err)
+	}
+
+	search := func(f store.SearchFilters) int {
+		t.Helper()
+		res, err := l.svc.Search(ctx, vault.SearchRequest{TenantID: w.tenant, Principal: "alice", Query: "contoso", Filters: f})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(res.Hits)
+	}
+	if n := search(store.SearchFilters{}); n != 1 {
+		t.Fatalf("search found %d hits, want the provider's prompt", n)
+	}
+	if n := search(store.SearchFilters{Device: w.device}); n != 0 {
+		t.Fatalf("a search by device found %d hits of a provider's record", n)
+	}
+	export, err := l.svc.SubjectExport(ctx, vault.SubjectExportRequest{TenantID: w.tenant, SubjectRef: "user-ref-1", Principal: "admin"})
+	if err != nil || len(export.Prompts) != 1 || !bytes.Equal(export.Prompts[0].Plaintext, content) {
+		t.Fatalf("subject export = %+v, %v", export, err)
 	}
 }
 

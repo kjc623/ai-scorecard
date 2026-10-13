@@ -27,6 +27,8 @@ import { DEPLOYMENT_NOTES, renderAgentSetup } from './deployment-render.js';
 import { createSettings } from './settings.js';
 import { createDirectory } from './directory.js';
 import { renderDirectory } from './directory-render.js';
+import { createIntegrations } from './integrations.js';
+import { renderIntegrations } from './integrations-render.js';
 import { renderSanctionDecisions, renderSettings } from './settings-render.js';
 import { createRules } from './rules.js';
 import { renderRuleDialog, renderRules } from './rules-render.js';
@@ -54,6 +56,7 @@ export const SCREENS = Object.freeze([
   Object.freeze({ id: 'settings', label: 'Collection', question: null, kind: 'admin' }),
   Object.freeze({ id: 'devices', label: 'Devices', question: 7, kind: 'answer', questionId: 'q7_devices' }),
   Object.freeze({ id: 'directory', label: 'Identity Providers', question: null, kind: 'admin' }),
+  Object.freeze({ id: 'integrations', label: 'Integrations', question: null, kind: 'admin' }),
   Object.freeze({ id: 'audit', label: 'Audit trail', question: 10, kind: 'answer', questionId: 'q10_audit_trail' }),
   Object.freeze({ id: 'event', label: 'Event detail', question: 9, kind: 'input', questionId: 'q9_event_detail' }),
 ]);
@@ -490,7 +493,7 @@ function saveDownload(document, data, filename) {
 /** What a control acts on, so a repaint can find the same control again. */
 function controlKey(el) {
   const d = el.dataset ?? {};
-  return [d.team ?? d.rl, d.value, d.field, d.index, d.label].join('\u0000');
+  return [d.team ?? d.rl ?? d.int, d.value, d.field, d.index, d.label, d.provider].join('\u0000');
 }
 
 /**
@@ -561,6 +564,7 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   let deployment = null;
   let settings = null;
   let directory = null;
+  let integrations = null;
   let rules = null;
   let editor = null;
   // An admin edits Policy and Settings and adds and edits teams; the server refuses the admin API
@@ -628,6 +632,15 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   function directoryController() {
     directory ??= createDirectory({ admin: adminApi, onChange: paintDirectory });
     return directory;
+  }
+
+  function paintIntegrations(state) {
+    if (paintedScreen === 'integrations') repaint(document, root, renderIntegrations(state, { head: headNow('integrations') }));
+  }
+
+  function integrationsController() {
+    integrations ??= createIntegrations({ admin: adminApi, onChange: paintIntegrations });
+    return integrations;
   }
 
   /** Rules or Labels, and the rule panel. */
@@ -702,6 +715,8 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     root.classList?.toggle('switched', !sameScreen && paintedScreen !== null);
     // Leaving Identity Providers takes the one-time SCIM token with it.
     if (!sameScreen && paintedScreen === 'directory') deployment?.leave();
+    // Leaving Integrations takes a key being typed with it.
+    if (!sameScreen && paintedScreen === 'integrations') integrations?.leave();
     const before = paintedScreen;
     paintedScreen = screen.id;
     root.classList?.toggle('same-screen', sameScreen);
@@ -723,6 +738,12 @@ export async function boot({ document, api, admin, session: givenSession } = {})
         const setup = deploymentController();
         paintDirectory();
         await Promise.all([loadOnce(controller, sameScreen), loadOnce(setup, sameScreen)]);
+        return;
+      }
+      if (screen.id === 'integrations') {
+        const controller = integrationsController();
+        paintIntegrations(controller.state);
+        await loadOnce(controller, sameScreen);
         return;
       }
       const controller = settingsController();
@@ -791,6 +812,12 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       if (editor) editor.act({ team: form.dataset.teamForm });
       return;
     }
+    // An integration's key form: Enter or its button connects.
+    if (form?.dataset?.intForm !== undefined) {
+      event.preventDefault();
+      if (integrations) integrations.act({ int: 'connect', provider: form.dataset.intForm });
+      return;
+    }
     // The deployment sections' forms act through their buttons; Enter in the token label creates it.
     if (form?.dataset?.depForm !== undefined) {
       event.preventDefault();
@@ -850,6 +877,12 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       directory.act({ ...dirTarget.dataset });
       return;
     }
+    const intTarget = event.target?.closest?.('[data-int]');
+    if (intTarget && integrations && !intTarget.disabled) {
+      event.preventDefault();
+      integrations.act({ ...intTarget.dataset });
+      return;
+    }
     const target = event.target?.closest?.('[data-dep]');
     if (!target || !deployment || target.disabled) return;
     event.preventDefault();
@@ -900,6 +933,8 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     if (killRoute && settings) settings.setKillSwitchReason(killRoute, event.target.value);
     const field = event.target?.dataset?.depDraft;
     if (field && deployment) deployment.setDraft(field, event.target.value);
+    const intField = event.target?.dataset?.intDraft;
+    if (intField && integrations) integrations.setDraft(intField, event.target.value);
     const teamField = event.target?.dataset?.teamDraft;
     if (teamField && editor) {
       editor.setDraft(teamField, event.target.value);
@@ -909,5 +944,5 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   });
   await render();
 
-  return { render, dashboard, deployment: () => deployment, settings: () => settings, directory: () => directory, rules: () => rules, editor: () => editor };
+  return { render, dashboard, deployment: () => deployment, settings: () => settings, directory: () => directory, integrations: () => integrations, rules: () => rules, editor: () => editor };
 }

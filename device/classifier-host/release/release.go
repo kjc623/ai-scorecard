@@ -179,6 +179,21 @@ func Load(dir string, pub ed25519.PublicKey) (*Release, error) {
 	return &Release{Version: m.Version, Rules: set, Model: mdl}, nil
 }
 
+// Builtin compiles the rules and the model the product ships (rules.BuiltinRules and
+// rules.BuiltinModel), for a classifier that runs on a server rather than from a signed release on a
+// device. Its version names both: "<rules version>+<model version>".
+func Builtin() (*Release, error) {
+	set, err := rules.Compile(rules.BuiltinRules)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrContent, err)
+	}
+	mdl, err := model.Parse(rules.BuiltinModel)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrContent, err)
+	}
+	return &Release{Version: set.Version() + "+" + mdl.Version(), Rules: set, Model: mdl}, nil
+}
+
 func compile(rulesRaw, modelRaw []byte) error {
 	if _, err := rules.Compile(rulesRaw); err != nil {
 		return fmt.Errorf("%w: %v", ErrContent, err)

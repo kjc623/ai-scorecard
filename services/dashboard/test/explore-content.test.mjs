@@ -318,3 +318,26 @@ test('a hit shows the prompt text with the person, the hostname and the tool', a
   assert.match(html, /<span>u_9a02<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>d-2<\/span>/);
   assert.match(html, />s2<\/span>/, 'a hit with no metadata still names its submission');
 });
+
+test('a prompt read from a provider\'s admin API names the provider where a device would be', async () => {
+  const { explorer, stub } = explorerFor();
+  const state = { ...explorer.state, text: { status: 'ready', query: 'x', truncated: false, problem: null, hits: [
+    { submissionId: 's1', snippet: 'Draft the <em>renewal</em> letter', subject: 'alice@contoso.example', directory_name: 'Alice Smith', device: null, hostname: null, provider: 'ChatGPT Enterprise', tool: 'chatgpt_web', tool_name: 'ChatGPT' },
+  ] } };
+  assert.match(renderExploreText(state), /<span>Alice Smith<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>via ChatGPT Enterprise<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>ChatGPT<\/span>/);
+  const hit = await createExplorer({
+    api: createQueryApi({ transport: stub }),
+    content: createContentApi({ transport: { search: async () => ({ state: 'available', hits: [{ submission_id: 's1', snippet: 'x', provider: 'ChatGPT Enterprise', device: null }] }), retrieve: stub.content.retrieve, readUrl: stub.content.readUrl } }),
+    now,
+  });
+  await hit.searchText('x');
+  assert.equal(hit.state.text.hits[0].provider, 'ChatGPT Enterprise', 'the hit keeps the provider the search named');
+
+  const local = stub.sample.events.find((e) => e.content_state === 'local_only');
+  await explorer.restore(`#events?window=d30&open=${local.submission_id}`);
+  assert.match(renderExploreDetail(explorer.state), /<dt>Device<\/dt>/);
+  const read = { ...explorer.state, detail: { ...explorer.state.detail, row: { ...explorer.state.detail.row, device: null, provider: 'ChatGPT Enterprise' } } };
+  const detail = renderExploreDetail(read);
+  assert.match(detail, /<dt>Provider<\/dt><dd><span>via ChatGPT Enterprise<\/span>/);
+  assert.doesNotMatch(detail, /<dt>Device<\/dt>|data-field="device"/, 'no device, and no device to filter by');
+});

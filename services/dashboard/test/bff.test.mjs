@@ -527,7 +527,7 @@ test('GET /session names the pages each role may open; Search is not served to a
   assert.equal('dev' in viewerSession, false);
   assert.equal(JSON.stringify(viewerSession).includes('at-viewer'), false, 'the page is never given a token');
   const adminSession = (await send(port, '/session', { headers: { cookie: `sac_session=${admin}` } })).json();
-  for (const id of ['settings', 'directory', 'labels']) assert.ok(adminSession.pages.includes(id), id);
+  for (const id of ['settings', 'directory', 'integrations', 'labels']) assert.ok(adminSession.pages.includes(id), id);
   for (const id of ['activity', 'insights']) assert.equal(adminSession.pages.includes(id), false, `production does not offer ${id}, still being built`);
   const refused = await send(port, '/explore.html', { headers: { cookie: `sac_session=${viewer}` } });
   assert.equal(refused.status, 403);

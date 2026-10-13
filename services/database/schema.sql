@@ -57,10 +57,14 @@ CREATE ROLE sac_ops      NOLOGIN;   -- scheduled jobs (aggregate, expire)
 -- Owns the SECURITY DEFINER functions that read across tenants (section 5d) and nothing else. No
 -- runtime role is a member, so its reach is exactly those function bodies.
 CREATE ROLE sac_resolver NOLOGIN;
+-- Owns ingest.record_provider_event, the write path for a provider's records (section 8), and holds
+-- what that write needs. No runtime role is a member, so control-api records a provider's record
+-- without being able to read what record_event reads.
+CREATE ROLE sac_recorder NOLOGIN;
 
-GRANT USAGE ON SCHEMA ref    TO sac_ingest, sac_control, sac_vault, sac_query, sac_ops;
-GRANT USAGE ON SCHEMA ops    TO sac_ingest, sac_control, sac_vault, sac_query, sac_ops, sac_resolver;
-GRANT USAGE ON SCHEMA ingest TO sac_ingest, sac_control, sac_vault, sac_query, sac_ops;
+GRANT USAGE ON SCHEMA ref    TO sac_ingest, sac_control, sac_vault, sac_query, sac_ops, sac_recorder;
+GRANT USAGE ON SCHEMA ops    TO sac_ingest, sac_control, sac_vault, sac_query, sac_ops, sac_resolver, sac_recorder;
+GRANT USAGE ON SCHEMA ingest TO sac_ingest, sac_control, sac_vault, sac_query, sac_ops, sac_recorder;
 GRANT USAGE ON SCHEMA mart   TO sac_query, sac_ops, sac_control;
 
 
@@ -183,6 +187,25 @@ CREATE TABLE ref.retention_class (
   retention_class   text PRIMARY KEY,
   default_ttl_days  int NOT NULL CHECK (default_ttl_days > 0),
   description       text NOT NULL
+);
+
+-- The AI providers whose own admin API the product reads a tenant's usage from, with that tenant's
+-- consent: the provider's record of what its people sent, pulled by control-api rather than
+-- observed on a device. The console's Integrations page lists every row, so a provider is offered
+-- by adding it here and its adapter to control-api. `credential` is how the product authenticates:
+-- the vendor's Entra application under the customer's admin consent, or a key the customer's admin
+-- issued, which the page asks for by credential_label. A provider whose key does not name what it
+-- reads asks for that too, by account_label. `apps` is the ref.app keys its records are filed under.
+CREATE TABLE ref.provider (
+  provider          text PRIMARY KEY CHECK (provider ~ '^[a-z][a-z0-9_]{1,63}$'),
+  display_name      text NOT NULL,
+  vendor            text NOT NULL,
+  credential        text NOT NULL CHECK (credential IN ('entra_app','api_key')),
+  source_url        text NOT NULL,
+  apps              text[] NOT NULL CHECK (cardinality(apps) > 0),
+  credential_label  text,
+  account_label     text,
+  CONSTRAINT provider_key_is_labelled CHECK ((credential = 'api_key') = (credential_label IS NOT NULL))
 );
 
 
@@ -378,6 +401,42 @@ CREATE TABLE ops.collector_state (
 );
 
 CREATE INDEX collector_state_by_state ON ops.collector_state (tenant_id, state);
+
+-- A tenant's consented link to one provider's admin API (ref.provider), the collection path that
+-- needs no device: control-api reads the provider's records of what the tenant's people sent and
+-- records each as an observation whose origin is this connection. One row per provider; it is
+-- disabled, never deleted, so the observations it made keep naming it. The row is the path's health:
+-- each pass records when it ran and how it ended, and last_error is a closed code, never a
+-- provider's response body.
+CREATE TABLE ops.provider_connection (
+  tenant_id          uuid NOT NULL REFERENCES ops.tenant(tenant_id),
+  connection_id      uuid NOT NULL DEFAULT gen_random_uuid(),
+  provider           text NOT NULL REFERENCES ref.provider(provider),
+  -- The provider-side account the connection reads, where the credential alone does not name it:
+  -- a ChatGPT workspace, an Anthropic organization. A Microsoft connection reads the directory of
+  -- the tenant's Entra connection.
+  account            text CONSTRAINT provider_connection_account_bounded CHECK (length(account) BETWEEN 1 AND 200),
+  -- The key the customer's admin issued, sealed under the tenant's directory key. NULL for a
+  -- provider read with the vendor's Entra application, which holds no secret.
+  credential_enc     bytea,
+  status             text NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
+  -- Where the next pass resumes, as the provider's adapter spells it; NULL before the first pass.
+  cursor             text CONSTRAINT provider_connection_cursor_bounded CHECK (length(cursor) <= 4096),
+  created_by         text NOT NULL,
+  created_at         timestamptz NOT NULL DEFAULT now(),
+  updated_by         text NOT NULL,
+  updated_at         timestamptz NOT NULL DEFAULT now(),
+  last_started_at    timestamptz,
+  last_completed_at  timestamptz,
+  last_status        text CHECK (last_status IN ('ok','failed')),
+  last_error         text CONSTRAINT provider_connection_error_is_code CHECK (last_error ~ '^[a-z_]{1,64}$'),
+  -- Records the passes have read, and those among them the tenant did not already hold.
+  records_read       bigint NOT NULL DEFAULT 0 CHECK (records_read >= 0),
+  records_new        bigint NOT NULL DEFAULT 0 CHECK (records_new >= 0),
+  PRIMARY KEY (tenant_id, connection_id),
+  UNIQUE (tenant_id, provider),
+  CONSTRAINT provider_connection_failure_has_code CHECK ((last_status = 'failed') = (last_error IS NOT NULL))
+);
 
 -- The signed policy bundle. A device that fails to verify a new bundle keeps the last version it
 -- verified, which is what bundle_version orders.
@@ -577,13 +636,14 @@ COMMENT ON COLUMN ops.audit.row_hash IS
 --   UPDATE ops.grant SET used_at = now()
 --    WHERE ... AND used_at IS NULL AND decision = 'granted' AND expires_at > now()
 -- so a second claim matches nothing. There is no bulk grant, so an "upload everything" state cannot
--- be configured.
+-- be configured. A grant is for the event's origin: the device that observed it, or the provider
+-- connection whose record it is, which control-api reads and decides for itself.
 CREATE TABLE ops.grant (
   tenant_id         uuid NOT NULL REFERENCES ops.tenant(tenant_id),
   grant_id          uuid NOT NULL,
   event_id          uuid NOT NULL,
   submission_id     uuid,
-  device_id         uuid NOT NULL,
+  device_id         uuid,
   requested_at      timestamptz NOT NULL DEFAULT now(),
   decided_at        timestamptz,
   decision          text NOT NULL CHECK (decision IN ('pending','granted','denied','expired','voided')),
@@ -592,10 +652,13 @@ CREATE TABLE ops.grant (
   -- When a granted upload must have happened by.
   expires_at        timestamptz,
   used_at           timestamptz,
+  connection_id     uuid,
   PRIMARY KEY (tenant_id, grant_id),
   -- Target of ops.content's foreign key, which ties stored content to the event it was granted for.
   UNIQUE (tenant_id, grant_id, event_id),
   FOREIGN KEY (tenant_id, device_id) REFERENCES ops.device(tenant_id, device_id),
+  FOREIGN KEY (tenant_id, connection_id) REFERENCES ops.provider_connection(tenant_id, connection_id),
+  CONSTRAINT grant_has_one_origin CHECK ((device_id IS NULL) <> (connection_id IS NULL)),
   CONSTRAINT grant_denial_requires_reason
     CHECK ((decision = 'denied') = (denial_reason IS NOT NULL)),
   CONSTRAINT grant_granted_has_expiry
@@ -1292,11 +1355,13 @@ COMMENT ON FUNCTION ops.tenant_ids() IS
 
 -- One row per observation. Two routes observing one submission produce two rows here and one row in
 -- ingest.submission. UPDATE is refused outright; DELETE only by the retention path, which sets a
--- session flag (section 8).
+-- session flag (section 8). An observation's origin is the device that made it or, for a provider's
+-- record pulled from its admin API, the tenant's connection to that provider: exactly one of
+-- device_id and connection_id.
 CREATE TABLE ingest.observation (
   tenant_id         uuid NOT NULL REFERENCES ops.tenant(tenant_id),
   event_id          uuid NOT NULL,
-  device_id         uuid NOT NULL,
+  device_id         uuid,
   user_ref          text NOT NULL,
   -- The clear account name, present only while the tenant's device_identity is 'clear' and the
   -- device could attribute the observation to a person.
@@ -1348,8 +1413,11 @@ CREATE TABLE ingest.observation (
   duration_ms       bigint CHECK (duration_ms >= 0),
   tool_name         text,
   outcome           text CHECK (outcome IN ('success','error','denied')),
+  connection_id     uuid,
   PRIMARY KEY (tenant_id, event_id),
   FOREIGN KEY (tenant_id, device_id) REFERENCES ops.device(tenant_id, device_id),
+  FOREIGN KEY (tenant_id, connection_id) REFERENCES ops.provider_connection(tenant_id, connection_id),
+  CONSTRAINT observation_has_one_origin CHECK ((device_id IS NULL) <> (connection_id IS NULL)),
 
   -- The event envelope contract's kind and mode boundaries, enforced so that a record arriving by
   -- any path, not only the ingest gate, cannot carry a field its kind or mode forbids. Each list
@@ -1419,8 +1487,9 @@ CREATE INDEX observation_discovery ON ingest.observation (tenant_id, received_at
 CREATE INDEX observation_agent_activity ON ingest.observation (tenant_id, received_at) WHERE kind = 'agent_activity';
 
 -- The dedup key for an observation without a content digest (M0, a canvas UI, a WebSocket session,
--- a rollup, a discovery, an agent activity): tenant, device, tool, kind, a 300-second bucket and the
--- payload size. The server derives it, so independently written collectors agree. `kind` is part of
+-- a rollup, a discovery, an agent activity): tenant, origin (the device, or the provider connection),
+-- tool, kind, a 300-second bucket and the payload size. The server derives it, so independently
+-- written collectors agree. `kind` is part of
 -- it because rollups and discoveries carry no size: without it, a rollup and a discovery of one tool
 -- in one bucket would collapse into one record.
 CREATE FUNCTION ingest.weak_dedup_key(
@@ -1445,6 +1514,11 @@ $$;
 --   * the weak key binds only rows with no exact key, so a weak observation cannot pull a confident
 --     row into a merge.
 -- An exact observation matching a weak-only row adopts it rather than inserting a twin.
+--
+-- Both keys include the origin, so a device's capture of a prompt and the provider's record of it
+-- never share one. They are the same submission when they agree on the content digest, the person
+-- and the tool and occurred within ten minutes of each other, and record_event merges them on that.
+-- device_id and connection_id are the origin of the observation that created the row.
 CREATE TABLE ingest.submission (
   tenant_id          uuid NOT NULL REFERENCES ops.tenant(tenant_id),
   submission_id      uuid NOT NULL,
@@ -1454,7 +1528,7 @@ CREATE TABLE ingest.submission (
   -- The winning observation's request kind; NULL for every other kind and for M0 prompts, read as
   -- 'unknown'. A 'client_generated' submission is never indexed for prompt-text search.
   prompt_kind        text CHECK (prompt_kind IS NULL OR (prompt_kind IN ('user','client_generated','unknown') AND kind = 'prompt')),
-  device_id          uuid NOT NULL,
+  device_id          uuid,
   user_ref           text NOT NULL,
   -- The winning observation's account name, so the name and the content describe the same
   -- observation.
@@ -1488,8 +1562,11 @@ CREATE TABLE ingest.submission (
   -- How many attachments the winning observation described. NULL when it described none, which
   -- is every M0 prompt: M0 may not carry attachment descriptors, so their absence says nothing.
   attachment_count   int CHECK (attachment_count >= 0),
+  connection_id      uuid,
   PRIMARY KEY (tenant_id, submission_id),
   FOREIGN KEY (tenant_id, device_id) REFERENCES ops.device(tenant_id, device_id),
+  FOREIGN KEY (tenant_id, connection_id) REFERENCES ops.provider_connection(tenant_id, connection_id),
+  CONSTRAINT submission_has_one_origin CHECK ((device_id IS NULL) <> (connection_id IS NULL)),
   CONSTRAINT submission_shredded_requires_reason
     CHECK ((content_state = 'shredded') = (shredded_reason IS NOT NULL)),
   CONSTRAINT submission_no_content_without_capture
@@ -1512,6 +1589,11 @@ CREATE INDEX submission_expiry ON ingest.submission (tenant_id, expires_at);
 -- One person's submissions: a subject's reads, and the rollup moving a device-derived ref's rows
 -- to the person's canonical ref once the directory names it.
 CREATE INDEX submission_by_user ON ingest.submission (tenant_id, user_ref);
+
+-- The submissions of one prompt text: record_event finds the device's capture of a prompt a
+-- provider's record names, and the other way round, by digest.
+CREATE INDEX submission_by_digest ON ingest.submission (tenant_id, content_digest)
+  WHERE content_digest IS NOT NULL;
 
 -- Rejected envelopes, kept for diagnosis with a short TTL. Content does not leave the device for a
 -- rejected record either, so the redacted envelope may carry the fields needed to diagnose a
@@ -2400,6 +2482,10 @@ DECLARE
   v_kind          text := p_envelope->>'kind';
   v_mode          text := p_envelope->>'collection_mode';
   v_source        text := p_envelope->>'source';
+  -- The observation's origin: the device that made it, or the provider connection whose record it
+  -- is (ingest.record_provider_event).
+  v_device        uuid := (p_envelope->>'device_id')::uuid;
+  v_connection    uuid := (p_envelope->>'connection_id')::uuid;
   v_fidelity      int;
   v_occurred      timestamptz := (p_envelope->>'occurred_at')::timestamptz;
   v_sub_id        uuid;
@@ -2420,6 +2506,10 @@ BEGIN
   IF v_fidelity IS NULL THEN
     RAISE EXCEPTION 'unknown route %', v_source;
   END IF;
+  -- A provider connection is an origin only record_provider_event vouches for.
+  IF v_connection IS NOT NULL AND current_user <> 'sac_recorder' THEN
+    RAISE EXCEPTION 'a provider''s record is recorded only through ingest.record_provider_event';
+  END IF;
 
   -- Retention is resolved once and materialised onto both rows.
   v_ttl := ops.event_ttl_days(v_tenant, v_mode, p_envelope->'labels');
@@ -2432,7 +2522,7 @@ BEGIN
   -- and erasure paths mark it shredded.
   v_captured := (v_kind = 'prompt' AND v_mode = 'm3');
   v_exact    := p_envelope->>'dedup_key';
-  v_weak     := ingest.weak_dedup_key(v_tenant, (p_envelope->>'device_id')::uuid,
+  v_weak     := ingest.weak_dedup_key(v_tenant, coalesce(v_device, v_connection),
                                       p_envelope->>'tool_fingerprint', v_kind, v_occurred,
                                       (p_envelope->>'size_bytes')::bigint);
 
@@ -2460,12 +2550,12 @@ BEGIN
     window_start, window_end, submission_count, bytes_total, detection_basis,
     prompt_kind, dedup_key, schema_version, expires_at,
     discovery_type, app_version, publisher, host_app, destination_host, model_names,
-    activity_type, model, input_tokens, output_tokens, duration_ms, tool_name, outcome
+    activity_type, model, input_tokens, output_tokens, duration_ms, tool_name, outcome, connection_id
   )
   VALUES (
     v_tenant,
     v_event_id,
-    (p_envelope->>'device_id')::uuid,
+    v_device,
     v_user_ref,
     v_subject_name,
     p_envelope->>'tool_fingerprint',
@@ -2505,7 +2595,8 @@ BEGIN
     (p_envelope->>'output_tokens')::bigint,
     (p_envelope->>'duration_ms')::bigint,
     p_envelope->>'tool_name',
-    p_envelope->>'outcome'
+    p_envelope->>'outcome',
+    v_connection
   )
   ON CONFLICT (tenant_id, event_id) DO NOTHING;
 
@@ -2524,13 +2615,15 @@ BEGIN
   END IF;
 
   -- The device's most recent user. Guarded like last_seen_at, so an out-of-order batch cannot move
-  -- it backwards.
-  UPDATE ops.device
-     SET last_user_ref     = v_user_ref,
-         last_subject_name = v_subject_name
-   WHERE tenant_id = v_tenant
-     AND device_id = (p_envelope->>'device_id')::uuid
-     AND (last_seen_at IS NULL OR last_seen_at <= p_received_at);
+  -- it backwards. A provider's record has no device.
+  IF v_device IS NOT NULL THEN
+    UPDATE ops.device
+       SET last_user_ref     = v_user_ref,
+           last_subject_name = v_subject_name
+     WHERE tenant_id = v_tenant
+       AND device_id = v_device
+       AND (last_seen_at IS NULL OR last_seen_at <= p_received_at);
+  END IF;
 
   -- Step 2: fold the observation into the logical submission:
   --   1. an exact match on this observation's key: merge into it;
@@ -2605,7 +2698,7 @@ BEGIN
       tool_fingerprint, first_occurred_at, last_occurred_at, received_at, collection_mode, size_bytes,
       content_digest, labels, classifier_version, confidence, policy_action, policy_rule_id,
       decided_locally, winning_source, winning_fidelity, observed_routes, observation_count,
-      merge_confidence, content_state, expires_at, attachment_count
+      merge_confidence, content_state, expires_at, attachment_count, connection_id
     )
     VALUES (
       v_tenant,
@@ -2614,7 +2707,7 @@ BEGIN
       v_weak,
       v_kind,
       nullif(p_envelope->>'prompt_kind', ''),
-      (p_envelope->>'device_id')::uuid,
+      v_device,
       v_user_ref,
       v_subject_name,
       p_envelope->>'tool_fingerprint',
@@ -2631,7 +2724,8 @@ BEGIN
       CASE WHEN v_is_exact THEN 'high' ELSE 'low' END,
       CASE WHEN v_captured THEN 'local_only' ELSE 'not_captured' END,
       p_received_at + make_interval(days => v_ttl),
-      v_attachments
+      v_attachments,
+      v_connection
     )
     RETURNING ingest.submission.submission_id INTO v_sub_id;
     v_outcome := 'inserted';
@@ -2654,6 +2748,68 @@ BEGIN
   END IF;
 
   RETURN QUERY SELECT v_outcome, v_sub_id;
+END $$;
+
+-- The write path for a provider's record of a prompt (ops.provider_connection). control-api reads
+-- the provider, classifies the text and records it through record_event, but does not hold
+-- record_event's privileges, which include reading labels and digests: this function runs as
+-- sac_recorder, whose grants are what record_event needs. Row-level security still applies, under
+-- the caller's session tenant. The envelope names an active connection of that tenant and no
+-- device, and arrives by provider.api.
+--
+-- A device that captured the same prompt filed it under a key that names the device, so the two
+-- never share a key. A device's prompt that agrees with the record on the content digest, the person
+-- and the tool and began within ten minutes of it lends the record its key, and record_event merges
+-- the two: one prompt counts once. A device observation that arrives after the provider's record is
+-- recorded on its own.
+CREATE FUNCTION ingest.record_provider_event(p_envelope jsonb)
+RETURNS TABLE(event_outcome text, event_submission_id uuid)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+DECLARE
+  v_tenant    uuid := (p_envelope->>'tenant_id')::uuid;
+  v_occurred  timestamptz := (p_envelope->>'occurred_at')::timestamptz;
+  v_user_ref  text;
+  v_key       text;
+BEGIN
+  IF v_tenant IS DISTINCT FROM ops.current_tenant() THEN
+    RAISE EXCEPTION 'a provider record must be for the session tenant';
+  END IF;
+  IF p_envelope ? 'device_id' OR p_envelope->>'source' IS DISTINCT FROM 'provider.api' THEN
+    RAISE EXCEPTION 'a provider record has no device and arrives by provider.api';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM ops.provider_connection c
+                  WHERE c.tenant_id = v_tenant
+                    AND c.connection_id = (p_envelope->>'connection_id')::uuid
+                    AND c.status = 'active') THEN
+    RAISE EXCEPTION 'provider connection % is not an active connection of the tenant',
+      p_envelope->>'connection_id';
+  END IF;
+
+  IF p_envelope->>'kind' = 'prompt' AND p_envelope->>'content_digest' IS NOT NULL THEN
+    v_user_ref := coalesce(
+      (SELECT a.user_ref FROM ops.user_ref_alias a
+        WHERE a.tenant_id = v_tenant AND a.alias_ref = p_envelope->>'user_ref'),
+      p_envelope->>'user_ref');
+    SELECT s.dedup_key INTO v_key
+      FROM ingest.submission s
+     WHERE s.tenant_id = v_tenant
+       AND s.content_digest = p_envelope->>'content_digest'
+       AND s.kind = 'prompt'
+       AND s.device_id IS NOT NULL
+       AND s.dedup_key IS NOT NULL
+       AND s.user_ref = v_user_ref
+       AND ops.tool_id(s.tool_fingerprint) = ops.tool_id(p_envelope->>'tool_fingerprint')
+       AND s.first_occurred_at BETWEEN v_occurred - interval '10 minutes'
+                                   AND v_occurred + interval '10 minutes'
+     ORDER BY abs(extract(epoch FROM s.first_occurred_at - v_occurred))
+     LIMIT 1;
+    IF v_key IS NOT NULL THEN
+      p_envelope := jsonb_set(p_envelope, '{dedup_key}', to_jsonb(v_key));
+    END IF;
+  END IF;
+
+  RETURN QUERY SELECT r.event_outcome, r.event_submission_id
+                 FROM ingest.record_event(p_envelope, now()) AS r;
 END $$;
 
 
@@ -2682,6 +2838,7 @@ DECLARE
     'ops.role_grant', 'ops.auth_session', 'ops.scim_token', 'ops.scim_user', 'ops.scim_group',
     'ops.scim_group_member', 'ops.user_ref_alias', 'ops.deployment_key',
     'ops.directory_sync', 'ops.team', 'ops.team_member', 'ops.team_include',
+    'ops.provider_connection',
     -- ingest
     'ingest.observation', 'ingest.submission', 'ingest.rejected', 'ingest.search_text',
     -- mart
@@ -2783,10 +2940,10 @@ GRANT INSERT (tenant_id, usage_day, content_bytes_added), UPDATE (content_bytes_
   ON ops.usage_daily TO sac_control;
 -- A content grant is decided against the device's own observation of the event and the submission
 -- it belongs to. Column-level: never labels, excerpts, digests or policy decisions.
-GRANT SELECT (tenant_id, event_id, device_id, kind, collection_mode, expires_at, dedup_key)
+GRANT SELECT (tenant_id, event_id, device_id, kind, collection_mode, expires_at, dedup_key, connection_id)
   ON ingest.observation TO sac_control;
 GRANT SELECT (tenant_id, submission_id, device_id, user_ref, tool_fingerprint, collection_mode,
-              content_state, expires_at, received_at, dedup_key)
+              content_state, expires_at, received_at, dedup_key, connection_id)
   ON ingest.submission TO sac_control;
 GRANT INSERT ON ops.audit TO sac_control;
 GRANT SELECT ON ref.data_class, ref.route_fidelity, ref.collector, ref.retention_class, ref.rule
@@ -2811,6 +2968,10 @@ GRANT DELETE ON ops.tenant_email_domain, ops.role_grant, ops.auth_session, ops.a
 -- what they include.
 GRANT SELECT, INSERT, UPDATE, DELETE ON ops.directory_sync, ops.team, ops.team_member, ops.team_include
   TO sac_control;
+-- A provider connection is made (inserted), records each pass and is disabled (updated), and is
+-- never deleted: its observations name it.
+GRANT SELECT, INSERT, UPDATE ON ops.provider_connection TO sac_control;
+GRANT SELECT ON ref.provider TO sac_control;
 GRANT SELECT ON ops.v_team_member TO sac_control;
 
 -- sac_resolver reads only what the cross-tenant lookups answer from.
@@ -2850,6 +3011,29 @@ ALTER FUNCTION ops.tenant_ids()                         OWNER TO sac_resolver;
 REVOKE CREATE ON SCHEMA ops FROM sac_resolver;
 REVOKE sac_resolver FROM CURRENT_USER;
 
+-- sac_recorder holds what record_event reads and writes, as ingest-api does, and what
+-- record_provider_event adds: the connection check and the tool lookup that pairs a record with a
+-- device's capture. The tenant row is column-level: record_event reads two settings from it.
+GRANT SELECT ON ref.data_class, ref.route_fidelity, ref.retention_class, ref.tool_catalogue,
+      ref.app_signal TO sac_recorder;
+GRANT SELECT (tenant_id, device_identity, content_search) ON ops.tenant TO sac_recorder;
+GRANT SELECT ON ops.retention_policy, ops.user_ref_alias TO sac_recorder;
+GRANT SELECT (tenant_id, connection_id, status) ON ops.provider_connection TO sac_recorder;
+GRANT SELECT, INSERT ON ingest.observation TO sac_recorder;
+GRANT SELECT, INSERT, UPDATE ON ingest.submission TO sac_recorder;
+GRANT INSERT ON ingest.search_text TO sac_recorder;
+
+-- control-api records a provider's records, and nothing else does.
+REVOKE EXECUTE ON FUNCTION ingest.record_provider_event(jsonb) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION ingest.record_provider_event(jsonb) TO sac_control;
+
+-- Hand the provider write path to sac_recorder, as the lookups were handed to sac_resolver.
+GRANT sac_recorder TO CURRENT_USER;
+GRANT CREATE ON SCHEMA ingest TO sac_recorder;
+ALTER FUNCTION ingest.record_provider_event(jsonb) OWNER TO sac_recorder;
+REVOKE CREATE ON SCHEMA ingest FROM sac_recorder;
+REVOKE sac_recorder FROM CURRENT_USER;
+
 -- content-vault: the only role that reads stored content.
 GRANT SELECT, INSERT, DELETE ON ops.content TO sac_vault;
 -- Claiming an upload grant sets used_at and nothing else.
@@ -2881,6 +3065,9 @@ GRANT INSERT ON ops.audit TO sac_vault;
 -- query-api: read-mostly. No grant on ops.content or ingest.search_text: content and content
 -- search are reached only through content-vault.
 GRANT SELECT ON ingest.submission, ingest.observation TO sac_query;
+-- A record from a provider is described by its provider's name. Never the credential.
+GRANT SELECT (tenant_id, connection_id, provider) ON ops.provider_connection TO sac_query;
+GRANT SELECT ON ref.provider TO sac_query;
 GRANT SELECT ON mart.finding, mart.agg_tool_period, mart.agg_tool_user_period,
       mart.agg_class_period, mart.agg_org_period, mart.agg_user_period, mart.agg_device_period,
       mart.agg_team_period, mart.agg_rule_period, mart.agg_discovery_period, mart.agg_agent_period,
@@ -2979,6 +3166,7 @@ INSERT INTO ref.route_fidelity (source, fidelity_rank, yields_content, descripti
   ('tool.otel',        15, true,  'The tool''s own OpenTelemetry export, received on the device. Structured by the tool; prompt text is present only when the tool is configured to export it.'),
   ('cli.shim',         20, true,  'Call-site capture from a managed shell environment. Structured arguments rather than a parsed HTTP body, so no reconstruction is involved.'),
   ('proxy.loopback',   30, true,  'Local inference broker observing plaintext HTTP on the loopback interface. Nothing is decrypted and no framing is guessed; coverage is narrow.'),
+  ('provider.api',     35, true,  'The provider''s own record of the prompt, read from its admin API under the tenant''s consent (ops.provider_connection). The text the provider received, exactly; it does not see what the device composed, decided or attached.'),
   ('ext.web_request',  40, true,  'Extension reading the request body as sent. Accurate for the wire form, which may differ from the composed form in encoding and whitespace.'),
   ('proxy.tls',        50, true,  'Egress proxy terminating TLS and reading the HTTP body. The prompt is reconstructed from a provider-specific serialisation, so encoding differences can defeat canonicalisation.'),
   ('ext.dom',          60, true,  'DOM-derived observation, used where the request is not observable. Best-effort: some browser UIs render outside normal DOM structures.'),
@@ -3276,6 +3464,19 @@ INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_k
 
 INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_kind, evidence, app_key)
 SELECT 'app:' || app_key, display_name, vendor, 'endpoint', '{}', app_key FROM ref.app;
+
+-- The providers whose admin API returns each prompt a tenant's people sent. source_url is the
+-- documentation of the endpoint control-api reads.
+INSERT INTO ref.provider (provider, display_name, vendor, credential, source_url, apps, credential_label, account_label) VALUES
+  ('microsoft_365_copilot', 'Microsoft 365 Copilot', 'microsoft', 'entra_app',
+   'https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/api/ai-services/interaction-export/aiinteractionhistory-getallenterpriseinteractions',
+   '{m365_copilot}', NULL, NULL),
+  ('chatgpt_enterprise', 'ChatGPT Enterprise', 'openai', 'api_key',
+   'https://cookbook.openai.com/examples/chatgpt/compliance_api/logs_platform',
+   '{chatgpt_web}', 'Compliance API key', 'Workspace ID'),
+  ('claude_enterprise', 'Claude Enterprise', 'anthropic', 'api_key',
+   'https://platform.claude.com/docs/en/manage-claude/compliance-api',
+   '{claude_web,claude_desktop,claude_code}', 'Compliance API key', 'Organization ID');
 
 
 -- =====================================================================================

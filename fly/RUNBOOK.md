@@ -159,6 +159,9 @@ invite link. Consent and roles are as `azure/RUNBOOK.md` §6. People and groups 
 either way Settings → Identity Providers offers: SCIM at `https://<analyst-fqdn>/scim/v2` (the dashboard
 forwards it to control-api), or reading the directory from Microsoft Entra, which needs the app's
 `User.Read.All` and `GroupMember.Read.All` application permissions consented in the customer's tenant.
+AI providers' own records of prompts are connected on Settings → Integrations: ChatGPT Enterprise and
+Claude Enterprise with a key the customer's admin issues, Microsoft 365 Copilot with the app's
+`AiEnterpriseInteraction.Read.All` application permission consented in the customer's tenant.
 Pre-prod does not serve `/.well-known/*` to browsers.
 
 ## 9. Devices (Intune)

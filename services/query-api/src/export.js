@@ -33,7 +33,7 @@ const EXPORTABLE = Object.freeze(['ingest.submission', 'mart.v_finding']);
 const CSV_COLUMNS = Object.freeze({
   'ingest.submission': Object.freeze([
     'submission_id', 'received_at', 'first_occurred_at', 'last_occurred_at', 'subject', 'subject_name',
-    'directory_name', 'tool', 'tool_name', 'device', 'mode', 'action', 'content_state', 'route', 'detection_basis',
+    'directory_name', 'tool', 'tool_name', 'device', 'provider', 'mode', 'action', 'content_state', 'route', 'detection_basis',
     'prompt_kind', 'merge_confidence', 'confidence', 'observation_count', 'size_bytes', 'labels',
     'observed_routes',
   ]),

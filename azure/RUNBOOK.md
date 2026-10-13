@@ -36,9 +36,11 @@ refers to. Steps marked **(once)** are done once per environment.
    - App roles (value = name, for users/groups): `viewer`, `analyst`, `content_reader`, `admin`.
    - API permissions: delegated `openid`, `profile`, `email`, `offline_access`; application
      `DeviceManagementManagedDevices.Read.All` (the Intune check), `User.Read.All` and
-     `GroupMember.Read.All` (reading the directory, Settings → Identity Providers), granted by each customer at
-     consent. A customer that consented before the last two were added grants them again (Entra admin
-     center → Enterprise applications → the app → Permissions → Grant admin consent).
+     `GroupMember.Read.All` (reading the directory, Settings → Identity Providers), and
+     `AiEnterpriseInteraction.Read.All` (reading Microsoft 365 Copilot prompts, Settings →
+     Integrations), granted by each customer at consent. A customer that consented before a
+     permission was added grants consent again (Entra admin center → Enterprise applications → the
+     app → Permissions → Grant admin consent).
    - No client secret: control-api authenticates as the app with its managed identity (step 5).
    - Set `SAC_ENTRA_APP_CLIENT_ID` to its client id.
 7. **Intune licensing** for the test devices and the customer tenant.

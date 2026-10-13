@@ -30,12 +30,12 @@ UPDATE ops.grant
    SET used_at = $4::timestamptz
  WHERE tenant_id = $1::uuid AND grant_id = $2::uuid AND event_id = $3::uuid
    AND decision = 'granted' AND used_at IS NULL AND expires_at > $4::timestamptz
-RETURNING grant_id::text, event_id::text, device_id::text, coalesce(submission_id::text, ''),
-          decision, expires_at, used_at`
+RETURNING grant_id::text, event_id::text, coalesce(device_id::text, ''), coalesce(connection_id::text, ''),
+          coalesce(submission_id::text, ''), decision, expires_at, used_at`
 
 	sqlGrant = `
-SELECT grant_id::text, event_id::text, device_id::text, coalesce(submission_id::text, ''),
-       decision, expires_at, used_at
+SELECT grant_id::text, event_id::text, coalesce(device_id::text, ''), coalesce(connection_id::text, ''),
+       coalesce(submission_id::text, ''), decision, expires_at, used_at
   FROM ops.grant
  WHERE tenant_id = $1::uuid AND grant_id = $2::uuid`
 
@@ -427,7 +427,7 @@ type rowScanner interface{ Scan(dest ...any) error }
 func scanGrant(row rowScanner) (Grant, error) {
 	var g Grant
 	var expires, used sql.NullTime
-	if err := row.Scan(&g.GrantID, &g.EventID, &g.DeviceID, &g.SubmissionID, &g.Decision, &expires, &used); err != nil {
+	if err := row.Scan(&g.GrantID, &g.EventID, &g.DeviceID, &g.ConnectionID, &g.SubmissionID, &g.Decision, &expires, &used); err != nil {
 		return Grant{}, err
 	}
 	g.ExpiresAt, g.UsedAt = expires.Time, used.Time

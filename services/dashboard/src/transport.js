@@ -11,7 +11,7 @@
 import {
   QUERY_ENDPOINT, CONTENT_SEARCH_ENDPOINT, CONTENT_RETRIEVAL_ENDPOINT, LIST_EXPORT_ENDPOINT, RESULT_STATES,
   ADMIN_DEPLOYMENT_ENDPOINT, ADMIN_PACKAGE_ENDPOINT, ADMIN_VERIFICATION_ENDPOINT, ADMIN_KEYS_ENDPOINT, ADMIN_SCIM_TOKENS_ENDPOINT,
-  ADMIN_DIRECTORY_ENDPOINT, ADMIN_TEAMS_ENDPOINT,
+  ADMIN_DIRECTORY_ENDPOINT, ADMIN_TEAMS_ENDPOINT, ADMIN_PROVIDERS_ENDPOINT,
   ADMIN_SETTINGS_ENDPOINT, ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT, ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT,
   ADMIN_SETTINGS_RETENTION_ENDPOINT, ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT, ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT,
   ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT, ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT, ADMIN_SETTINGS_RULES_ENDPOINT, ADMIN_SETTINGS_CUSTOM_LABELS_ENDPOINT,
@@ -297,6 +297,7 @@ export function createAdminApi({ transport }) {
     return ok(answer.status) ? { state: 'done' } : refused(answer);
   };
   const revokePath = (base, id) => `${base}/${encodeURIComponent(String(id))}/revoke`;
+  const providerPath = (provider) => `${ADMIN_PROVIDERS_ENDPOINT}/${encodeURIComponent(String(provider))}`;
 
   return Object.freeze({
     async deployment() {
@@ -375,6 +376,29 @@ export function createAdminApi({ transport }) {
     },
     changeTeamMembers(teamId, { add = [], remove = [] }) {
       return done({ method: 'POST', path: `${ADMIN_TEAMS_ENDPOINT}/${encodeURIComponent(String(teamId))}/members`, body: { add, remove } });
+    },
+    /** Every provider whose admin API the product reads, with the tenant's connection to each. */
+    async providers() {
+      const answer = await call({ method: 'GET', path: ADMIN_PROVIDERS_ENDPOINT });
+      if (!ok(answer.status) || !Array.isArray(answer.body?.providers)) return refused(answer);
+      return { state: 'available', data: normaliseProviders(answer.body) };
+    },
+    /**
+     * Connect a provider, or replace its key. The body is the account and key for a provider read
+     * with a key, and empty for one read with the tenant's Entra consent; it is the only request
+     * that carries a key.
+     */
+    async connectProvider(provider, body = {}) {
+      const answer = await call({ method: 'PUT', path: providerPath(provider), body });
+      return ok(answer.status) ? { state: 'done', queued: answer.body?.queued === true } : refused(answer);
+    },
+    disconnectProvider(provider) {
+      return done({ method: 'DELETE', path: providerPath(provider) });
+    },
+    /** Pull a connected provider now. `queued` is false when a pull is already running. */
+    async runProvider(provider) {
+      const answer = await call({ method: 'POST', path: `${providerPath(provider)}/run` });
+      return ok(answer.status) ? { state: 'done', queued: answer.body?.queued === true } : refused(answer);
     },
     async settings() {
       const answer = await call({ method: 'GET', path: ADMIN_SETTINGS_ENDPOINT });
@@ -486,6 +510,47 @@ export function normaliseTeams(teams) {
     created_by: nullableText(t.created_by),
     created_at: nullableText(t.created_at),
   })));
+}
+
+const PROVIDER_CREDENTIALS = Object.freeze(['api_key', 'entra_app']);
+
+/**
+ * The provider list, with an empty label or a value the server did not send as null. A provider
+ * whose credential this page cannot ask for is not available here, and a documentation link that
+ * is not https is dropped.
+ */
+export function normaliseProviders(body) {
+  const providers = body.providers.filter((p) => p && typeof p === 'object' && typeof p.provider === 'string' && p.provider !== '').map((p) => Object.freeze({
+    provider: p.provider,
+    display_name: nullableText(p.display_name) ?? p.provider,
+    vendor: nullableText(p.vendor),
+    credential: PROVIDER_CREDENTIALS.includes(p.credential) ? p.credential : null,
+    credential_label: nullableText(p.credential_label),
+    account_label: nullableText(p.account_label),
+    source_url: typeof p.source_url === 'string' && /^https:\/\//i.test(p.source_url) ? p.source_url : null,
+    tools: Object.freeze((Array.isArray(p.tools) ? p.tools : []).filter((t) => t && typeof t === 'object' && typeof t.app === 'string').map((t) => Object.freeze({
+      app: t.app, name: nullableText(t.name) ?? t.app,
+    }))),
+    available: p.available === true && PROVIDER_CREDENTIALS.includes(p.credential),
+    connection: p.connection && typeof p.connection === 'object' && typeof p.connection.connection_id === 'string'
+      ? Object.freeze({
+        connection_id: p.connection.connection_id,
+        account: nullableText(p.connection.account),
+        status: nullableText(p.connection.status),
+        created_by: nullableText(p.connection.created_by),
+        created_at: nullableText(p.connection.created_at),
+        updated_by: nullableText(p.connection.updated_by),
+        updated_at: nullableText(p.connection.updated_at),
+        last_started_at: nullableText(p.connection.last_started_at),
+        last_completed_at: nullableText(p.connection.last_completed_at),
+        last_status: nullableText(p.connection.last_status),
+        last_error: nullableText(p.connection.last_error),
+        records_read: nullableNumber(p.connection.records_read),
+        records_new: nullableNumber(p.connection.records_new),
+      })
+      : null,
+  }));
+  return Object.freeze({ entra_connected: body.entra_connected === true, providers: Object.freeze(providers) });
 }
 
 /**

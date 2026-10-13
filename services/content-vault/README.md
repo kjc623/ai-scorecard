@@ -7,12 +7,15 @@ can decrypt it. It has **internal ingress only**: no device, browser or edge rou
 
 - **Upload.** A device uploads a granted content object to control-api, which checks the grant and
   forwards the body to `PUT /internal/v1/tenants/{tenant_id}/content/{event_id}` with headers
-  `X-Sac-Grant-Id`, `X-Sac-Raw-Digest` (`sha256:<hex>` of the body) and its service token. In one
-  transaction the vault claims the grant (`ops.grant.used_at`), encrypts the body, inserts
-  `ops.content` with the tenant's content retention, writes `ingest.search_text` as the tenant's
-  `content_search` tier allows (typed prompt text at `full_text`, attachment names at
-  `attachment_names` and above, nothing for a `client_generated` request), and writes `ops.audit`.
-  Repeating an upload already stored under the same grant with the same digest answers 200.
+  `X-Sac-Grant-Id`, `X-Sac-Raw-Digest` (`sha256:<hex>` of the body) and its service token.
+  control-api forwards a prompt it read from a provider's admin API the same way, under a grant
+  whose origin is the provider connection rather than a device. In one transaction the vault
+  claims the grant (`ops.grant.used_at`), encrypts the body, inserts `ops.content` with the
+  tenant's content retention, writes `ingest.search_text` as the tenant's `content_search` tier
+  allows (typed prompt text at `full_text`, attachment names at `attachment_names` and above,
+  nothing for a `client_generated` request), and writes `ops.audit`, whose actor is the device or
+  `provider-connection:<connection_id>`. Repeating an upload already stored under the same grant
+  with the same digest answers 200.
 - **Retrieval.** query-api forwards an analyst's `POST /v1/content/retrieval` with their token
   (role `content_reader` or `admin`). The vault records a single-use `ops.retrieval_grant` and answers with a
   five-minute URL, `GET /v1/content/retrieval/{tenant_id}/{grant_id}`, which the dashboard server

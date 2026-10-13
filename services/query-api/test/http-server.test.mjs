@@ -7,7 +7,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createQueryServer, createGate, PATHS, MAX_BODY_BYTES } from '../src/http/server.js';
+import { createQueryServer, createGate, PATHS, MAX_BODY_BYTES, HIT_DETAILS_SQL } from '../src/http/server.js';
 import { loadConfig } from '../src/http/config.js';
 import { createVerifier } from '../src/http/auth.js';
 import { createContentForwarder, CONTENT_PATHS } from '../src/http/content.js';
@@ -322,11 +322,23 @@ test('a search hit carries the person, the device and the tool of its submission
   const res = await call(CONTENT_PATHS.SEARCH, { query: 'capital' }, bearer(['analyst']));
   assert.equal(res.status, 200);
   const body = await res.json();
-  assert.deepEqual(body.hits[0], { submission_id: HIT, snippet: 'the <em>capital</em>', rank: 1, subject: 'alice@example', directory_name: 'Alice Smith', tool: 'claude_code', tool_name: 'Claude Code', device: '35beae1b-e366-465a-8517-58df42c88bdc', hostname: 'LAPTOP-7' });
+  assert.deepEqual(body.hits[0], { submission_id: HIT, snippet: 'the <em>capital</em>', rank: 1, subject: 'alice@example', directory_name: 'Alice Smith', tool: 'claude_code', tool_name: 'Claude Code', device: '35beae1b-e366-465a-8517-58df42c88bdc', hostname: 'LAPTOP-7', provider: null });
   assert.deepEqual(body.hits[1], { submission_id: 'not-a-uuid', snippet: 'x', rank: 0 }, 'a hit with no submission row is served as the vault sent it');
   const lookup = pool.calls.query.find((q) => q.text.includes('AS subject_name'));
   assert.deepEqual(lookup.params, [TENANT, [HIT]], 'the lookup is tenant-scoped and its ids are a bound parameter');
   assert.equal(pool.calls.query[0].text, 'BEGIN', 'inside a tenant-scoped transaction');
+});
+
+test("a search hit from a provider's record names the provider, and no device", async (t) => {
+  const row = { submission_id: HIT, user_ref: 'u_4f21', subject_name: 'alice@example', directory_name: 'Alice Smith', tool: 'app:chatgpt_web', tool_name: 'ChatGPT', device: null, hostname: null, provider: 'ChatGPT Enterprise' };
+  const pool = fakePool({ answer: (text) => (text === HIT_DETAILS_SQL ? [row] : []) });
+  const { call, bearer } = await withServer(t, { pool, vault: vaultDouble([{ submission_id: HIT, snippet: 's', rank: 1 }]) });
+  const body = await (await call(CONTENT_PATHS.SEARCH, { query: 's' }, bearer(['analyst']))).json();
+  assert.deepEqual(body.hits[0], { submission_id: HIT, snippet: 's', rank: 1, subject: 'alice@example', directory_name: 'Alice Smith', tool: 'app:chatgpt_web', tool_name: 'ChatGPT', device: null, hostname: null, provider: 'ChatGPT Enterprise' });
+  // The provider is reached through the submission's connection of the same tenant, by its display name.
+  assert.match(HIT_DETAILS_SQL, /LEFT JOIN ops\.provider_connection pc\s+ON pc\.tenant_id = s\.tenant_id AND pc\.connection_id = s\.connection_id/);
+  assert.match(HIT_DETAILS_SQL, /LEFT JOIN ref\.provider p\s+ON p\.provider = pc\.provider/);
+  assert.match(HIT_DETAILS_SQL, /p\.display_name AS provider/);
 });
 
 test('a search hit falls back to the pseudonymous reference when there is no clear name', async (t) => {
@@ -336,6 +348,7 @@ test('a search hit falls back to the pseudonymous reference when there is no cle
   assert.equal(body.hits[0].subject, 'u_4f21');
   assert.equal(body.hits[0].hostname, null);
   assert.equal(body.hits[0].directory_name, null);
+  assert.equal(body.hits[0].provider, null);
 });
 
 test('a search still answers when its hits cannot be described', async (t) => {

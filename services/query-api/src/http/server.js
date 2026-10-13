@@ -55,6 +55,26 @@ export const POOL_MAX = MAX_CONCURRENCY + 1;
 /** The statement budget for the two writes and the search-hit lookup. */
 const OPERATIONAL_TIMEOUT_MS = QUERY_CLASSES.operational.statementTimeoutMs;
 
+/**
+ * Who and where each search hit is: the person, the tool, and the origin of its submission, a
+ * device (its id and hostname) or the provider whose admin API recorded it (its display name).
+ */
+export const HIT_DETAILS_SQL = `
+SELECT s.submission_id::text AS submission_id, s.user_ref AS user_ref, s.subject_name AS subject_name,
+       ud.display_name AS directory_name,
+       ops.tool_id(s.tool_fingerprint) AS tool, ops.tool_display_name(s.tool_fingerprint) AS tool_name,
+       s.device_id::text AS device, d.hostname AS hostname, p.display_name AS provider
+  FROM ingest.submission s
+  LEFT JOIN ops.device d
+    ON d.tenant_id = s.tenant_id AND d.device_id = s.device_id
+  LEFT JOIN ops.provider_connection pc
+    ON pc.tenant_id = s.tenant_id AND pc.connection_id = s.connection_id
+  LEFT JOIN ref.provider p
+    ON p.provider = pc.provider
+  LEFT JOIN ops.user_dim ud
+    ON ud.tenant_id = s.tenant_id AND ud.user_ref = s.user_ref
+ WHERE s.tenant_id = $1::uuid AND s.submission_id = ANY($2::uuid[])`;
+
 class HttpError extends Error {
   constructor(status, payload, { closeConnection = false } = {}) {
     super(payload?.error?.message ?? `HTTP ${status}`);
@@ -446,7 +466,8 @@ export function createHandler({
   }
 
   /**
-   * Who and where each search hit is: the person, the device and the tool of its submission.
+   * Who and where each search hit is: the person, the tool and the origin of its submission
+   * (HIT_DETAILS_SQL).
    *
    * The vault answers a search with a submission and a fragment, which is all it knows. The
    * submission's metadata is this service's to read under the tenant's row-level security, and it
@@ -458,16 +479,7 @@ export function createHandler({
     let rows;
     try {
       rows = await withClient((client) => inTransaction(client, { tenant: principal.tenant, statementTimeoutMs: OPERATIONAL_TIMEOUT_MS }, async () => (await client.query(
-        `SELECT s.submission_id::text AS submission_id, s.user_ref AS user_ref, s.subject_name AS subject_name,
-                ud.display_name AS directory_name,
-                ops.tool_id(s.tool_fingerprint) AS tool, ops.tool_display_name(s.tool_fingerprint) AS tool_name,
-                s.device_id::text AS device, d.hostname AS hostname
-           FROM ingest.submission s
-           LEFT JOIN ops.device d
-             ON d.tenant_id = s.tenant_id AND d.device_id = s.device_id
-           LEFT JOIN ops.user_dim ud
-             ON ud.tenant_id = s.tenant_id AND ud.user_ref = s.user_ref
-          WHERE s.tenant_id = $1::uuid AND s.submission_id = ANY($2::uuid[])`,
+        HIT_DETAILS_SQL,
         [principal.tenant, ids],
       )).rows));
     } catch (error) {
@@ -488,8 +500,10 @@ export function createHandler({
         directory_name: row.directory_name ?? null,
         tool: row.tool ?? null,
         tool_name: row.tool_name ?? null,
+        // The submission's origin: a device, or the provider whose admin API recorded it.
         device: row.device ?? null,
         hostname: row.hostname ?? null,
+        provider: row.provider ?? null,
       };
     });
   }
