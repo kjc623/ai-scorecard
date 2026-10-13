@@ -325,6 +325,9 @@ test('a prompt read from a provider\'s admin API names the provider where a devi
     { submissionId: 's1', snippet: 'Draft the <em>renewal</em> letter', subject: 'alice@contoso.example', directory_name: 'Alice Smith', device: null, hostname: null, provider: 'ChatGPT Enterprise', tool: 'chatgpt_web', tool_name: 'ChatGPT' },
   ] } };
   assert.match(renderExploreText(state), /<span>Alice Smith<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>via ChatGPT Enterprise<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>ChatGPT<\/span>/);
+  // A prompt a device captured as well is placed by both.
+  const both = { ...state, text: { ...state.text, hits: [{ ...state.text.hits[0], device: 'd-1', hostname: 'FIN-LAPTOP-07' }] } };
+  assert.match(renderExploreText(both), /<span>FIN-LAPTOP-07<\/span><span class="x-hit-sep" aria-hidden="true">\|<\/span><span>via ChatGPT Enterprise<\/span>/);
   const hit = await createExplorer({
     api: createQueryApi({ transport: stub }),
     content: createContentApi({ transport: { search: async () => ({ state: 'available', hits: [{ submission_id: 's1', snippet: 'x', provider: 'ChatGPT Enterprise', device: null }] }), retrieve: stub.content.retrieve, readUrl: stub.content.readUrl } }),

@@ -1481,6 +1481,10 @@ CREATE TABLE ingest.observation (
 -- The expire job deletes per tenant by expires_at.
 CREATE INDEX observation_expiry ON ingest.observation (tenant_id, expires_at);
 
+-- A submission's observations: the event detail reads them, and record_event asks whether a
+-- provider's record already holds a device's earlier route of the same prompt.
+CREATE INDEX observation_by_dedup_key ON ingest.observation (tenant_id, dedup_key);
+
 -- The rollup reads a window of discoveries without scanning the tenant's prompts.
 CREATE INDEX observation_discovery ON ingest.observation (tenant_id, received_at) WHERE kind = 'discovery';
 -- The same for what coding agents report.
@@ -1517,8 +1521,9 @@ $$;
 --
 -- Both keys include the origin, so a device's capture of a prompt and the provider's record of it
 -- never share one. They are the same submission when they agree on the content digest, the person
--- and the tool and occurred within ten minutes of each other, and record_event merges them on that.
--- device_id and connection_id are the origin of the observation that created the row.
+-- and the tool and occurred within ten minutes of each other, whichever arrives first, and the
+-- second takes the first's key. device_id and connection_id are the submission's origins: the
+-- device that captured it, the provider connection that reported it, or both.
 CREATE TABLE ingest.submission (
   tenant_id          uuid NOT NULL REFERENCES ops.tenant(tenant_id),
   submission_id      uuid NOT NULL,
@@ -1566,7 +1571,7 @@ CREATE TABLE ingest.submission (
   PRIMARY KEY (tenant_id, submission_id),
   FOREIGN KEY (tenant_id, device_id) REFERENCES ops.device(tenant_id, device_id),
   FOREIGN KEY (tenant_id, connection_id) REFERENCES ops.provider_connection(tenant_id, connection_id),
-  CONSTRAINT submission_has_one_origin CHECK ((device_id IS NULL) <> (connection_id IS NULL)),
+  CONSTRAINT submission_has_an_origin CHECK (device_id IS NOT NULL OR connection_id IS NOT NULL),
   CONSTRAINT submission_shredded_requires_reason
     CHECK ((content_state = 'shredded') = (shredded_reason IS NOT NULL)),
   CONSTRAINT submission_no_content_without_capture
@@ -2499,6 +2504,7 @@ DECLARE
   v_user_ref      text;
   v_search        text;
   v_outcome       text;
+  v_key           text;
   v_attachments   int := CASE WHEN jsonb_typeof(p_envelope->'attachments') = 'array'
                               THEN jsonb_array_length(p_envelope->'attachments') END;
 BEGIN
@@ -2541,6 +2547,19 @@ BEGIN
       WHERE a.tenant_id = v_tenant AND a.alias_ref = p_envelope->>'user_ref'),
     p_envelope->>'user_ref');
 
+  -- A device's prompt that a provider connection reported first takes the key of the provider's
+  -- submission (ingest.provider_record_key), as record_provider_event lends a device's key the
+  -- other way round, so the prompt counts once and its observations share one key. A key this
+  -- tenant already files a submission under is kept.
+  IF v_device IS NOT NULL AND v_is_exact
+     AND NOT EXISTS (SELECT 1 FROM ingest.submission s
+                      WHERE s.tenant_id = v_tenant AND s.dedup_key = v_exact) THEN
+    v_exact := coalesce(ingest.provider_record_key(v_tenant, v_device, v_user_ref,
+                                                   p_envelope->>'tool_fingerprint',
+                                                   p_envelope->>'content_digest', v_occurred),
+                        v_exact);
+  END IF;
+
   -- Step 1: record the observation. The primary key is (tenant_id, event_id), so a replayed batch
   -- inserts nothing and reports duplicates.
   INSERT INTO ingest.observation (
@@ -2579,7 +2598,7 @@ BEGIN
     (p_envelope->>'bytes_total')::bigint,
     p_envelope->>'detection_basis',
     nullif(p_envelope->>'prompt_kind', ''),
-    p_envelope->>'dedup_key',
+    v_exact,
     p_envelope->>'schema_version',
     p_received_at + make_interval(days => v_ttl),
     p_envelope->>'discovery_type',
@@ -2657,6 +2676,9 @@ BEGIN
                                      THEN s.observed_routes
                                      ELSE s.observed_routes || v_source END,
            observation_count  = s.observation_count + 1,
+           -- A prompt both a device and a provider connection collected has both origins.
+           device_id          = coalesce(s.device_id, v_device),
+           connection_id      = coalesce(s.connection_id, v_connection),
            dedup_key          = coalesce(s.dedup_key, CASE WHEN v_is_exact THEN v_exact END),
            winning_source     = CASE WHEN v_fidelity < s.winning_fidelity THEN v_source ELSE s.winning_source END,
            winning_fidelity   = least(s.winning_fidelity, v_fidelity),
@@ -2759,9 +2781,9 @@ END $$;
 --
 -- A device that captured the same prompt filed it under a key that names the device, so the two
 -- never share a key. A device's prompt that agrees with the record on the content digest, the person
--- and the tool and began within ten minutes of it lends the record its key, and record_event merges
--- the two: one prompt counts once. A device observation that arrives after the provider's record is
--- recorded on its own.
+-- and the tool, began within ten minutes of it and no provider has reported yet lends the record its
+-- key, and record_event merges the two: one prompt counts once. A device observation that arrives
+-- after the provider's record takes the record's key in record_event instead.
 CREATE FUNCTION ingest.record_provider_event(p_envelope jsonb)
 RETURNS TABLE(event_outcome text, event_submission_id uuid)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
@@ -2796,6 +2818,7 @@ BEGIN
        AND s.content_digest = p_envelope->>'content_digest'
        AND s.kind = 'prompt'
        AND s.device_id IS NOT NULL
+       AND s.connection_id IS NULL
        AND s.dedup_key IS NOT NULL
        AND s.user_ref = v_user_ref
        AND ops.tool_id(s.tool_fingerprint) = ops.tool_id(p_envelope->>'tool_fingerprint')
@@ -2811,6 +2834,38 @@ BEGIN
   RETURN QUERY SELECT r.event_outcome, r.event_submission_id
                  FROM ingest.record_event(p_envelope, now()) AS r;
 END $$;
+
+-- The key of the submission a provider connection reported that a device's capture of the same
+-- prompt joins, or NULL: the same content digest, person and tool, begun within ten minutes, and
+-- holding no capture by this device except an earlier route of this same prompt (one in the same
+-- five-minute bucket, which the device's own key would have merged anyway). record_event calls it
+-- for a device's prompt; it runs as sac_recorder because pairing the tools reads the catalogue,
+-- which ingest-api does not. Row-level security applies under the caller's session tenant.
+CREATE FUNCTION ingest.provider_record_key(p_tenant uuid, p_device uuid, p_user_ref text,
+                                           p_tool_fingerprint text, p_content_digest text,
+                                           p_occurred timestamptz)
+RETURNS text
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
+  SELECT s.dedup_key
+    FROM ingest.submission s
+   WHERE s.tenant_id = p_tenant
+     AND s.content_digest = p_content_digest
+     AND s.kind = 'prompt'
+     AND s.connection_id IS NOT NULL
+     AND s.dedup_key IS NOT NULL
+     AND s.user_ref = p_user_ref
+     AND ops.tool_id(s.tool_fingerprint) = ops.tool_id(p_tool_fingerprint)
+     AND s.first_occurred_at BETWEEN p_occurred - interval '10 minutes'
+                                 AND p_occurred + interval '10 minutes'
+     AND (s.device_id IS NULL
+          OR EXISTS (SELECT 1 FROM ingest.observation o
+                      WHERE o.tenant_id = s.tenant_id AND o.dedup_key = s.dedup_key
+                        AND o.device_id = p_device
+                        AND date_bin('5 minutes', o.occurred_at, timestamptz 'epoch')
+                          = date_bin('5 minutes', p_occurred, timestamptz 'epoch')))
+   ORDER BY abs(extract(epoch FROM s.first_occurred_at - p_occurred))
+   LIMIT 1
+$$;
 
 
 -- =====================================================================================
@@ -2915,6 +2970,8 @@ GRANT INSERT ON ops.audit TO sac_ingest;
 GRANT INSERT ON ingest.search_text TO sac_ingest;
 -- record_event runs with the caller's rights and resolves aliases as it writes.
 GRANT SELECT ON ops.user_ref_alias TO sac_ingest;
+-- It finds the provider record a device's capture joins through a definer, which resolves tools.
+GRANT EXECUTE ON FUNCTION ingest.provider_record_key(uuid, uuid, text, text, text, timestamptz) TO sac_ingest;
 GRANT EXECUTE ON FUNCTION ingest.record_event(jsonb, timestamptz) TO sac_ingest;
 GRANT EXECUTE ON FUNCTION ops.current_tenant() TO sac_ingest;
 
@@ -3012,8 +3069,8 @@ REVOKE CREATE ON SCHEMA ops FROM sac_resolver;
 REVOKE sac_resolver FROM CURRENT_USER;
 
 -- sac_recorder holds what record_event reads and writes, as ingest-api does, and what
--- record_provider_event adds: the connection check and the tool lookup that pairs a record with a
--- device's capture. The tenant row is column-level: record_event reads two settings from it.
+-- record_provider_event and provider_record_key add: the connection check and the tool lookup that
+-- pairs a record with a device's capture. The tenant row is column-level: record_event reads two settings from it.
 GRANT SELECT ON ref.data_class, ref.route_fidelity, ref.retention_class, ref.tool_catalogue,
       ref.app_signal TO sac_recorder;
 GRANT SELECT (tenant_id, device_identity, content_search) ON ops.tenant TO sac_recorder;
@@ -3026,11 +3083,13 @@ GRANT INSERT ON ingest.search_text TO sac_recorder;
 -- control-api records a provider's records, and nothing else does.
 REVOKE EXECUTE ON FUNCTION ingest.record_provider_event(jsonb) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION ingest.record_provider_event(jsonb) TO sac_control;
+REVOKE EXECUTE ON FUNCTION ingest.provider_record_key(uuid, uuid, text, text, text, timestamptz) FROM PUBLIC;
 
 -- Hand the provider write path to sac_recorder, as the lookups were handed to sac_resolver.
 GRANT sac_recorder TO CURRENT_USER;
 GRANT CREATE ON SCHEMA ingest TO sac_recorder;
 ALTER FUNCTION ingest.record_provider_event(jsonb) OWNER TO sac_recorder;
+ALTER FUNCTION ingest.provider_record_key(uuid, uuid, text, text, text, timestamptz) OWNER TO sac_recorder;
 REVOKE CREATE ON SCHEMA ingest FROM sac_recorder;
 REVOKE sac_recorder FROM CURRENT_USER;
 

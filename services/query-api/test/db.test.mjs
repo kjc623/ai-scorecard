@@ -336,6 +336,60 @@ test("every read that names an event's device names the provider that recorded i
   );
 });
 
+test('a prompt a device and a provider both collected is one event that names both, found by either route', { skip: SKIP }, async () => {
+  const fromDevice = '00000000-0000-4000-8000-0000000000e1';
+  const fromProvider = '00000000-0000-4000-8000-0000000000e2';
+  const fromBoth = '00000000-0000-4000-8000-0000000000e3';
+  const deviceEvent = '00000000-0000-4000-8000-0000000000f3';
+  const providerEvent = '00000000-0000-4000-8000-0000000000f4';
+  const key = `sha256:${'e3'.repeat(32)}`;
+  await scratch(
+    async (client) => {
+      await seedSubmissions(client, [submissionRow(fromDevice, { receivedAt: '2026-09-02T10:00:00Z' })]);
+      await seedProviderRecord(client, fromProvider, '00000000-0000-4000-8000-0000000000f2');
+      await client.query(
+        `INSERT INTO ingest.submission
+           (tenant_id, submission_id, dedup_key, dedup_weak_key, kind, prompt_kind, device_id, connection_id, user_ref,
+            tool_fingerprint, first_occurred_at, last_occurred_at, received_at, collection_mode, content_digest, labels,
+            policy_action, winning_source, winning_fidelity, observed_routes, observation_count, content_state, expires_at)
+         VALUES (ops.current_tenant(), $1, $2, $3, 'prompt', 'user', $4, $5, 'user_ref_0001', 'app:chatgpt_web',
+                 '2026-09-02T12:00:00Z', '2026-09-02T12:00:00Z', '2026-09-02T12:00:05Z', 'm1', $6, '[]'::jsonb, 'logged',
+                 'ext.page_context', 10, ARRAY['ext.page_context', 'provider.api'], 2, 'not_captured', '2026-12-01T00:00:00Z')`,
+        [fromBoth, key, `sha256:${'e4'.repeat(32)}`, DEVICE, CONNECTION, `sha256:${'e5'.repeat(32)}`],
+      );
+      for (const [eventId, device, connection, source] of [[deviceEvent, DEVICE, null, 'ext.page_context'], [providerEvent, null, CONNECTION, 'provider.api']]) {
+        await client.query(
+          `INSERT INTO ingest.observation
+             (tenant_id, event_id, device_id, connection_id, user_ref, tool_fingerprint, direction, kind, prompt_kind, occurred_at,
+              received_at, monotonic_offset_ms, source, confidence, collection_mode, size_bytes, content_digest, labels,
+              classifier_version, policy_decision, dedup_key, schema_version, expires_at)
+           VALUES (ops.current_tenant(), $1, $2, $3, 'user_ref_0001', 'app:chatgpt_web', 'egress', 'prompt', 'user', '2026-09-02T12:00:00Z',
+                   '2026-09-02T12:00:05Z', 0, $4, 'high', 'm1', 42, $5, '[]'::jsonb, 'rules-1.0.0/model-1.0.0',
+                   '{"rule_id":"policy.default","action":"logged","decided_locally":false}'::jsonb, $6, '1.0', '2026-12-01T00:00:00Z')`,
+          [eventId, device, connection, source, `sha256:${'e5'.repeat(32)}`, key],
+        );
+      }
+    },
+    async (client, tenant) => {
+      const ctx = { now: NOW, tenant, actorId: 'db-test', cursorKey: KEY };
+      const list = async (params) => (await executePlan(plan({ query_version: '1', template: 'q8_activity', params: { window: WINDOW, ...params } }, ctx), { ...ctx, client: nested(client) }))
+        .data.map((r) => [r.submission_id, r.device ?? null, r.provider ?? null, Number(r.route_count)]).sort();
+
+      assert.deepEqual(await list({ routes: 'several' }), [[fromBoth, DEVICE, 'ChatGPT Enterprise', 2]], 'several routes');
+      assert.deepEqual(await list({ route: 'provider.api' }), [[fromProvider, null, 'ChatGPT Enterprise', 1], [fromBoth, DEVICE, 'ChatGPT Enterprise', 2]].sort(), 'a route that did not win');
+      assert.deepEqual(await list({ route: 'ext.page_context' }), [[fromBoth, DEVICE, 'ChatGPT Enterprise', 2]], 'the winning route');
+
+      const hits = (await client.query(HIT_DETAILS_SQL, [tenant, [fromBoth]])).rows;
+      assert.deepEqual(hits.map((h) => [h.device, h.provider]), [[DEVICE, 'ChatGPT Enterprise']], 'the search hit names both');
+
+      const detail = plan({ query_version: '1', template: 'q9_event_detail', params: { submission_id: fromBoth } }, ctx).statements.find((s) => s.id === 'submission_detail');
+      const observations = (await client.query(detail.text, detail.params)).rows
+        .map((r) => [r.observation_source, r.observation_device ?? null, r.observation_provider ?? null]);
+      assert.deepEqual(observations.sort(), [['ext.page_context', DEVICE, null], ['provider.api', null, 'ChatGPT Enterprise']], 'each observation names its origin');
+    },
+  );
+});
+
 test('a bucket-size predicate keeps hour rows out of a day total, and counts arrive as numbers', { skip: SKIP }, async () => {
   await scratch(
     (client) => client.query(
