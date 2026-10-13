@@ -1,0 +1,24 @@
+{
+  "app_key": "copilot_cli",
+  "route": "otlp",
+  "source": {
+    "kind": "documented",
+    "from": "otlp/testdata/privacy/copilot/traces-cli-agent-turn.json, an agent turn written from the Copilot CLI's OpenTelemetry documentation, as the machine environment makes the CLI export it",
+    "checked": "2026-10-12"
+  },
+  "typed": "Check the medical records of SAC-CANARY-7f3a",
+  "otlp": {
+    "signal": "traces",
+    "export_file": "otlp/testdata/privacy/copilot/traces-cli-agent-turn.json",
+    "placeholders": {
+      "{{CANARY}}": "SAC-CANARY-7f3a",
+      "{{DROPPED_CANARY}}": "SAC-DROPPED-7f3a"
+    },
+    "sender": "C:\\Program Files\\nodejs\\node.exe"
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

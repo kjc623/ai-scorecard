@@ -1,0 +1,30 @@
+{
+  "app_key": "xai_api",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "xAI's API reference (docs.x.ai/docs/api-reference: POST https://api.x.ai/v1/chat/completions), an OpenAI-compatible chat completions endpoint; the body is the OpenAI chat shape with one user message, written from that reference",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary xai-api AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "python.exe",
+    "host": "api.x.ai",
+    "path": "/v1/chat/completions",
+    "media_type": "application/json",
+    "body": {
+      "model": "grok-4",
+      "messages": [
+        {
+          "role": "user",
+          "content": "sac canary xai-api AKIAIOSFODNN7EXAMPLE"
+        }
+      ]
+    }
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

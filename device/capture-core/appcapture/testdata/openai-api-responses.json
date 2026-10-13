@@ -1,0 +1,22 @@
+{
+  "app_key": "openai_api",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "parsers/openai/testdata/documented/responses-string.json, written from OpenAI's OpenAPI specification",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary openai-api AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "python.exe",
+    "host": "api.openai.com",
+    "path": "/v1/responses",
+    "media_type": "application/json",
+    "body_file": "parsers/openai/testdata/documented/responses-string.json"
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

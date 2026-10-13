@@ -1,0 +1,30 @@
+{
+  "app_key": "perplexity_api",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "Perplexity's API reference (docs.perplexity.ai/api-reference/chat-completions-post: POST https://api.perplexity.ai/chat/completions), an OpenAI-compatible chat completions endpoint; the body is the OpenAI chat shape with one user message, written from that reference",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary perplexity-api AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "python.exe",
+    "host": "api.perplexity.ai",
+    "path": "/chat/completions",
+    "media_type": "application/json",
+    "body": {
+      "model": "sonar",
+      "messages": [
+        {
+          "role": "user",
+          "content": "sac canary perplexity-api AKIAIOSFODNN7EXAMPLE"
+        }
+      ]
+    }
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

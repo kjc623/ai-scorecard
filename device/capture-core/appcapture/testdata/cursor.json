@@ -1,0 +1,20 @@
+{
+  "app_key": "cursor",
+  "route": "hook",
+  "source": {
+    "kind": "documented",
+    "from": "hooks/testdata/cursor/documented/before-submit-prompt.json, written from the stdin JSON third-party Cursor hook packages document",
+    "checked": "2026-10-12"
+  },
+  "typed": "Deploy with key AKIAIOSFODNN7EXAMPLE to the \"staging\" bucket <now>",
+  "hook": {
+    "tool": "cursor",
+    "event": "beforeSubmitPrompt",
+    "stdin_file": "hooks/testdata/cursor/documented/before-submit-prompt.json"
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

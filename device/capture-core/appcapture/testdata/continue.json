@@ -1,0 +1,23 @@
+{
+  "app_key": "continue",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "Continue's OpenAI provider (github.com/continuedev/continue, core/llm/llms/OpenAI.ts) posts the OpenAI chat shape of parsers/openai/testdata/documented/chat-string.json to the provider's chat completions endpoint from VS Code's extension host",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary openai-api AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "Code.exe",
+    "host": "api.openai.com",
+    "path": "/v1/chat/completions",
+    "media_type": "application/json",
+    "body_file": "parsers/openai/testdata/documented/chat-string.json"
+  },
+  "expect": {
+    "captured": true,
+    "attributed": false,
+    "prompt": true,
+    "why": "Continue sends to the provider its config names, and the request is named by that provider's tls row (here tls_f32477ff734d70d1, openai_api); Continue runs in Code.exe and has no host of its own, so nothing names it"
+  }
+}

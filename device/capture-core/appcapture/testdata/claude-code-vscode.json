@@ -1,0 +1,21 @@
+{
+  "app_key": "claude_code_vscode",
+  "route": "otlp",
+  "source": {
+    "kind": "documented",
+    "from": "otlp/testdata/claude-code/documented/logs-prompts-on.json: the extension runs Claude Code's own binary, which reads the same managed settings and exports the same events",
+    "checked": "2026-10-12"
+  },
+  "typed": "SAC-CANARY-7f3a prompt text",
+  "otlp": {
+    "signal": "logs",
+    "export_file": "otlp/testdata/claude-code/documented/logs-prompts-on.json",
+    "sender": "C:\\Users\\console\\.vscode\\extensions\\anthropic.claude-code-2.1.295-win32-x64\\resources\\native-binary\\claude.exe"
+  },
+  "expect": {
+    "captured": true,
+    "attributed": false,
+    "prompt": true,
+    "why": "the extension's Claude Code exports under service.name claude-code, and the claudecode normalizer names every such record app:claude_code (claudecode.ToolFingerprint); nothing in the record or its sender tells the extension apart"
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "app_key": "openrouter",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "OpenRouter's API reference (openrouter.ai/docs/api-reference/overview: POST https://openrouter.ai/api/v1/chat/completions), an OpenAI-compatible chat completions endpoint; the body is the OpenAI chat shape with one user message, written from that reference",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary openrouter AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "python.exe",
+    "host": "openrouter.ai",
+    "path": "/api/v1/chat/completions",
+    "media_type": "application/json",
+    "body": {
+      "model": "openai/gpt-4o",
+      "messages": [
+        {
+          "role": "user",
+          "content": "sac canary openrouter AKIAIOSFODNN7EXAMPLE"
+        }
+      ]
+    }
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

@@ -282,3 +282,12 @@ it is `absent` with `etw_session_failed`.
 cd device/capture-core && go build -ldflags "-X main.version=1.2.3" ./cmd/capture-core
 for m in protocol capture-spool capture-core integration; do (cd device/$m && gofmt -l . && go vet ./... && go test ./...); done
 ```
+
+`capture-core/appcapture` replays one prompt per app in the console's app catalogue (the
+`ref.app` seed in `services/database/schema.sql`), other than the browser web apps the extension's
+`tool-capture` test covers, through the agent's code for the route that app's prompts take: the
+TLS proxy's interception and parser, the OTLP normalizers, the hook relay or the loopback broker.
+Each app's fixture in `appcapture/testdata/` states whether its prompt is captured, attributed to
+the app and stored as typed, and why not where it is not; the check is exact both ways, so a fix
+fails it too until the fixture says so. `go test -v -run TestAppCapture ./appcapture/` logs the
+results as a Markdown table.

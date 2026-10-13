@@ -1,0 +1,34 @@
+{
+  "app_key": "gemini_cli",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "the streamGenerateContent request Gemini CLI sends through @google/genai with GEMINI_API_KEY set: a model's method on generativelanguage.googleapis.com with the turn in contents; written from the Gemini API reference, with one user turn",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary gemini-cli AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "node.exe",
+    "host": "generativelanguage.googleapis.com",
+    "path": "/v1beta/models/gemini-2.5-pro:streamGenerateContent",
+    "media_type": "application/json",
+    "body": {
+      "contents": [
+        {
+          "role": "user",
+          "parts": [
+            {
+              "text": "sac canary gemini-cli AKIAIOSFODNN7EXAMPLE"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "expect": {
+    "captured": true,
+    "attributed": false,
+    "prompt": true,
+    "why": "the TLS fingerprint hashes the whole path, so .../gemini-2.5-pro:streamGenerateContent matches no tls row; the nearest, v1beta/models (tls_0320fa08a4f64851), is google_ai_api's, and nothing on the request names Gemini CLI (it runs as node.exe)"
+  }
+}
