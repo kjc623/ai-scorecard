@@ -3591,6 +3591,304 @@ BEGIN
 END $$;
 
 -- =====================================================================================
+-- T90-T93  Provider connections: a provider's record of a prompt, with no device
+-- =====================================================================================
+-- control-api connects a provider and records each prompt the provider reports through
+-- ingest.record_provider_event, which runs as sac_recorder. control-api cannot write events or read
+-- labels otherwise; a provider's record that agrees with a device's capture merges into it.
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  base jsonb := jsonb_build_object(
+    'schema_version', '1.0',
+    'tenant_id', '11111111-1111-7111-8111-111111111111',
+    'connection_id', 'c0000000-0000-7000-8000-000000000090',
+    'user_ref', 'u_t90',
+    'tool_fingerprint', 'app:claude_web',
+    'direction', 'egress',
+    'kind', 'prompt',
+    'occurred_at', '2026-10-02T09:00:00Z',
+    'monotonic_offset_ms', 0,
+    'source', 'provider.api',
+    'collection_mode', 'm1',
+    'size_bytes', 42,
+    'content_digest', 'sha256:' || repeat('90', 32),
+    'labels', '[]'::jsonb,
+    'classifier_version', 'rules-1.0.0/model-1.0.0',
+    'confidence', 'high',
+    'prompt_kind', 'user',
+    'policy_decision', jsonb_build_object('rule_id', 'policy.default', 'action', 'logged', 'decided_locally', false));
+  r record;
+  dev uuid;
+  conn uuid;
+BEGIN
+  INSERT INTO ops.provider_connection (tenant_id, connection_id, provider, account, credential_enc, created_by, updated_by)
+  VALUES ('11111111-1111-7111-8111-111111111111', 'c0000000-0000-7000-8000-000000000090',
+          'claude_enterprise', 'org-t90', '\x00'::bytea, 'test', 'test'),
+         ('11111111-1111-7111-8111-111111111111', 'c0000000-0000-7000-8000-000000000091',
+          'chatgpt_enterprise', 'ws-t90', '\x00'::bytea, 'test', 'test');
+  UPDATE ops.provider_connection SET status = 'disabled', updated_by = 'test'
+   WHERE connection_id = 'c0000000-0000-7000-8000-000000000091';
+
+  SELECT * INTO r FROM ingest.record_provider_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000900',
+    'dedup_key', 'sha256:' || repeat('91', 32)));
+  IF r.event_outcome IS DISTINCT FROM 'inserted' THEN
+    RAISE EXCEPTION 'FAIL T90 a provider''s record was %, want inserted', r.event_outcome;
+  END IF;
+  SELECT o.device_id, o.connection_id INTO dev, conn FROM ingest.observation o
+   WHERE o.event_id = 'e0000000-0000-7000-8000-000000000900';
+  IF dev IS NOT NULL OR conn IS DISTINCT FROM 'c0000000-0000-7000-8000-000000000090' THEN
+    RAISE EXCEPTION 'FAIL T90 the observation''s origin is device % connection %', dev, conn;
+  END IF;
+  SELECT s.device_id, s.connection_id INTO dev, conn FROM ingest.submission s
+   WHERE s.submission_id = r.event_submission_id;
+  IF dev IS NOT NULL OR conn IS DISTINCT FROM 'c0000000-0000-7000-8000-000000000090' THEN
+    RAISE EXCEPTION 'FAIL T90 the submission''s origin is device % connection %', dev, conn;
+  END IF;
+
+  SELECT * INTO r FROM ingest.record_provider_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000900',
+    'dedup_key', 'sha256:' || repeat('91', 32)));
+  IF r.event_outcome IS DISTINCT FROM 'duplicate' THEN
+    RAISE EXCEPTION 'FAIL T90 a provider''s record read twice was %, want duplicate', r.event_outcome;
+  END IF;
+
+  BEGIN
+    PERFORM ingest.record_provider_event(base || jsonb_build_object(
+      'event_id', 'e0000000-0000-7000-8000-000000000901',
+      'dedup_key', 'sha256:' || repeat('92', 32),
+      'device_id', 'aaaaaaaa-0000-7000-8000-000000000001'));
+    RAISE EXCEPTION 'FAIL T90 a provider''s record naming a device was recorded';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM LIKE 'FAIL%' THEN RAISE; END IF;
+  END;
+  BEGIN
+    PERFORM ingest.record_provider_event(base || jsonb_build_object(
+      'event_id', 'e0000000-0000-7000-8000-000000000902',
+      'dedup_key', 'sha256:' || repeat('93', 32),
+      'connection_id', 'c0000000-0000-7000-8000-000000000091'));
+    RAISE EXCEPTION 'FAIL T90 a disabled connection''s record was recorded';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM LIKE 'FAIL%' THEN RAISE; END IF;
+  END;
+  BEGIN
+    PERFORM ingest.record_provider_event(base || jsonb_build_object(
+      'event_id', 'e0000000-0000-7000-8000-000000000903',
+      'dedup_key', 'sha256:' || repeat('94', 32),
+      'tenant_id', '22222222-2222-7222-8222-222222222222'));
+    RAISE EXCEPTION 'FAIL T90 a record for another tenant was recorded';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM LIKE 'FAIL%' THEN RAISE; END IF;
+  END;
+
+  -- Outside the definer control-api writes no event and reads no label.
+  BEGIN
+    PERFORM ingest.record_event(base || jsonb_build_object(
+      'event_id', 'e0000000-0000-7000-8000-000000000904',
+      'dedup_key', 'sha256:' || repeat('95', 32)), now());
+    RAISE EXCEPTION 'FAIL T90 control-api recorded an event without record_provider_event';
+  EXCEPTION WHEN raise_exception OR insufficient_privilege THEN
+    IF SQLERRM LIKE 'FAIL%' THEN RAISE; END IF;
+  END;
+  BEGIN
+    PERFORM s.labels FROM ingest.submission s;
+    RAISE EXCEPTION 'FAIL T90 control-api read a submission''s labels';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  RAISE NOTICE 'PASS T90 control-api records a provider''s record with the connection as its origin, only through record_provider_event and only for an active connection of its tenant';
+END $$;
+
+RESET ROLE;
+
+-- A device captured a prompt to ChatGPT; the provider reports the same prompt two minutes later.
+SET ROLE sac_ingest;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+DO $$
+DECLARE
+  r record;
+BEGIN
+  SELECT * INTO r FROM ingest.record_event(jsonb_build_object(
+    'schema_version', '1.0',
+    'event_id', 'e0000000-0000-7000-8000-000000000910',
+    'tenant_id', '11111111-1111-7111-8111-111111111111',
+    'device_id', 'aaaaaaaa-0000-7000-8000-000000000001',
+    'user_ref', 'u_t91',
+    'tool_fingerprint', 'host:chatgpt.com',
+    'direction', 'egress',
+    'kind', 'prompt',
+    'occurred_at', '2026-10-02T10:00:00Z',
+    'monotonic_offset_ms', 10,
+    'source', 'ext.page_context',
+    'collection_mode', 'm1',
+    'dedup_key', 'sha256:' || repeat('a1', 32),
+    'size_bytes', 64,
+    'content_digest', 'sha256:' || repeat('a2', 32),
+    'labels', '[]'::jsonb,
+    'classifier_version', '1.0.0',
+    'confidence', 'high',
+    'prompt_kind', 'user',
+    'policy_decision', jsonb_build_object('rule_id', 'policy.default', 'action', 'logged', 'decided_locally', true)), now());
+  PERFORM set_config('sac_test.t91_device', r.event_submission_id::text, false);
+
+  -- ingest-api cannot record a provider's record: it is not record_provider_event.
+  BEGIN
+    PERFORM ingest.record_event(jsonb_build_object(
+      'schema_version', '1.0',
+      'event_id', 'e0000000-0000-7000-8000-000000000911',
+      'tenant_id', '11111111-1111-7111-8111-111111111111',
+      'connection_id', 'c0000000-0000-7000-8000-000000000090',
+      'user_ref', 'u_t91', 'tool_fingerprint', 'app:chatgpt_web', 'direction', 'egress',
+      'kind', 'prompt', 'occurred_at', '2026-10-02T10:00:00Z', 'monotonic_offset_ms', 0,
+      'source', 'provider.api', 'collection_mode', 'm0', 'dedup_key', 'sha256:' || repeat('a3', 32),
+      'size_bytes', 64,
+      'policy_decision', jsonb_build_object('rule_id', 'policy.default', 'action', 'logged', 'decided_locally', false)), now());
+    RAISE EXCEPTION 'FAIL T91 ingest-api recorded an event whose origin is a provider connection';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM LIKE 'FAIL%' THEN RAISE; END IF;
+  END;
+  -- An event with no origin at all is refused by the table.
+  BEGIN
+    PERFORM ingest.record_event(jsonb_build_object(
+      'schema_version', '1.0',
+      'event_id', 'e0000000-0000-7000-8000-000000000912',
+      'tenant_id', '11111111-1111-7111-8111-111111111111',
+      'user_ref', 'u_t91', 'tool_fingerprint', 'app:chatgpt_web', 'direction', 'egress',
+      'kind', 'prompt', 'occurred_at', '2026-10-02T10:00:00Z', 'monotonic_offset_ms', 0,
+      'source', 'ext.page_context', 'collection_mode', 'm0', 'dedup_key', 'sha256:' || repeat('a4', 32),
+      'size_bytes', 64,
+      'policy_decision', jsonb_build_object('rule_id', 'policy.default', 'action', 'logged', 'decided_locally', true)), now());
+    RAISE EXCEPTION 'FAIL T91 an event with neither a device nor a connection was recorded';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  RAISE NOTICE 'PASS T91 an event has exactly one origin, and only record_provider_event records a provider connection as one';
+END $$;
+RESET ROLE;
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+DO $$
+DECLARE
+  base jsonb := jsonb_build_object(
+    'schema_version', '1.0',
+    'tenant_id', '11111111-1111-7111-8111-111111111111',
+    'connection_id', 'c0000000-0000-7000-8000-000000000090',
+    'user_ref', 'u_t91',
+    'tool_fingerprint', 'app:chatgpt_web',
+    'direction', 'egress',
+    'kind', 'prompt',
+    'occurred_at', '2026-10-02T10:02:00Z',
+    'monotonic_offset_ms', 0,
+    'source', 'provider.api',
+    'collection_mode', 'm1',
+    'size_bytes', 64,
+    'content_digest', 'sha256:' || repeat('a2', 32),
+    'labels', '[]'::jsonb,
+    'classifier_version', 'rules-1.0.0/model-1.0.0',
+    'confidence', 'high',
+    'prompt_kind', 'user',
+    'policy_decision', jsonb_build_object('rule_id', 'policy.default', 'action', 'logged', 'decided_locally', false));
+  r record;
+BEGIN
+  SELECT * INTO r FROM ingest.record_provider_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000913', 'dedup_key', 'sha256:' || repeat('b1', 32)));
+  IF r.event_outcome IS DISTINCT FROM 'merged' OR r.event_submission_id::text <> current_setting('sac_test.t91_device') THEN
+    RAISE EXCEPTION 'FAIL T92 the provider''s record of the device''s prompt was % into %, want merged into %',
+      r.event_outcome, r.event_submission_id, current_setting('sac_test.t91_device');
+  END IF;
+  SELECT * INTO r FROM ingest.record_provider_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000913', 'dedup_key', 'sha256:' || repeat('b1', 32)));
+  IF r.event_outcome IS DISTINCT FROM 'duplicate' OR r.event_submission_id::text <> current_setting('sac_test.t91_device') THEN
+    RAISE EXCEPTION 'FAIL T92 the merged record read again was % for %', r.event_outcome, r.event_submission_id;
+  END IF;
+
+  -- The same text sent to another tool, sent later, or by someone else is another prompt.
+  SELECT * INTO r FROM ingest.record_provider_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000914', 'dedup_key', 'sha256:' || repeat('b2', 32),
+    'tool_fingerprint', 'app:claude_web'));
+  IF r.event_outcome IS DISTINCT FROM 'inserted' THEN
+    RAISE EXCEPTION 'FAIL T92 the same text to another tool was %', r.event_outcome;
+  END IF;
+  SELECT * INTO r FROM ingest.record_provider_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000915', 'dedup_key', 'sha256:' || repeat('b3', 32),
+    'occurred_at', '2026-10-02T10:20:00Z'));
+  IF r.event_outcome IS DISTINCT FROM 'inserted' THEN
+    RAISE EXCEPTION 'FAIL T92 the same text twenty minutes later was %', r.event_outcome;
+  END IF;
+  SELECT * INTO r FROM ingest.record_provider_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000916', 'dedup_key', 'sha256:' || repeat('b4', 32),
+    'user_ref', 'u_t91_other'));
+  IF r.event_outcome IS DISTINCT FROM 'inserted' THEN
+    RAISE EXCEPTION 'FAIL T92 the same text from someone else was %', r.event_outcome;
+  END IF;
+END $$;
+RESET ROLE;
+
+DO $$
+DECLARE
+  routes text[];
+  n int;
+  conn uuid;
+BEGIN
+  SELECT s.observed_routes, s.observation_count, s.connection_id INTO routes, n, conn
+    FROM ingest.submission s WHERE s.submission_id = current_setting('sac_test.t91_device')::uuid;
+  IF routes IS DISTINCT FROM ARRAY['ext.page_context', 'provider.api'] OR n <> 2 OR conn IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T92 the merged submission has routes %, % observations and connection %', routes, n, conn;
+  END IF;
+  RAISE NOTICE 'PASS T92 a provider''s record of a prompt a device captured merges into the device''s submission: same text, person and tool within ten minutes';
+END $$;
+
+-- query-api names a record's provider and never reads its credential; ingest-api reads no
+-- connection; another tenant sees none.
+SET ROLE sac_query;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+DO $$
+DECLARE
+  name text;
+BEGIN
+  SELECT p.display_name INTO name
+    FROM ingest.submission s
+    JOIN ops.provider_connection c ON c.tenant_id = s.tenant_id AND c.connection_id = s.connection_id
+    JOIN ref.provider p ON p.provider = c.provider
+   WHERE s.tenant_id = '11111111-1111-7111-8111-111111111111'
+     AND s.connection_id = 'c0000000-0000-7000-8000-000000000090'
+   LIMIT 1;
+  IF name IS DISTINCT FROM 'Claude Enterprise' THEN
+    RAISE EXCEPTION 'FAIL T93 query-api named the provider %', name;
+  END IF;
+  BEGIN
+    PERFORM c.credential_enc FROM ops.provider_connection c;
+    RAISE EXCEPTION 'FAIL T93 query-api read a provider credential';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+END $$;
+SET app.tenant_id = '22222222-2222-7222-8222-222222222222';
+DO $$
+DECLARE
+  n int;
+BEGIN
+  SELECT count(*) INTO n FROM ops.provider_connection;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T93 tenant B saw % of tenant A''s provider connections', n;
+  END IF;
+END $$;
+RESET ROLE;
+SET ROLE sac_ingest;
+DO $$
+BEGIN
+  BEGIN
+    PERFORM 1 FROM ops.provider_connection;
+    RAISE EXCEPTION 'FAIL T93 ingest-api read the provider connections';
+  EXCEPTION WHEN insufficient_privilege THEN NULL;
+  END;
+  RAISE NOTICE 'PASS T93 query-api names a record''s provider without its credential; ingest-api and other tenants see no connection';
+END $$;
+RESET ROLE;
+
+-- =====================================================================================
 -- Report
 -- =====================================================================================
 

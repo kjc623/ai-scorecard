@@ -173,7 +173,7 @@ expectCaught('secdef: a definer left executable by PUBLIC',
   'secdef.execute-revoked-from-public');
 expectCaught('secdef: a definer left with the role that applied the schema',
   'services/database/schema.sql', (s) => s.replace('ALTER FUNCTION ops.auth_session_by_hash(bytea)          OWNER TO sac_resolver;\n', ''),
-  'secdef.owned-by-resolver');
+  'secdef.owned-by-definer-role');
 expectCaught('secdef: ownership moved before EXECUTE is revoked',
   'services/database/schema.sql', (s) => {
     const start = s.indexOf('-- Functions are executable by PUBLIC unless revoked');
@@ -184,6 +184,13 @@ expectCaught('secdef: ownership moved before EXECUTE is revoked',
   'secdef.privileges-set-before-handover');
 expectCaught('secdef: sac_resolver keeping its CREATE on ops',
   'services/database/schema.sql', (s) => s.replace('REVOKE CREATE ON SCHEMA ops FROM sac_resolver;\n', ''),
+  'secdef.handover-revoked');
+expectCaught('secdef: the provider write path handed to sac_resolver',
+  'services/database/schema.sql', (s) => s.replace('ALTER FUNCTION ingest.record_provider_event(jsonb) OWNER TO sac_recorder;',
+    'ALTER FUNCTION ingest.record_provider_event(jsonb) OWNER TO sac_resolver;'),
+  'secdef.owned-by-definer-role');
+expectCaught('secdef: the applying role staying a member of sac_recorder',
+  'services/database/schema.sql', (s) => s.replace('REVOKE sac_recorder FROM CURRENT_USER;\n', ''),
   'secdef.handover-revoked');
 
 // Expiry indexes
