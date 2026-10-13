@@ -1,0 +1,40 @@
+{
+  "app_key": "gemini_code_assist",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "Gemini Code Assist's endpoint is https://cloudcode-pa.googleapis.com (docs.cloud.google.com/gemini/docs/codeassist/network-access), and its agent mode in VS Code runs the Gemini CLI, whose Code Assist request is gemini-cli packages/core/src/code_assist/server.ts: /v1internal:streamGenerateContent with model, project, user_prompt_id and request.contents; sent from VS Code's extension host",
+    "checked": "2026-10-13"
+  },
+  "typed": "sac canary gemini-code-assist AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "Code.exe",
+    "host": "cloudcode-pa.googleapis.com",
+    "path": "/v1internal:streamGenerateContent",
+    "media_type": "application/json",
+    "body": {
+      "model": "gemini-2.5-pro",
+      "project": "sac-placeholder-project",
+      "user_prompt_id": "7d2e4f6a-8b0c-4d1e-9f3a-5b7c9d1e3f5a",
+      "request": {
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "sac canary gemini-code-assist AKIAIOSFODNN7EXAMPLE"
+              }
+            ]
+          }
+        ],
+        "session_id": "3a5c7e9b-1d2f-4a6c-8e0b-2d4f6a8c0e1b"
+      }
+    }
+  },
+  "expect": {
+    "captured": true,
+    "attributed": false,
+    "prompt": true,
+    "why": "Gemini Code Assist sends to the same Code Assist endpoint as the Gemini CLI, from Code.exe, an editor's process, which names no request, so the request is named by its host and path (app:gemini_cli); the provider's own log files the IDE's requests under gemini_code_assist"
+  }
+}
