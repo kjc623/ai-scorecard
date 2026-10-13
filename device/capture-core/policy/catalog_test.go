@@ -172,6 +172,103 @@ func TestCatalogLookups(t *testing.T) {
 	if nilBundle.AppByExe("windows", "Code.exe") != nil || nilBundle.AppsByPort(11434) != nil || nilBundle.Category("vscode") != "" {
 		t.Fatal("a nil bundle matched an app")
 	}
+	if _, ok := nilBundle.AppForHost("api.anthropic.com"); ok {
+		t.Fatal("a nil bundle named a host")
+	}
+}
+
+// A desktop app's own inference domains are decrypted for its processes alone; the interception set
+// is decrypted for every process.
+func TestCatalogInterceptsForTheSender(t *testing.T) {
+	b := &Bundle{
+		Interception: Interception{SeedHosts: []string{"api.anthropic.com"}},
+		Catalog: []CatalogApp{
+			{AppKey: "claude_code", Category: "coding_agent", Signals: []CatalogSignal{
+				{Platform: "any", Kind: SignalInferenceDomain, Value: "api.anthropic.com"},
+				{Platform: "windows", Kind: SignalWindowsExe, Value: "claude.exe"}}},
+			{AppKey: "claude_desktop", Category: "chat_assistant", Signals: []CatalogSignal{
+				{Platform: "any", Kind: SignalInferenceDomain, Value: "claude.ai"},
+				{Platform: "windows", Kind: SignalWindowsAppx, Value: "Claude_pzs8sxrjxfjjc"}}},
+			{AppKey: "claude_web", Category: "chat_assistant", Signals: []CatalogSignal{
+				{Platform: "any", Kind: SignalInferenceDomain, Value: ".claude.ai"}}},
+			{AppKey: "chatgpt_desktop", Category: "chat_assistant", Signals: []CatalogSignal{
+				{Platform: "any", Kind: SignalInferenceDomain, Value: "chatgpt.com"},
+				{Platform: "windows", Kind: SignalWindowsExe, Value: "ChatGPT.exe"}}},
+		},
+	}
+	for _, tc := range []struct {
+		sender, host string
+		port         int
+		want         bool
+	}{
+		{"claude_desktop", "claude.ai", 443, true},
+		{"claude_desktop", "CLAUDE.AI.", 443, true},
+		{"claude_desktop", "claude.ai", 8443, false},
+		{"claude_desktop", "api.claude.ai", 443, false},
+		{"claude_desktop", "chatgpt.com", 443, false},
+		{"claude_desktop", "api.anthropic.com", 443, true},
+		{"", "claude.ai", 443, false},
+		{"", "api.anthropic.com", 443, true},
+		{"claude_web", "claude.ai", 443, false},
+		{"claude_code", "claude.ai", 443, false},
+	} {
+		if got := b.InterceptsFor(tc.sender, tc.host, tc.port); got != tc.want {
+			t.Errorf("InterceptsFor(%q, %q, %d) = %v, want %v", tc.sender, tc.host, tc.port, got, tc.want)
+		}
+	}
+	if got, want := b.DesktopAppHosts(), []string{"api.anthropic.com", "claude.ai", "chatgpt.com"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("DesktopAppHosts = %v, want %v", got, want)
+	}
+	var nilBundle *Bundle
+	if nilBundle.InterceptsFor("claude_desktop", "claude.ai", 443) || nilBundle.DesktopAppHosts() != nil {
+		t.Fatal("a nil bundle intercepts")
+	}
+}
+
+// A host is named by the app the catalog knows by its domains alone: an exact host before a domain,
+// a longer domain before a shorter one, the catalog's order breaking a tie.
+func TestCatalogAppForHost(t *testing.T) {
+	v, priv := newKeyPair(t, "policy-key-1")
+	section := `[
+  {"app_key": "chatgpt_desktop", "category": "chat_assistant", "signals": [
+    {"platform": "any", "kind": "inference_domain", "value": "chatgpt.com"},
+    {"platform": "windows", "kind": "windows_exe", "value": "ChatGPT.exe"}]},
+  {"app_key": "chatgpt_web", "category": "chat_assistant", "signals": [
+    {"platform": "any", "kind": "inference_domain", "value": ".chatgpt.com"}]},
+  {"app_key": "claude_web", "category": "chat_assistant", "signals": [
+    {"platform": "any", "kind": "inference_domain", "value": ".claude.ai"}]},
+  {"app_key": "first", "category": "inference_api", "signals": [
+    {"platform": "any", "kind": "inference_domain", "value": ".example.invalid"}]},
+  {"app_key": "longer", "category": "inference_api", "signals": [
+    {"platform": "any", "kind": "inference_domain", "value": ".api.example.invalid"}]},
+  {"app_key": "exact", "category": "inference_api", "signals": [
+    {"platform": "any", "kind": "inference_domain", "value": "eu.api.example.invalid"}]},
+  {"app_key": "second", "category": "inference_api", "signals": [
+    {"platform": "any", "kind": "inference_domain", "value": "*.example.invalid"}]},
+  {"app_key": "silent", "category": "ide", "signals": []}
+]`
+	b, err := v.Open(signWithMembers(t, priv, "100", map[string]string{"catalog": section}), nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	for host, want := range map[string]string{
+		"chatgpt.com":              "chatgpt_web",
+		"CHATGPT.com.":             "chatgpt_web",
+		"claude.ai":                "claude_web",
+		"a.claude.ai":              "claude_web",
+		"eu.api.example.invalid":   "exact",
+		"us.api.example.invalid":   "longer",
+		"api.example.invalid":      "longer",
+		"other.example.invalid":    "first",
+		"notclaude.ai":             "",
+		"api.example.invalid.test": "",
+		"":                         "",
+	} {
+		got, ok := b.AppForHost(host)
+		if got != want || ok != (want != "") {
+			t.Errorf("AppForHost(%q) = %q, %v; want %q", host, got, ok, want)
+		}
+	}
 }
 
 // Installed-app lookups: an uninstall name matches alone or as the leading words of the entry's
@@ -227,6 +324,41 @@ func TestCatalogInstalledAppLookups(t *testing.T) {
 	var nilBundle *Bundle
 	if nilBundle.AppByUninstallName("windows", "PyCharm") != nil || nilBundle.AppByAppx("windows", "Claude_pzs8sxrjxfjjc") != nil || nilBundle.HasSignal("jetbrains", "windows", SignalWindowsUninstallName) {
 		t.Fatal("a nil bundle matched an app")
+	}
+}
+
+// A process is its package's app before its executable's, so Claude Desktop's claude.exe is not
+// Claude Code's.
+func TestCatalogAppOfProcess(t *testing.T) {
+	b := &Bundle{Catalog: []CatalogApp{
+		{AppKey: "claude_code", Category: "coding_agent", Signals: []CatalogSignal{
+			{Platform: "windows", Kind: SignalWindowsExe, Value: "claude.exe"},
+		}},
+		{AppKey: "claude_desktop", Category: "chat_assistant", Signals: []CatalogSignal{
+			{Platform: "windows", Kind: SignalWindowsAppx, Value: "Claude_pzs8sxrjxfjjc"},
+		}},
+	}}
+	desktop := `C:\Program Files\WindowsApps\Claude_1.0.0.0_x64__pzs8sxrjxfjjc\app\claude.exe`
+	for _, tc := range []struct {
+		image, family, want string
+	}{
+		{desktop, "Claude_pzs8sxrjxfjjc", "claude_desktop"},
+		{`C:\Users\a\.local\bin\claude.exe`, "", "claude_code"},
+		{"claude.exe", "", "claude_code"},
+		{`C:\Users\a\.local\bin\CLAUDE.EXE`, "", "claude_code"},
+		{desktop, "Microsoft.WindowsCalculator_8wekyb3d8bbwe", "claude_code"},
+		{`C:\Windows\System32\curl.exe`, "", ""},
+		{"", "", ""},
+		{`C:\Tools\`, "", ""},
+	} {
+		got, ok := b.AppOfProcess("windows", tc.image, tc.family)
+		if got != tc.want || ok != (tc.want != "") {
+			t.Errorf("AppOfProcess(%q, %q) = %q, %v; want %q", tc.image, tc.family, got, ok, tc.want)
+		}
+	}
+	var nilBundle *Bundle
+	if app, ok := nilBundle.AppOfProcess("windows", desktop, "Claude_pzs8sxrjxfjjc"); ok {
+		t.Fatalf("a nil bundle named %q", app)
 	}
 }
 

@@ -36,8 +36,8 @@
   },
   "expect": {
     "captured": true,
-    "attributed": false,
+    "attributed": true,
     "prompt": false,
-    "why": "chatgpt.com/backend-api/conversation is catalogued only as ChatGPT (web) (tls_11574658dafb8805), and the generic parser finds no text in it (the role is under author and the text in content.parts), so the body as sent is stored"
+    "why": "ChatGPT.exe names the request ChatGPT Desktop, but chatgpt.com has no parser of its own and the generic parser finds no text in its body (the role is under author and the text in content.parts), so the body as sent is stored"
   }
 }

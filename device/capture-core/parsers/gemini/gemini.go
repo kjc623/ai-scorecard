@@ -1,6 +1,6 @@
 // Package gemini parses requests to the Gemini API's generateContent and streamGenerateContent
-// methods on generativelanguage.googleapis.com, v1 and v1beta, and (Upload) the uploads of its Files
-// API.
+// methods on generativelanguage.googleapis.com, v1 and v1beta, (Upload) the uploads of its Files
+// API, and (CodeAssist) the same request as Code Assist's backend carries it.
 //
 // The text read is the request's turn: the trailing user contents (role `user`, or unset), after
 // any trailing `model` content. Earlier contents were sent, and recorded, with the requests that

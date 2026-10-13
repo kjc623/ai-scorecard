@@ -146,6 +146,9 @@ func TestProcessInfoDescribesThisTestBinary(t *testing.T) {
 	if p.Publisher != "" {
 		t.Errorf("publisher = %q, want empty for an unsigned test binary", p.Publisher)
 	}
+	if p.Package != "" {
+		t.Errorf("package = %q, want none for a test binary no package runs", p.Package)
+	}
 	again, err := ProcessInfo(uint32(os.Getpid()))
 	if err != nil || again.Image != p.Image || !again.Started.Equal(p.Started) {
 		t.Errorf("second ProcessInfo = %+v, %v; want the same answer", again, err)

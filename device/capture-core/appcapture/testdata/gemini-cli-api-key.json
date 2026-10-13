@@ -29,6 +29,6 @@
     "captured": true,
     "attributed": false,
     "prompt": true,
-    "why": "the TLS fingerprint hashes the whole path, so .../gemini-2.5-pro:streamGenerateContent matches no tls row; the nearest, v1beta/models (tls_0320fa08a4f64851), is google_ai_api's, and nothing on the request names Gemini CLI (it runs as node.exe)"
+    "why": "Gemini CLI runs as node.exe, which names no app, so the request is named by its host, generativelanguage.googleapis.com, which is the Google AI API's (app:google_ai_api)"
   }
 }

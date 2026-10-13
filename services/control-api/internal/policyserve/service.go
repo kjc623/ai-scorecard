@@ -24,6 +24,7 @@ import (
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -286,8 +287,11 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 			canary = h + ":443"
 		}
 	}
-	if canary == "" && len(hosts) > 0 {
-		canary = hosts[0] + ":443"
+	if canary == "" {
+		// A domain with a leading dot names no host to probe.
+		if i := slices.IndexFunc(hosts, func(h string) bool { return !strings.HasPrefix(h, ".") }); i >= 0 {
+			canary = hosts[i] + ":443"
+		}
 	}
 	// An override is set per tool; the bundle carries it per catalogue fingerprint of the tool,
 	// which is what a device knows.

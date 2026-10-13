@@ -15,6 +15,9 @@ type Process struct {
 	PID uint32
 	// Image is the full path of the process's executable.
 	Image string
+	// Package is the package family name of a packaged app's process (MSIX or AppX), as in
+	// Claude_pzs8sxrjxfjjc; empty for a process no package runs.
+	Package string
 	// Publisher is the common name of the image's Authenticode signer, when the signature verifies;
 	// empty for an unsigned image or one whose signature does not verify.
 	Publisher string

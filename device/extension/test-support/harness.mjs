@@ -79,7 +79,7 @@ export function createHarness({ core = {}, capacity = 200, failConnect = false, 
   };
 
   const chromeObj = { ...fake.chrome, crypto };
-  const scope = { chrome: chromeObj, crypto, performance: globalThis.performance };
+  const scope = { chrome: chromeObj, crypto, performance: globalThis.performance, fetch: fake.fetch };
 
   const adapter = createChromeAdapter(scope);
   const contentAdapter = createContentScriptAdapter(scope);

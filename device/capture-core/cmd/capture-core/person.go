@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -162,6 +163,16 @@ func clientProcessName(owner func(net.Conn) (hostinfo.Process, error), conn net.
 		return "unknown"
 	}
 	return p.Image[strings.LastIndexAny(p.Image, `\/`)+1:]
+}
+
+// clientApp is the catalog app, in the bundle in force, of the process behind a proxied connection:
+// the app of the package that runs it, else the app whose executable it runs.
+func (s *service) clientApp(owner func(net.Conn) (hostinfo.Process, error), conn net.Conn) (string, bool) {
+	p, err := owner(conn)
+	if err != nil || p.Image == "" {
+		return "", false
+	}
+	return s.pipe.Bundles().AppOfProcess(catalogPlatform(runtime.GOOS), p.Image, p.Package)
 }
 
 // currentDeviceIdentity is the tenant's identity setting the device acts on now.

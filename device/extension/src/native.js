@@ -113,12 +113,13 @@ export function createNativeClient({
       onEvent({ kind: 'version_mismatch', version: msg.version });
       return;
     }
+    // Any answer shows the channel works: a refusal, or the ack of a one-way health report, which is
+    // often the first thing answered on a port reopened after capture-core restarts.
+    markAnswered();
     if (msg.id && pending.has(msg.id)) {
       const entry = pending.get(msg.id);
       pending.delete(msg.id);
       clearTimeout(entry.timer);
-      // A refusal is still an answer: the channel works even though this request was declined.
-      markAnswered();
       if (msg.type === CORE_TYPE.REFUSAL) {
         const body = msg.body || {};
         entry.reject(new ExtError('core_refused', body.message || 'refused', { reason: body.reason }));

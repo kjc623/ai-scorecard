@@ -3146,6 +3146,8 @@ INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES
   ('chatgpt_desktop',     'any',       'inference_domain',        'chatgpt.com'),
   ('chatgpt_desktop',     'macos',     'macos_bundle_id',         'com.openai.chat'),
   ('chatgpt_desktop',     'macos',     'macos_bundle_id',         'com.openai.codex'),
+  ('chatgpt_desktop',     'windows',   'windows_appx',            'OpenAI.ChatGPT-Desktop_2p2nqsd0c76g0'),
+  ('chatgpt_desktop',     'windows',   'windows_exe',             'ChatGPT.exe'),
   ('chatgpt_web',         'any',       'inference_domain',        '.chatgpt.com'),
   ('chatgpt_web',         'any',       'inference_domain',        'chat.openai.com'),
   ('claude_code',         'any',       'cli_binary',              'claude'),
@@ -3164,6 +3166,7 @@ INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES
   ('codex',               'windows',   'windows_exe',             'codex-x86_64-pc-windows-msvc.exe'),
   ('codex',               'windows',   'windows_exe',             'codex.exe'),
   ('cohere_api',          'any',       'inference_domain',        'api.cohere.ai'),
+  ('cohere_api',          'any',       'inference_domain',        'api.cohere.com'),
   ('continue',            'any',       'ide_extension_id',        'continue.continue'),
   ('copilot_cli',         'any',       'cli_binary',              'copilot'),
   ('copilot_cli',         'any',       'npm_package',             '@github/copilot'),
@@ -3219,6 +3222,8 @@ INSERT INTO ref.app_signal (app_key, platform, kind, value) VALUES
 --   * `tls` rows: the egress proxy's fingerprint of a destination, "tls_" + the first eight bytes
 --     (lowercase hex) of sha256("tls|" + lowercased host + "|" + path without leading or trailing
 --     slashes). One tool may have several paths, so several rows. evidence names the host and path.
+--     The proxy names a request by its app's `app:` fingerprint instead when the catalog knows the
+--     process that sent it, or knows an app by its inference domains alone that covers the host.
 --   * `extension` rows: a browser prompt stored under "tf2:" + base32(sha256(canonical({v: 2,
 --     host}))), one row per host. evidence names the host. The extension names a web tool by its
 --     app's own `app:` fingerprint, found from the app's inference domains.
@@ -3257,6 +3262,8 @@ INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_k
   ('tls_d829c7e9598888f9', 'xAI API', 'xai', 'tls', '{"host":"api.x.ai","path":"/v1/chat/completions"}', 'xai_api'),
   ('tls_544b80dcc1446f8b', 'Together AI', 'together', 'tls', '{"host":"api.together.xyz","path":"/v1/chat/completions"}', 'together_ai'),
   ('tls_4fb4f5cb98d7a1c3', 'Cohere API', 'cohere', 'tls', '{"host":"api.cohere.ai","path":"/v1/chat"}', 'cohere_api'),
+  ('tls_32a5e5df08769f13', 'Gemini CLI', 'google', 'tls', '{"host":"cloudcode-pa.googleapis.com","path":"/v1internal:streamGenerateContent"}', 'gemini_cli'),
+  ('tls_65263f31609dd072', 'Gemini CLI', 'google', 'tls', '{"host":"cloudcode-pa.googleapis.com","path":"/v1internal:generateContent"}', 'gemini_cli'),
   ('tf2:de4s6yclxfhnumvdm3ubzgd5jveiwkzapelxdcj2qdzd72qrridq', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chatgpt.com"}', 'chatgpt_web'),
   ('tf2:a64fvqypthxcqzcwgpxxeeo4kvhk5onujlq22qafww3ql422pxyq', 'ChatGPT (web)', 'openai', 'extension', '{"host":"m.chatgpt.com"}', 'chatgpt_web'),
   ('tf2:mespeqbrgr4vb7rqmmrubxuglidtpu3e5xpjd7dwqkm2evicbwla', 'ChatGPT (web)', 'openai', 'extension', '{"host":"chat.openai.com"}', 'chatgpt_web'),

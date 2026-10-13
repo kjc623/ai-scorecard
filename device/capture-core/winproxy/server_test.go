@@ -153,6 +153,13 @@ func testBundle() *policy.Bundle {
 			TenantHosts: []string{".corp.example"},
 			PacListen:   "127.0.0.1:0",
 		},
+		Catalog: []policy.CatalogApp{
+			{AppKey: "claude_desktop", Category: "chat_assistant", Signals: []policy.CatalogSignal{
+				{Platform: "any", Kind: policy.SignalInferenceDomain, Value: "claude.ai"},
+				{Platform: "windows", Kind: policy.SignalWindowsAppx, Value: "Claude_pzs8sxrjxfjjc"}}},
+			{AppKey: "claude_web", Category: "chat_assistant", Signals: []policy.CatalogSignal{
+				{Platform: "any", Kind: policy.SignalInferenceDomain, Value: ".claude.ai"}}},
+		},
 	}
 }
 
@@ -329,6 +336,11 @@ func TestHandlePAC(t *testing.T) {
 	}
 	if !strings.Contains(body, `"chatgpt.com":1`) || !strings.Contains(body, `".corp.example"`) {
 		t.Fatalf("interception hosts missing:\n%s", body)
+	}
+	// A desktop app's own host goes to the proxy too, which decrypts it for that app alone; a web
+	// app's domain does not.
+	if !strings.Contains(body, `"claude.ai":1`) || strings.Contains(body, `".claude.ai"`) {
+		t.Fatalf("want claude.ai, Claude Desktop's host, and not Claude (web)'s domain:\n%s", body)
 	}
 
 	// An unknown user gets a PAC that goes direct for everything.
