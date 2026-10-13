@@ -12,12 +12,14 @@
  *   chrome.webRequest.onBeforeRequest.removeListener(fn)
  *   chrome.webRequest.onCompleted.addListener(fn, filter)
  *   chrome.runtime.connectNative(application) / lastError
- *   chrome.runtime.getManifest().version / requestUpdateCheck() / onUpdateAvailable.addListener(fn) / reload()
+ *   chrome.runtime.id / getManifest().version / getManifest().update_url
+ *   chrome.runtime.requestUpdateCheck() / onUpdateAvailable.addListener(fn) / reload()
  *   chrome.runtime.onMessage.addListener(fn) / sendMessage(msg) / getURL(path)
  *   chrome.tabs.sendMessage(tabId, msg) / query({active: true, currentWindow: true})
  *   chrome.alarms.create(name, {periodInMinutes}) / onAlarm.addListener(fn)
  *   chrome.permissions.contains({permissions: ["webRequestBlocking"]})
  *   (content script world) globalThis.crypto.subtle
+ *   (service worker) fetch(update_url): the update manifest the browser itself reads
  *
  * Not used: chrome.declarativeNetRequest (it cannot make a decision that depends on the body),
  * chrome.storage (the extension holds nothing durable), analytics, remote code.
@@ -78,6 +80,8 @@
  * @typedef {object} RuntimeAdapter
  * @property {(application: string) => NativePort} connectNative
  * @property {() => string} version                 the installed manifest's version
+ * @property {() => string} id                      this extension's id
+ * @property {() => string|null} updateUrl          the installed manifest's update_url; null for a build loaded unpacked
  * @property {() => Promise<string>} requestUpdateCheck  `update_available`, `no_update` or `throttled`
  * @property {(fn: (version: string) => void) => void} onUpdateAvailable  an update is downloaded and waits for the worker to stop
  * @property {() => void} reload                     installs a downloaded update now
@@ -87,6 +91,7 @@
  * @typedef {object} Adapter
  * @property {WebRequestAdapter} webRequest
  * @property {RuntimeAdapter} runtime
+ * @property {{getText: (url: string) => Promise<string>}} net  an uncredentialed GET; rejects on a non-2xx answer
  * @property {{onMessage: (fn: (message: any, sender: any) => any) => void, sendMessage: (message: any) => Promise<any>}} messages
  * @property {{sendMessage: (tabId: number, message: any, options?: any) => Promise<any>, query: (q: any) => Promise<any[]>}} tabs
  * @property {{create: (name: string, info: {periodInMinutes: number}) => void, onAlarm: (fn: (alarm: {name: string}) => void) => void}} alarms

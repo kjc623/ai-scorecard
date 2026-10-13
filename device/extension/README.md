@@ -24,13 +24,15 @@ through the dashboard on the analyst hostname at
 `https://<analyst-fqdn>/v1/extension/updates.xml` (not the device hostname, whose client
 certificate request the extension downloader cannot answer), and the browsers install it from the
 `ExtensionInstallForcelist` policy (see `device/installer/README.md`). The packaged manifest's
-`update_url` names the same update manifest: the policy's URL serves only the first install, and
-without `update_url` the browser looks for updates in its own store. The browser checks every few hours on its own; sooner,
-the extension follows the agent: `capture-core` names its release version in each `policy_bundle`
-answer, and an extension of an older release asks the browser to check now
-(`runtime.requestUpdateCheck`, once per agent version). A policy sync also runs each time the
-channel comes back, so once `capture-core` restarts into a new release the extension asks within a
-minute, the period of its health report. A downloaded update installs only when the
+`update_url` names the same update manifest, and the `ExtensionSettings` policy's
+`override_update_url` makes the browser update from it whatever an installed copy's `update_url`
+says. The browser reads the manifest every few hours on its own; the extension reads it too, on
+start and every five minutes, and when it lists a newer version asks the browser to fetch it now
+(`runtime.requestUpdateCheck`). `capture-core` names its release version in each `policy_bundle`
+answer, and a newer one starts the same read at once; a policy sync runs each time the native
+channel comes back, so that is within a minute of `capture-core` restarting into a new release. The
+browser refuses update checks for hours after one that does not install an update, so the extension
+asks only when the manifest lists a newer version. A downloaded update installs only when the
 service worker stops, which the open native port prevents, so on `runtime.onUpdateAvailable` the
 extension hands its queue to `capture-core` and reloads. The installers register the native
 messaging host `com.shadowaicapture.capture_core` for the extension's id, which `manifest.json`'s
@@ -53,11 +55,11 @@ reads the message and link from the bundle in force.
 
 | Permission | Why |
 |---|---|
-| `webRequest`, host `<all_urls>` | see every request, including to services nobody listed; requests are never modified |
+| `webRequest`, host `<all_urls>` | see every request, including to services nobody listed; requests are never modified. The service worker also reads its own update manifest, without credentials |
 | `webRequestBlocking` | cancel a request a `block` rule matches, or send a page a `redirect` rule matches to the splash page; granted only to a policy-installed extension, and its absence is reported |
 | `nativeMessaging` | the only channel to `capture-core`; observations leave through it and nowhere else |
 | `tabs` | show a `warn` rule's confirmation, or a `block` rule's notice, in the tab that made the request, and open a `redirect` rule's splash page there |
-| `alarms` | send the health report and refresh policy while the browser is idle |
+| `alarms` | send the health report, refresh policy and read the update manifest while the browser is idle |
 
 The content script runs in every frame's isolated world from `document_start`, because a file the
 user attaches exists only in the page. The extension stores nothing and loads no remote code.

@@ -20,12 +20,13 @@ The owner's PC builds nothing for the VM: builds come from CI.
    `node tools/testbed/deploy.mjs` only waits for it and says when the VM runs it and reports.
    `deploy.mjs --install` publishes the release through Intune instead, for a VM with no agent (a
    restored `clean-enrolled`) or one older than the self-updating agent.
-4. The browser extension updates itself: once the agent runs the new release, the extension's next
-   policy sync (at once when the agent restarts, else within 15 minutes) names the agent's version,
-   and an older extension asks Edge to check its `update_url` (the analyst hostname's
-   `/v1/extension/updates.xml`) and reloads into the update. Edge's own check, about every five
-   hours, is the fallback. The version under "Shadow AI Capture" on `edge://extensions` is the
-   run's `1.0.<run number>`.
+4. The browser extension updates itself, in each browser it is installed in: every five minutes it
+   reads its update manifest (the analyst hostname's `/v1/extension/updates.xml`), and when the
+   manifest lists a newer version it asks the browser to install it and reloads into it. The agent
+   restarting into the new release starts the same read at once. The browser's own check, about
+   every five hours, is the fallback. The version under "Shadow AI Capture" on `edge://extensions`
+   and `chrome://extensions` is the run's `1.0.<run number>`. A copy behind it updates at once from
+   the Update button there, in Developer mode.
 5. The agent checks the device side with `tools/testbed/invm.ps1`. The owner checks the dashboard
    and changes settings there when a brief asks.
 
@@ -73,6 +74,9 @@ rest). Agents read this file and never write a secret into it.
      - `ExtensionInstallForcelist` = `<extension id>;https://<analyst hostname>/v1/extension/updates.xml`
        (the analyst hostname: the device hostname asks for a client certificate, which the
        browsers' extension downloader cannot answer);
+     - `ExtensionSettings` = `{"<extension id>":{"installation_mode":"force_installed","update_url":"https://<analyst hostname>/v1/extension/updates.xml","override_update_url":true}}`
+       on one line, so every installed copy updates from that manifest whatever its own
+       `update_url` says;
      - `NativeMessagingAllowlist` = `com.shadowaicapture.capture_core`.
    - The extension id is in the release's `release.json`.
 4. **Publishing app.**
