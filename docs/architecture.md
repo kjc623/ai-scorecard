@@ -99,7 +99,8 @@ The device resolves the mode before it reads anything.
    collection mode, derives the person's user reference as a device would, and writes the event
    through `ingest.record_provider_event` with the route `provider.api` and the connection, not a
    device, as its origin. A prompt a device also captured (same text, person and tool within ten
-   minutes) is one submission whichever arrives first, so it counts once; it names both origins and
+   minutes), or another connection also reported, is one submission whichever arrives first, so it
+   counts once; it names both origins and
    every route that collected it, and Search finds it by any of those routes or as collected by
    several. A prompt either side read at M0 carries no digest to pair them by, so it stays two. At M3 control-api grants itself
    the upload and hands the text to content-vault. A provider's record is never enforced: it is read

@@ -2780,10 +2780,12 @@ END $$;
 -- device, and arrives by provider.api.
 --
 -- A device that captured the same prompt filed it under a key that names the device, so the two
--- never share a key. A device's prompt that agrees with the record on the content digest, the person
--- and the tool, began within ten minutes of it and no provider has reported yet lends the record its
--- key, and record_event merges the two: one prompt counts once. A device observation that arrives
--- after the provider's record takes the record's key in record_event instead.
+-- never share a key. A submission that agrees with the record on the content digest, the person and
+-- the tool, began within ten minutes of it, and holds nothing this connection reported lends the
+-- record its key, and record_event merges the two: one prompt counts once. That is a device's
+-- capture or another connection's record of the prompt, such as a log sink's beside an admin API's.
+-- A device observation that arrives after the provider's record takes the record's key in
+-- record_event instead.
 CREATE FUNCTION ingest.record_provider_event(p_envelope jsonb)
 RETURNS TABLE(event_outcome text, event_submission_id uuid)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pg_temp AS $$
@@ -2817,9 +2819,10 @@ BEGIN
      WHERE s.tenant_id = v_tenant
        AND s.content_digest = p_envelope->>'content_digest'
        AND s.kind = 'prompt'
-       AND s.device_id IS NOT NULL
-       AND s.connection_id IS NULL
        AND s.dedup_key IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM ingest.observation o
+                        WHERE o.tenant_id = s.tenant_id AND o.dedup_key = s.dedup_key
+                          AND o.connection_id = (p_envelope->>'connection_id')::uuid)
        AND s.user_ref = v_user_ref
        AND ops.tool_id(s.tool_fingerprint) = ops.tool_id(p_envelope->>'tool_fingerprint')
        AND s.first_occurred_at BETWEEN v_occurred - interval '10 minutes'

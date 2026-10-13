@@ -4046,6 +4046,49 @@ BEGIN
 END $$;
 
 -- =====================================================================================
+-- T95  Two provider connections that report one prompt
+-- =====================================================================================
+-- A log sink and an admin API can both report a prompt: the second connection's record joins the
+-- event, so it still counts once, and a resend that connection reports is another prompt.
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+DO $$
+DECLARE
+  base jsonb := jsonb_build_object(
+    'schema_version', '1.0', 'tenant_id', '11111111-1111-7111-8111-111111111111',
+    'connection_id', 'c0000000-0000-7000-8000-000000000095',
+    'user_ref', 'u_t94', 'tool_fingerprint', 'app:claude_web', 'direction', 'egress', 'kind', 'prompt',
+    'monotonic_offset_ms', 0, 'source', 'provider.api',
+    'collection_mode', 'm1', 'size_bytes', 30, 'content_digest', 'sha256:' || repeat('c1', 32),
+    'labels', '[]'::jsonb, 'classifier_version', 'rules-1.0.0/model-1.0.0', 'confidence', 'high',
+    'prompt_kind', 'user',
+    'policy_decision', jsonb_build_object('rule_id', 'policy.default', 'action', 'logged', 'decided_locally', false));
+  r record;
+  want uuid := current_setting('sac_test.t94_provider')::uuid;
+  routes text[];
+  n int;
+BEGIN
+  INSERT INTO ops.provider_connection (tenant_id, connection_id, provider, account, credential_enc, created_by, updated_by)
+  VALUES ('11111111-1111-7111-8111-111111111111', 'c0000000-0000-7000-8000-000000000095',
+          'microsoft_365_copilot', 'tenant-t95', '\x00'::bytea, 'test', 'test');
+  SELECT * INTO r FROM ingest.record_provider_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000950', 'occurred_at', '2026-10-02T11:00:20Z',
+    'dedup_key', 'sha256:' || repeat('d1', 32)));
+  IF r.event_outcome IS DISTINCT FROM 'merged' OR r.event_submission_id IS DISTINCT FROM want THEN
+    RAISE EXCEPTION 'FAIL T95 a second connection''s record was % into %, want merged into %', r.event_outcome, r.event_submission_id, want;
+  END IF;
+  SELECT * INTO r FROM ingest.record_provider_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000951', 'occurred_at', '2026-10-02T10:52:00Z',
+    'dedup_key', 'sha256:' || repeat('d2', 32)));
+  IF r.event_outcome IS DISTINCT FROM 'inserted' THEN
+    RAISE EXCEPTION 'FAIL T95 a resend the second connection reported was %, want inserted', r.event_outcome;
+  END IF;
+  RAISE NOTICE 'PASS T95 a prompt two provider connections report is one event; a resend either reports stays another';
+END $$;
+RESET ROLE;
+
+-- =====================================================================================
 -- Report
 -- =====================================================================================
 

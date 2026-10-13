@@ -2,8 +2,9 @@
 -- arrives first: a device's capture of a prompt the provider reported earlier takes the provider's
 -- key (ingest.provider_record_key), as the provider's record already took the device's. Such a
 -- submission names both origins, the device and the connection, so the console shows every source
--- that collected it. A provider's record joins only a device's submission no provider record has
--- joined yet, so two identical prompts stay two.
+-- that collected it. A provider's record also joins another connection's record of the prompt (a
+-- log sink's beside an admin API's), and never one its own connection already reported, so two
+-- identical prompts stay two.
 --
 -- The migrator also applies this file over a database built from the current schema.sql, so every
 -- statement converges on that schema.
@@ -84,9 +85,10 @@ BEGIN
      WHERE s.tenant_id = v_tenant
        AND s.content_digest = p_envelope->>'content_digest'
        AND s.kind = 'prompt'
-       AND s.device_id IS NOT NULL
-       AND s.connection_id IS NULL
        AND s.dedup_key IS NOT NULL
+       AND NOT EXISTS (SELECT 1 FROM ingest.observation o
+                        WHERE o.tenant_id = s.tenant_id AND o.dedup_key = s.dedup_key
+                          AND o.connection_id = (p_envelope->>'connection_id')::uuid)
        AND s.user_ref = v_user_ref
        AND ops.tool_id(s.tool_fingerprint) = ops.tool_id(p_envelope->>'tool_fingerprint')
        AND s.first_occurred_at BETWEEN v_occurred - interval '10 minutes'
