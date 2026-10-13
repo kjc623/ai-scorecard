@@ -1,0 +1,30 @@
+{
+  "app_key": "deepseek_api",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "DeepSeek's API reference (api-docs.deepseek.com: base URL https://api.deepseek.com, POST /chat/completions), an OpenAI-compatible chat completions endpoint; the body is the OpenAI chat shape with one user message, written from that reference",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary deepseek-api AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "python.exe",
+    "host": "api.deepseek.com",
+    "path": "/chat/completions",
+    "media_type": "application/json",
+    "body": {
+      "model": "deepseek-chat",
+      "messages": [
+        {
+          "role": "user",
+          "content": "sac canary deepseek-api AKIAIOSFODNN7EXAMPLE"
+        }
+      ]
+    }
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

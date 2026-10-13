@@ -1,0 +1,23 @@
+{
+  "app_key": "azure_ai_foundry",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "Azure OpenAI's chat completions REST reference (POST https://{resource}.openai.azure.com/openai/deployments/{deployment}/chat/completions?api-version=...), whose body is the OpenAI chat shape of parsers/openai/testdata/documented/chat-string.json",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary openai-api AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "python.exe",
+    "host": "contoso.openai.azure.com",
+    "path": "/openai/deployments/gpt-4.1/chat/completions",
+    "media_type": "application/json",
+    "body_file": "parsers/openai/testdata/documented/chat-string.json"
+  },
+  "expect": {
+    "captured": false,
+    "attributed": false,
+    "prompt": false,
+    "why": "Azure AI Foundry has inference_domain suffixes and no tls row, and the interception set is the tls rows' hosts (SQLInterceptionHosts), so *.openai.azure.com is tunnelled blind"
+  }
+}

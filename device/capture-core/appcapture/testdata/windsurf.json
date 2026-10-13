@@ -1,0 +1,16 @@
+{
+  "app_key": "windsurf",
+  "route": "none",
+  "source": {
+    "kind": "documented",
+    "from": "the windsurf rows of ref.app_signal in services/database/schema.sql (publisher only); no request is replayed",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary windsurf AKIAIOSFODNN7EXAMPLE",
+  "expect": {
+    "captured": false,
+    "attributed": false,
+    "prompt": false,
+    "why": "no tls row names a host Windsurf sends prompts to, so its traffic is tunnelled blind, and the agent configures no telemetry or hook for it"
+  }
+}

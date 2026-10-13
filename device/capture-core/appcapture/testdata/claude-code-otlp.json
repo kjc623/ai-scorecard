@@ -1,0 +1,20 @@
+{
+  "app_key": "claude_code",
+  "route": "otlp",
+  "source": {
+    "kind": "documented",
+    "from": "otlp/testdata/claude-code/documented/logs-prompts-on.json, written from Claude Code's monitoring documentation, as the managed settings make Claude Code export it",
+    "checked": "2026-10-12"
+  },
+  "typed": "SAC-CANARY-7f3a prompt text",
+  "otlp": {
+    "signal": "logs",
+    "export_file": "otlp/testdata/claude-code/documented/logs-prompts-on.json",
+    "sender": "C:\\Users\\console\\.local\\bin\\claude.exe"
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

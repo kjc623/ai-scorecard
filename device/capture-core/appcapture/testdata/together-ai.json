@@ -1,0 +1,30 @@
+{
+  "app_key": "together_ai",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "Together AI's API reference (docs.together.ai/reference/chat-completions-1: POST https://api.together.xyz/v1/chat/completions), an OpenAI-compatible chat completions endpoint; the body is the OpenAI chat shape with one user message, written from that reference",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary together-ai AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "python.exe",
+    "host": "api.together.xyz",
+    "path": "/v1/chat/completions",
+    "media_type": "application/json",
+    "body": {
+      "model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+      "messages": [
+        {
+          "role": "user",
+          "content": "sac canary together-ai AKIAIOSFODNN7EXAMPLE"
+        }
+      ]
+    }
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "app_key": "codex",
+  "route": "otlp",
+  "source": {
+    "kind": "documented",
+    "from": "otlp/testdata/codex/documented/logs-prompts-on.json, written from Codex's codex-otel source, as the system config.toml makes Codex export it",
+    "checked": "2026-10-12"
+  },
+  "typed": "SAC-CANARY-7f3a prompt text",
+  "otlp": {
+    "signal": "logs",
+    "export_file": "otlp/testdata/codex/documented/logs-prompts-on.json",
+    "sender": "C:\\Users\\console\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex\\vendor\\x86_64-pc-windows-msvc\\codex\\codex.exe"
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "app_key": "gemini_cli",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "the Code Assist request Gemini CLI sends when signed in with Google (gemini-cli packages/core/src/code_assist/server.ts: https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent; converter.ts: model, project, user_prompt_id, request.contents)",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary gemini-cli AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "node.exe",
+    "host": "cloudcode-pa.googleapis.com",
+    "path": "/v1internal:streamGenerateContent",
+    "media_type": "application/json",
+    "body": {
+      "model": "gemini-2.5-pro",
+      "project": "sac-placeholder-project",
+      "user_prompt_id": "5c1e9a2b-3d4f-4a6b-8c7d-9e0f1a2b3c4d",
+      "request": {
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              {
+                "text": "sac canary gemini-cli AKIAIOSFODNN7EXAMPLE"
+              }
+            ]
+          }
+        ],
+        "session_id": "0f9e8d7c-6b5a-4938-8271-605f4e3d2c1b"
+      }
+    }
+  },
+  "expect": {
+    "captured": false,
+    "attributed": false,
+    "prompt": false,
+    "why": "cloudcode-pa.googleapis.com has no tls row, so it is not in the interception set and is tunnelled blind; the catalogue names no host for Gemini CLI at all"
+  }
+}

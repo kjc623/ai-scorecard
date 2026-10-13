@@ -1,0 +1,20 @@
+{
+  "app_key": "codex",
+  "route": "hook",
+  "source": {
+    "kind": "documented",
+    "from": "hooks/testdata/codex/documented/user-prompt-submit.json, written from Codex's hooks source",
+    "checked": "2026-10-12"
+  },
+  "typed": "Deploy with key AKIAIOSFODNN7EXAMPLE to the \"staging\" bucket <now>",
+  "hook": {
+    "tool": "codex",
+    "event": "UserPromptSubmit",
+    "stdin_file": "hooks/testdata/codex/documented/user-prompt-submit.json"
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

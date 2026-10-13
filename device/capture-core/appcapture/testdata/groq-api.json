@@ -1,0 +1,30 @@
+{
+  "app_key": "groq_api",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "Groq's API reference (console.groq.com/docs/api-reference: POST https://api.groq.com/openai/v1/chat/completions), an OpenAI-compatible chat completions endpoint; the body is the OpenAI chat shape with one user message, written from that reference",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary groq-api AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "python.exe",
+    "host": "api.groq.com",
+    "path": "/openai/v1/chat/completions",
+    "media_type": "application/json",
+    "body": {
+      "model": "llama-3.3-70b-versatile",
+      "messages": [
+        {
+          "role": "user",
+          "content": "sac canary groq-api AKIAIOSFODNN7EXAMPLE"
+        }
+      ]
+    }
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

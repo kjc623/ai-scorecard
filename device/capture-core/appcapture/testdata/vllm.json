@@ -1,0 +1,30 @@
+{
+  "app_key": "vllm",
+  "route": "loopback",
+  "source": {
+    "kind": "documented",
+    "from": "vLLM's OpenAI-compatible server (vllm serve: POST http://localhost:8000/v1/chat/completions); the body is the OpenAI chat shape with one user message",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary vllm AKIAIOSFODNN7EXAMPLE",
+  "loopback": {
+    "port": 8000,
+    "path": "/v1/chat/completions",
+    "media_type": "application/json",
+    "body": {
+      "model": "local-model",
+      "messages": [
+        {
+          "role": "user",
+          "content": "sac canary vllm AKIAIOSFODNN7EXAMPLE"
+        }
+      ]
+    }
+  },
+  "expect": {
+    "captured": false,
+    "attributed": false,
+    "prompt": false,
+    "why": "control-api's broker covers Ollama only (loopbackRuntimes), so the bundle's loopback section holds no port 8000 and vLLM is reached directly"
+  }
+}

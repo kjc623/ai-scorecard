@@ -1,0 +1,29 @@
+{
+  "app_key": "ollama",
+  "route": "loopback",
+  "source": {
+    "kind": "documented",
+    "from": "the chat request in ollama's docs/api.md (POST /api/chat, model and messages), which `ollama run` sends",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary ollama AKIAIOSFODNN7EXAMPLE",
+  "loopback": {
+    "port": 11434,
+    "path": "/api/chat",
+    "media_type": "application/json",
+    "body": {
+      "model": "llama3.2",
+      "messages": [
+        {
+          "role": "user",
+          "content": "sac canary ollama AKIAIOSFODNN7EXAMPLE"
+        }
+      ]
+    }
+  },
+  "expect": {
+    "captured": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

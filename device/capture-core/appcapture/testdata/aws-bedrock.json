@@ -1,0 +1,37 @@
+{
+  "app_key": "aws_bedrock",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "the Converse operation of botocore's bedrock-runtime model (botocore/data/bedrock-runtime/2023-09-30/service-2.json: POST /model/{modelId}/converse, messages of content blocks), as boto3 sends it with the model id's colon escaped; written from the model, not captured",
+    "checked": "2026-10-12"
+  },
+  "typed": "sac canary bedrock AKIAIOSFODNN7EXAMPLE",
+  "tls": {
+    "process": "python.exe",
+    "host": "bedrock-runtime.us-east-1.amazonaws.com",
+    "path": "/model/amazon.nova-pro-v1%3A0/converse",
+    "media_type": "application/json",
+    "body": {
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "text": "sac canary bedrock AKIAIOSFODNN7EXAMPLE"
+            }
+          ]
+        }
+      ],
+      "inferenceConfig": {
+        "maxTokens": 512
+      }
+    }
+  },
+  "expect": {
+    "captured": false,
+    "attributed": false,
+    "prompt": false,
+    "why": "Amazon Bedrock has inference_domain signals and no tls row, and the interception set is the tls rows' hosts (SQLInterceptionHosts), so bedrock-runtime is tunnelled blind"
+  }
+}

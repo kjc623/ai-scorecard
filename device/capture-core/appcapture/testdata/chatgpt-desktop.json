@@ -1,0 +1,43 @@
+{
+  "app_key": "chatgpt_desktop",
+  "route": "tls",
+  "source": {
+    "kind": "documented",
+    "from": "the conversation body built by github.com/acheong08/ChatGPT (src/revChatGPT/V1.py, AsyncChatbot.ask and post_messages), a client of the ChatGPT backend the desktop app uses, posted to the conversation path the catalogue names",
+    "checked": "2026-10-12"
+  },
+  "typed": "summarise this week's sales figures",
+  "tls": {
+    "process": "ChatGPT.exe",
+    "host": "chatgpt.com",
+    "path": "/backend-api/conversation",
+    "media_type": "application/json",
+    "body": {
+      "action": "next",
+      "messages": [
+        {
+          "id": "11111111-2222-4333-8444-555555555555",
+          "author": {
+            "role": "user"
+          },
+          "content": {
+            "content_type": "text",
+            "parts": [
+              "summarise this week's sales figures"
+            ]
+          }
+        }
+      ],
+      "conversation_id": null,
+      "parent_message_id": "00000000-0000-4000-8000-000000000000",
+      "model": "auto",
+      "history_and_training_disabled": false
+    }
+  },
+  "expect": {
+    "captured": true,
+    "attributed": false,
+    "prompt": false,
+    "why": "chatgpt.com/backend-api/conversation is catalogued only as ChatGPT (web) (tls_11574658dafb8805), and the generic parser finds no text in it (the role is under author and the text in content.parts), so the body as sent is stored"
+  }
+}
