@@ -31,6 +31,21 @@
     return true;
   });
 
+  // Inject the main-world WebSocket hook, which reads the Copilot sockets' outgoing frames the
+  // request lanes cannot see. A per-load nonce marks its messages, so the content script relays only
+  // frames this hook sent. A page that blocks the injection simply yields no socket frames.
+  const wsNonce = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  try {
+    const hook = document.createElement('script');
+    hook.type = 'module';
+    hook.src = chrome.runtime.getURL('content/ws-hook.js');
+    hook.dataset.sacNonce = wsNonce;
+    hook.addEventListener('load', () => hook.remove());
+    (document.head || document.documentElement).appendChild(hook);
+  } catch (e) {
+    /* a page that forbids script injection yields no socket frames; the request lanes still run */
+  }
+
   import(chrome.runtime.getURL('content/content-script.js'))
     .then((cs) => {
       const adapter = {
@@ -43,7 +58,7 @@
           },
         },
       };
-      cs.bootstrapContentScript(adapter, { document });
+      cs.bootstrapContentScript(adapter, { document, window, wsNonce });
     })
     .catch((e) => {
       loadFailure = String((e && e.message) || e);

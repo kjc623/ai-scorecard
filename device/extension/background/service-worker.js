@@ -148,7 +148,7 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
 
   // The content script sends each attachment frame (manifest, chunks, completion) here; the code
   // that holds the bytes therefore enforces "manifest before bytes".
-  adapter.messages.onMessage(async (msg) => {
+  adapter.messages.onMessage(async (msg, sender) => {
     if (!msg || typeof msg !== 'object') return { ok: false, error: 'empty message' };
     if (msg.type === 'capture_attachment_frame') {
       try {
@@ -159,6 +159,18 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
           return { ok: true, answer: { type: CORE_TYPE.REFUSAL, body: { reason: e.detail.reason, message: e.message } } };
         }
         throw e;
+      }
+    }
+    if (msg.type === 'capture_ws_frame') {
+      // A Copilot socket frame the main-world hook read. The pipeline recognises it and applies the
+      // mode before anything is stored as content. A sender tab names the person whose prompt it is.
+      try {
+        const tabId = sender && sender.tab && Number.isInteger(sender.tab.id) ? sender.tab.id : -1;
+        const frameId = sender && sender.frameId;
+        await pipeline.captureWebSocketFrame({ url: msg.url, data: msg.data, tabId, frameId });
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: String((e && e.message) || e) };
       }
     }
     if (msg.type === 'capture_redirect_spec') return redirectSpec(msg.rule_id);

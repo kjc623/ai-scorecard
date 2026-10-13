@@ -1,0 +1,23 @@
+{
+  "tool": "Microsoft 365 Copilot (web)",
+  "app_key": "m365_copilot",
+  "source": {
+    "kind": "documented",
+    "from": "the Microsoft 365 Copilot chat socket wss://substrate.office.com/m365Copilot/Chathub: SignalR over WebSocket, records terminated by 0x1e; the handshake opens, a chat turn is a type-4 StreamInvocation to target 'chat' with arguments[0].message.text",
+    "checked": "2026-10-13"
+  },
+  "typed": "summarise the Q3 board deck in five bullets",
+  "socket": {
+    "url": "wss://substrate.office.com/m365Copilot/Chathub?source=bizchat",
+    "frames": [
+      "{\"protocol\":\"json\",\"version\":1}\u001e",
+      "{\"type\":4,\"invocationId\":\"0\",\"target\":\"chat\",\"arguments\":[{\"source\":\"BizChat\",\"message\":{\"text\":\"summarise the Q3 board deck in five bullets\"}}]}\u001e"
+    ]
+  },
+  "expect": {
+    "events": 1,
+    "observed": true,
+    "attributed": true,
+    "prompt": true
+  }
+}

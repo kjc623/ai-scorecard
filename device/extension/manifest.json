@@ -35,10 +35,12 @@
     {
       "resources": [
         "content/content-script.js",
+        "content/ws-hook.js",
         "src/adapter.js",
         "src/chrome-adapter.js",
         "src/codec.js",
         "src/messages.js",
+        "src/socket-submission.js",
         "src/attachments/files.js",
         "src/attachments/sender.js"
       ],
