@@ -175,11 +175,18 @@ when the process monitor saw the tool run in the last 24 hours, the agent's conf
 place all that time, and neither the OTLP receiver nor the hook relay had anything from the tool.
 
 With TLS inspection on, the proxy decrypts the bundle's interception hosts (the catalogue's `tls`
-hosts and the domains of its inference APIs) and blind-tunnels a connection from a tool whose native
-collector is enabled. It names a request by the catalog app whose executable sent it, unless that
-app is an editor, whose process also carries its extensions' requests; else by the app the catalog
-knows by the inference domains alone that the host belongs to, as the extension names a host; else
-by the fingerprint of its host and path, which the catalogue's `tls` rows name.
+hosts and the domains of its inference APIs) for every process, and a desktop app's own inference
+domains (claude.ai for Claude Desktop) for that app's processes alone; the PAC sends both to the
+proxy, which carries every other process's connection to a desktop app's domain as it is. A
+process is the catalog app of the package that runs it (its MSIX package family), else of its
+executable, so Claude Desktop's `claude.exe` is not Claude Code's. A connection from a tool whose
+native collector is enabled is blind-tunnelled. The proxy names a request by the app of the process
+that sent it, unless that app is an editor, whose process also carries its extensions' requests;
+else by the app the catalog knows by the inference domains alone that the host belongs to, as the
+extension names a host; else by the fingerprint of its host and path, which the catalogue's `tls`
+rows name. A request whose destination's parser says it carries no prompt (claude.ai's telemetry,
+timeline streams and non-message actions) is carried and not recorded. An exchange is cut only
+after four dial timeouts without a byte either way, so a long streamed answer is carried whole.
 
 ## Tool hooks
 

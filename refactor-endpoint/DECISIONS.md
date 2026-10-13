@@ -2918,3 +2918,30 @@ dashboard.
   GenAI-conventions message that name a file. The generic parser names the file a body registers by
   `file_name`, as ChatGPT's apps do before uploading it, and the files a `prompt` body lists in
   `attachments`, as Claude's apps send a file whose text they extracted.
+
+## 2026-10-13: Claude Desktop's prompts through the proxy
+
+- **A process is its package's app first.** Claude Desktop's MSIX package (family
+  `Claude_pzs8sxrjxfjjc`) runs a `claude.exe`, as Claude Code's native install does, so the proxy
+  names a process by its package family (`GetPackageFamilyName`) before its executable. Claude
+  Desktop is then neither named Claude Code nor blind-tunnelled while Claude Code's collector is
+  on. A Claude Desktop that no package runs is still taken for Claude Code.
+- **A desktop app's own domains are decrypted for that app alone.** The PAC sends the inference
+  domains of the catalog's desktop apps (an app with a Windows executable or package) to the
+  proxy, which decrypts them for that app's processes and carries every other process's connection
+  as it is. claude.ai is the one new host: a browser's claude.ai traffic stays the extension's, and
+  nothing changes on the server or in the interception set.
+- **`claudeai` is built from the capture.** The web app Claude Desktop loads sends a message by the
+  Connect RPC `.../ConversationService/PerformAction` (unary, `application/proto`; the message
+  in field 2, its text in field 3), or by the REST `.../chat_conversations/<id>/completion`
+  (`prompt`), as the extension reads them, from the Chrome capture of 2026-10-12. The desktop app's
+  own version was not checked. A block answers a Connect `permission_denied` error or Anthropic's
+  `permission_error`, so `claude.ai` is enforced from now on. This replaces "`claudeai` and
+  `chatgpt` wait for the device phase" for `claudeai`; `chatgpt` still waits.
+- **A parser can say a request is no prompt.** The web app's other requests to claude.ai
+  (telemetry, timeline streams, viewing reports) and its PerformAction calls without a message (one
+  per prompt in the capture) are carried and counted `skipped_not_generative`, not recorded:
+  `claudeai` owns the host, and answers `ErrNotPrompt` for another action.
+- **Deadlines are idle deadlines.** An intercepted exchange was cut 40 seconds after it started,
+  however much was still streaming. Every read and write now moves the deadline on, so an exchange
+  is cut after 40 seconds without a byte either way.

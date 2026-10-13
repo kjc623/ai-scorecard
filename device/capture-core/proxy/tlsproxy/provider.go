@@ -87,15 +87,14 @@ type Config struct {
 	UpstreamRoots *x509.CertPool
 
 	// Process names the image of the client process behind a connection (its path, or its base
-	// name), for the per-process exclusion of clients that pin certificates and of tools covered by a
-	// native collector, and to name the app that sent a request. It is a seam because process
-	// attribution is platform-specific; "unknown" names a client that could not be attributed.
+	// name), for the per-process exclusion of clients that pin certificates. It is a seam because
+	// process attribution is platform-specific; "unknown" names a client that could not be attributed.
 	Process func(conn net.Conn) string
 
-	// AppByExe names the catalog app whose executable has this lower-case image base name. nil
-	// matches nothing, so no connection is excluded as a native collector's and no request is named
-	// by its sender.
-	AppByExe func(base string) (appKey string, ok bool)
+	// App names the catalog app of the client process behind a connection: the app of the package
+	// that runs it, else the app whose executable it runs. nil names none, so no connection is
+	// excluded as a native collector's and no request is named by its sender.
+	App func(conn net.Conn) (appKey string, ok bool)
 
 	// Person names the owner of the process behind a connection, whom an intercepted request is
 	// attributed to. nil leaves every request to the pipeline's identity (the console user); an
@@ -608,6 +607,7 @@ func (p *Provider) handle(client net.Conn) {
 	}
 
 	process := p.cfg.Process(client)
+	sender := p.sender(client)
 	bundle := p.bundle()
 
 	// A kill switch in force tunnels every connection blind: nothing is decrypted or enforced, and
@@ -625,31 +625,31 @@ func (p *Provider) handle(client net.Conn) {
 		return
 	}
 
-	if bundle == nil || !bundle.Intercepts(host, port) {
-		// A destination in none of the three sets is blind-tunnelled, and the device
-		// records only host, bytes, duration and owning process.
+	if bundle == nil || !bundle.InterceptsFor(sender, host, port) {
+		// A destination in none of the three sets, and a desktop app's own host reached by another
+		// process, is blind-tunnelled, and the device records only host, bytes, duration and
+		// owning process.
 		p.blindTunnel(client, br, req.Host, process, protocol.DetailNone)
 		return
 	}
 
 	// A tool whose own telemetry or hooks report its prompts is not decrypted as well, so one prompt
 	// is not recorded twice.
-	if p.nativelyCovered(process, bundle) {
+	if sender != "" && toolconfig.NativelyCovered(bundle, sender) {
 		p.blindTunnel(client, br, req.Host, process, protocol.DetailNone)
 		return
 	}
 
-	p.intercept(client, br, req, host, port, process, p.person(client), bundle)
+	p.intercept(client, br, req, host, port, process, sender, p.person(client), bundle)
 }
 
-// nativelyCovered reports whether the client process is a catalog app that the bundle covers with
-// an enabled native collector.
-func (p *Provider) nativelyCovered(process string, bundle *policy.Bundle) bool {
-	if p.cfg.AppByExe == nil {
-		return false
+// sender is the catalog app of the client process behind a connection, empty when it is none.
+func (p *Provider) sender(conn net.Conn) string {
+	if p.cfg.App == nil {
+		return ""
 	}
-	app, ok := p.cfg.AppByExe(imageBase(process))
-	return ok && toolconfig.NativelyCovered(bundle, app)
+	app, _ := p.cfg.App(conn)
+	return app
 }
 
 // imageBase is the lower-case base name of a process image, whichever separator its path uses.
@@ -695,7 +695,7 @@ func (p *Provider) mode(host string) core.Resolution {
 }
 
 // intercept terminates TLS with a minted leaf and reads the request.
-func (p *Provider) intercept(client net.Conn, br *bufio.Reader, req *http.Request, host string, port int, process string, person *core.Person, bundle *policy.Bundle) {
+func (p *Provider) intercept(client net.Conn, br *bufio.Reader, req *http.Request, host string, port int, process, sender string, person *core.Person, bundle *policy.Bundle) {
 	p.mu.Lock()
 	ca := p.ca
 	p.mu.Unlock()
@@ -742,11 +742,11 @@ func (p *Provider) intercept(client net.Conn, br *bufio.Reader, req *http.Reques
 	}
 	defer tlsConn.Close()
 
-	p.serveIntercepted(tlsConn, host, port, process, person, bundle)
+	p.serveIntercepted(tlsConn, host, port, sender, person, bundle)
 }
 
-func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, process string, person *core.Person, bundle *policy.Bundle) {
-	_ = client.SetDeadline(time.Now().Add(4 * p.cfg.DialTimeout))
+func (p *Provider) serveIntercepted(tlsConn *tls.Conn, host string, port int, sender string, person *core.Person, bundle *policy.Bundle) {
+	client := p.idle(tlsConn)
 	br := newBufReader(client)
 	req, err := http.ReadRequest(br)
 	if err != nil {
@@ -755,10 +755,12 @@ func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, pro
 	}
 	defer req.Body.Close()
 
-	submission := req.Method == http.MethodPost || req.Method == http.MethodPut
+	// A request that is not a POST or a PUT, or that its target's parser says no prompt is sent by,
+	// is carried unread. Counted, never guessed at.
+	submission := (req.Method == http.MethodPost || req.Method == http.MethodPut) &&
+		targets.Registry().MayCarryPrompt(req.Host, req.URL.Path)
 	p.counters.Add(protocol.CounterObserved)
 	if !submission {
-		// The shape predicate said no. Counted, never guessed at.
 		p.counters.Add(protocol.CounterSkippedNotGenerative)
 	}
 
@@ -769,7 +771,7 @@ func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, pro
 		return
 	}
 
-	r := p.newRuling(req, process, bundle)
+	r := p.newRuling(req, sender, bundle)
 
 	// The mode is applied before content is read.
 	var buf *bodyBuffer
@@ -783,6 +785,13 @@ func (p *Provider) serveIntercepted(client *tls.Conn, host string, port int, pro
 		body = buf.replay(counted)
 	}
 
+	if buf != nil && !buf.overCap() && targets.Registry().NotPrompt(req.Host, req.URL.Path, buf.data, req.Header.Get("Content-Type")) {
+		// Another of the target's requests on a prompt's path, such as another action of the same
+		// method: carried, and nothing recorded or decided.
+		p.counters.Add(protocol.CounterSkippedNotGenerative)
+		p.forward(client, req, host, port, body)
+		return
+	}
 	if buf != nil && !buf.overCap() {
 		// The whole body is held: it is parsed and classified, and the rules decided over its
 		// labels, before anything is forwarded.
@@ -838,7 +847,7 @@ func (p *Provider) forward(client net.Conn, req *http.Request, host string, port
 		return false
 	}
 	defer upstream.Close()
-	_ = upstream.SetDeadline(time.Now().Add(4 * p.cfg.DialTimeout))
+	up := p.idle(upstream)
 
 	outReq := req.Clone(context.Background())
 	outReq.URL.Scheme = "https"
@@ -848,9 +857,9 @@ func (p *Provider) forward(client net.Conn, req *http.Request, host string, port
 	outReq.Body = io.NopCloser(body)
 
 	writeDone := make(chan error, 1)
-	go func() { writeDone <- outReq.Write(upstream) }()
+	go func() { writeDone <- outReq.Write(up) }()
 
-	resp, rerr := http.ReadResponse(newBufReader(upstream), req)
+	resp, rerr := http.ReadResponse(newBufReader(up), req)
 	if rerr != nil {
 		p.counters.Add(protocol.CounterErrors)
 		p.setDetail(protocol.DetailUpstreamFailure)
@@ -859,6 +868,10 @@ func (p *Provider) forward(client net.Conn, req *http.Request, host string, port
 	}
 	// Responses stream through unbuffered: responses are not captured.
 	werr := resp.Write(client)
+	if werr != nil {
+		// Closing the body reads the rest of it; an exchange that has failed is not read on.
+		_ = upstream.Close()
+	}
 	_ = resp.Body.Close()
 	<-writeDone
 	if werr != nil {
@@ -897,12 +910,12 @@ type ruling struct {
 	decision   enforce.Decision
 }
 
-func (p *Provider) newRuling(req *http.Request, process string, bundle *policy.Bundle) *ruling {
+func (p *Provider) newRuling(req *http.Request, sender string, bundle *policy.Bundle) *ruling {
 	parser := targets.Registry().Lookup(req.Host, req.URL.Path)
 	_, generic := parser.(parsers.Generic)
 	return &ruling{
 		bundles:    p.bundle,
-		tool:       Tool(bundle, p.cfg.AppByExe, process, req.Host, req.URL.Path),
+		tool:       Tool(bundle, sender, req.Host, req.URL.Path),
 		parser:     parser,
 		extract:    targets.Registry().For(req.Host, req.URL.Path),
 		canEnforce: !generic && !p.killSwitchActive(),
@@ -1165,15 +1178,13 @@ func splitHostPort(hostport string) (string, int) {
 	return host, port
 }
 
-// Tool names the tool behind a request that process sent to host and path. The catalog app whose
-// executable sent it names it, unless that app is an editor, whose process also carries its
-// extensions' requests; else the app the catalog knows by the inference domains alone that the host
-// belongs to; else the fingerprint of the host and path. appByExe is Config.AppByExe.
-func Tool(b *policy.Bundle, appByExe func(base string) (string, bool), process, host, path string) string {
-	if appByExe != nil {
-		if app, ok := appByExe(imageBase(process)); ok && b.Category(app) != "ide" {
-			return "app:" + app
-		}
+// Tool names the tool behind a request to host and path from a process of the catalog app sender
+// (empty when the process is no catalog app's). The sender names it, unless it is an editor, whose
+// process also carries its extensions' requests; else the app the catalog knows by the inference
+// domains alone that the host belongs to; else the fingerprint of the host and path.
+func Tool(b *policy.Bundle, sender, host, path string) string {
+	if sender != "" && b.Category(sender) != "ide" {
+		return "app:" + sender
 	}
 	if name, _ := splitHostPort(host); name != "" {
 		if app, ok := b.AppForHost(name); ok {

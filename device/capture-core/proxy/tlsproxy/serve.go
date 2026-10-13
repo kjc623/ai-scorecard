@@ -5,9 +5,34 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net"
+	"time"
 )
 
 func newBufReader(r io.Reader) *bufio.Reader { return bufio.NewReader(r) }
+
+// idleConn is a connection whose deadline moves on with each read and write, so an exchange is cut
+// when it stalls for idle, never because a response streams for long.
+type idleConn struct {
+	net.Conn
+	idle time.Duration
+}
+
+func (c idleConn) Read(b []byte) (int, error) {
+	_ = c.SetDeadline(time.Now().Add(c.idle))
+	return c.Conn.Read(b)
+}
+
+func (c idleConn) Write(b []byte) (int, error) {
+	_ = c.SetDeadline(time.Now().Add(c.idle))
+	return c.Conn.Write(b)
+}
+
+// idle is conn with the proxy's idle deadline: four dial timeouts without a byte either way.
+func (p *Provider) idle(conn net.Conn) idleConn {
+	_ = conn.SetDeadline(time.Now().Add(4 * p.cfg.DialTimeout))
+	return idleConn{Conn: conn, idle: 4 * p.cfg.DialTimeout}
+}
 
 // countingReader counts body bytes as they stream. Counting is not reading content: size_bytes is
 // available at every mode, including M0.

@@ -20,6 +20,9 @@ var (
 	modiphlpapi             = windows.NewLazySystemDLL("iphlpapi.dll")
 	procGetExtendedTcpTable = modiphlpapi.NewProc("GetExtendedTcpTable")
 
+	modkernel32              = windows.NewLazySystemDLL("kernel32.dll")
+	procGetPackageFamilyName = modkernel32.NewProc("GetPackageFamilyName")
+
 	modwintrust                              = windows.NewLazySystemDLL("wintrust.dll")
 	procWTHelperProvDataFromStateData        = modwintrust.NewProc("WTHelperProvDataFromStateData")
 	procWTHelperGetProvSignerFromChain       = modwintrust.NewProc("WTHelperGetProvSignerFromChain")
@@ -147,7 +150,7 @@ func ProcessInfo(pid uint32) (Process, error) {
 	if err != nil {
 		return Process{}, fmt.Errorf("image of process %d: %w", pid, err)
 	}
-	p := Process{PID: pid, Image: image, Started: started, Publisher: publisher(image)}
+	p := Process{PID: pid, Image: image, Package: packageFamily(h), Started: started, Publisher: publisher(image)}
 	if u, err := UserOfProcess(pid); err == nil {
 		p.User = &u
 	}
@@ -164,6 +167,22 @@ func processImage(h windows.Handle) (string, error) {
 		return "", err
 	}
 	return windows.UTF16ToString(buf[:n]), nil
+}
+
+// packageFamily is the package family name of the process h, empty when no package runs it
+// (GetPackageFamilyName answers APPMODEL_ERROR_NO_PACKAGE) or the name cannot be read. A family name
+// is at most 64 characters (PACKAGE_FAMILY_NAME_MAX_LENGTH), so the buffer is never short.
+func packageFamily(h windows.Handle) string {
+	buf := make([]uint16, 128)
+	n := uint32(len(buf))
+	if err := procGetPackageFamilyName.Find(); err != nil {
+		return ""
+	}
+	r, _, _ := procGetPackageFamilyName.Call(uintptr(h), uintptr(unsafe.Pointer(&n)), uintptr(unsafe.Pointer(&buf[0])))
+	if r != 0 || n == 0 || int(n) > len(buf) {
+		return ""
+	}
+	return windows.UTF16ToString(buf[:n])
 }
 
 // publisher is the common name of the image's verified signer: its embedded Authenticode signature

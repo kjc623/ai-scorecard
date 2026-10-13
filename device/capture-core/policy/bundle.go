@@ -444,6 +444,26 @@ func (b *Bundle) AppByAppx(platform, family string) []string {
 	return b.appsWith(platform, SignalWindowsAppx, func(v string) bool { return strings.EqualFold(v, family) })
 }
 
+// AppOfProcess names the app a process on platform runs: the app of its package family when a
+// package runs it (family is empty otherwise), else the app whose executable has the base name of
+// image, the first in catalog order when several do. The package comes first because two apps can
+// ship an executable of one name: Claude Desktop's package and Claude Code both run claude.exe.
+func (b *Bundle) AppOfProcess(platform, image, family string) (string, bool) {
+	if family != "" {
+		if keys := b.AppByAppx(platform, family); len(keys) > 0 {
+			return keys[0], true
+		}
+	}
+	base := image[strings.LastIndexAny(image, `\/`)+1:]
+	if base == "" {
+		return "", false
+	}
+	if keys := b.AppByExe(platform, base); len(keys) > 0 {
+		return keys[0], true
+	}
+	return "", false
+}
+
 // HasSignal reports whether the catalog gives the app a signal of kind on platform or on any
 // platform.
 func (b *Bundle) HasSignal(appKey, platform, kind string) bool {
@@ -629,6 +649,60 @@ func (b *Bundle) Intercepts(host string, port int) bool {
 		}
 	}
 	return false
+}
+
+// InterceptsFor reports whether a connection to host:port from a process of the catalog app sender
+// (empty when it is no catalog app's) is eligible for decryption: the bundle intercepts the host
+// for every process, or the host is one of the sender's own inference domains and the sender is a
+// desktop app. So Claude Desktop's requests to claude.ai are decrypted while a browser's, which the
+// extension reads, are carried as they are.
+func (b *Bundle) InterceptsFor(sender, host string, port int) bool {
+	if b.Intercepts(host, port) {
+		return true
+	}
+	if b == nil || sender == "" || !b.portIntercepted(port) {
+		return false
+	}
+	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, a := range b.Catalog {
+		if a.AppKey != sender || !desktopApp(a) {
+			continue
+		}
+		for _, s := range a.Signals {
+			if s.Kind == SignalInferenceDomain && hostMatches(h, s.Value) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// DesktopAppHosts is the inference domains of the catalog's desktop apps, in catalog order: the
+// hosts beyond the interception set that InterceptsFor decrypts for the app they belong to.
+func (b *Bundle) DesktopAppHosts() []string {
+	if b == nil {
+		return nil
+	}
+	var out []string
+	for _, a := range b.Catalog {
+		if !desktopApp(a) {
+			continue
+		}
+		for _, s := range a.Signals {
+			if s.Kind == SignalInferenceDomain && !slices.Contains(out, s.Value) {
+				out = append(out, s.Value)
+			}
+		}
+	}
+	return out
+}
+
+// desktopApp reports whether the catalog knows a as a program on Windows, by its executable or its
+// package, so a process can be named as it.
+func desktopApp(a CatalogApp) bool {
+	return slices.ContainsFunc(a.Signals, func(s CatalogSignal) bool {
+		return s.Kind == SignalWindowsExe || s.Kind == SignalWindowsAppx
+	})
 }
 
 func (b *Bundle) portIntercepted(port int) bool {

@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"net"
 	"runtime"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/core"
+	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
 	"github.com/shadow-ai-capture/device/capture-core/policy"
 	"github.com/shadow-ai-capture/device/protocol"
 )
@@ -29,8 +31,9 @@ func signedCatalogBundle(t *testing.T, priv ed25519.PrivateKey, version string, 
 	return raw
 }
 
-// catalogService is a service whose bundle in force holds a catalog: claude.exe on this platform,
-// Cursor.exe on another platform and ollama.exe on any. apply signs a bundle and puts it in force.
+// catalogService is a service whose bundle in force holds a catalog: claude.exe and Claude
+// Desktop's package on this platform, Cursor.exe on another platform and ollama.exe on any. apply
+// signs a bundle and puts it in force.
 func catalogService(t *testing.T) (*service, func(version string, catalog []policy.CatalogApp)) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -44,6 +47,7 @@ func catalogService(t *testing.T) (*service, func(version string, catalog []poli
 	}
 	catalog := []policy.CatalogApp{
 		{AppKey: "claude_code", Category: "coding_agent", Signals: []policy.CatalogSignal{{Platform: here, Kind: policy.SignalWindowsExe, Value: "claude.exe"}}},
+		{AppKey: "claude_desktop", Category: "chat_assistant", Signals: []policy.CatalogSignal{{Platform: here, Kind: policy.SignalWindowsAppx, Value: "Claude_pzs8sxrjxfjjc"}}},
 		{AppKey: "cursor", Category: "ide", Signals: []policy.CatalogSignal{{Platform: other, Kind: policy.SignalWindowsExe, Value: "Cursor.exe"}}},
 		{AppKey: "ollama", Category: "local_runtime", Signals: []policy.CatalogSignal{{Platform: "any", Kind: policy.SignalWindowsExe, Value: "ollama.exe"}}},
 	}
@@ -101,12 +105,35 @@ func TestCatalogPlatform(t *testing.T) {
 	}
 }
 
-// proxy.tls's native-first exclusion names a connecting process's app from the catalog of the
-// bundle in force.
+// proxy.tls names a connecting process's app from the catalog of the bundle in force: the app of
+// its package, else of its executable.
 func TestProxyNamesItsClientsAppFromTheCatalogInForce(t *testing.T) {
 	svc, apply := catalogService(t)
-	cfg := svc.proxyConfig(svc.currentBundle(), nil, nil)
-	assertAppByExe(t, cfg.AppByExe, apply)
+	for _, tc := range []struct {
+		proc hostinfo.Process
+		err  error
+		want string
+	}{
+		{proc: hostinfo.Process{Image: `C:\Users\a\.local\bin\claude.exe`}, want: "claude_code"},
+		{proc: hostinfo.Process{Image: `C:\Program Files\WindowsApps\Claude_1.0.0.0_x64__pzs8sxrjxfjjc\app\claude.exe`, Package: "Claude_pzs8sxrjxfjjc"}, want: "claude_desktop"},
+		{proc: hostinfo.Process{Image: "/usr/local/bin/ollama.exe"}, want: "ollama"},
+		{proc: hostinfo.Process{Image: `C:\Program Files\Cursor\Cursor.exe`}},
+		{proc: hostinfo.Process{Image: `C:\Python\python.exe`}},
+		{proc: hostinfo.Process{}},
+		{err: hostinfo.ErrNotFound},
+	} {
+		owner := func(net.Conn) (hostinfo.Process, error) { return tc.proc, tc.err }
+		key, ok := svc.clientApp(owner, nil)
+		if key != tc.want || ok != (tc.want != "") {
+			t.Errorf("clientApp(%+v, %v) = %q, %t; want %q", tc.proc, tc.err, key, ok, tc.want)
+		}
+	}
+
+	apply("6", nil)
+	owner := func(net.Conn) (hostinfo.Process, error) { return hostinfo.Process{Image: "claude.exe"}, nil }
+	if key, ok := svc.clientApp(owner, nil); ok {
+		t.Errorf("under a bundle with no catalog claude.exe is %q", key)
+	}
 }
 
 // The GenAI normalizer names a resolved sender's app from the catalog of the bundle in force.

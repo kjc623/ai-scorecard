@@ -75,9 +75,11 @@ type fixture struct {
 	} `json:"expect"`
 }
 
-// tlsInput is a request through the TLS proxy, from Process (the sending executable's file name).
+// tlsInput is a request through the TLS proxy, from Process (the sending executable's path or file
+// name), which Package runs when a package does (its package family name).
 type tlsInput struct {
 	Process   string `json:"process"`
+	Package   string `json:"package"`
 	Host      string `json:"host"`
 	Path      string `json:"path"`
 	MediaType string `json:"media_type"`
@@ -241,7 +243,8 @@ func replay(ctx context.Context, b *policy.Bundle, fx fixture) (replayed, error)
 }
 
 // replayTLS takes the TLS proxy's decisions for a CONNECT to the host from the process: a host
-// outside the interception set, and an app whose native collector is on, are tunnelled blind;
+// the bundle does not intercept for the process's app, and an app whose native collector is on,
+// are tunnelled blind; a request its destination's parser says is no prompt is carried unrecorded;
 // anything else is decrypted, named as the proxy names it, and its body extracted by the
 // destination's parser.
 func replayTLS(b *policy.Bundle, in *tlsInput) (replayed, error) {
@@ -249,14 +252,18 @@ func replayTLS(b *policy.Bundle, in *tlsInput) (replayed, error) {
 	if err != nil {
 		return replayed{}, err
 	}
-	if !b.Intercepts(in.Host, 443) {
-		return replayed{gate: in.Host + " is not in the interception set, so it is tunnelled blind"}, nil
+	sender, _ := b.AppOfProcess("windows", in.Process, in.Package)
+	if !b.InterceptsFor(sender, in.Host, 443) {
+		return replayed{gate: in.Host + " is not intercepted for " + in.Process + ", so it is tunnelled blind"}, nil
 	}
-	if app, ok := appByExe(b, in.Process); ok && toolconfig.NativelyCovered(b, app) {
-		return replayed{gate: fmt.Sprintf("%s is %s, whose native collector is on, so it is tunnelled blind", in.Process, app)}, nil
+	if sender != "" && toolconfig.NativelyCovered(b, sender) {
+		return replayed{gate: fmt.Sprintf("%s is %s, whose native collector is on, so it is tunnelled blind", in.Process, sender)}, nil
+	}
+	if !targets.Registry().MayCarryPrompt(in.Host, in.Path) || targets.Registry().NotPrompt(in.Host, in.Path, body, in.MediaType) {
+		return replayed{gate: "the destination's parser says the request is no prompt, so it is carried unrecorded"}, nil
 	}
 	text, _, xerr := targets.Registry().For(in.Host, in.Path).Extract(body, in.MediaType)
-	tool := tlsproxy.Tool(b, func(base string) (string, bool) { return appByExe(b, base) }, in.Process, in.Host, in.Path)
+	tool := tlsproxy.Tool(b, sender, in.Host, in.Path)
 	return replayed{records: []record{{tool, body, text, xerr}}}, nil
 }
 
