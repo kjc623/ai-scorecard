@@ -28,6 +28,8 @@ export const HEALTH_ALARM = 'capture-health';
 export const HEALTH_PERIOD_MINUTES = 1;
 export const POLICY_SYNC_ALARM = 'capture-policy-sync';
 export const POLICY_SYNC_PERIOD_MINUTES = 15;
+export const UPDATE_CHECK_ALARM = 'capture-update-check';
+export const UPDATE_CHECK_PERIOD_MINUTES = 5;
 
 /** Build the running extension. Exported so a test can drive the whole thing with a fake adapter. */
 export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacity = 200, nativeTimeoutMs = undefined, connectCooldownMs = undefined } = {}) {
@@ -179,11 +181,14 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
   function installAlarms() {
     adapter.alarms.create(HEALTH_ALARM, { periodInMinutes: HEALTH_PERIOD_MINUTES });
     adapter.alarms.create(POLICY_SYNC_ALARM, { periodInMinutes: POLICY_SYNC_PERIOD_MINUTES });
+    adapter.alarms.create(UPDATE_CHECK_ALARM, { periodInMinutes: UPDATE_CHECK_PERIOD_MINUTES });
     adapter.alarms.onAlarm((alarm) => {
       if (alarm.name === HEALTH_ALARM) {
         void pipeline.drainQueue(20).then(() => reportHealth());
       } else if (alarm.name === POLICY_SYNC_ALARM) {
         requestPolicySync();
+      } else if (alarm.name === UPDATE_CHECK_ALARM) {
+        void selfUpdate.check();
       }
     });
   }
@@ -198,6 +203,7 @@ export function bootstrap(adapter, { deviceId = null, version = '0.1.0', capacit
     else health.onEnforcementUnavailable();
     installAlarms();
     selfUpdate.install();
+    void selfUpdate.check();
     const installed = installLanesNow();
     await requestPolicySync();
     return { policy, queue, health, native, pipeline, lanes: installed, blockingAvailable };

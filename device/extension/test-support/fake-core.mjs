@@ -186,6 +186,10 @@ export function createFakeCore({
     received,
     emitted,
     transfers,
+    /** capture-core restarted as another release. */
+    setAgentVersion(v) {
+      agentVersion = v;
+    },
     get observationCount() {
       return emitted.filter((e) => e.type === 'observation').length;
     },

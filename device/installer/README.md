@@ -87,14 +87,25 @@ unsigned statement or a package that differs from it, and a development build ne
 
 **The extension.** Force-install it in both browsers with `ExtensionInstallForcelist`, value
 `<extension id>;https://<analyst-fqdn>/v1/extension/updates.xml` (the id is `release.json`'s
-`extension.id`). In Intune, Devices → Configuration → Create → Windows 10 and later → Settings catalog:
+`extension.id`), and set `ExtensionSettings`, on one line, so the browsers always update it from
+that manifest:
 
-- Google Chrome → Extensions → *Configure the list of force-installed apps and extensions*
-- Microsoft Edge → Extensions → *Control which extensions are installed silently*
+```json
+{"<extension id>":{"installation_mode":"force_installed","update_url":"https://<analyst-fqdn>/v1/extension/updates.xml","override_update_url":true}}
+```
 
-The policy's URL serves the first install only; the installed extension checks for updates at its
-packaged `update_url`, the same manifest, so a deploy reaches browsers at their next update check
-(about every five hours). Chrome and Edge install an extension from outside their stores only on a managed device, which an
+In Intune, Devices → Configuration → Create → Windows 10 and later → Settings catalog:
+
+- Google Chrome → Extensions → *Configure the list of force-installed apps and extensions* and
+  *Extension management settings*
+- Microsoft Edge → Extensions → *Control which extensions are installed silently* and *Configure
+  extension management settings*
+
+Without `override_update_url` a browser updates an installed copy from the `update_url` packaged in
+it, so a copy packaged without one, or with an older hostname, never updates. With it, a deploy
+reaches the extension at its own next read of the manifest, within five minutes (see
+`device/extension/README.md`), and at the browser's own check, about every five hours, regardless.
+Chrome and Edge install an extension from outside their stores only on a managed device, which an
 Intune-enrolled device is, and only a policy-installed extension is granted `webRequestBlocking`.
 A tenant that restricts native messaging must allow `com.shadowaicapture.capture_core`
 (`NativeMessagingAllowlist`).

@@ -106,7 +106,11 @@ users and groups, and start provisioning.
 3. Browser extension: a Settings catalog profile for **Google Chrome** and **Microsoft Edge** →
    *Extensions* → *Configure the list of force-installed apps and extensions* with
    `<extension-id>;https://<analyst-fqdn>/v1/extension/updates.xml` (the id is in the release's
-   `release.json`). The update URL is on the analyst hostname, not the device hostname: the
+   `release.json`), and *Extension management settings* (Edge: *Configure extension management
+   settings*) with
+   `{"<extension-id>":{"installation_mode":"force_installed","update_url":"https://<analyst-fqdn>/v1/extension/updates.xml","override_update_url":true}}`
+   on one line, so every installed copy updates from that manifest whatever its own `update_url`
+   says. The update URL is on the analyst hostname, not the device hostname: the
    browsers' extension downloader cannot answer the device edge's client certificate request. The
    MSI registers the native messaging host the extension talks to.
 

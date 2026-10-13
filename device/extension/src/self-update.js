@@ -1,12 +1,17 @@
 /**
- * self-update.js — installs a new release of the extension as soon as the agent has one.
+ * self-update.js — installs a new release of the extension as soon as its update server lists one.
  *
- * The agent and the extension are built from one release under one version, and the agent updates
- * itself within minutes; the browser's own update check runs only every few hours. capture-core
- * names its version in every `policy_bundle` answer, so when it is newer than this extension the
- * browser is asked to check the `update_url` now. The browser installs a downloaded update only
- * once the service worker stops, which the open native port prevents, so a downloaded update is
- * applied by reloading, after the queue has been handed to capture-core.
+ * The browser installs the extension, and every update of it, from the update manifest its
+ * `update_url` names, but reads that manifest only every few hours. The extension reads it too, on
+ * start and every few minutes, and when it lists a newer version asks the browser to fetch it now
+ * (`runtime.requestUpdateCheck`). capture-core names its own release in each `policy_bundle`
+ * answer, so a newer agent starts the same read at once. The browser installs a downloaded update
+ * only once the service worker stops, which the open native port prevents, so a downloaded update
+ * is applied by reloading, after the queue has been handed to capture-core.
+ *
+ * The browser refuses update checks for hours after one that does not end in an installed update,
+ * so it is asked only when the manifest lists a newer version, and again on each read until it has
+ * the update.
  */
 
 /** Parse a dotted numeric version; null for anything else (a development build). */
@@ -29,27 +34,59 @@ export function versionNewer(candidate, current) {
 }
 
 /**
+ * The version a gupdate update manifest lists for extension `id`, or null. Read with patterns: a
+ * service worker has no DOMParser, and the manifest is a few attributes on two elements.
+ */
+export function listedVersion(xml, id) {
+  for (const app of String(xml).split(/<app\b/).slice(1)) {
+    const appid = /^[^>]*\bappid\s*=\s*["']([^"']*)["']/.exec(app);
+    if (!appid || appid[1] !== id) continue;
+    const check = /<updatecheck\b[^>]*\bversion\s*=\s*["']([^"']*)["']/.exec(app);
+    return check ? check[1] : null;
+  }
+  return null;
+}
+
+/**
  * @param {object} opts
  * @param {import('./adapter.js').Adapter} opts.adapter
  * @param {string} opts.version            this extension's version
  * @param {() => Promise<unknown>} opts.beforeReload  hands what is held in memory to capture-core
  */
 export function createSelfUpdate({ adapter, version, beforeReload }) {
-  /** The agent version a check was last asked for, so each release is asked for once per worker. */
-  let askedFor = null;
   let lastStatus = null;
+  let reading = null;
   let reloading = false;
 
-  /** Called with the agent version from each `policy_bundle` answer. */
-  async function consider(agentVersion) {
-    if (!versionNewer(agentVersion, version) || askedFor === agentVersion) return lastStatus;
-    askedFor = agentVersion;
+  /** Read the update manifest and, when it lists a newer version, ask the browser for it. */
+  function check() {
+    // One read at a time: start, the alarm and a policy sync can coincide.
+    if (!reading) reading = read().finally(() => (reading = null));
+    return reading;
+  }
+
+  async function read() {
+    const url = adapter.runtime.updateUrl();
+    // A build loaded unpacked has no update_url, and a reload under way has its update already.
+    if (!url || reloading) return lastStatus;
+    let listed;
+    try {
+      listed = listedVersion(await adapter.net.getText(url), adapter.runtime.id());
+    } catch {
+      return (lastStatus = 'unreachable');
+    }
+    if (!versionNewer(listed, version)) return (lastStatus = 'current');
     try {
       lastStatus = await adapter.runtime.requestUpdateCheck();
     } catch {
       lastStatus = 'error';
     }
     return lastStatus;
+  }
+
+  /** Called with the agent version from each `policy_bundle` answer. */
+  function consider(agentVersion) {
+    return versionNewer(agentVersion, version) ? check() : Promise.resolve(lastStatus);
   }
 
   async function applyUpdate() {
@@ -68,6 +105,7 @@ export function createSelfUpdate({ adapter, version, beforeReload }) {
   }
 
   return {
+    check,
     consider,
     install,
     applyUpdate,
