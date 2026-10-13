@@ -45,6 +45,11 @@ export function createFakeChrome() {
     updateChecks: 0,
     updateAvailableHandlers: [],
     reloads: 0,
+    /** The installed manifest's update_url (null: loaded unpacked), and what its server answers. */
+    updateUrl: null,
+    updateManifest: '',
+    failFetch: false,
+    fetches: [],
   };
 
   const onMessageAdd = [];
@@ -96,7 +101,7 @@ export function createFakeChrome() {
         return state.lastError;
       },
       getURL: (p) => `chrome-extension://fake-extension-id/${p}`,
-      getManifest: () => ({ manifest_version: 3, version: state.manifestVersion }),
+      getManifest: () => ({ manifest_version: 3, version: state.manifestVersion, ...(state.updateUrl ? { update_url: state.updateUrl } : {}) }),
       async requestUpdateCheck() {
         state.updateChecks += 1;
         return { status: state.updateCheckStatus };
@@ -183,6 +188,13 @@ export function createFakeChrome() {
     return results.find((r) => r && r.cancel);
   }
 
+  /** The worker's `fetch`: the update server answers with `updateManifest`, or is unreachable. */
+  async function fetch(url, init) {
+    state.fetches.push({ url, init });
+    if (state.failFetch) throw new TypeError('Failed to fetch');
+    return { ok: true, status: 200, text: async () => state.updateManifest };
+  }
+
   return {
     chrome,
     state,
@@ -190,6 +202,7 @@ export function createFakeChrome() {
     registrations,
     drive,
     dispatch,
+    fetch,
     /** Which lanes are registered, and with what extraInfoSpec — the M0 assertion surface. */
     registration(lane) {
       const entry = listeners.onBeforeRequest.find((l) => l.lane === lane);

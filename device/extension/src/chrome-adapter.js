@@ -156,6 +156,8 @@ export function createChromeAdapter(scope = globalThis) {
         };
       },
       version: () => api.runtime.getManifest().version,
+      id: () => api.runtime.id,
+      updateUrl: () => api.runtime.getManifest().update_url || null,
       requestUpdateCheck: async () => {
         const answer = await api.runtime.requestUpdateCheck();
         return answer && typeof answer === 'object' ? answer.status : answer;
@@ -179,6 +181,14 @@ export function createChromeAdapter(scope = globalThis) {
     tabs: {
       sendMessage: (tabId, message, options) => api.tabs.sendMessage(tabId, message, options),
       query: (q) => api.tabs.query(q),
+    },
+
+    net: {
+      getText: async (url) => {
+        const res = await scope.fetch(url, { cache: 'no-store', credentials: 'omit' });
+        if (!res.ok) throw new Error(`GET ${url}: HTTP ${res.status}`);
+        return res.text();
+      },
     },
 
     alarms: {
