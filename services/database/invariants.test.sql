@@ -3884,9 +3884,22 @@ BEGIN
     RAISE EXCEPTION 'FAIL T93 ingest-api read the provider connections';
   EXCEPTION WHEN insufficient_privilege THEN NULL;
   END;
-  RAISE NOTICE 'PASS T93 query-api names a record''s provider without its credential; ingest-api and other tenants see no connection';
 END $$;
 RESET ROLE;
+DO $$
+DECLARE
+  missing text;
+BEGIN
+  -- Every tool a provider's records are filed under is a catalogued app, so the record appears
+  -- under that tool's name.
+  SELECT string_agg(p.provider || ':' || a, ', ') INTO missing
+    FROM ref.provider p CROSS JOIN LATERAL unnest(p.apps) AS a
+   WHERE NOT EXISTS (SELECT 1 FROM ref.app r WHERE r.app_key = a);
+  IF missing IS NOT NULL THEN
+    RAISE EXCEPTION 'FAIL T93 providers file records under tools the catalogue lacks: %', missing;
+  END IF;
+  RAISE NOTICE 'PASS T93 query-api names a record''s provider without its credential; ingest-api and other tenants see no connection; every provider files under catalogued tools';
+END $$;
 
 -- =====================================================================================
 -- Report

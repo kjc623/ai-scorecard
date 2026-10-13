@@ -191,14 +191,21 @@ CREATE TABLE ref.retention_class (
 
 -- The AI providers whose own admin API the product reads a tenant's usage from, with that tenant's
 -- consent: the provider's record of what its people sent, pulled by control-api rather than
--- observed on a device. `credential` is how the product authenticates: the vendor's Entra
--- application under the customer's admin consent, or a key the customer's admin issued.
+-- observed on a device. The console's Integrations page lists every row, so a provider is offered
+-- by adding it here and its adapter to control-api. `credential` is how the product authenticates:
+-- the vendor's Entra application under the customer's admin consent, or a key the customer's admin
+-- issued, which the page asks for by credential_label. A provider whose key does not name what it
+-- reads asks for that too, by account_label. `apps` is the ref.app keys its records are filed under.
 CREATE TABLE ref.provider (
-  provider      text PRIMARY KEY CHECK (provider ~ '^[a-z][a-z0-9_]{1,63}$'),
-  display_name  text NOT NULL,
-  vendor        text NOT NULL,
-  credential    text NOT NULL CHECK (credential IN ('entra_app','api_key')),
-  source_url    text NOT NULL
+  provider          text PRIMARY KEY CHECK (provider ~ '^[a-z][a-z0-9_]{1,63}$'),
+  display_name      text NOT NULL,
+  vendor            text NOT NULL,
+  credential        text NOT NULL CHECK (credential IN ('entra_app','api_key')),
+  source_url        text NOT NULL,
+  apps              text[] NOT NULL CHECK (cardinality(apps) > 0),
+  credential_label  text,
+  account_label     text,
+  CONSTRAINT provider_key_is_labelled CHECK ((credential = 'api_key') = (credential_label IS NOT NULL))
 );
 
 
@@ -3460,13 +3467,16 @@ SELECT 'app:' || app_key, display_name, vendor, 'endpoint', '{}', app_key FROM r
 
 -- The providers whose admin API returns each prompt a tenant's people sent. source_url is the
 -- documentation of the endpoint control-api reads.
-INSERT INTO ref.provider (provider, display_name, vendor, credential, source_url) VALUES
+INSERT INTO ref.provider (provider, display_name, vendor, credential, source_url, apps, credential_label, account_label) VALUES
   ('microsoft_365_copilot', 'Microsoft 365 Copilot', 'microsoft', 'entra_app',
-   'https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/api/ai-services/interaction-export/aiinteractionhistory-getallenterpriseinteractions'),
+   'https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/api/ai-services/interaction-export/aiinteractionhistory-getallenterpriseinteractions',
+   '{m365_copilot}', NULL, NULL),
   ('chatgpt_enterprise', 'ChatGPT Enterprise', 'openai', 'api_key',
-   'https://cookbook.openai.com/examples/chatgpt/compliance_api/logs_platform'),
+   'https://cookbook.openai.com/examples/chatgpt/compliance_api/logs_platform',
+   '{chatgpt_web}', 'Compliance API key', 'Workspace ID'),
   ('claude_enterprise', 'Claude Enterprise', 'anthropic', 'api_key',
-   'https://platform.claude.com/docs/en/manage-claude/compliance-api');
+   'https://platform.claude.com/docs/en/manage-claude/compliance-api',
+   '{claude_web,claude_desktop,claude_code}', 'Compliance API key', 'Organization ID');
 
 
 -- =====================================================================================

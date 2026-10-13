@@ -17,20 +17,27 @@ END $$;
 GRANT USAGE ON SCHEMA ref, ops, ingest TO sac_recorder;
 
 CREATE TABLE IF NOT EXISTS ref.provider (
-  provider      text PRIMARY KEY CHECK (provider ~ '^[a-z][a-z0-9_]{1,63}$'),
-  display_name  text NOT NULL,
-  vendor        text NOT NULL,
-  credential    text NOT NULL CHECK (credential IN ('entra_app','api_key')),
-  source_url    text NOT NULL
+  provider          text PRIMARY KEY CHECK (provider ~ '^[a-z][a-z0-9_]{1,63}$'),
+  display_name      text NOT NULL,
+  vendor            text NOT NULL,
+  credential        text NOT NULL CHECK (credential IN ('entra_app','api_key')),
+  source_url        text NOT NULL,
+  apps              text[] NOT NULL CHECK (cardinality(apps) > 0),
+  credential_label  text,
+  account_label     text,
+  CONSTRAINT provider_key_is_labelled CHECK ((credential = 'api_key') = (credential_label IS NOT NULL))
 );
 
-INSERT INTO ref.provider (provider, display_name, vendor, credential, source_url) VALUES
+INSERT INTO ref.provider (provider, display_name, vendor, credential, source_url, apps, credential_label, account_label) VALUES
   ('microsoft_365_copilot', 'Microsoft 365 Copilot', 'microsoft', 'entra_app',
-   'https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/api/ai-services/interaction-export/aiinteractionhistory-getallenterpriseinteractions'),
+   'https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/api/ai-services/interaction-export/aiinteractionhistory-getallenterpriseinteractions',
+   '{m365_copilot}', NULL, NULL),
   ('chatgpt_enterprise', 'ChatGPT Enterprise', 'openai', 'api_key',
-   'https://cookbook.openai.com/examples/chatgpt/compliance_api/logs_platform'),
+   'https://cookbook.openai.com/examples/chatgpt/compliance_api/logs_platform',
+   '{chatgpt_web}', 'Compliance API key', 'Workspace ID'),
   ('claude_enterprise', 'Claude Enterprise', 'anthropic', 'api_key',
-   'https://platform.claude.com/docs/en/manage-claude/compliance-api')
+   'https://platform.claude.com/docs/en/manage-claude/compliance-api',
+   '{claude_web,claude_desktop,claude_code}', 'Compliance API key', 'Organization ID')
 ON CONFLICT (provider) DO NOTHING;
 
 INSERT INTO ref.route_fidelity (source, fidelity_rank, yields_content, description) VALUES
