@@ -384,13 +384,20 @@ export function createAdminApi({ transport }) {
       return { state: 'available', data: normaliseProviders(answer.body) };
     },
     /**
-     * Connect a provider, or replace its key. The body is the account and key for a provider read
-     * with a key, and empty for one read with the tenant's Entra consent; it is the only request
-     * that carries a key.
+     * Connect a provider, or replace its key or intake token. The body is the account and key for a
+     * provider read with a key, and empty for one read with the tenant's Entra consent or sent to the
+     * intake; it is the only request that carries a key. An intake's answer carries its new token,
+     * the only time it is shown, and the endpoint it is sent to.
      */
     async connectProvider(provider, body = {}) {
       const answer = await call({ method: 'PUT', path: providerPath(provider), body });
-      return ok(answer.status) ? { state: 'done', queued: answer.body?.queued === true } : refused(answer);
+      if (!ok(answer.status)) return refused(answer);
+      return {
+        state: 'done',
+        queued: answer.body?.queued === true,
+        intake_token: nullableText(answer.body?.intake_token),
+        intake_url: nullableText(answer.body?.intake_url),
+      };
     },
     disconnectProvider(provider) {
       return done({ method: 'DELETE', path: providerPath(provider) });
@@ -512,7 +519,8 @@ export function normaliseTeams(teams) {
   })));
 }
 
-const PROVIDER_CREDENTIALS = Object.freeze(['api_key', 'entra_app']);
+const PROVIDER_CREDENTIALS = Object.freeze(['api_key', 'entra_app', 'intake']);
+const INTAKE_KINDS = Object.freeze(['pubsub', 'firehose', 'webhook']);
 
 /**
  * The provider list, with an empty label or a value the server did not send as null. A provider
@@ -532,6 +540,7 @@ export function normaliseProviders(body) {
       app: t.app, name: nullableText(t.name) ?? t.app,
     }))),
     available: p.available === true && PROVIDER_CREDENTIALS.includes(p.credential),
+    intake: p.credential === 'intake' && INTAKE_KINDS.includes(p.intake) ? p.intake : null,
     connection: p.connection && typeof p.connection === 'object' && typeof p.connection.connection_id === 'string'
       ? Object.freeze({
         connection_id: p.connection.connection_id,
@@ -547,6 +556,7 @@ export function normaliseProviders(body) {
         last_error: nullableText(p.connection.last_error),
         records_read: nullableNumber(p.connection.records_read),
         records_new: nullableNumber(p.connection.records_new),
+        intake_url: typeof p.connection.intake_url === 'string' && /^https?:\/\//i.test(p.connection.intake_url) ? p.connection.intake_url : null,
       })
       : null,
   }));

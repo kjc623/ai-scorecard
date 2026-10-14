@@ -161,8 +161,10 @@ forwards it to control-api), or reading the directory from Microsoft Entra, whic
 `User.Read.All` and `GroupMember.Read.All` application permissions consented in the customer's tenant.
 AI providers' own records of prompts are connected on Settings → Integrations: ChatGPT Enterprise and
 Claude Enterprise with a key the customer's admin issues, Microsoft 365 Copilot with the app's
-`AiEnterpriseInteraction.Read.All` application permission consented in the customer's tenant.
-Pre-prod does not serve `/.well-known/*` to browsers.
+`AiEnterpriseInteraction.Read.All` application permission consented in the customer's tenant;
+Gemini Code Assist, Amazon Bedrock and Perplexity Enterprise with an intake URL on the analyst
+hostname (the dashboard forwards it to control-api) and a token, which the customer's cloud sends the
+provider's log with, as the control-api README's log intake describes. Pre-prod does not serve `/.well-known/*` to browsers.
 
 ## 9. Devices (Intune)
 

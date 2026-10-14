@@ -2,7 +2,8 @@
 //
 // Every origin is a Private Link origin into the internal Container Apps environment (Premium is the
 // tier that supports it), so no app has a public address. The dashboard answers everything except the
-// identity paths, which control-api serves to browsers and to customers' identity providers.
+// identity paths, which control-api serves to browsers and to customers' identity providers, and the
+// provider intake, where customers' clouds deliver the logs of AI tools that have no API to read.
 
 param baseName string
 
@@ -47,6 +48,26 @@ resource waf 'Microsoft.Network/frontDoorWebApplicationFirewallPolicies@2024-02-
               matchVariable: 'RemoteAddr'
               operator: 'IPMatch'
               matchValue: ['0.0.0.0/0', '::/0']
+            }
+          ]
+        }
+        {
+          // A log delivery carries people's prompts, which read as attacks to the managed rules, and
+          // control-api authenticates each one by its connection's token before reading its body.
+          name: 'AllowProviderIntake'
+          priority: 200
+          ruleType: 'MatchRule'
+          action: 'Allow'
+          matchConditions: [
+            {
+              matchVariable: 'RequestMethod'
+              operator: 'Equal'
+              matchValue: ['POST']
+            }
+            {
+              matchVariable: 'RequestUri'
+              operator: 'RegEx'
+              matchValue: ['^(https?://[^/]+)?/intake/v1/[a-z0-9_]+/[0-9a-fA-F-]{36}$']
             }
           ]
         }
@@ -133,6 +154,7 @@ resource origins 'Microsoft.Cdn/profiles/originGroups/origins@2024-02-01' = [for
 
 var routes = [
   { name: 'identity', group: 1, patterns: ['/scim/v2/*', '/onboard/*', '/.well-known/*'] }
+  { name: 'intake', group: 1, patterns: ['/intake/v1/*'] }
   { name: 'dashboard', group: 0, patterns: ['/*'] }
 ]
 

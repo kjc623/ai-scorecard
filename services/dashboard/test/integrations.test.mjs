@@ -4,7 +4,7 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { PULL_ERRORS, createIntegrations } from '../src/integrations.js';
+import { DELIVERY_ERRORS, INTAKE_SETUP, PULL_ERRORS, createIntegrations } from '../src/integrations.js';
 import { renderIntegrations } from '../src/integrations-render.js';
 import { createAdminApi, createQueryApi } from '../src/transport.js';
 import { escapeHtml } from '../src/render.js';
@@ -36,6 +36,15 @@ const COPILOT = Object.freeze({
   source_url: 'https://learn.microsoft.com/en-us/microsoft-365/copilot/extensibility/api/ai-services/interaction-export/aiinteractionhistory-getallenterpriseinteractions',
   tools: [{ app: 'm365_copilot', name: 'Microsoft 365 Copilot' }], available: true, connection: null,
 });
+
+const BEDROCK = Object.freeze({
+  provider: 'amazon_bedrock', display_name: 'Amazon Bedrock', vendor: 'amazon',
+  credential: 'intake', credential_label: '', account_label: '', intake: 'firehose',
+  source_url: 'https://docs.aws.amazon.com/bedrock/latest/userguide/model-invocation-logging.html',
+  tools: [{ app: 'aws_bedrock', name: 'Amazon Bedrock' }], available: true, connection: null,
+});
+const TOKEN = 'sacintake_Zm9vYmFyYmF6cXV4cXV1eHF1dXhxdXV4cXV1eHF1dXhx';
+const ENDPOINT = `https://app.contoso.com/intake/v1/amazon_bedrock/${CONNECTION}`;
 
 /** A connection as control-api returns it: active, its last pull finished and succeeded. */
 function connection(patch = {}) {
@@ -76,7 +85,7 @@ function fakeAdmin({ providers = [CHATGPT, CLAUDE, COPILOT], entra = true, answe
 
 async function loaded(options) {
   const { admin, requests } = fakeAdmin(options);
-  const page = createIntegrations({ admin });
+  const page = createIntegrations({ admin, copy: options?.copy });
   await page.load();
   return { page, requests, html: () => renderIntegrations(page.state) };
 }
@@ -330,6 +339,112 @@ test('the admin API keeps only what the page can show of the provider list', asy
   assert.equal(claude.available, false, 'a credential this page cannot ask for is not available here');
   const copilot = (await createAdminApi({ transport: { request: async () => ({ status: 200, body: { providers: [COPILOT] } }) } }).providers()).data.providers[0];
   assert.equal(copilot.credential_label, null, 'an empty label is no label');
+});
+
+// ---------------------------------------------------------------------------------------------
+// A provider sent to the intake
+// ---------------------------------------------------------------------------------------------
+
+/** The intake's PUT, as control-api answers it: the connection, its endpoint and a new token. */
+function issuing(tokens = [TOKEN]) {
+  let n = 0;
+  return {
+    [`PUT ${PROVIDERS}/amazon_bedrock`]: () => ({ status: 200, body: { connection_id: CONNECTION, queued: false, intake_url: ENDPOINT, intake_token: tokens[n++] } }),
+  };
+}
+
+test('a provider sent to the intake says what to set up, and connecting asks for nothing and shows the token once', async () => {
+  const copied = [];
+  const { page, requests, html } = await loaded({ providers: [BEDROCK], answers: issuing(), copy: async (text) => { copied.push(text); } });
+  const before = card(html(), 'Amazon Bedrock');
+  assert.ok(before.includes(escapeHtml(INTAKE_SETUP.firehose)), 'the setup for its transport');
+  assert.match(before, />How to turn on its log</);
+  assert.match(before, /<button type="button" class="btn btn-primary" data-int="connect" data-provider="amazon_bedrock">Connect<\/button>/);
+  assert.doesNotMatch(before, /type="password"|data-int="run"/);
+
+  await page.act({ int: 'connect', provider: 'amazon_bedrock' });
+  assert.deepEqual(writes(requests), [['PUT', `${PROVIDERS}/amazon_bedrock`, {}]], 'no key and no account');
+  const issued = card(html(), 'Amazon Bedrock');
+  assert.match(issued, /Connected\. Sundial now receives what is sent with the token below\./);
+  assert.match(issued, /Copy this token now\. It will not be shown again\./);
+  assert.ok(issued.includes(`<input class="dp-input dp-mono" id="int-token-amazon_bedrock" readonly value="${TOKEN}">`));
+  assert.ok(issued.includes(`<input class="dp-input dp-mono" id="int-url-amazon_bedrock" readonly value="${escapeHtml(ENDPOINT)}">`));
+
+  await page.act({ int: 'copy', what: 'token' });
+  await page.act({ int: 'copy', what: 'url' });
+  assert.deepEqual(copied, [TOKEN, ENDPOINT]);
+  assert.match(card(html(), 'Amazon Bedrock'), /<span class="dp-copied" role="status">Copied<\/span>/);
+
+  await page.act({ int: 'cancel' });
+  assert.ok(!html().includes(TOKEN) && !JSON.stringify(page.state).includes(TOKEN), 'once dismissed the token is gone');
+});
+
+test('a connected intake shows its endpoint and last delivery, offers no pull, and replaces its token only when asked twice', async () => {
+  const providers = [{ ...BEDROCK, connection: connection({ account: '', intake_url: ENDPOINT, last_started_at: '2026-10-01T11:02:00Z' }) }];
+  const { page, requests, html } = await loaded({ providers, answers: issuing(['sacintake_second']) });
+  const one = card(html(), 'Amazon Bedrock');
+  assert.ok(one.includes(`<dt>Endpoint</dt><dd><code class="dp-url">${escapeHtml(ENDPOINT)}</code></dd>`));
+  assert.match(one, /<dt>Last delivery<\/dt><dd><span class="v-time"[^>]*>2026-10-01 11:02Z<\/span> <span class="v-vocab v-vocab-ok">ok<\/span>/);
+  assert.doesNotMatch(one, /Last pull|still running/);
+  assert.deepEqual([...one.matchAll(/<button[^>]*data-int="([^"]+)"[^>]*>([^<]*)</g)].map((m) => [m[1], m[2]]), [['replace', 'Replace token'], ['disconnect', 'Disconnect']]);
+
+  await page.act({ int: 'run', provider: 'amazon_bedrock' });
+  await page.act({ int: 'connect', provider: 'amazon_bedrock' });
+  assert.deepEqual(writes(requests), [], 'an intake is never pulled, and its token is not replaced without asking');
+
+  await page.act({ int: 'replace', provider: 'amazon_bedrock' });
+  assert.match(card(html(), 'Amazon Bedrock'), /Issue a new token\? The current one stops working at once, so what Amazon Bedrock sends is refused until its sender has the new one\./);
+  await page.act({ int: 'confirm-replace', provider: 'amazon_bedrock' });
+  assert.deepEqual(writes(requests), [['PUT', `${PROVIDERS}/amazon_bedrock`, {}]]);
+  const replaced = card(html(), 'Amazon Bedrock');
+  assert.match(replaced, /Token replaced\. The previous token no longer works\./);
+  assert.match(replaced, /readonly value="sacintake_second"/);
+
+  page.leave();
+  assert.ok(!JSON.stringify(page.state).includes('sacintake_second'), 'leaving the page forgets the token');
+
+  await page.act({ int: 'disconnect', provider: 'amazon_bedrock' });
+  assert.match(card(html(), 'Amazon Bedrock'), /Stop receiving Amazon Bedrock and forget its token\?/);
+  await page.act({ int: 'confirm-disconnect', provider: 'amazon_bedrock' });
+  assert.match(card(html(), 'Amazon Bedrock'), /Disconnected\. Sundial no longer receives Amazon Bedrock and has forgotten its token\./);
+});
+
+test('a failed delivery names its cause, and a browser that will not copy says so', async () => {
+  assert.deepEqual(Object.keys(DELIVERY_ERRORS).sort(), ['delivery_malformed', 'internal']);
+  for (const [code, words] of Object.entries(DELIVERY_ERRORS)) {
+    const { html } = await loaded({ providers: [{ ...BEDROCK, connection: connection({ intake_url: ENDPOINT, last_status: 'failed', last_error: code }) }] });
+    assert.ok(card(html(), 'Amazon Bedrock').includes(`<strong>The last delivery failed.</strong> ${escapeHtml(words)} <code>${code}</code>`), code);
+  }
+  const { page, html } = await loaded({ providers: [BEDROCK], answers: issuing(), copy: async () => { throw new Error('denied'); } });
+  await page.act({ int: 'connect', provider: 'amazon_bedrock' });
+  await page.act({ int: 'copy', what: 'token' });
+  assert.match(card(html(), 'Amazon Bedrock'), /This browser did not allow copying: select the text and copy it\./);
+});
+
+test('the admin API keeps an intake\'s transport and endpoint only when they are what the page knows', async () => {
+  const admin = createAdminApi({
+    transport: {
+      async request() {
+        return {
+          status: 200,
+          body: {
+            providers: [
+              { ...BEDROCK, connection: { connection_id: CONNECTION, status: 'active', intake_url: ENDPOINT } },
+              { ...BEDROCK, provider: 'other', intake: 'smtp', connection: { connection_id: CONNECTION, status: 'active', intake_url: 'javascript:alert(1)' } },
+              { ...CHATGPT, intake: 'firehose' },
+            ],
+          },
+        };
+      },
+    },
+  });
+  const [bedrock, other, chatgpt] = (await admin.providers()).data.providers;
+  assert.equal(bedrock.intake, 'firehose');
+  assert.equal(bedrock.available, true);
+  assert.equal(bedrock.connection.intake_url, ENDPOINT);
+  assert.equal(other.intake, null, 'a transport the page does not know has no setup');
+  assert.equal(other.connection.intake_url, null, 'an endpoint that is not http(s) is not shown');
+  assert.equal(chatgpt.intake, null, 'only an intake provider has a transport');
 });
 
 // ---------------------------------------------------------------------------------------------

@@ -23,6 +23,7 @@ type adminStore struct {
 	connected map[string]string // provider -> connection id
 	disabled  map[string]bool
 	keys      map[string][]byte
+	hashes    map[string]string
 	accounts  map[string]string
 	audits    []Audit
 }
@@ -36,8 +37,11 @@ func newAdminStore() *adminStore {
 				Tools: []Tool{{App: "m365_copilot", Name: "Microsoft 365 Copilot"}}},
 			{Provider: ClaudeEnterprise, DisplayName: "Claude Enterprise", Vendor: "anthropic", Credential: "api_key",
 				CredentialLabel: "Compliance API key", AccountLabel: "Organization ID"},
+			{Provider: GeminiCodeAssist, DisplayName: "Gemini Code Assist", Vendor: "google", Credential: "intake",
+				Tools: []Tool{{App: "gemini_code_assist", Name: "Gemini Code Assist"}}},
 		},
-		connected: map[string]string{}, disabled: map[string]bool{}, keys: map[string][]byte{}, accounts: map[string]string{},
+		connected: map[string]string{}, disabled: map[string]bool{}, keys: map[string][]byte{}, hashes: map[string]string{},
+		accounts: map[string]string{},
 	}
 }
 
@@ -58,12 +62,13 @@ func (s *adminStore) Providers(context.Context, string) ([]Provider, error) {
 
 func (s *adminStore) EntraConnected(context.Context, string) (bool, error) { return s.entra, nil }
 
-func (s *adminStore) Connect(_ context.Context, _, provider, account string, sealed []byte, a Audit) (string, error) {
+func (s *adminStore) Connect(_ context.Context, _, provider, account string, sealed []byte, tokenHash string, a Audit) (string, error) {
 	if provider == Microsoft365Copilot && !s.entra {
 		return "", ErrNoEntra
 	}
-	id := "c0000000-0000-4000-8000-0000000000" + map[string]string{ChatGPTEnterprise: "01", Microsoft365Copilot: "02", ClaudeEnterprise: "03"}[provider]
-	s.connected[provider], s.keys[provider], s.accounts[provider] = id, sealed, account
+	id := "c0000000-0000-4000-8000-0000000000" + map[string]string{ChatGPTEnterprise: "01", Microsoft365Copilot: "02",
+		ClaudeEnterprise: "03", GeminiCodeAssist: "04"}[provider]
+	s.connected[provider], s.keys[provider], s.hashes[provider], s.accounts[provider] = id, sealed, tokenHash, account
 	delete(s.disabled, provider)
 	a.ObjectID = id
 	s.audits = append(s.audits, a)
@@ -75,7 +80,7 @@ func (s *adminStore) Disconnect(_ context.Context, _, provider string, a Audit) 
 		return ErrNotFound
 	}
 	s.disabled[provider] = true
-	s.keys[provider] = nil
+	s.keys[provider], s.hashes[provider] = nil, ""
 	s.audits = append(s.audits, a)
 	return nil
 }
@@ -111,23 +116,41 @@ func (p *pullStub) Trigger(_, connectionID string) bool {
 	return true
 }
 
+// intakeStub is an intake receiving Gemini Code Assist's log by Pub/Sub.
+type intakeStub struct{ available map[string]bool }
+
+func (i *intakeStub) Available(provider string) bool { return i.available[provider] }
+
+func (i *intakeStub) Kind(provider string) string {
+	if i.available[provider] {
+		return KindPubSub
+	}
+	return ""
+}
+
+func (*intakeStub) URL(provider, connectionID string) string {
+	return "https://app.contoso.example/intake/v1/" + provider + "/" + connectionID
+}
+
 type adminRig struct {
-	st   *adminStore
-	pull *pullStub
-	mux  *http.ServeMux
-	role string
+	st     *adminStore
+	pull   *pullStub
+	intake *intakeStub
+	mux    *http.ServeMux
+	role   string
 }
 
 func newAdminRig(t *testing.T) *adminRig {
 	t.Helper()
-	r := &adminRig{st: newAdminStore(), pull: &pullStub{available: map[string]bool{ChatGPTEnterprise: true, ClaudeEnterprise: true, Microsoft365Copilot: true}}, role: deploy.RoleAdmin}
+	r := &adminRig{st: newAdminStore(), pull: &pullStub{available: map[string]bool{ChatGPTEnterprise: true, ClaudeEnterprise: true, Microsoft365Copilot: true}},
+		intake: &intakeStub{available: map[string]bool{GeminiCodeAssist: true}}, role: deploy.RoleAdmin}
 	auth := func(req *http.Request) (deploy.Principal, error) {
 		if req.Header.Get("Authorization") == "" {
 			return deploy.Principal{}, errors.New("no bearer token")
 		}
 		return deploy.Principal{Tenant: adminTenant, Actor: "admin@contoso.example", Subject: "sub-1", Roles: []string{r.role}}, nil
 	}
-	h, err := NewHandler(r.st, auth, sealer{}, r.pull, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h, err := NewHandler(r.st, auth, sealer{}, r.pull, r.intake, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +178,7 @@ func TestTheListIsEveryProviderWithWhatThisDeploymentReads(t *testing.T) {
 		t.Fatalf("list = %d", code)
 	}
 	list, _ := body["providers"].([]any)
-	if len(list) != 3 || body["entra_connected"] != false {
+	if len(list) != 4 || body["entra_connected"] != false {
 		t.Fatalf("list %v", body)
 	}
 	byName := map[string]map[string]any{}
@@ -163,14 +186,18 @@ func TestTheListIsEveryProviderWithWhatThisDeploymentReads(t *testing.T) {
 		m := p.(map[string]any)
 		byName[m["provider"].(string)] = m
 	}
-	if byName[Microsoft365Copilot]["available"] != false || byName[ChatGPTEnterprise]["available"] != true {
+	if byName[Microsoft365Copilot]["available"] != false || byName[ChatGPTEnterprise]["available"] != true ||
+		byName[GeminiCodeAssist]["available"] != true {
 		t.Fatalf("availability %v", list)
+	}
+	if byName[GeminiCodeAssist]["intake"] != KindPubSub || byName[ChatGPTEnterprise]["intake"] != "" {
+		t.Fatalf("intake kinds %v", list)
 	}
 	if byName[ChatGPTEnterprise]["connection"] != nil {
 		t.Fatal("an unconnected provider shows a connection")
 	}
 	c := byName[ClaudeEnterprise]["connection"].(map[string]any)
-	if c["account"] != "org-1" || c["status"] != "active" {
+	if c["account"] != "org-1" || c["status"] != "active" || c["intake_url"] != "" {
 		t.Fatalf("connection %v", c)
 	}
 	if strings.Contains(strings.ToLower(jsonOf(body)), "key\":\"") {
@@ -259,6 +286,66 @@ func TestDisconnectingAndPullingNow(t *testing.T) {
 	}
 	if want := "provider.connect:c0000000-0000-4000-8000-000000000003 provider.run:c0000000-0000-4000-8000-000000000003 provider.disconnect:"; strings.Join(actions, " ") != want {
 		t.Fatalf("audits %v", actions)
+	}
+}
+
+func TestConnectingAnIntakeIssuesItsTokenOnce(t *testing.T) {
+	r := newAdminRig(t)
+	for _, body := range []string{`{"key":"k"}`, `{"account":"proj-1"}`} {
+		if code, _ := r.do(http.MethodPut, "/admin/v1/providers/gemini_code_assist", body); code != http.StatusBadRequest {
+			t.Errorf("PUT %s = %d, want 400", body, code)
+		}
+	}
+	code, body := r.do(http.MethodPut, "/admin/v1/providers/gemini_code_assist", `{}`)
+	const id = "c0000000-0000-4000-8000-000000000004"
+	token, _ := body["intake_token"].(string)
+	if code != http.StatusOK || body["connection_id"] != id || body["queued"] != false ||
+		body["intake_url"] != "https://app.contoso.example/intake/v1/gemini_code_assist/"+id || !strings.HasPrefix(token, IntakeTokenPrefix) {
+		t.Fatalf("connect = %d %v", code, body)
+	}
+	if r.st.hashes[GeminiCodeAssist] != HashIntakeToken(token) || r.st.keys[GeminiCodeAssist] != nil {
+		t.Fatalf("stored hash %q, key %q", r.st.hashes[GeminiCodeAssist], r.st.keys[GeminiCodeAssist])
+	}
+	if len(r.pull.triggered) != 0 {
+		t.Fatalf("an intake was pulled: %v", r.pull.triggered)
+	}
+	if a := r.st.audits[0]; a.Detail["intake_token"] != "issued" || strings.Contains(jsonOf(a), token) {
+		t.Fatalf("audit %+v", a)
+	}
+
+	_, list := r.do(http.MethodGet, "/admin/v1/providers", "")
+	if strings.Contains(jsonOf(list), token) || strings.Contains(jsonOf(list), "sha256:") {
+		t.Fatal("the list carries the token")
+	}
+	for _, p := range list["providers"].([]any) {
+		if m := p.(map[string]any); m["provider"] == GeminiCodeAssist {
+			if c := m["connection"].(map[string]any); c["intake_url"] != body["intake_url"] {
+				t.Fatalf("connection %v", c)
+			}
+		}
+	}
+	if code, _ := r.do(http.MethodPost, "/admin/v1/providers/gemini_code_assist/run", ""); code != http.StatusConflict {
+		t.Fatalf("pulling an intake = %d", code)
+	}
+
+	_, again := r.do(http.MethodPut, "/admin/v1/providers/gemini_code_assist", ``)
+	if next, _ := again["intake_token"].(string); next == token || r.st.hashes[GeminiCodeAssist] != HashIntakeToken(next) {
+		t.Fatal("connecting again did not replace the token")
+	}
+	if code, _ := r.do(http.MethodDelete, "/admin/v1/providers/gemini_code_assist", ""); code != http.StatusNoContent || r.st.hashes[GeminiCodeAssist] != "" {
+		t.Fatalf("disconnect = %d, hash %q", code, r.st.hashes[GeminiCodeAssist])
+	}
+	_, list = r.do(http.MethodGet, "/admin/v1/providers", "")
+	for _, p := range list["providers"].([]any) {
+		if m := p.(map[string]any); m["provider"] == GeminiCodeAssist {
+			if c := m["connection"].(map[string]any); c["intake_url"] != "" {
+				t.Fatalf("a disabled intake shows its URL: %v", c)
+			}
+		}
+	}
+	r.intake.available[GeminiCodeAssist] = false
+	if code, _ := r.do(http.MethodPut, "/admin/v1/providers/gemini_code_assist", `{}`); code != http.StatusServiceUnavailable {
+		t.Fatalf("an intake this deployment does not receive = %d", code)
 	}
 }
 

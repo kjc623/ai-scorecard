@@ -5,7 +5,9 @@ and makes it queryable by the company's security team. Most of the tools people 
 customer can pull usage from: if the device does not observe it, the data does not exist. Where a
 customer has bought an enterprise plan whose admin API reports its people's prompts (ChatGPT
 Enterprise, Claude Enterprise, Microsoft 365 Copilot), that record is a second source, which also
-sees prompts sent from devices without the agent.
+sees prompts sent from devices without the agent. A provider with no such API that writes the same
+record to a log in the customer's own cloud (Gemini Code Assist, Amazon Bedrock, Perplexity
+Enterprise) is the same second source once the customer forwards that log.
 
 The design turns on one property: **content is interpreted where it is observed and, by default,
 does not leave the device.** Classification labels, a digest and dimensions cross the network; the
@@ -38,7 +40,7 @@ prompt itself crosses only when the backend grants the upload of that one event.
 | `device/extension` | Device browsers (Chrome, Edge) | Observes requests to AI tools, extracts the prompt and the files attached to it, warns or blocks inline, and hands both to capture-core through the native messaging host |
 | `device/installer` | Build | The Windows MSI (and macOS/Linux packages) that install the agent and register the native messaging host |
 | `services/ingest-api` | Container app | The one write path for events: authenticates the device certificate, validates each envelope against the contract, writes through `ingest.record_event` |
-| `services/control-api` | Container app | Device enrolment and certificates, signed policy delivery, content grants and upload, analyst sign-in and sessions, SCIM, tenant onboarding, tenant packages and extension updates, and the pull of AI providers' records of prompts |
+| `services/control-api` | Container app | Device enrolment and certificates, signed policy delivery, content grants and upload, analyst sign-in and sessions, SCIM, tenant onboarding, tenant packages and extension updates, and the pull and intake of AI providers' records of prompts |
 | `services/content-vault` | Container app (internal) | The only component that can decrypt prompt content; stores it encrypted in PostgreSQL and serves approved retrievals and content search |
 | `services/query-api` | Container app (internal) | The one read path: a closed query DSL compiled to parameterised SQL |
 | `services/dashboard` | Container app | The analyst web app and its server: sign-in session, and the only forwarder of browser requests into the environment |
@@ -90,11 +92,16 @@ The device resolves the mode before it reads anything.
 
 1. **Connect.** An admin connects a provider on Settings → Integrations: ChatGPT Enterprise and
    Claude Enterprise with a compliance key their admin issued (sealed in `ops.provider_connection`),
-   Microsoft 365 Copilot with the consent the tenant gave the vendor's Entra application.
-2. **Pull.** control-api reads each connection an hour apart and on demand, from where its last pass
-   stopped, and keeps each person's prompts: their text, attachments' names, the person's UPN or
-   object id, and the tool (ChatGPT, Claude on the web, Claude Code, Claude Desktop, Microsoft 365
-   Copilot).
+   Microsoft 365 Copilot with the consent the tenant gave the vendor's Entra application. A provider
+   read from its log is given an intake URL and token instead, which the customer's cloud sends its
+   log with: a Pub/Sub push subscription for Gemini Code Assist, a Firehose stream for Amazon
+   Bedrock, the audit log webhook for Perplexity Enterprise.
+2. **Pull or receive.** control-api reads each API connection an hour apart and on demand, from
+   where its last pass stopped, and receives each log delivery at `/intake/v1/*` as it is sent,
+   resolving its tenant from the token. Either way it keeps each person's prompts: their text,
+   attachments' names, the person's UPN or object id, and the tool (ChatGPT, Claude on the web,
+   Claude Code, Claude Desktop, Microsoft 365 Copilot, Gemini Code Assist, the Gemini CLI, Amazon
+   Bedrock, Perplexity).
 3. **Record.** It classifies the text with the rules and model the agent ships, under the tenant's
    collection mode, derives the person's user reference as a device would, and writes the event
    through `ingest.record_provider_event` with the route `provider.api` and the connection, not a

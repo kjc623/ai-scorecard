@@ -51,7 +51,9 @@ It has two halves and no dependencies:
   product access token per session (the browser holds one opaque HttpOnly cookie), and forwards:
   `/v1/*` to query-api and `/admin/v1/*` to control-api with `Authorization: Bearer <product token>`,
   `/onboard/*` and an identity provider's SCIM calls (`/scim/v2/*`, with their own bearer token
-  and never a cookie) to control-api untouched, `GET`/`HEAD` of the browser extension's update manifest
+  and never a cookie) to control-api untouched, a provider's log deliveries (`POST /intake/v1/*`,
+  streamed, with the headers that carry the connection's token and never a cookie) to control-api,
+  `GET`/`HEAD` of the browser extension's update manifest
   and CRX (`/v1/extension/updates.xml`, `/v1/extension/shadow-ai-capture.crx`) to control-api with
   no credential, and a minted retrieval URL
   (`GET /v1/content/retrieval/<tenant>/<grant>`) straight to content-vault, so content never

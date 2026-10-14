@@ -1,5 +1,6 @@
 // Package httpapi is control-api's HTTP surface: the device routes, the browser extension routes,
-// the admin, identity, onboarding and SCIM handlers mounted beside them, and the platform probes.
+// the admin, identity, onboarding, SCIM and provider intake handlers mounted beside them, and the
+// platform probes.
 //
 // Devices authenticate with the certificate control-api issued them. Application Gateway
 // terminates the device's TLS connection and forwards the presented certificate in X-Client-Cert
@@ -55,9 +56,12 @@ type Server struct {
 	Settings *settings.Handler
 	// Directory is the directory pull and teams admin API (/admin/v1/directory*, /admin/v1/teams*).
 	Directory *directoryadmin.Handler
-	// Providers is the Integrations page's API: the AI providers' admin APIs a tenant connects
+	// Providers is the Integrations page's API: the AI providers a tenant connects
 	// (/admin/v1/providers*).
 	Providers *providers.Handler
+	// Intake receives the logs a tenant's cloud forwards for the providers with no API to read
+	// (/intake/v1/*), authenticated by each connection's intake token.
+	Intake *providers.Intake
 	// Extensions serves the browser extension's update manifest and CRX.
 	Extensions *deploy.Extensions
 	// Agents serves enrolled devices the signed agent release and its package.
@@ -111,6 +115,9 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.Providers != nil {
 		s.Providers.Register(mux)
+	}
+	if s.Intake != nil {
+		s.Intake.Register(mux)
 	}
 	if s.SCIM != nil {
 		mux.Handle("/scim/v2", s.SCIM)
