@@ -59,6 +59,7 @@ type Memory struct {
 	ruleUsers    map[string]map[string]memoryRuleUser
 	customLabels map[string][]store.CustomLabel
 	killSwitches map[string][]store.KillSwitch
+	diagnostics  map[string]*memoryDiagnostics
 	dataClasses  []string
 	catalog      []store.CatalogApp
 }
@@ -71,6 +72,7 @@ func New() *Memory {
 		now:               time.Now,
 		tenants:           map[string]store.Tenant{},
 		devices:           map[string]store.Device{},
+		diagnostics:       map[string]*memoryDiagnostics{},
 		creds:             map[string]store.Credential{},
 		collectors:        map[string]bool{},
 		collectorState:    map[string]store.CollectorState{},

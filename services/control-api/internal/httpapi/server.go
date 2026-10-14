@@ -28,6 +28,7 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/content"
 	"github.com/shadow-ai-capture/control-api/internal/deploy"
 	"github.com/shadow-ai-capture/control-api/internal/deviceca"
+	"github.com/shadow-ai-capture/control-api/internal/diagnostics"
 	"github.com/shadow-ai-capture/control-api/internal/directoryadmin"
 	"github.com/shadow-ai-capture/control-api/internal/enrol"
 	"github.com/shadow-ai-capture/control-api/internal/health"
@@ -66,6 +67,9 @@ type Server struct {
 	Extensions *deploy.Extensions
 	// Agents serves enrolled devices the signed agent release and its package.
 	Agents *deploy.Agents
+	// Diagnostics receives a device's diagnostics on request (/v1/diagnostics) and serves the
+	// admin's requests and downloads (/admin/v1/devices/{id}/diagnostics*).
+	Diagnostics *diagnostics.Handler
 	// SCIM is the provisioning endpoint a customer's identity provider calls (/scim/v2).
 	SCIM http.Handler
 	// Mounts are further handlers by path prefix: the internal sign-in API, the onboarding pages and
@@ -100,6 +104,12 @@ func (s *Server) Handler() http.Handler {
 	}
 	if s.Agents != nil {
 		s.Agents.Register(mux, func(r *http.Request) (string, string, error) {
+			cur, err := s.authenticateDevice(r)
+			return cur.TenantID, cur.DeviceID, err
+		})
+	}
+	if s.Diagnostics != nil {
+		s.Diagnostics.Register(mux, func(r *http.Request) (string, string, error) {
 			cur, err := s.authenticateDevice(r)
 			return cur.TenantID, cur.DeviceID, err
 		})

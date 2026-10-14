@@ -29,6 +29,7 @@ func TestRouteMirrorsTheGateway(t *testing.T) {
 		"/v1/content":       {upstreamControl, 0},
 		"/v1/agent/release": {upstreamControl, 0},
 		"/v1/agent/package": {upstreamControl, 0},
+		"/v1/diagnostics":   {upstreamControl, 0},
 		// Refused by the firewall rule.
 		"/":                                   {"", http.StatusForbidden},
 		"/healthz":                            {"", http.StatusForbidden},
@@ -46,6 +47,7 @@ func TestRouteMirrorsTheGateway(t *testing.T) {
 		"/v1/contents":       {"", http.StatusBadGateway},
 		"/v1/content/upload": {"", http.StatusBadGateway},
 		"/v1/agent/other":    {"", http.StatusBadGateway},
+		"/v1/diagnostics/x":  {"", http.StatusBadGateway},
 	} {
 		upstream, status := route(path)
 		if upstream != want.upstream || status != want.status {

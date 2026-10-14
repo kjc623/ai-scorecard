@@ -19,6 +19,7 @@ here against the device CA and matched to the device's live credential on every 
 | `POST /v1/enrol` | device | deployment key (first enrolment) or current certificate (rotation) |
 | `GET /v1/policy`, `POST /v1/health`, `POST /v1/content/grant`, `POST /v1/content` | device | device certificate |
 | `GET /v1/agent/release`, `GET /v1/agent/package` | device | device certificate |
+| `POST /v1/diagnostics` | device, answering a diagnostics request its health response named | device certificate |
 | `GET /v1/extension/updates.xml`, `GET /v1/extension/shadow-ai-capture.crx` | browser, through the dashboard server on the analyst hostname | none |
 | `/internal/v1/auth/{begin,complete,token,revoke}` | dashboard server | `Bearer SAC_INTERNAL_TOKEN` |
 | `/admin/v1/*` | dashboard server | product token, audience `sac-control`, role `admin` |

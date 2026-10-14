@@ -525,6 +525,24 @@ type Store interface {
 	// the route is outside KillSwitchRoutes.
 	SetKillSwitch(ctx context.Context, tenantID, route string, on bool, reasonCode string, audit AuditEntry) error
 
+	// RequestDiagnostics records an admin's request for a device's diagnostics and its audit row,
+	// unless the device already has one waiting, which it returns instead (created false, no audit).
+	// ErrDeviceUnknown for a device the tenant does not have, ErrDeviceRevoked for a revoked one.
+	RequestDiagnostics(ctx context.Context, d Diagnostics, audit AuditEntry) (Diagnostics, bool, error)
+	// PendingDiagnostics is the id of the device's oldest request still waiting at now; empty when
+	// none is.
+	PendingDiagnostics(ctx context.Context, tenantID, deviceID string, now time.Time) (string, error)
+	// ReceiveDiagnostics stores the bundle answering d.RequestID, with d's ReceivedAt, AgentVersion,
+	// SHA256 and new ExpiresAt, and its audit row. ErrDiagnosticsNotPending when that request is not
+	// waiting for d.DeviceID.
+	ReceiveDiagnostics(ctx context.Context, d Diagnostics, bundle []byte, audit AuditEntry) error
+	// DeviceDiagnostics lists up to limit of the device's requests not yet expired at now, newest
+	// first, without their bundles.
+	DeviceDiagnostics(ctx context.Context, tenantID, deviceID string, now time.Time, limit int) ([]Diagnostics, error)
+	// DiagnosticsBundle reads one received bundle not expired at audit.OccurredAt and writes the
+	// audit row of the read in the same transaction. ErrDiagnosticsUnknown when there is none.
+	DiagnosticsBundle(ctx context.Context, tenantID, deviceID, requestID string, audit AuditEntry) (Diagnostics, []byte, error)
+
 	// Ping checks the database is reachable, for readiness.
 	Ping(ctx context.Context) error
 }

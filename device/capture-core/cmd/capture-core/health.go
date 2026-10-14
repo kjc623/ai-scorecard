@@ -111,6 +111,9 @@ func (h *healthChannel) publish(ctx context.Context) {
 	// The response restates the tenant's device identity setting, which is how a device enrolled
 	// under one setting learns the tenant changed it.
 	h.svc.adoptDeviceIdentity(resp.DeviceIdentity)
+	if resp.DiagnosticsRequest != "" && h.svc.diagnostics != nil {
+		h.svc.diagnostics.Request(resp.DiagnosticsRequest)
+	}
 }
 
 // SetExtensionReport records the extension's own coverage row.
@@ -137,6 +140,7 @@ type healthSnapshot struct {
 	PolicyCause    string                  `json:"policy_cause,omitempty"`
 	PolicyFetch    *policySyncStatus       `json:"policy_fetch,omitempty"`
 	AgentUpdate    *agentUpdateStatus      `json:"agent_update,omitempty"`
+	Diagnostics    *diagnosticsStatus      `json:"diagnostics,omitempty"`
 	Classifier     protocol.HealthReport   `json:"classifier"`
 	Reports        []protocol.HealthReport `json:"reports"`
 	Extension      *protocol.HealthReport  `json:"extension,omitempty"`
@@ -190,6 +194,11 @@ func (h *healthChannel) Snapshot() healthSnapshot {
 	if svc.updater != nil {
 		st := svc.updater.Status()
 		snap.AgentUpdate = &st
+	}
+	if svc.diagnostics != nil {
+		if st := svc.diagnostics.Status(); st.LastRequest != "" {
+			snap.Diagnostics = &st
+		}
 	}
 	snap.Classifier = svc.host.Health().Report(snap.DeviceID, svc.classifierVersion())
 	snap.Classifier.Collector = string(svc.host.Name())

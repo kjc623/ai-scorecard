@@ -405,6 +405,33 @@ CREATE TABLE ops.collector_state (
 
 CREATE INDEX collector_state_by_state ON ops.collector_state (tenant_id, state);
 
+-- A device's diagnostics, asked for by an admin in the console. The device learns of the request
+-- from its next health response and answers it once with a zip of its health snapshot and its own
+-- logs, which is kept until expires_at: a request the device never answered lapses with it, and an
+-- answered one is kept a fixed time after it arrived. The expire job sweeps both.
+CREATE TABLE ops.device_diagnostics (
+  tenant_id     uuid NOT NULL,
+  request_id    uuid NOT NULL,
+  device_id     uuid NOT NULL,
+  requested_by  text NOT NULL,
+  requested_at  timestamptz NOT NULL,
+  received_at   timestamptz,
+  agent_version text,
+  size_bytes    bigint CHECK (size_bytes >= 0),
+  sha256        text CHECK (sha256 ~ '^[0-9a-f]{64}$'),
+  bundle        bytea,
+  expires_at    timestamptz NOT NULL,
+  PRIMARY KEY (tenant_id, request_id),
+  FOREIGN KEY (tenant_id, device_id) REFERENCES ops.device(tenant_id, device_id),
+  CONSTRAINT device_diagnostics_received CHECK (
+    (received_at IS NULL AND bundle IS NULL AND size_bytes IS NULL AND sha256 IS NULL)
+    OR (received_at IS NOT NULL AND bundle IS NOT NULL AND size_bytes IS NOT NULL AND sha256 IS NOT NULL)),
+  CONSTRAINT device_diagnostics_expiry_after_request CHECK (expires_at > requested_at)
+);
+
+CREATE INDEX device_diagnostics_by_device ON ops.device_diagnostics (tenant_id, device_id, requested_at);
+CREATE INDEX device_diagnostics_expiry ON ops.device_diagnostics (tenant_id, expires_at);
+
 -- A tenant's consented link to one provider (ref.provider), the collection path that needs no
 -- device: control-api reads the provider's records of what the tenant's people sent, from its admin
 -- API or from the deliveries of its intake, and records each as an observation whose origin is this
@@ -2908,6 +2935,7 @@ DECLARE
   tenant_tables text[] := ARRAY[
     -- ops
     'ops.user_dim', 'ops.device', 'ops.device_credential', 'ops.collector_state',
+    'ops.device_diagnostics',
     'ops.policy_bundle', 'ops.tool_sanction', 'ops.notice_acknowledgement', 'ops.retention_policy',
     'ops.endpoint_setting', 'ops.endpoint_tool_setting', 'ops.enforcement_rule', 'ops.custom_label',
     'ops.kill_switch',
@@ -3017,6 +3045,8 @@ GRANT SELECT, INSERT, DELETE ON ops.custom_label TO sac_control;
 GRANT UPDATE (display_name, terms, updated_by, updated_at) ON ops.custom_label TO sac_control;
 -- A kill switch is tripped (inserted), given a new reason (updated) and cleared (deleted).
 GRANT SELECT, INSERT, UPDATE, DELETE ON ops.kill_switch TO sac_control;
+-- A diagnostics request is made (inserted) and answered (updated) and never deleted by the service.
+GRANT SELECT, INSERT, UPDATE ON ops.device_diagnostics TO sac_control;
 -- Deciding a content grant reads the tenant's budget; a stored upload adds its bytes to the day's
 -- content counter and to nothing else.
 GRANT SELECT ON ops.usage_daily TO sac_control;
@@ -3232,6 +3262,8 @@ GRANT EXECUTE ON FUNCTION ops.tool_app(text), ops.tool_id(text) TO sac_ops;
 -- The erase job sweeps expired exports (by id and expiry, never the payload) and processes the
 -- subject erasure requests query-api records.
 GRANT SELECT (tenant_id, export_id, expires_at), DELETE ON ops.export TO sac_ops;
+-- The expire job sweeps lapsed and expired diagnostics by id and expiry, never the bundle.
+GRANT SELECT (tenant_id, request_id, expires_at), DELETE ON ops.device_diagnostics TO sac_ops;
 GRANT SELECT, UPDATE ON ops.erasure_request TO sac_ops;
 
 

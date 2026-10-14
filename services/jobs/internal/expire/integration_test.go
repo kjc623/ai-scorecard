@@ -55,6 +55,13 @@ func TestExpireAgainstPostgreSQL(t *testing.T) {
 	pgtest.Exec(t, tx, `INSERT INTO mart.finding (tenant_id, submission_id, rule_id, detected_at, decided_locally, collection_mode)
 	                    VALUES ($1, $2, $3, $4, false, 'm1')`, tenant, expired[3], rule, longAgo)
 
+	// Diagnostics: a request that lapsed unanswered, and a received bundle still kept.
+	pgtest.Exec(t, tx, `INSERT INTO ops.device_diagnostics (tenant_id, request_id, device_id, requested_by, requested_at, expires_at)
+	                    VALUES ($1, gen_random_uuid(), $2, 'admin', $3, $4)`, tenant, device, past.Add(-time.Hour), past)
+	pgtest.Exec(t, tx, `INSERT INTO ops.device_diagnostics (tenant_id, request_id, device_id, requested_by, requested_at,
+	                    received_at, size_bytes, sha256, bundle, expires_at)
+	                    VALUES ($1, gen_random_uuid(), $2, 'admin', now(), now(), 2, repeat('a', 64), 'PK', $3)`, tenant, device, future)
+
 	pgtest.AsJobs(t, tx)
 	removed, err := expireTenant(ctx, tx, tenant, 2)
 	if err != nil {
@@ -62,7 +69,7 @@ func TestExpireAgainstPostgreSQL(t *testing.T) {
 	}
 	want := map[string]int64{
 		"ingest.search_text": 3, "ops.content": 2, "ingest.observation": 5,
-		"ingest.submission": 5, "ingest.rejected": 3,
+		"ingest.submission": 5, "ingest.rejected": 3, "ops.device_diagnostics": 1,
 	}
 	for name, n := range want {
 		if removed[name] != n {
@@ -73,7 +80,7 @@ func TestExpireAgainstPostgreSQL(t *testing.T) {
 	pgtest.AsOwner(t, tx)
 	for table, remaining := range map[string]string{
 		"ingest.search_text": "1", "ops.content": "1", "ingest.observation": "2",
-		"ingest.submission": "2", "ingest.rejected": "1", "mart.finding": "0",
+		"ingest.submission": "2", "ingest.rejected": "1", "mart.finding": "0", "ops.device_diagnostics": "1",
 	} {
 		f.expect(table+" remaining", `SELECT count(*)::text FROM `+table+` WHERE tenant_id = $1`, remaining)
 	}

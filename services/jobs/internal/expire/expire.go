@@ -75,6 +75,8 @@ var tables = []table{
 	newTable("ingest.rejected", "rejected_id"),
 	// Exports are single-use and short-lived; an expired one is swept with everything else.
 	newTable("ops.export", "export_id"),
+	// A device's diagnostics: a request that lapsed unanswered, or a bundle past its keep.
+	newTable("ops.device_diagnostics", "request_id"),
 }
 
 // retentionPathSQL opens the retention path for the rest of the transaction. ingest.observation

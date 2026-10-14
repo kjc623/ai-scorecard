@@ -36,8 +36,8 @@ var name = '${baseName}-agw'
 var zones = zoneRedundant ? ['1', '2', '3'] : []
 var ingestPaths = ['/v1/events']
 var controlPaths = ['/v1/enrol', '/v1/policy', '/v1/health', '/v1/content/grant', '/v1/agent/release', '/v1/agent/package']
-var contentPaths = ['/v1/content']
-var allowedPrefixes = ['/v1/events', '/v1/enrol', '/v1/policy', '/v1/health', '/v1/content', '/v1/agent/']
+var contentPaths = ['/v1/content', '/v1/diagnostics']
+var allowedPrefixes = ['/v1/events', '/v1/enrol', '/v1/policy', '/v1/health', '/v1/content', '/v1/agent/', '/v1/diagnostics']
 
 var managedRules = {
   managedRuleSets: [
@@ -82,8 +82,8 @@ resource waf 'Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies
   }
 }
 
-// Uploaded prompt content is arbitrary user text and code, which the managed rules would read as
-// attacks; its body is not inspected. Headers, URI and the allow-list still apply.
+// Uploaded prompt content is arbitrary user text and code, and a diagnostics upload is a zip of logs;
+// the managed rules would read either as attacks, so their bodies are not inspected. Headers, URI and the allow-list still apply.
 resource contentWaf 'Microsoft.Network/ApplicationGatewayWebApplicationFirewallPolicies@2024-05-01' = {
   name: '${baseName}-agw-waf-content'
   location: location

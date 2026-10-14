@@ -11,7 +11,7 @@
 import {
   QUERY_ENDPOINT, CONTENT_SEARCH_ENDPOINT, CONTENT_RETRIEVAL_ENDPOINT, LIST_EXPORT_ENDPOINT, RESULT_STATES,
   ADMIN_DEPLOYMENT_ENDPOINT, ADMIN_PACKAGE_ENDPOINT, ADMIN_VERIFICATION_ENDPOINT, ADMIN_KEYS_ENDPOINT, ADMIN_SCIM_TOKENS_ENDPOINT,
-  ADMIN_DIRECTORY_ENDPOINT, ADMIN_TEAMS_ENDPOINT, ADMIN_PROVIDERS_ENDPOINT,
+  ADMIN_DIRECTORY_ENDPOINT, ADMIN_TEAMS_ENDPOINT, ADMIN_PROVIDERS_ENDPOINT, ADMIN_DEVICES_ENDPOINT,
   ADMIN_SETTINGS_ENDPOINT, ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT, ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT,
   ADMIN_SETTINGS_RETENTION_ENDPOINT, ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT, ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT,
   ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT, ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT, ADMIN_SETTINGS_RULES_ENDPOINT, ADMIN_SETTINGS_CUSTOM_LABELS_ENDPOINT,
@@ -298,6 +298,7 @@ export function createAdminApi({ transport }) {
   };
   const revokePath = (base, id) => `${base}/${encodeURIComponent(String(id))}/revoke`;
   const providerPath = (provider) => `${ADMIN_PROVIDERS_ENDPOINT}/${encodeURIComponent(String(provider))}`;
+  const diagnosticsPath = (device) => `${ADMIN_DEVICES_ENDPOINT}/${encodeURIComponent(String(device))}/diagnostics`;
 
   return Object.freeze({
     async deployment() {
@@ -316,6 +317,24 @@ export function createAdminApi({ transport }) {
     },
     revokeKey(keyId) {
       return done({ method: 'POST', path: revokePath(ADMIN_KEYS_ENDPOINT, keyId) });
+    },
+    /** A device's diagnostics requests, newest first. */
+    async diagnostics(device) {
+      const answer = await call({ method: 'GET', path: diagnosticsPath(device) });
+      if (!ok(answer.status) || !answer.body || typeof answer.body !== 'object') return refused(answer);
+      return { state: 'available', data: normaliseDiagnostics(answer.body.diagnostics) };
+    },
+    /** Ask the device for its diagnostics; a request already waiting is returned instead of a new one. */
+    async requestDiagnostics(device) {
+      const answer = await call({ method: 'POST', path: diagnosticsPath(device) });
+      if (!ok(answer.status) || !answer.body || typeof answer.body !== 'object') return refused(answer);
+      return { state: 'done', created: answer.status === 201, request: normaliseDiagnostics([answer.body])[0] ?? null };
+    },
+    async downloadDiagnostics(device, requestId) {
+      const path = `${diagnosticsPath(device)}/${encodeURIComponent(String(requestId))}/bundle`;
+      const answer = await call({ method: 'GET', path, expect: 'file' });
+      if (!ok(answer.status) || !answer.file) return refused(answer);
+      return { state: 'available', file: answer.file };
     },
     async createScimToken(label) {
       const answer = await call({ method: 'POST', path: ADMIN_SCIM_TOKENS_ENDPOINT, body: { label } });
@@ -567,6 +586,20 @@ export function normaliseProviders(body) {
  * The deployment read, with every field present: a value the server did not send is null, never a
  * zero or an empty string, because "not reported" and "none" are different answers.
  */
+/** A device's diagnostics requests: waiting for the device, or received with their size and the agent that sent them. */
+export function normaliseDiagnostics(list) {
+  return Object.freeze((Array.isArray(list) ? list : []).filter((d) => d && typeof d === 'object' && typeof d.request_id === 'string' && d.request_id !== '').map((d) => Object.freeze({
+    request_id: d.request_id,
+    state: d.state === 'received' ? 'received' : 'waiting',
+    requested_at: nullableText(d.requested_at),
+    requested_by: nullableText(d.requested_by),
+    received_at: nullableText(d.received_at),
+    agent_version: nullableText(d.agent_version),
+    size_bytes: nullableNumber(d.size_bytes),
+    expires_at: nullableText(d.expires_at),
+  })));
+}
+
 export function normaliseDeployment(body) {
   const connection = body.connection && typeof body.connection === 'object'
     ? Object.freeze({

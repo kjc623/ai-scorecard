@@ -150,6 +150,12 @@ var Statements = []Statement{
 	{"kill_switches", SQLKillSwitches},
 	{"trip_kill_switch", SQLTripKillSwitch},
 	{"clear_kill_switch", SQLClearKillSwitch},
+	{"lock_diagnostics_device", SQLLockDiagnosticsDevice},
+	{"pending_diagnostics", SQLPendingDiagnostics},
+	{"insert_diagnostics", SQLInsertDiagnostics},
+	{"receive_diagnostics", SQLReceiveDiagnostics},
+	{"device_diagnostics", SQLDeviceDiagnostics},
+	{"diagnostics_bundle", SQLDiagnosticsBundle},
 }
 
 // SQLStore is the PostgreSQL implementation of Store.

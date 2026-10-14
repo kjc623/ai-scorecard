@@ -224,3 +224,40 @@ func TestReportRefusesUnvalidatedShape(t *testing.T) {
 		t.Fatalf("error = %v, want 400", err)
 	}
 }
+
+// The response names the oldest diagnostics request waiting for the device, and nothing once it is
+// answered.
+func TestReportNamesAWaitingDiagnosticsRequest(t *testing.T) {
+	st := storetest.New()
+	seed(st)
+	svc, err := New(st, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 4, 9, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return at }
+	ctx := context.Background()
+
+	resp, err := svc.Report(ctx, "tenant-1", "device-1", validReport(at))
+	if err != nil || resp.DiagnosticsRequest != "" {
+		t.Fatalf("with no request: %q, %v", resp.DiagnosticsRequest, err)
+	}
+	const id = "6f1c2b9e-1d1a-4c55-9a51-3f1c2b9e1d1a"
+	if _, _, err := st.RequestDiagnostics(ctx, store.Diagnostics{TenantID: "tenant-1", RequestID: id, DeviceID: "device-1",
+		RequestedBy: "admin", RequestedAt: at.Add(-time.Minute), ExpiresAt: at.Add(time.Hour)}, store.AuditEntry{}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err = svc.Report(ctx, "tenant-1", "device-1", validReport(at))
+	if err != nil || resp.DiagnosticsRequest != id {
+		t.Fatalf("with a request waiting: %q, %v", resp.DiagnosticsRequest, err)
+	}
+	received := at.Add(time.Second)
+	if err := st.ReceiveDiagnostics(ctx, store.Diagnostics{TenantID: "tenant-1", RequestID: id, DeviceID: "device-1",
+		ReceivedAt: &received, ExpiresAt: at.Add(24 * time.Hour)}, []byte("PK"), store.AuditEntry{}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err = svc.Report(ctx, "tenant-1", "device-1", validReport(at.Add(time.Minute)))
+	if err != nil || resp.DiagnosticsRequest != "" {
+		t.Fatalf("after the answer: %q, %v", resp.DiagnosticsRequest, err)
+	}
+}
