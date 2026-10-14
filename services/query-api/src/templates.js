@@ -9,7 +9,7 @@
 // through the same validate -> guard -> compile path as a hand-written document, so there is
 // exactly one place that can put text into a statement.
 
-import { BUCKETS } from './registry.js';
+import { BUCKETS, ROUTES } from './registry.js';
 import { REASON, unsupported } from './errors.js';
 import {
   classTotalStatement,
@@ -402,7 +402,7 @@ export const TEMPLATES = Object.freeze({
     title: 'What happened in this window, for this tool or person?',
     source: 'ingest.submission',
     kind: 'list',
-    params: ['window', 'limit', 'cursor', 'subject', 'tool', 'device', 'class', 'content_state', 'action', 'mode', 'department', 'prompt_kind', 'prompt_kind_not', 'attachments'],
+    params: ['window', 'limit', 'cursor', 'subject', 'tool', 'device', 'class', 'content_state', 'action', 'mode', 'department', 'prompt_kind', 'prompt_kind_not', 'attachments', 'route', 'routes'],
     build(params) {
       return {
         document: {
@@ -425,6 +425,10 @@ export const TEMPLATES = Object.freeze({
             eq('prompt_kind', oneOf(params, 'prompt_kind_not', ['user', 'client_generated', 'unknown']), 'ne'),
             // `attachments: yes` keeps the submissions that described at least one attachment.
             oneOf(params, 'attachments', ['yes']) ? { field: 'attachment_count', op: 'gt', value: 0 } : null,
+            // `route` keeps the events that route collected, whichever route won; `routes: several`
+            // keeps the events more than one route collected, such as a device and a provider's API.
+            eq('observed_route', oneOf(params, 'route', ROUTES)),
+            oneOf(params, 'routes', ['several']) ? { field: 'route_count', op: 'gt', value: 1 } : null,
           ]),
           window: windowOf(params),
           limit: limitOf(params, 50, 500),

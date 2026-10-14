@@ -368,8 +368,8 @@ export function subjectToolsStatement(subject, query) {
 }
 
 /**
- * The event detail: one submission and its observations, one row per route, so an overlapping-route
- * count can be explained rather than merely defended. No content column is selected: this
+ * The event detail: one submission and its observations, one row per route with its origin, so an
+ * overlapping-route count can be explained rather than merely defended. No content column is selected: this
  * component cannot see content, and `content_state` says which of the four answers applies.
  *
  * @param {string} submissionId
@@ -390,7 +390,11 @@ export function submissionDetailStatement(submissionId) {
       '       o.kind AS observation_kind, o.direction, o.occurred_at AS observation_occurred_at,',
       '       o.received_at AS observation_received_at, o.size_bytes AS observation_size_bytes,',
       '       o.labels AS observation_labels, o.policy_decision, o.detection_basis,',
-      '       o.window_start, o.window_end, o.submission_count, o.bytes_total',
+      '       o.window_start, o.window_end, o.submission_count, o.bytes_total,',
+      // Where each observation came from: the device, or the provider whose admin API reported it.
+      '       o.device_id AS observation_device,',
+      '       (SELECT p.display_name FROM ops.provider_connection pc JOIN ref.provider p ON p.provider = pc.provider',
+      '         WHERE pc.tenant_id = o.tenant_id AND pc.connection_id = o.connection_id) AS observation_provider',
       '  FROM ingest.submission s',
       '  LEFT JOIN ingest.observation o',
       '    ON o.tenant_id = s.tenant_id AND o.dedup_key = s.dedup_key',

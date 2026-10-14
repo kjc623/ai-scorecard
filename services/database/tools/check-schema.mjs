@@ -49,7 +49,10 @@ const testsCode = strip(tests);
 const RUNTIME_ROLES = ['sac_ingest', 'sac_control', 'sac_vault', 'sac_query', 'sac_ops'];
 // The definer owners: sac_resolver owns the cross-tenant lookups, sac_recorder the provider write
 // path. Each definer's owner is named here; any other owner fails.
-const DEFINER_OWNERS = { 'ingest.record_provider_event': 'sac_recorder' };
+const DEFINER_OWNERS = {
+  'ingest.record_provider_event': 'sac_recorder',
+  'ingest.provider_record_key': 'sac_recorder',
+};
 const DEFAULT_DEFINER_OWNER = 'sac_resolver';
 const ROLES = [...RUNTIME_ROLES, 'sac_resolver', 'sac_recorder'];
 
@@ -325,7 +328,7 @@ check('grants.nothing-to-public', !grants.some((g) => g.grantees.includes('PUBLI
   check('secdef.owned-by-definer-role', badOwner.length === 0,
     badOwner.length
       ? `not owned by their definer role: ${badOwner.map((d) => `${d.name} (${owners.get(d.name) ?? 'the applying role'}, want ${wantOwner(d.name)})`).join(', ')}`
-      : 'every definer is owned by sac_resolver, and record_provider_event by sac_recorder');
+      : 'every definer is owned by sac_resolver, and the provider write path by sac_recorder');
 
   // Privileges must be set while the applying role still owns the functions: afterwards it can no
   // longer change them, and PUBLIC would keep EXECUTE.

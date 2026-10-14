@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { SOURCES, TEMPLATES, TEMPLATE_NAMES, RESULT_STATES, STATE_PAIRS, COLLECTOR_DETAILS } from '../src/vocab.js';
+import { SOURCES, TEMPLATES, TEMPLATE_NAMES, RESULT_STATES, STATE_PAIRS, COLLECTOR_DETAILS, ROUTES } from '../src/vocab.js';
 import { ROLE_CAPABILITIES } from '../server/session.mjs';
 import * as registry from '../../query-api/src/registry.js';
 import * as serverTemplates from '../../query-api/src/templates.js';
@@ -31,6 +31,10 @@ test('the ten templates, their sources and their parameters match', () => {
     assert.deepEqual([...TEMPLATES[name].params].sort(), [...serverTemplates.TEMPLATES[name].params].sort(), `${name} parameters`);
     assert.equal(TEMPLATES[name].source, serverTemplates.TEMPLATES[name].source, `${name} source`);
   }
+});
+
+test('the routes Search filters by are the API\'s', () => {
+  assert.deepEqual(ROUTES, registry.ROUTES);
 });
 
 test('the result-state vocabulary is the API\'s', () => {

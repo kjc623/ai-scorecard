@@ -3832,13 +3832,18 @@ DECLARE
   routes text[];
   n int;
   conn uuid;
+  dev uuid;
 BEGIN
   SELECT s.observed_routes, s.observation_count, s.connection_id INTO routes, n, conn
     FROM ingest.submission s WHERE s.submission_id = current_setting('sac_test.t91_device')::uuid;
-  IF routes IS DISTINCT FROM ARRAY['ext.page_context', 'provider.api'] OR n <> 2 OR conn IS NOT NULL THEN
-    RAISE EXCEPTION 'FAIL T92 the merged submission has routes %, % observations and connection %', routes, n, conn;
+  SELECT s.device_id INTO dev
+    FROM ingest.submission s WHERE s.submission_id = current_setting('sac_test.t91_device')::uuid;
+  IF routes IS DISTINCT FROM ARRAY['ext.page_context', 'provider.api'] OR n <> 2
+     OR conn IS DISTINCT FROM 'c0000000-0000-7000-8000-000000000090'
+     OR dev IS DISTINCT FROM 'aaaaaaaa-0000-7000-8000-000000000001' THEN
+    RAISE EXCEPTION 'FAIL T92 the merged submission has routes %, % observations, device % and connection %', routes, n, dev, conn;
   END IF;
-  RAISE NOTICE 'PASS T92 a provider''s record of a prompt a device captured merges into the device''s submission: same text, person and tool within ten minutes';
+  RAISE NOTICE 'PASS T92 a provider''s record of a prompt a device captured merges into the device''s submission, which then names both origins: same text, person and tool within ten minutes';
 END $$;
 
 -- query-api names a record's provider and never reads its credential; ingest-api reads no
@@ -3900,6 +3905,188 @@ BEGIN
   END IF;
   RAISE NOTICE 'PASS T93 query-api names a record''s provider without its credential; ingest-api and other tenants see no connection; every provider files under catalogued tools';
 END $$;
+
+-- =====================================================================================
+-- T94  A device's capture of a prompt a provider reported first
+-- =====================================================================================
+-- The provider's record arrives first (the device was offline); the device's routes of the same
+-- prompt join it, so it counts once and names both origins. The same text sent again is another
+-- prompt, and each provider record joins one device capture only.
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+DO $$
+DECLARE
+  r record;
+BEGIN
+  SELECT * INTO r FROM ingest.record_provider_event(jsonb_build_object(
+    'schema_version', '1.0', 'tenant_id', '11111111-1111-7111-8111-111111111111',
+    'event_id', 'e0000000-0000-7000-8000-000000000940',
+    'connection_id', 'c0000000-0000-7000-8000-000000000090',
+    'user_ref', 'u_t94', 'tool_fingerprint', 'app:claude_web', 'direction', 'egress', 'kind', 'prompt',
+    'occurred_at', '2026-10-02T11:00:00Z', 'monotonic_offset_ms', 0, 'source', 'provider.api',
+    'collection_mode', 'm1', 'size_bytes', 30, 'content_digest', 'sha256:' || repeat('c1', 32),
+    'dedup_key', 'sha256:' || repeat('c2', 32), 'labels', '[]'::jsonb, 'classifier_version', 'rules-1.0.0/model-1.0.0', 'confidence', 'high',
+    'prompt_kind', 'user',
+    'policy_decision', jsonb_build_object('rule_id', 'policy.default', 'action', 'logged', 'decided_locally', false)));
+  IF r.event_outcome IS DISTINCT FROM 'inserted' THEN
+    RAISE EXCEPTION 'FAIL T94 the provider''s record was %, want inserted', r.event_outcome;
+  END IF;
+  PERFORM set_config('sac_test.t94_provider', r.event_submission_id::text, false);
+END $$;
+RESET ROLE;
+
+SET ROLE sac_ingest;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+DO $$
+DECLARE
+  base jsonb := jsonb_build_object(
+    'schema_version', '1.0', 'tenant_id', '11111111-1111-7111-8111-111111111111',
+    'device_id', 'aaaaaaaa-0000-7000-8000-000000000001',
+    'user_ref', 'u_t94', 'tool_fingerprint', 'app:claude_web', 'direction', 'egress', 'kind', 'prompt',
+    'occurred_at', '2026-10-02T11:01:10Z', 'monotonic_offset_ms', 10, 'source', 'ext.page_context',
+    'collection_mode', 'm1', 'size_bytes', 30, 'content_digest', 'sha256:' || repeat('c1', 32),
+    'dedup_key', 'sha256:' || repeat('c3', 32), 'labels', '[]'::jsonb, 'classifier_version', '1.0.0',
+    'confidence', 'high', 'prompt_kind', 'user',
+    'policy_decision', jsonb_build_object('rule_id', 'policy.default', 'action', 'logged', 'decided_locally', true));
+  r record;
+  want uuid := current_setting('sac_test.t94_provider')::uuid;
+  key text;
+BEGIN
+  SELECT * INTO r FROM ingest.record_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000941'), now());
+  IF r.event_outcome IS DISTINCT FROM 'merged' OR r.event_submission_id IS DISTINCT FROM want THEN
+    RAISE EXCEPTION 'FAIL T94 the device''s capture was % into %, want merged into %', r.event_outcome, r.event_submission_id, want;
+  END IF;
+  SELECT o.dedup_key INTO key FROM ingest.observation o WHERE o.event_id = 'e0000000-0000-7000-8000-000000000941';
+  IF key IS DISTINCT FROM 'sha256:' || repeat('c2', 32) THEN
+    RAISE EXCEPTION 'FAIL T94 the device''s observation is filed under %, not the submission''s key', key;
+  END IF;
+
+  -- Another route of the same capture, and a replay of the first.
+  SELECT * INTO r FROM ingest.record_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000942', 'source', 'proxy.tls',
+    'occurred_at', '2026-10-02T11:01:12Z'), now());
+  IF r.event_outcome IS DISTINCT FROM 'merged' OR r.event_submission_id IS DISTINCT FROM want THEN
+    RAISE EXCEPTION 'FAIL T94 the device''s second route was % into %', r.event_outcome, r.event_submission_id;
+  END IF;
+  SELECT * INTO r FROM ingest.record_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000941'), now());
+  IF r.event_outcome IS DISTINCT FROM 'duplicate' OR r.event_submission_id IS DISTINCT FROM want THEN
+    RAISE EXCEPTION 'FAIL T94 the replayed capture was % for %', r.event_outcome, r.event_submission_id;
+  END IF;
+
+  -- The same text sent again from the device six minutes later is another prompt.
+  SELECT * INTO r FROM ingest.record_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000943', 'occurred_at', '2026-10-02T11:07:00Z',
+    'dedup_key', 'sha256:' || repeat('c4', 32)), now());
+  IF r.event_outcome IS DISTINCT FROM 'inserted' THEN
+    RAISE EXCEPTION 'FAIL T94 the same text sent again was %, want inserted', r.event_outcome;
+  END IF;
+  PERFORM set_config('sac_test.t94_resend', r.event_submission_id::text, false);
+END $$;
+RESET ROLE;
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+DO $$
+DECLARE
+  base jsonb := jsonb_build_object(
+    'schema_version', '1.0', 'tenant_id', '11111111-1111-7111-8111-111111111111',
+    'connection_id', 'c0000000-0000-7000-8000-000000000090',
+    'user_ref', 'u_t94', 'tool_fingerprint', 'app:claude_web', 'direction', 'egress', 'kind', 'prompt',
+    'monotonic_offset_ms', 0, 'source', 'provider.api',
+    'collection_mode', 'm1', 'size_bytes', 30, 'content_digest', 'sha256:' || repeat('c1', 32),
+    'labels', '[]'::jsonb, 'classifier_version', 'rules-1.0.0/model-1.0.0', 'confidence', 'high',
+    'prompt_kind', 'user',
+    'policy_decision', jsonb_build_object('rule_id', 'policy.default', 'action', 'logged', 'decided_locally', false));
+  r record;
+  resend uuid := current_setting('sac_test.t94_resend')::uuid;
+BEGIN
+  -- The provider's record of the resend joins the device's capture of it.
+  SELECT * INTO r FROM ingest.record_provider_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000944', 'occurred_at', '2026-10-02T11:07:05Z',
+    'dedup_key', 'sha256:' || repeat('c5', 32)));
+  IF r.event_outcome IS DISTINCT FROM 'merged' OR r.event_submission_id IS DISTINCT FROM resend THEN
+    RAISE EXCEPTION 'FAIL T94 the provider''s record of the resend was % into %, want merged into %', r.event_outcome, r.event_submission_id, resend;
+  END IF;
+  -- A third send the device did not capture stays its own prompt rather than joining one that
+  -- already has the provider's record.
+  SELECT * INTO r FROM ingest.record_provider_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000945', 'occurred_at', '2026-10-02T11:07:30Z',
+    'dedup_key', 'sha256:' || repeat('c6', 32)));
+  IF r.event_outcome IS DISTINCT FROM 'inserted' THEN
+    RAISE EXCEPTION 'FAIL T94 a third send was %, want inserted', r.event_outcome;
+  END IF;
+END $$;
+RESET ROLE;
+
+DO $$
+DECLARE
+  s record;
+BEGIN
+  SELECT * INTO s FROM ingest.submission WHERE submission_id = current_setting('sac_test.t94_provider')::uuid;
+  IF s.observed_routes IS DISTINCT FROM ARRAY['provider.api', 'ext.page_context', 'proxy.tls']
+     OR s.observation_count <> 3
+     OR s.device_id IS DISTINCT FROM 'aaaaaaaa-0000-7000-8000-000000000001'
+     OR s.connection_id IS DISTINCT FROM 'c0000000-0000-7000-8000-000000000090'
+     OR s.winning_source <> 'ext.page_context'
+     OR s.first_occurred_at <> '2026-10-02T11:00:00Z' THEN
+    RAISE EXCEPTION 'FAIL T94 the submission has routes %, % observations, device %, connection %, winner %, first %',
+      s.observed_routes, s.observation_count, s.device_id, s.connection_id, s.winning_source, s.first_occurred_at;
+  END IF;
+  IF (SELECT count(*) FROM ingest.submission WHERE user_ref = 'u_t94') <> 3 THEN
+    RAISE EXCEPTION 'FAIL T94 three sends are % submissions', (SELECT count(*) FROM ingest.submission WHERE user_ref = 'u_t94');
+  END IF;
+  -- Every observation of the submission is filed under its key, so its detail lists all three.
+  IF (SELECT count(*) FROM ingest.observation o WHERE o.dedup_key = s.dedup_key) <> 3 THEN
+    RAISE EXCEPTION 'FAIL T94 the submission''s key files % observations', (SELECT count(*) FROM ingest.observation o WHERE o.dedup_key = s.dedup_key);
+  END IF;
+  RAISE NOTICE 'PASS T94 a device''s capture of a prompt a provider reported first joins the provider''s submission, which names both origins; a resend stays another prompt';
+END $$;
+
+-- =====================================================================================
+-- T95  Two provider connections that report one prompt
+-- =====================================================================================
+-- A log sink and an admin API can both report a prompt: the second connection's record joins the
+-- event, so it still counts once, and a resend that connection reports is another prompt.
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+DO $$
+DECLARE
+  base jsonb := jsonb_build_object(
+    'schema_version', '1.0', 'tenant_id', '11111111-1111-7111-8111-111111111111',
+    'connection_id', 'c0000000-0000-7000-8000-000000000095',
+    'user_ref', 'u_t94', 'tool_fingerprint', 'app:claude_web', 'direction', 'egress', 'kind', 'prompt',
+    'monotonic_offset_ms', 0, 'source', 'provider.api',
+    'collection_mode', 'm1', 'size_bytes', 30, 'content_digest', 'sha256:' || repeat('c1', 32),
+    'labels', '[]'::jsonb, 'classifier_version', 'rules-1.0.0/model-1.0.0', 'confidence', 'high',
+    'prompt_kind', 'user',
+    'policy_decision', jsonb_build_object('rule_id', 'policy.default', 'action', 'logged', 'decided_locally', false));
+  r record;
+  want uuid := current_setting('sac_test.t94_provider')::uuid;
+  routes text[];
+  n int;
+BEGIN
+  INSERT INTO ops.provider_connection (tenant_id, connection_id, provider, account, credential_enc, created_by, updated_by)
+  VALUES ('11111111-1111-7111-8111-111111111111', 'c0000000-0000-7000-8000-000000000095',
+          'microsoft_365_copilot', 'tenant-t95', '\x00'::bytea, 'test', 'test');
+  SELECT * INTO r FROM ingest.record_provider_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000950', 'occurred_at', '2026-10-02T11:00:20Z',
+    'dedup_key', 'sha256:' || repeat('d1', 32)));
+  IF r.event_outcome IS DISTINCT FROM 'merged' OR r.event_submission_id IS DISTINCT FROM want THEN
+    RAISE EXCEPTION 'FAIL T95 a second connection''s record was % into %, want merged into %', r.event_outcome, r.event_submission_id, want;
+  END IF;
+  SELECT * INTO r FROM ingest.record_provider_event(base || jsonb_build_object(
+    'event_id', 'e0000000-0000-7000-8000-000000000951', 'occurred_at', '2026-10-02T10:52:00Z',
+    'dedup_key', 'sha256:' || repeat('d2', 32)));
+  IF r.event_outcome IS DISTINCT FROM 'inserted' THEN
+    RAISE EXCEPTION 'FAIL T95 a resend the second connection reported was %, want inserted', r.event_outcome;
+  END IF;
+  RAISE NOTICE 'PASS T95 a prompt two provider connections report is one event; a resend either reports stays another';
+END $$;
+RESET ROLE;
 
 -- =====================================================================================
 -- Report

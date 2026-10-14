@@ -14,7 +14,9 @@ layout lands on the page that holds it now.
   the directory or a device has named, with their teams and prompts, and each person's page).
 - **Search** (`explore.html`): an analyst lists events and findings, searches prompt text, and
   reads an event's stored prompt. An event read from a provider's admin API names the provider
-  where a device would be.
+  where a device would be, and one a device and a provider both collected names both. Each event
+  lists every route that collected it, and the Route and Routes filters find events by any of them
+  or those several collected.
 - **Policy**: Rules (the enforcement rules, read top to bottom like a firewall's rulebase: each rule
   for the people, groups, departments, units or teams it names, the tools and the labels it checks,
   its action and the prompts it decided over 30 days; everyone reads them, and an admin edits them
