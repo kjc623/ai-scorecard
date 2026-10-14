@@ -316,6 +316,37 @@ test('a device row is the device and what it runs, its state with when it was la
   assert.match(html, /<span class="cell-stack"><span class="v-absent">—<\/span><\/span>/, 'no user is an absence, not a blank');
 });
 
+test('a device with apps waiting for a restart names them in its row, and says "Restart needed" when nothing else is degraded', () => {
+  const base = { liveness: 'reporting', collectors_reporting: 3, collectors_healthy: 1, collectors_absent: 0, collectors_tampered: 0, last_seen_at: '2026-10-01T11:57:00Z' };
+  const state = readState(envelope('ok', {
+    data: [
+      { ...base, device: 'd1', hostname: 'DEV-1', collectors_degraded: 1, restart_required: ['tool_config_claude_code'] },
+      { ...base, device: 'd2', hostname: 'DEV-2', collectors_degraded: 2, collectors_healthy: 0, restart_required: ['tool_config_claude_code', 'tool_config_codex'] },
+      { ...base, device: 'd3', hostname: 'DEV-3', collectors_degraded: 2, collectors_healthy: 0, restart_required: ['tool_config_codex'] },
+      { ...base, device: 'd4', hostname: 'DEV-4', collectors_degraded: 1, restart_required: [] },
+      { ...base, device: 'd5', hostname: 'DEV-5', collectors_degraded: 1, restart_required: ['tool_config_newtool'] },
+      { ...base, device: 'd6', hostname: 'DEV-6', liveness: 'stale', collectors_degraded: 1, restart_required: ['tool_config_codex'], last_seen_at: '2026-09-29T02:11:00Z' },
+    ],
+    freshness: FRESH, coverage: PARTIAL, meta: { source: 'mart.v_device_liveness' },
+  }));
+  const view = devicesView(state, { now: NOW() });
+  const byHost = Object.fromEntries(view.tables[0].rows.map((r) => [r.row.hostname, r.row.status_cell]));
+  assert.deepEqual(byHost['DEV-1'], { chip: { key: 'degraded', text: 'Restart needed' }, secondary: 'Claude Code needs a restart · Last seen 3 min ago · Collectors 1 degraded · 1 healthy' });
+  assert.deepEqual(byHost['DEV-2'], { chip: { key: 'degraded', text: 'Restart needed' }, secondary: 'Claude Code and Codex need a restart · Last seen 3 min ago · Collectors 2 degraded' });
+  assert.deepEqual(byHost['DEV-3'], { chip: { key: 'degraded', text: 'Degraded' }, secondary: 'Codex needs a restart · Last seen 3 min ago · Collectors 2 degraded' },
+    'another collector is degraded for another cause, so the device is degraded');
+  assert.deepEqual(byHost['DEV-4'].chip, { key: 'degraded', text: 'Degraded' });
+  assert.equal(byHost['DEV-4'].secondary, 'Last seen 3 min ago · Collectors 1 degraded · 1 healthy');
+  assert.match(byHost['DEV-5'].secondary, /^tool_config_newtool needs a restart · /, 'a collector of no known tool is named as it is');
+  assert.equal(byHost['DEV-6'].chip.key, 'stale', 'a quiet device stays quiet');
+  assert.match(byHost['DEV-6'].secondary, /^Codex needs a restart · Last seen 2 days ago/);
+
+  const degraded = devicesView(state, { now: NOW(), filters: { status: 'degraded' } });
+  assert.deepEqual(degraded.tables[0].rows.map((r) => r.row.hostname), ['DEV-1', 'DEV-2', 'DEV-3', 'DEV-4', 'DEV-5'], 'a device that needs a restart is still found under Degraded');
+  const html = renderScreen(view, SHELL);
+  assert.match(html, /<span class="v-vocab v-vocab-degraded" title="degraded">Restart needed<\/span>/, 'it keeps the degraded colour');
+});
+
 test('the attention tile says why devices need attention, each reason opening the devices it counts, and the status filter takes a reason', async () => {
   const dashboard = dashboardFor();
   const { view } = await dashboard.load('devices', {});

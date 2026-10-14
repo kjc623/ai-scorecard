@@ -10,7 +10,7 @@ import { formatInstant } from './format.js';
 import { COLLECTION_MODE_LABELS } from './vocab.js';
 import {
   COLLECTION_MODES, SANCTION_STATES, ENDPOINT_COLLECTORS, ENDPOINT_TOOLS, effectiveMode, modeIncreaseNeedsConfirmation, searchTierAllowed,
-  KILL_SWITCH_ROUTES,
+  KILL_SWITCH_ROUTES, RESTART_NOTICES,
 } from './settings.js';
 
 const MODE_LABELS = COLLECTION_MODE_LABELS;
@@ -268,6 +268,19 @@ function stTLSInspection(state) {
   return stCard('TLS inspection', body);
 }
 
+function stRestartNotice(state) {
+  const current = state.data.restart_notice;
+  const busy = Boolean(state.restartNotice.pending);
+  const control = current === null
+    ? '<p><span class="v-absent">not reported</span> The server did not send this setting.</p>'
+    : `<div class="seg dp-seg" role="group" aria-label="Apps that need a restart">${RESTART_NOTICES.map((n) => segItem(n.label, n.key, current, { action: 'restart-notice', value: n.key }, { disabled: busy })).join('')}</div>`;
+  const body = control
+    + '<p class="dp-note">Some apps read the agent\'s settings only when they start, so one that is already running keeps running without them until it restarts. Choose whether such a device shows on the dashboard, whether the person using the app is notified to restart it, or both.</p>'
+    + (busy ? '<p class="dp-note" role="status">Saving…</p>' : '')
+    + stProblem(state.restartNotice.problem);
+  return stCard('Apps that need a restart', body);
+}
+
 function stKillSwitch(state) {
   const switches = state.data.kill_switches;
   if (switches === null) {
@@ -327,6 +340,7 @@ export function renderSettings(state, { head = {} } = {}) {
     + stOverrides(state)
     + `<div class="dp-grid">${stTLSInspection(state)}${stKillSwitch(state)}</div>`
     + stEndpoint(state)
+    + stRestartNotice(state)
     + notes
     + '</article>';
 }

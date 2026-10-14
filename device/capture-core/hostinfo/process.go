@@ -31,6 +31,13 @@ type Process struct {
 	Session uint32
 }
 
+// ProcessEntry is a process as the system's process list names it.
+type ProcessEntry struct {
+	PID, Parent uint32
+	// Name is the image's file name, such as claude.exe.
+	Name string
+}
+
 // ProcessInfo answers are kept this long, for at most this many processes.
 const (
 	processCacheTTL = 10 * time.Minute

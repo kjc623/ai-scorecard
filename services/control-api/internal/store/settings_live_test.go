@@ -264,3 +264,66 @@ func TestTLSInspectionAgainstPostgres(t *testing.T) {
 		t.Fatalf("audits = %v, want %v", got, want)
 	}
 }
+
+// TestRestartNoticeAgainstPostgres: a new tenant reports apps that need a restart on the dashboard,
+// in both the Settings page and the policy inputs; a change is read back and audited with the old
+// and the new value, and a value outside the set is refused before it is written.
+func TestRestartNoticeAgainstPostgres(t *testing.T) {
+	owner := pgtest.Open(t)
+	st := store.NewSQL(pgtest.OpenAs(t, "sac_control"))
+	ctx := context.Background()
+	tenant := pgtest.Tenant(t, owner, "eastus")
+	audit := store.AuditEntry{TenantID: tenant, ActorType: store.ActorUser, ActorID: "admin@example.com",
+		Action: "tenant.restart_notice.set", ObjectType: "tenant", ObjectID: tenant, OccurredAt: time.Now().UTC().Truncate(time.Microsecond)}
+
+	read := func() (string, string) {
+		t.Helper()
+		s, err := st.Settings(ctx, tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		in, err := st.PolicyInputs(ctx, tenant)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s.RestartNotice, in.Tenant.RestartNotice
+	}
+	if page, policy := read(); page != "dashboard" || policy != "dashboard" {
+		t.Fatalf("a new tenant reads restart notice %q (Settings) and %q (policy), want dashboard", page, policy)
+	}
+	for _, v := range []string{"both", "off"} {
+		if err := st.SetRestartNotice(ctx, tenant, v, audit); err != nil {
+			t.Fatal(err)
+		}
+		if page, policy := read(); page != v || policy != v {
+			t.Fatalf("after setting %s: %q (Settings) and %q (policy)", v, page, policy)
+		}
+	}
+	if err := st.SetRestartNotice(ctx, tenant, "email", audit); !errors.Is(err, store.ErrUnknownRestartNotice) {
+		t.Fatalf("a value outside the set: %v", err)
+	}
+	if err := st.SetRestartNotice(ctx, pgtest.UUID(t), "notify", audit); !errors.Is(err, store.ErrUnknownTenant) {
+		t.Fatalf("unknown tenant: %v", err)
+	}
+
+	rows, err := owner.QueryContext(ctx, `SELECT detail->>'previous', detail->>'new' FROM ops.audit
+		WHERE tenant_id = $1::uuid AND action = 'tenant.restart_notice.set' ORDER BY audit_seq`, tenant)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var previous, next string
+		if err := rows.Scan(&previous, &next); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, previous+">"+next)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"dashboard>both", "both>off"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("audits = %v, want %v", got, want)
+	}
+}

@@ -540,6 +540,9 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
+	// The user-session helpers show notifications, among them the tool config providers'.
+	s.helpers = userhelper.New(userhelper.Config{Platform: platform.userSessions, Log: s.logf, Clock: time.Now})
+
 	// While a tool config provider runs, a change someone else makes to its managed files or
 	// registry values is put right and reported as tampering.
 	drift := toolconfig.NewWatcher(s.logf)
@@ -572,11 +575,15 @@ func (s *service) buildProviders() error {
 	})
 
 	// A tool's health reads the version the inventory's last scan found, what the receiver and the
-	// hook relay last had from it, and whether the process monitor saw it run.
+	// hook relay last had from it, and whether the process monitor saw it run. Its apps' running
+	// processes are listed to find those that need a restart, and their people are told through
+	// the user-session helpers.
 	toolHealth := func(cfg toolconfig.Config) toolconfig.Config {
 		cfg.InstalledVersion = scanner.Installed
 		cfg.LastEvent = func(tool string) time.Time { return s.lastToolEvent(otel, tool) }
 		cfg.LastRunning = procs.LastRunning
+		cfg.Processes = s.appProcesses
+		cfg.Notify = s.helpers.Notify
 		return cfg
 	}
 
@@ -658,7 +665,6 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
-	s.helpers = userhelper.New(userhelper.Config{Platform: platform.userSessions, Log: s.logf, Clock: time.Now})
 	if err := s.reg.Add(s.helpers); err != nil {
 		return err
 	}

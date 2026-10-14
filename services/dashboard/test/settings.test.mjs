@@ -33,6 +33,7 @@ function populated(overrides = {}) {
     ],
     endpoint: endpointDefaults(),
     tls_inspection: false,
+    restart_notice: 'dashboard',
     kill_switches: [],
     data_classes: ['credential', 'customer_pii', 'government_id', 'health', 'legal_commercial', 'payment_card', 'source_code'],
     app_categories: ['chat_assistant', 'coding_agent', 'ide', 'ide_assistant', 'inference_api', 'local_runtime'],
@@ -420,6 +421,94 @@ test('TLS inspection: a refused write is said in the card, and a setting the ser
 });
 
 // ---------------------------------------------------------------------------------------------
+// Apps that need a restart
+// ---------------------------------------------------------------------------------------------
+
+/** The card for apps that need a restart, of a rendered page. */
+function restartCard(page) {
+  const start = page.indexOf('<h3>Apps that need a restart</h3>');
+  assert.ok(start >= 0, 'the page has a card for apps that need a restart');
+  return page.slice(start, page.indexOf('</section>', start));
+}
+
+/** The choice pressed in the restart card. */
+function restartChoice(card) {
+  const m = card.match(/aria-pressed="true" data-action="restart-notice" data-value="([a-z]+)"/);
+  assert.ok(m, 'a pressed choice for apps that need a restart');
+  return m[1];
+}
+
+test('apps that need a restart: the four choices, the dashboard by default, with what it is for', async () => {
+  const { html } = await loaded({ [GET]: () => ({ status: 200, body: populated() }) });
+  const card = restartCard(html());
+  assert.equal(restartChoice(card), 'dashboard');
+  assert.match(card, /aria-label="Apps that need a restart"/);
+  assert.deepEqual([...card.matchAll(/data-value="([a-z]+)"[^>]*>([^<]+)<\/button>/g)].map((m) => [m[1], m[2]]),
+    [['off', 'Off'], ['dashboard', 'Dashboard'], ['notify', 'Notify users'], ['both', 'Both']]);
+  assert.match(card, /Some apps read the agent's settings only when they start, so one that is already running keeps running without them until it restarts\./);
+  assert.match(card, /whether such a device shows on the dashboard, whether the person using the app is notified to restart it, or both\./);
+});
+
+test('apps that need a restart: choosing one sends it, and the page re-reads', async () => {
+  let body = populated();
+  const { controller, requests, html } = await loaded({
+    [GET]: () => ({ status: 200, body }),
+    'PUT /admin/v1/settings/restart-notice': (spec) => { body = { ...body, restart_notice: spec.body.restart_notice }; return { status: 204 }; },
+  });
+  await controller.act({ action: 'restart-notice', value: 'both' });
+  const puts = requests.filter((r) => r.method === 'PUT');
+  assert.equal(puts.length, 1);
+  assert.equal(puts[0].path, '/admin/v1/settings/restart-notice');
+  assert.deepEqual(puts[0].body, { restart_notice: 'both' });
+  assert.equal(requests.at(-1).method, 'GET', 'the page re-reads after the write');
+  assert.equal(controller.state.data.restart_notice, 'both');
+  assert.equal(restartChoice(restartCard(html())), 'both');
+  // The choice already made sends nothing; a value outside the four sends nothing.
+  await controller.act({ action: 'restart-notice', value: 'both' });
+  await controller.act({ action: 'restart-notice', value: 'email' });
+  assert.equal(requests.filter((r) => r.method === 'PUT').length, 1);
+  await controller.act({ action: 'restart-notice', value: 'off' });
+  assert.deepEqual(requests.filter((r) => r.method === 'PUT').at(-1).body, { restart_notice: 'off' });
+  assert.equal(controller.state.data.restart_notice, 'off');
+});
+
+test('apps that need a restart: the choice is held while it saves', async () => {
+  let release;
+  const { controller, html } = await loaded({
+    [GET]: () => ({ status: 200, body: populated() }),
+    'PUT /admin/v1/settings/restart-notice': () => new Promise((r) => { release = r; }),
+  });
+  const pending = controller.act({ action: 'restart-notice', value: 'notify' });
+  assert.equal(controller.state.restartNotice.pending, 'notify');
+  const card = restartCard(html());
+  assert.match(card, /Saving…/);
+  assert.equal([...card.matchAll(/data-action="restart-notice"[^>]* disabled>/g)].length, 4, 'every choice is held');
+  release({ status: 204 });
+  await pending;
+  assert.equal(controller.state.restartNotice.pending, null);
+});
+
+test('apps that need a restart: a refused write is said in the card, and a setting the server did not send is not reported', async () => {
+  const { controller, html } = await loaded({
+    [GET]: () => ({ status: 200, body: populated() }),
+    'PUT /admin/v1/settings/restart-notice': () => ({ status: 400, body: { error: { code: 'invalid_request', message: 'restart_notice must be off, dashboard, notify or both' } } }),
+  });
+  await controller.act({ action: 'restart-notice', value: 'notify' });
+  const card = restartCard(html());
+  assert.match(card, /Not changed\./);
+  assert.match(card, /restart_notice must be off, dashboard, notify or both/);
+  assert.equal(controller.state.data.restart_notice, 'dashboard');
+
+  const { restart_notice: _drop, ...without } = populated();
+  const missing = await loaded({ [GET]: () => ({ status: 200, body: without }) });
+  assert.match(restartCard(missing.html()), /not reported/);
+  assert.doesNotMatch(restartCard(missing.html()), /data-action="restart-notice"/);
+  await missing.controller.act({ action: 'restart-notice', value: 'notify' });
+  assert.equal(missing.requests.filter((r) => r.method === 'PUT').length, 0, 'nothing is written over a setting that was not read');
+  assert.match(restartCard(missing.html()), /restart_notice_not_reported/);
+});
+
+// ---------------------------------------------------------------------------------------------
 // Kill switch
 // ---------------------------------------------------------------------------------------------
 
@@ -593,6 +682,9 @@ test('an absent count is null after normalising, never 0', () => {
   assert.deepEqual(data.scope_overrides, {});
   assert.equal(data.endpoint, null, 'endpoint settings the server did not send are null, never all off');
   assert.equal(data.tls_inspection, null, 'a TLS inspection setting the server did not send is null, never off');
+  assert.equal(data.restart_notice, null, 'a restart notice the server did not send is null, never a choice');
+  assert.equal(normaliseSettings({ restart_notice: 'email' }).restart_notice, null, 'nor is one outside the four');
+  assert.equal(normaliseSettings({ restart_notice: 'notify' }).restart_notice, 'notify');
   assert.equal(data.data_classes, null, 'data classes the server did not send are null, never none');
   assert.equal(data.app_categories, null, 'app categories the server did not send are null, never none');
   assert.equal(data.custom_labels, null, 'custom labels the server did not send are null, never none');

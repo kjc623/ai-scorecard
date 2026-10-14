@@ -33,9 +33,10 @@ layout lands on the page that holds it now.
   for) and Coding agents (each coding agent's people, actions and tokens against the period before,
   and the models that received its code and context).
 - **Settings**: Collection (the collection mode, prompt storage, retention, per-tool overrides, TLS
-  inspection, the kill switch and the endpoint collectors), Devices (each device with the mode it
-  applied, and each of its collectors with its state and cause; an admin installs the agent below
-  the list), Identity Providers (the directory read, sign-in and SCIM provisioning), Integrations
+  inspection, the kill switch, the endpoint collectors and how apps that need a restart are
+  reported), Devices (each device with the mode it applied and the apps on it that need a restart,
+  and each of its collectors with its state and cause; an admin installs the agent below the
+  list), Identity Providers (the directory read, sign-in and SCIM provisioning), Integrations
   (every AI provider whose admin API the product reads, as control-api lists them: an admin
   connects each with its key and account or the tenant's Entra consent, replaces its key, pulls it
   now or disconnects it, and sees its last pull and the records read) and Audit trail (filtered by

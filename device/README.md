@@ -186,6 +186,17 @@ the scan could not read does not hold the write back. A row is `degraded` with `
 when the process monitor saw the tool run in the last 24 hours, the agent's configuration had been in
 place all that time, and neither the OTLP receiver nor the hook relay had anything from the tool.
 
+Claude Code and Codex read their managed files only when they start, so a process that was already
+running when a file last changed runs without the change until it restarts. Every 60 seconds, while a
+tool's configuration is in place and the bundle's `endpoint.restart_notice` is not `off`, the service
+lists the running processes of the apps that read it (Claude Code and the Claude desktop app, which
+starts the Claude Code sessions of its Code tab and Cowork; Codex), as the catalog names them by their
+executable and package, and compares each one's start with the managed files' last change. With
+`dashboard` or `both`, the tool's row is `degraded` with `restart_required` while such a process runs.
+With `notify` or `both`, the person signed in to each session running one is shown a notification
+through the user-session helper, "Restart Claude" for a process the desktop app started and otherwise
+the app's own name, once for each change; one that is not shown is tried again at the next check.
+
 With TLS inspection on, the proxy decrypts the bundle's interception hosts (the catalogue's `tls`
 hosts and the domains of its inference APIs) for every process, and a desktop app's own inference
 domains (claude.ai for Claude Desktop) for that app's processes alone; the PAC sends both to the
