@@ -368,7 +368,7 @@ func TestLiveSearch(t *testing.T) {
 	for i, body := range []string{
 		`{"prompt":"contract renewal for Contoso","attachments":[{"name":"Contoso-Q3_report.pdf"}]}`,
 		`{"prompt":"Contoso pricing review","attachments":[{"name":"pricing.xlsx"}]}`,
-		`{"prompt":"unrelated question"}`,
+		`{"prompt":"unrelated question: sundial-check-claude-desktop, mail ana@contoso.com"}`,
 	} {
 		sub := l.seedSubmission(w, "user", `[]`, base.Add(time.Duration(i)*time.Minute))
 		subs = append(subs, sub)
@@ -408,6 +408,12 @@ func TestLiveSearch(t *testing.T) {
 		"pricing.xlsx": subs[1] + "/attachment_name",
 		"q3_report":    subs[0] + "/attachment_name",
 		"Q3 pricing":   "",
+		// A hyphenated word or an address is found by the parser's reading of it, whole or in part.
+		"sundial-check-claude-desktop": subs[2] + "/prompt_body",
+		"check-claude":                 subs[2] + "/prompt_body",
+		"ana@contoso.com":              subs[2] + "/prompt_body",
+		"claude-check":                 "",
+		"desktop, mail":                subs[2] + "/prompt_body",
 	} {
 		if got := hitKeys(search(store.FormTerms, q, "", 10).Hits); got != want {
 			t.Errorf("terms %q hits %s, want %q", q, got, want)

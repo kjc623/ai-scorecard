@@ -62,10 +62,12 @@ func TestSearchText(t *testing.T) {
 		form        store.SearchForm
 		query, want string
 	}{
-		{store.FormTerms, "Contract renewal", "contract & renewal"},
-		{store.FormTerms, `"board pack" Q3`, "board <-> pack & q3"},
-		{store.FormTerms, "a AND b or NOT c", "a & b & c"},
-		{store.FormTerms, "x:* | !y & (z)", "x & y & z"},
+		{store.FormTerms, "Contract renewal", "'contract' & 'renewal'"},
+		{store.FormTerms, `"board pack" Q3`, "'board' <-> 'pack' & 'q3'"},
+		{store.FormTerms, "a AND b or NOT c", "'a' & 'b' & 'c'"},
+		{store.FormTerms, "x:* | !y & (z)", "'x:*' & '!y' & '(z)'"},
+		{store.FormTerms, `"sundial-check claude"`, "('sundial-check' | 'sundial' <-> 'check') <-> 'claude'"},
+		{store.FormTerms, `it's a\b`, `'it''s' & 'a\\b'`},
 		{store.FormSubstring, "Q3_50%", `Q3\_50\%`},
 		{store.FormSubstring, `a\b`, `a\\b`},
 		{store.FormFuzzy, "contrct.pdf", "contrct.pdf"},
