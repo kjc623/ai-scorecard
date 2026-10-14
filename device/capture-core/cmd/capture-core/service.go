@@ -558,8 +558,13 @@ func (s *service) buildProviders() error {
 
 	// Claude Code's managed settings point its telemetry at the receiver and declare this
 	// executable's hooks while the bundle switches its OTel export or its hooks on. Claude Code is
-	// installed when the inventory's CLI scan finds it in a user profile.
-	claudeInstalled := func() bool { return inventory.CLIInstalled(s.currentBundle(), "claude_code") }
+	// installed when the inventory's CLI scan finds it in a user profile, or its installed-app scan
+	// finds Claude Desktop: the desktop app's Code tab and Cowork run their sessions on Claude Code,
+	// which reads the same managed settings.
+	desktopInstalled := s.appInstalled("claude_desktop")
+	claudeInstalled := func() bool {
+		return inventory.CLIInstalled(s.currentBundle(), "claude_code") || desktopInstalled()
+	}
 	claude := toolconfig.NewClaudeCode(toolconfig.NewClaudeCodeWriter(s.dir, platform.claudeCodeSettings, claudeInstalled), toolHealth(toolconfig.Config{
 		Token:   otel.Token,
 		Scope:   s.toolScope,
