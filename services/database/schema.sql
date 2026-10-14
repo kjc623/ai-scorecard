@@ -3530,7 +3530,6 @@ INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_k
   ('tls_ba5b03450233e3fc', 'GitHub Copilot', 'github', 'tls', '{"host":"api.githubcopilot.com","path":"/models"}', 'github_copilot'),
   ('tls_7a4b6619639eeb3a', 'GitHub Copilot', 'github', 'tls', '{"host":"api.business.githubcopilot.com","path":"/chat/completions"}', 'github_copilot'),
   ('tls_37b0c18f488554d9', 'GitHub Copilot', 'github', 'tls', '{"host":"api.enterprise.githubcopilot.com","path":"/chat/completions"}', 'github_copilot'),
-  ('tls_3a0703d7a0dc3a68', 'Microsoft Copilot', 'microsoft', 'tls', '{"host":"copilot.microsoft.com","path":"/chat/completions"}', 'microsoft_copilot'),
   ('tls_7659f7a5e64cd885', 'Gemini (web)', 'google', 'tls', '{"host":"gemini.google.com","path":"/"}', 'gemini_web'),
   ('tls_0320fa08a4f64851', 'Gemini API', 'google', 'tls', '{"host":"generativelanguage.googleapis.com","path":"/v1beta/models"}', 'google_ai_api'),
   ('tls_a40a04ef6e27de9f', 'Perplexity (web)', 'perplexity', 'tls', '{"host":"www.perplexity.ai","path":"/"}', 'perplexity_web'),
