@@ -9,7 +9,8 @@ import { formatBytes, formatInstant } from './format.js';
 import { depButton, depInstant, depProblem } from './deployment-render.js';
 
 const INTRO = 'The device sends its health snapshot, a configuration summary, its service log and its update logs '
-  + 'the next time it checks in, usually within 15 minutes. No prompt it captured is included, but the logs name '
+  + 'the next time it checks in: every 15 minutes by default, at most an hour apart when the deployment slows '
+  + 'the fleet, and when it is next online if it is off. No prompt it captured is included, but the logs name '
   + 'the device and the Windows accounts that used it. '
   + 'A request the device does not answer lapses after 7 days; a bundle is kept for 14. '
   + 'Each request and download is recorded in the audit trail.';
