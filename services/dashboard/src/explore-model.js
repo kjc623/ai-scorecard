@@ -13,7 +13,7 @@
 // Nothing here ranks or sorts. A list source has one fixed total ordering, set by the server, and
 // the page shows rows in the order they arrive.
 
-import { WINDOWS } from './vocab.js';
+import { ROUTES, WINDOWS } from './vocab.js';
 import { QUESTIONS, context } from './questions.js';
 
 const DATA_CLASSES = Object.freeze(['payment_card', 'government_id', 'credential', 'customer_pii', 'source_code', 'legal_commercial', 'health']);
@@ -85,6 +85,10 @@ export const EXPLORE_DATASETS = Object.freeze({
       exploreField('mode', 'Collection mode', { values: COLLECTION_MODES }),
       exploreField('prompt_kind', 'Request kind', { values: ['user', 'client_generated', 'unknown'] }),
       exploreField('attachments', 'Attachments', { values: ['yes'] }),
+      // Any route that collected the event, whichever won; `several` finds the events more than one
+      // route collected, such as a device and a provider's admin API.
+      exploreField('route', 'Route', { values: ROUTES }),
+      exploreField('routes', 'Routes', { values: ['several'] }),
       exploreField('department', 'Department', { hint: 'As the directory spells it' }),
       exploreField('device', 'Device', { hint: 'A device id' }),
     ]),
@@ -98,7 +102,7 @@ export const EXPLORE_DATASETS = Object.freeze({
       exploreColumn('content_state', 'Content', 'vocab'),
       exploreColumn('mode', 'Mode', 'vocab'),
       exploreColumn('attachment_count', 'Attachments', 'count'),
-      exploreColumn('observation_count', 'Routes', 'count'),
+      exploreColumn('observed_routes', 'Routes', 'routes'),
     ]),
   }),
 

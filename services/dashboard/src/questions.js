@@ -171,6 +171,8 @@ export const QUESTIONS = Object.freeze({
       prompt_kind: ctx.filters.prompt_kind,
       prompt_kind_not: ctx.filters.prompt_kind_not,
       attachments: ctx.filters.attachments,
+      route: ctx.filters.route,
+      routes: ctx.filters.routes,
     })),
   },
 

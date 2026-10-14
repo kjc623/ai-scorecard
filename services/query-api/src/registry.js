@@ -196,7 +196,12 @@ const CONTENT_STATE_CARD = { cardinality: 4 };
 const KIND_CARD = { cardinality: 3 };
 const PROMPT_KIND_CARD = { cardinality: 3 };
 const REVIEW_CARD = { cardinality: 3 };
-const ROUTE_CARD = { cardinality: 7 };
+const ROUTE_CARD = { cardinality: 12 };
+// ref.route_fidelity: the routes an observation arrives by.
+export const ROUTES = Object.freeze([
+  'tool.hook', 'ext.page_context', 'tool.otel', 'cli.shim', 'proxy.loopback', 'provider.api',
+  'ext.web_request', 'proxy.tls', 'ext.dom', 'proc.detect', 'inv.scan', 'net.flow',
+]);
 const COLLECTOR_CARD = { cardinality: 6 };
 const COLLECTOR_STATE_CARD = { cardinality: 4 };
 const LIVENESS_CARD = { cardinality: 4 };
@@ -1209,6 +1214,13 @@ export const SOURCES = Object.freeze({
         values: ['not_captured', 'local_only', 'uploaded', 'shredded'],
       }),
       route: dim('route', 's.winning_source', 'text', { ...ROUTE_CARD }),
+      // Every route that collected the event, the winning one among them: a prompt a device
+      // captured and a provider's admin API reported is one event with both routes.
+      observed_route: dim('observed_route', 's.observed_routes', 'text', {
+        ...ROUTE_CARD,
+        array: true,
+        values: ROUTES,
+      }),
       detection_basis: dim('detection_basis', 's.kind', 'text', {
         ...KIND_CARD,
         values: ['prompt', 'usage_rollup', 'discovery', 'agent_activity'],
@@ -1325,6 +1337,7 @@ export const SOURCES = Object.freeze({
       's.size_bytes AS size_bytes',
       's.winning_fidelity AS winning_fidelity',
       's.observed_routes AS observed_routes',
+      'cardinality(s.observed_routes) AS route_count',
       's.attachment_count AS attachment_count',
     ]),
     /** Columns usable as filters and as order keys but not as grouping dimensions. */
@@ -1336,6 +1349,8 @@ export const SOURCES = Object.freeze({
       expires_at: dim('expires_at', 's.expires_at', 'timestamp'),
       size_bytes: dim('size_bytes', 's.size_bytes', 'number', { nullable: true }),
       observation_count: dim('observation_count', 's.observation_count', 'number'),
+      // How many routes collected the event; more than one is an event several sources collected.
+      route_count: dim('route_count', 'cardinality(s.observed_routes)', 'number'),
       // NULL when the prompt described no attachment, which every M0 prompt is.
       attachment_count: dim('attachment_count', 's.attachment_count', 'number', { nullable: true }),
     }),

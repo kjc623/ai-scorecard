@@ -90,7 +90,8 @@ SELECT event_outcome, coalesce(event_submission_id::text, '')
 	sqlContentPending = `
 SELECT EXISTS (SELECT 1 FROM ingest.submission
                 WHERE tenant_id = $1::uuid AND submission_id = $2::uuid
-                  AND connection_id = $3::uuid AND content_state = 'local_only')`
+                  AND connection_id = $3::uuid AND device_id IS NULL
+                  AND content_state = 'local_only')`
 
 	sqlInsertGrant = `
 INSERT INTO ops.grant (tenant_id, grant_id, event_id, submission_id, connection_id, decided_at, decision,

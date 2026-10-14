@@ -146,6 +146,9 @@ export function buildExploreSample(now) {
     const lateFlush = rand() < 0.06;
     const occurred = lateFlush ? cursorMs - Math.floor((1 + rand() * 8) * 86_400_000) : cursorMs - Math.floor(2000 + rand() * 240_000);
     const routes = detectionOnly ? ['proc.detect'] : rand() < 0.35 ? ['ext.page_context', 'proxy.tls'] : [rand() < 0.7 ? 'ext.page_context' : 'proxy.tls'];
+    // Every seventh prompt was also reported by a provider's admin API: one event, both origins.
+    const provider = !detectionOnly && i % 7 === 3 ? 'ChatGPT Enterprise' : null;
+    if (provider) routes.push('provider.api');
     events.push(Object.freeze({
       submission_id: sampleUuid(0xe0, i),
       received_at: sampleIso(cursorMs),
@@ -156,6 +159,7 @@ export function buildExploreSample(now) {
       directory_name: person.directory_name,
       tool,
       device: person.device,
+      provider,
       department: person.department,
       mode,
       // The sample does not model a device that decided the kind, so every event reads as
@@ -222,6 +226,9 @@ function sampleMatches(row, name, value) {
   // reads as 'unknown', exactly as the read layer coalesces it.
   if (name === 'prompt_kind') return samplePromptKind(row) === value;
   if (name === 'prompt_kind_not') return samplePromptKind(row) !== value;
+  // route is any route that collected the event; routes: several, more than one.
+  if (name === 'route') return Array.isArray(row.observed_routes) && row.observed_routes.includes(value);
+  if (name === 'routes') return Array.isArray(row.observed_routes) && row.observed_routes.length > 1;
   return row[name] === value;
 }
 
@@ -241,6 +248,8 @@ function sampleObservations(event) {
     direction: event.detection_basis === 'discovery' ? 'none' : 'egress',
     observation_occurred_at: i === 0 ? event.first_occurred_at : event.last_occurred_at,
     observation_size_bytes: event.size_bytes,
+    observation_device: route === 'provider.api' ? null : event.device,
+    observation_provider: route === 'provider.api' ? event.provider : null,
   }));
 }
 

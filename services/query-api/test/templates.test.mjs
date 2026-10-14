@@ -7,9 +7,10 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { plan } from '../src/plan.js';
 import { TEMPLATES, TEMPLATE_NAMES, expandTemplate } from '../src/templates.js';
-import { SOURCES, SOURCE_IDS } from '../src/registry.js';
+import { ROUTES, SOURCES, SOURCE_IDS } from '../src/registry.js';
 
 /** Registry constants that can legitimately appear both as a parameter and in SQL text. */
 const REGISTRY_CONSTANTS = new Set([...SOURCE_IDS, 'hour', 'day', 'week', 'month', 'ingest.submission']);
@@ -219,6 +220,27 @@ test('q8 attachments: yes keeps the submissions that described an attachment', (
     rejection(() => plan({ query_version: '1', template: 'q8_activity', params: { ...PARAMS.q8_activity, attachments: 'no' } }, { now: NOW })).reason,
     'malformed_document',
   );
+});
+
+test('the routes a filter admits are the schema\'s, in fidelity order', () => {
+  const schema = readFileSync(new URL('../../database/schema.sql', import.meta.url), 'utf8');
+  const insert = schema.slice(schema.indexOf('INSERT INTO ref.route_fidelity'), schema.indexOf(';\n', schema.indexOf('INSERT INTO ref.route_fidelity')));
+  const rows = [...insert.matchAll(/\('([a-z_.]+)',\s*(\d+),/g)].map((m) => [m[1], Number(m[2])]).sort((a, b) => a[1] - b[1]);
+  assert.deepEqual(ROUTES, rows.map(([route]) => route));
+});
+
+test('q8 route keeps the events a route collected, and routes: several those more than one did', () => {
+  const p = plan({ query_version: '1', template: 'q8_activity', params: { ...PARAMS.q8_activity, route: 'provider.api', routes: 'several' } }, { now: NOW });
+  const read = p.statements.find((s) => s.id === 'read');
+  assert.ok(read.text.includes('= ANY(s.observed_routes)'), 'route must match any route that collected the event, not only the winner');
+  assert.ok(read.text.includes('cardinality(s.observed_routes) > $'), 'several must compile as more than one route');
+  assert.ok(read.params.includes('provider.api') && read.params.includes(1), 'both values must be bound');
+  for (const params of [{ route: 'no.such_route' }, { routes: 'one' }]) {
+    assert.equal(
+      rejection(() => plan({ query_version: '1', template: 'q8_activity', params: { ...PARAMS.q8_activity, ...params } }, { now: NOW })).reason,
+      'malformed_document',
+    );
+  }
 });
 
 test('q9 is a single record read: submission and observations, audited first', () => {

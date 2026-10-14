@@ -235,7 +235,7 @@ export const SOURCES = Object.freeze({
     label: 'Events',
     dimensions: Object.freeze([
       'subject', 'tool', 'device', 'mode', 'prompt_kind', 'action', 'content_state', 'route',
-      'detection_basis', 'merge_confidence', 'confidence', 'department', 'population', 'manager',
+      'observed_route', 'detection_basis', 'merge_confidence', 'confidence', 'department', 'population', 'manager',
     ]),
     measures: Object.freeze([]),
     answers: 'Q8, Q9',
@@ -316,7 +316,7 @@ export const TEMPLATES = Object.freeze({
     title: 'What happened in this window, for this tool or person?',
     source: 'ingest.submission',
     screen: 'activity',
-    params: Object.freeze(['window', 'limit', 'cursor', 'subject', 'tool', 'device', 'class', 'content_state', 'action', 'mode', 'department', 'prompt_kind', 'prompt_kind_not', 'attachments']),
+    params: Object.freeze(['window', 'limit', 'cursor', 'subject', 'tool', 'device', 'class', 'content_state', 'action', 'mode', 'department', 'prompt_kind', 'prompt_kind_not', 'attachments', 'route', 'routes']),
   }),
   q9_event_detail: Object.freeze({
     question: 9,
@@ -424,6 +424,12 @@ export const COLLECTOR_DETAILS = Object.freeze({
   no_recent_events: 'The tool ran but sent nothing for 24 hours',
   etw_session_failed: 'The Windows event session failed',
 });
+
+/** The routes an observation arrives by (ref.route_fidelity), in fidelity order. */
+export const ROUTES = Object.freeze([
+  'tool.hook', 'ext.page_context', 'tool.otel', 'cli.shim', 'proxy.loopback', 'provider.api',
+  'ext.web_request', 'proxy.tls', 'ext.dom', 'proc.detect', 'inv.scan', 'net.flow',
+]);
 
 /** Windows the UI offers, in hours. Named so the label and the request cannot disagree. */
 export const WINDOWS = Object.freeze({

@@ -15,6 +15,7 @@ import { formatBytes, formatCount, formatDuration, formatInstant, formatScore } 
 import { coverageText, freshnessText, emptyStateFor, fixSentence } from './states.js';
 import { eventView, eventObservations } from './views.js';
 import { EXPLORE_DATASETS, EXPLORE_DATASET_IDS, exploreWindows, TEXT_PAGE_SIZES } from './explore-model.js';
+import { RULE_ROUTES } from './rules.js';
 
 /** Which values of which field get a tint. Only real warning and fault states are tinted. */
 const EXPLORE_TONES = Object.freeze({
@@ -51,6 +52,26 @@ function exploreChip(key, value) {
   return `<span class="x-chip${tone ? ` x-chip-${tone}` : ''}">${escapeHtml(value)}</span>`;
 }
 
+/** The routes by the names the Rules page gives them; a provider's admin API is not a rule route. */
+const ROUTE_NAMES = Object.freeze({
+  ...Object.fromEntries(RULE_ROUTES.map((r) => [r.key, r.label])),
+  'provider.api': 'Provider admin API',
+});
+
+/** A route's name, the provider's own where it is known. */
+function routeName(route, provider) {
+  if (route === 'provider.api' && provider) return `via ${provider}`;
+  return ROUTE_NAMES[route] ?? route;
+}
+
+/** Every route that collected an event, the winning one first. */
+function exploreRoutes(row, routes) {
+  const ordered = typeof row.route === 'string' && routes.includes(row.route)
+    ? [row.route, ...routes.filter((r) => r !== row.route)]
+    : routes;
+  return ordered.map((r) => `<span class="x-chip" title="${escapeHtml(r)}">${escapeHtml(routeName(r, providerOf(row)))}</span>`).join(' ');
+}
+
 function exploreClasses(labels) {
   if (labels === null || labels === undefined) return '<span class="x-absent">not classified</span>';
   if (!Array.isArray(labels) || labels.length === 0) return '<span class="x-absent">none found</span>';
@@ -77,6 +98,8 @@ export function renderExploreValue(row, column, { full = false } = {}) {
       return exploreChip(column.key, String(raw));
     case 'count':
       return `<span class="x-num">${escapeHtml(formatCount(Number(raw)))}</span>`;
+    case 'routes':
+      return Array.isArray(raw) && raw.length > 0 ? exploreRoutes(row, raw) : exploreAbsent(column.key);
     case 'id':
       return full
         ? `<span class="x-mono">${escapeHtml(raw)}</span>`
@@ -319,15 +342,15 @@ function exploreContentProblem(problem) {
 function exploreHitMeta(hit) {
   // Prefer the device hostname to the UUID: an analyst places a machine by its name, and the UUID
   // is still the identity behind the "open the event" action. A prompt read from a provider's admin
-  // API has no device, and is placed by the provider instead.
+  // API is placed by the provider too, beside the device when a device also captured it.
   const provider = providerOf(hit);
-  const where = provider ? `via ${provider}` : typeof hit.hostname === 'string' && hit.hostname !== '' ? hit.hostname : hit.device;
+  const device = typeof hit.hostname === 'string' && hit.hostname !== '' ? hit.hostname : hit.device;
   // The tool is named by its resolved display name when the read path supplied one; the raw
   // fingerprint is the fallback, so an unrecognised tool is still identifiable.
   const tool = typeof hit.tool_name === 'string' && hit.tool_name !== '' ? hit.tool_name : hit.tool;
   // The account name the device reported, then the directory's own (current) display name beside it,
   // so a stale as-of-submission name is distinguishable from the directory's. Either can be absent.
-  const parts = [hit.subject, hit.directory_name, where, tool].filter((part) => typeof part === 'string' && part !== '');
+  const parts = [hit.subject, hit.directory_name, device, provider ? `via ${provider}` : null, tool].filter((part) => typeof part === 'string' && part !== '');
   if (parts.length === 0) return `<span class="x-mono x-sub">${escapeHtml(hit.submissionId)}</span>`;
   return `<span class="x-hit-meta x-mono">${parts.map((part) => `<span>${escapeHtml(part)}</span>`).join('<span class="x-hit-sep" aria-hidden="true">|</span>')}</span>`;
 }
@@ -452,6 +475,26 @@ function exploreContent(state, contentState, note) {
     + '<p class="x-sr" role="status">Reading the prompt</p></section>';
 }
 
+/** Where one observation came from: the provider whose admin API reported it, or the device. */
+function observationOrigin(o) {
+  if (typeof o.observation_provider === 'string' && o.observation_provider !== '') return `<span>via ${escapeHtml(o.observation_provider)}</span>`;
+  if (typeof o.observation_device === 'string' && o.observation_device !== '') {
+    return `<span class="x-mono" title="Device ${escapeHtml(o.observation_device)}">device ${escapeHtml(o.observation_device.slice(0, 8))}</span>`;
+  }
+  return exploreAbsent('observation_device');
+}
+
+/** "Collected by N routes", naming the sources when a device and a provider both collected it. */
+function collectedBy(observations) {
+  const routes = new Set(observations.map((o) => o.observation_source).filter(Boolean));
+  const providers = [...new Set(observations.map((o) => o.observation_provider).filter(Boolean))];
+  const device = observations.some((o) => o.observation_device);
+  const sources = [...(device ? ['a device'] : []), ...providers];
+  return sources.length > 1
+    ? `Collected by ${routes.size} routes, from ${sources.join(' and ')}`
+    : `Collected by ${routes.size} route${routes.size === 1 ? '' : 's'}`;
+}
+
 /** One submission, read on its own (Q9): metadata, both clocks, routes, and the content answer. */
 function exploreRecord(detail, dataset, state) {
   const record = detail.record;
@@ -485,8 +528,9 @@ function exploreRecord(detail, dataset, state) {
 
   const routes = observations.length === 0
     ? '<p class="x-absent">This response carries no observation rows.</p>'
-    : `<table class="x-table x-table-plain"><thead><tr><th scope="col">Route</th><th scope="col">Kind</th><th scope="col">Direction</th><th scope="col">Occurred (device)</th><th scope="col">Size</th></tr></thead><tbody>${observations.map((o) => (
-      `<tr><td><span class="x-mono">${escapeHtml(o.observation_source ?? 'unknown')}</span></td>`
+    : `<table class="x-table x-table-plain"><thead><tr><th scope="col">Route</th><th scope="col">From</th><th scope="col">Kind</th><th scope="col">Direction</th><th scope="col">Occurred (device)</th><th scope="col">Size</th></tr></thead><tbody>${observations.map((o) => (
+      `<tr><td><span title="${escapeHtml(o.observation_source ?? '')}">${escapeHtml(o.observation_source ? routeName(o.observation_source, null) : 'unknown')}</span></td>`
+      + `<td>${observationOrigin(o)}</td>`
       + `<td>${escapeHtml(o.observation_kind ?? 'unknown')}</td><td>${escapeHtml(o.direction ?? 'unknown')}</td>`
       + `<td>${o.observation_occurred_at ? `<time class="x-time x-device-clock" title="${DEVICE_CLOCK_TITLE}">${escapeHtml(formatInstant(o.observation_occurred_at))}</time>` : exploreAbsent('observation_occurred_at')}</td>`
       + `<td>${typeof o.observation_size_bytes === 'number' ? escapeHtml(formatBytes(o.observation_size_bytes)) : exploreAbsent('size')}</td></tr>`
@@ -497,9 +541,13 @@ function exploreRecord(detail, dataset, state) {
     + '<section><h3>Who and where</h3>' + exploreFacts([
       ['User', `${renderExploreValue(head, col('subject', 'person'))}${exploreFilterButton(dataset, 'subject', head.subject)}`],
       ['Tool', `${renderExploreValue(head, col('tool', 'mono'))}${exploreFilterButton(dataset, 'tool', head.tool)}`],
-      head.provider
-        ? ['Provider', `<span>via ${escapeHtml(head.provider)}</span> <span class="x-sub">its own record, read from its admin API</span>`]
-        : ['Device', `${renderExploreValue(head, col('device', 'id'), { full: true })}${exploreFilterButton(dataset, 'device', head.device)}`],
+      // A prompt a device captured and a provider reported is one event with both origins.
+      ...(head.device || !head.provider
+        ? [['Device', `${renderExploreValue(head, col('device', 'id'), { full: true })}${exploreFilterButton(dataset, 'device', head.device)}`]]
+        : []),
+      ...(head.provider
+        ? [['Provider', `<span>via ${escapeHtml(head.provider)}</span> <span class="x-sub">its own record, read from its admin API</span>`]]
+        : []),
       ...(head.department ? [['Department', `<span>${escapeHtml(head.department)}</span>${exploreFilterButton(dataset, 'department', head.department)}`]] : []),
     ]) + '</section>'
     + '<section><h3>What was decided</h3>' + exploreFacts([
@@ -517,7 +565,7 @@ function exploreRecord(detail, dataset, state) {
         ? `<time class="x-time x-device-clock" title="${DEVICE_CLOCK_TITLE}">${escapeHtml(formatInstant(head.last_occurred_at))}</time>`
         : exploreAbsent('last_occurred_at')],
     ]) + '<p class="x-sub">Neither clock is converted into the other. The device clock may be skewed.</p></section>'
-    + `<section><h3>Observation routes</h3>${routes}`
+    + `<section><h3>Observation routes</h3>${observations.length > 1 ? `<p class="x-sub">${escapeHtml(collectedBy(observations))}. It is one event, counted once.</p>` : ''}${routes}`
     + (head.merge_confidence === 'low' ? '<p class="x-sub">Merge confidence is low: a weak key joined these observations. The row is counted, not discarded.</p>' : '')
     + '</section>'
     + (record.audit?.entry_id ? `<p class="x-audit">Opening this record was an audited read: entry ${escapeHtml(record.audit.entry_id)} at ${escapeHtml(formatInstant(record.audit.written_at))}.</p>` : '');

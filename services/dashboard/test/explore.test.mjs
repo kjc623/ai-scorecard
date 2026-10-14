@@ -173,6 +173,30 @@ test('prompt_kind and prompt_kind_not reach the read', async () => {
   assert.ok(explorer.state.rows.length > 0, 'events in the fake read as unknown');
 });
 
+test('a prompt several sources collected is one row that names every route, found by any of them', async () => {
+  const { explorer, sent } = explorerFor();
+  await explorer.restore('#events?window=d30&routes=several&route=provider.api');
+  assert.equal(sent.at(-1).params.routes, 'several');
+  assert.equal(sent.at(-1).params.route, 'provider.api');
+  const rows = explorer.state.rows;
+  assert.ok(rows.length > 0, 'the fake has events a device and a provider both collected');
+  assert.ok(rows.every((r) => r.observed_routes.length > 1 && r.observed_routes.includes('provider.api')));
+
+  const row = rows[0];
+  const cell = renderExploreValue(row, EXPLORE_DATASETS.events.columns.find((c) => c.key === 'observed_routes'));
+  // The winning route leads, and the provider's route is named by the provider.
+  assert.ok(cell.indexOf(`title="${row.route}"`) < cell.indexOf('title="provider.api"'), cell);
+  assert.match(cell, /title="provider\.api">via ChatGPT Enterprise</);
+
+  await explorer.restore(`#events?window=d30&routes=several&route=provider.api&open=${row.submission_id}`);
+  const detail = renderExploreDetail(explorer.state);
+  assert.match(detail, /<dt>Device<\/dt>/, 'the device that captured it');
+  assert.match(detail, /<dt>Provider<\/dt><dd><span>via ChatGPT Enterprise<\/span>/, 'and the provider that reported it');
+  assert.match(detail, /Collected by \d routes, from a device and ChatGPT Enterprise\. It is one event, counted once\./);
+
+  assert.deepEqual(parseExploreQuery('routes:one', EXPLORE_DATASETS.events).problems.map((p) => p.code), ['unknown_value']);
+});
+
 // ── paging ───────────────────────────────────────────────────────────────────────────────────
 
 test('paging repeats the frozen window and ends only on a null cursor', async () => {
