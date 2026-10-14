@@ -61,6 +61,15 @@ them without a restart. It rotates the certificate, presenting the current
 one, two thirds of the way through its validity. `capture-core --print-config` shows the resolved
 configuration and the enrolment; `--version` the build.
 
+The service is restarted when it fails: systemd by `Restart=on-failure`, launchd by `KeepAlive`, and
+on Windows by the recovery actions the service sets on itself at start (5 seconds after the first
+and second failure in a day, a minute after each later one). The agent also restarts itself when
+every certificate check of the device edge in its process has failed for 2 minutes, at least three
+times, and the edge verifies in a new process (`capture-core --check-edge-trust`): the fault is then
+state its process holds, such as the Windows certificate chain engine. It stops with an error so the
+service manager starts it again, at most once an hour, and records when in `edge-restart` in the
+state directory.
+
 ## The browser's native messaging host
 
 Chrome and Edge start the registered host with the extension's origin (`chrome-extension://<id>/`)
