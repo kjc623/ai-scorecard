@@ -150,7 +150,34 @@ type EndpointPolicy struct {
 
 	// DiscoveryDailyBudget is how many discovery records may leave the device per UTC day.
 	DiscoveryDailyBudget int `json:"discovery_daily_budget"`
+
+	// RestartNotice is how an app that was running when the agent changed the configuration it
+	// reads only at start is reported. Empty is off.
+	RestartNotice RestartNotice `json:"restart_notice"`
 }
+
+// RestartNotice is how an app that needs a restart to read its configuration is reported: on the
+// dashboard, by notifying the person running it, both, or neither.
+type RestartNotice string
+
+// The closed set of restart notices.
+const (
+	RestartNoticeOff       RestartNotice = "off"
+	RestartNoticeDashboard RestartNotice = "dashboard"
+	RestartNoticeNotify    RestartNotice = "notify"
+	RestartNoticeBoth      RestartNotice = "both"
+)
+
+// Valid reports whether the notice is in the closed set or empty.
+func (n RestartNotice) Valid() bool {
+	return n == "" || n == RestartNoticeOff || n == RestartNoticeDashboard || n == RestartNoticeNotify || n == RestartNoticeBoth
+}
+
+// Dashboard reports whether the app's collector reports it.
+func (n RestartNotice) Dashboard() bool { return n == RestartNoticeDashboard || n == RestartNoticeBoth }
+
+// Notify reports whether the person running the app is told to restart it.
+func (n RestartNotice) Notify() bool { return n == RestartNoticeNotify || n == RestartNoticeBoth }
 
 // EndpointSwitch is a collector with no setting beyond on or off.
 type EndpointSwitch struct {
@@ -1000,6 +1027,9 @@ func (e *EndpointPolicy) validate() error {
 	}
 	if e.DiscoveryDailyBudget < 0 {
 		return fmt.Errorf("policy: endpoint discovery_daily_budget is negative")
+	}
+	if !e.RestartNotice.Valid() {
+		return fmt.Errorf("policy: endpoint restart_notice %q is outside the set {off,dashboard,notify,both}", e.RestartNotice)
 	}
 	return nil
 }

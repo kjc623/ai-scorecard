@@ -168,6 +168,9 @@ type Endpoint struct {
 	// while the collector it names is enabled.
 	Tools                map[string]EndpointTool `json:"tools"`
 	DiscoveryDailyBudget int                     `json:"discovery_daily_budget"`
+	// RestartNotice is how the device reports an app that was running when the agent changed the
+	// configuration it reads only at start: off, dashboard, notify or both.
+	RestartNotice string `json:"restart_notice"`
 }
 
 // EndpointSwitch is a collector with no setting beyond on or off.

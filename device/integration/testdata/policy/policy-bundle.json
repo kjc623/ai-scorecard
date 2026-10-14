@@ -36,7 +36,8 @@
             "copilot": { "otel": true, "hooks": false },
             "cursor": { "otel": false, "hooks": true }
           },
-          "discovery_daily_budget": 200
+          "discovery_daily_budget": 200,
+          "restart_notice": "both"
         },
         "rules": [
           {

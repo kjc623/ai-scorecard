@@ -100,6 +100,9 @@ type facilities struct {
 	codexConfig string
 	// codexUserConfigs lists the users' own Codex config files; nil is the platform's.
 	codexUserConfigs func() []string
+	// edgeCheck reports whether the device edge's certificate verifies in a new process; nil
+	// leaves the agent running however its own checks of the edge fail.
+	edgeCheck func(ctx context.Context, endpoint, caFile string) error
 }
 
 // trustStore installs, verifies and removes the per-device CA in the platform trust store.
@@ -123,6 +126,7 @@ var platform = facilities{
 	processEvents: procmon.KernelEvents,
 	flowEvents:    flowmon.NetworkEvents,
 	machineEnv:    toolconfig.MachineEnvironment(),
+	edgeCheck:     checkEdgeInNewProcess,
 }
 
 // desktopPAC is the desktop-app PAC on Windows, where desktop apps read the per-user Internet
@@ -180,18 +184,33 @@ func runServiceContext(ctx context.Context, cfg Config, log *slog.Logger, onStar
 	if err != nil {
 		return err
 	}
-	if err := svc.Start(ctx); err != nil {
+	return svc.run(ctx, onStarted)
+}
+
+// run starts the agent and runs it until ctx ends or the agent asks to be restarted, then shuts it
+// down. A restart ends in errRestart, so the service manager starts the agent again.
+func (s *service) run(ctx context.Context, onStarted func()) error {
+	if err := s.Start(ctx); err != nil {
 		return err
 	}
 	if onStarted != nil {
 		onStarted()
 	}
-	log.Info("capture-core running", "version", version)
-	<-ctx.Done()
-	log.Info("stopping")
+	s.log.Info("capture-core running", "version", version)
+	restart := false
+	select {
+	case <-ctx.Done():
+	case <-s.restart:
+		restart = true
+	}
+	s.log.Info("stopping")
 	stopCtx, cancel := context.WithTimeout(context.Background(), serviceStopBudget)
 	defer cancel()
-	return svc.Stop(stopCtx)
+	err := s.Stop(stopCtx)
+	if restart {
+		return errors.Join(errRestart, err)
+	}
+	return err
 }
 
 // service is the wired agent: one graph, built once, started and stopped by the supervisor in its
@@ -254,6 +273,10 @@ type service struct {
 
 	bgStop chan struct{}
 	bgWG   sync.WaitGroup
+
+	// restart is closed when the agent asks to be stopped and started again.
+	restart     chan struct{}
+	restartOnce sync.Once
 }
 
 // newService builds the graph without starting any provider. Every constructor can fail, and a
@@ -270,6 +293,7 @@ func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, er
 		people:       newPeople(userSources()),
 		identityMode: protocol.DeviceIdentity(cfg.DeviceIdentity),
 		bgStop:       make(chan struct{}),
+		restart:      make(chan struct{}),
 	}
 
 	spoolKey, err := dir.Key(state.SpoolKeyFile)
@@ -516,6 +540,9 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
+	// The user-session helpers show notifications, among them the tool config providers'.
+	s.helpers = userhelper.New(userhelper.Config{Platform: platform.userSessions, Log: s.logf, Clock: time.Now})
+
 	// While a tool config provider runs, a change someone else makes to its managed files or
 	// registry values is put right and reported as tampering.
 	drift := toolconfig.NewWatcher(s.logf)
@@ -548,11 +575,15 @@ func (s *service) buildProviders() error {
 	})
 
 	// A tool's health reads the version the inventory's last scan found, what the receiver and the
-	// hook relay last had from it, and whether the process monitor saw it run.
+	// hook relay last had from it, and whether the process monitor saw it run. Its apps' running
+	// processes are listed to find those that need a restart, and their people are told through
+	// the user-session helpers.
 	toolHealth := func(cfg toolconfig.Config) toolconfig.Config {
 		cfg.InstalledVersion = scanner.Installed
 		cfg.LastEvent = func(tool string) time.Time { return s.lastToolEvent(otel, tool) }
 		cfg.LastRunning = procs.LastRunning
+		cfg.Processes = s.appProcesses
+		cfg.Notify = s.helpers.Notify
 		return cfg
 	}
 
@@ -634,7 +665,6 @@ func (s *service) buildProviders() error {
 		return err
 	}
 
-	s.helpers = userhelper.New(userhelper.Config{Platform: platform.userSessions, Log: s.logf, Clock: time.Now})
 	if err := s.reg.Add(s.helpers); err != nil {
 		return err
 	}
@@ -839,6 +869,13 @@ func (s *service) Start(ctx context.Context) error {
 		defer s.bgWG.Done()
 		s.watchPeople(ctx, s.bgStop)
 	}()
+	if platform.edgeCheck != nil {
+		s.bgWG.Add(1)
+		go func() {
+			defer s.bgWG.Done()
+			s.watchEdgeTrust(platform.edgeCheck, s.bgStop)
+		}()
+	}
 	if err := s.native.Start(); err != nil {
 		// The browser relay is one collection path; the others keep running without it.
 		s.log.Error("native messaging endpoint unavailable; the browser extension cannot reach the agent", "endpoint", s.native.Addr(), "error", err)

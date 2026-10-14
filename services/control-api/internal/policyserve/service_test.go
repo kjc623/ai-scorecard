@@ -252,10 +252,12 @@ func canonical(t *testing.T, doc string) string {
 }
 
 // TestComposeEndpointSection: a tenant without rows is served the defaults; a tenant row sets the
-// collector switches and a tool row one tool's, and each change mints a new version.
+// collector switches, a tool row one tool's and the tenant's restart notice how an app that needs a
+// restart is reported, and each change mints a new version.
 func TestComposeEndpointSection(t *testing.T) {
 	r := newRig(t, nil)
 	ctx := context.Background()
+	restartNotice := "dashboard"
 	section := func(inventory, flows, managedOnly, cursorHooks, codex bool) string {
 		return canonical(t, fmt.Sprintf(`{
 		  "inventory": {"enabled": %t, "interval_minutes": 360},
@@ -269,8 +271,9 @@ func TestComposeEndpointSection(t *testing.T) {
 		    "copilot":     {"otel": true,  "hooks": false},
 		    "cursor":      {"otel": false, "hooks": %t}
 		  },
-		  "discovery_daily_budget": 200
-		}`, inventory, flows, managedOnly, codex, codex, cursorHooks))
+		  "discovery_daily_budget": 200,
+		  "restart_notice": %q
+		}`, inventory, flows, managedOnly, codex, codex, cursorHooks, restartNotice))
 	}
 
 	v1, err := r.svc.Current(ctx, tenantA)
@@ -313,6 +316,21 @@ func TestComposeEndpointSection(t *testing.T) {
 	}
 	if got, want := endpointOf(t, v3.Envelope), section(false, false, true, false, false); got != want {
 		t.Fatalf("tool rows:\n got %s\nwant %s", got, want)
+	}
+
+	if err := r.store.SetRestartNotice(ctx, tenantA, "both", audit); err != nil {
+		t.Fatal(err)
+	}
+	restartNotice = "both"
+	v4, err := r.svc.Current(ctx, tenantA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !newer(v4.Version, v3.Version) {
+		t.Fatalf("changed restart notice: version %s, want newer than %s", v4.Version, v3.Version)
+	}
+	if got, want := endpointOf(t, v4.Envelope), section(false, false, true, false, false); got != want {
+		t.Fatalf("restart notice:\n got %s\nwant %s", got, want)
 	}
 }
 
@@ -1049,6 +1067,9 @@ func TestServedBundleVerifiesWithTheDevicesVerifier(t *testing.T) {
 	if err := r.store.SetTLSInspection(context.Background(), tenantA, true, audit); err != nil {
 		t.Fatal(err)
 	}
+	if err := r.store.SetRestartNotice(context.Background(), tenantA, "both", audit); err != nil {
+		t.Fatal(err)
+	}
 	// A custom label with every list, and rules using every field and match list, one naming the
 	// custom label, and two sanctioned tools.
 	if err := r.store.ReplaceCustomLabels(context.Background(), tenantA, []store.CustomLabel{
@@ -1178,7 +1199,7 @@ func main() {
 		" " + sectionOf(t, resp.SignedBundle, "rules") + " " + sectionOf(t, resp.SignedBundle, "sanctioned_tools") +
 		" " + sectionOf(t, resp.SignedBundle, "catalog") + " [ollama] ide " + sectionOf(t, resp.SignedBundle, "kill_switches") + " true " +
 		sectionOf(t, resp.SignedBundle, "loopback") + " " + sectionOf(t, resp.SignedBundle, "custom_labels") + " [custom_project_falcon]"
-	if !strings.Contains(want, `"link":"https://intranet.example/ai"`) || !strings.Contains(want, `"routes":["proxy.tls","tool.hook"]`) || !strings.Contains(want, `["app:claude_code","app:cursor","tls_9230903190dcf0dc"]`) ||
+	if !strings.Contains(want, `"restart_notice":"both"`) || !strings.Contains(want, `"link":"https://intranet.example/ai"`) || !strings.Contains(want, `"routes":["proxy.tls","tool.hook"]`) || !strings.Contains(want, `["app:claude_code","app:cursor","tls_9230903190dcf0dc"]`) ||
 		!strings.Contains(want, `{"app_key":"continue","category":"ide_assistant","signals":[]}`) || !strings.Contains(want, `"value":"%USERPROFILE%\\.ollama\\models"`) ||
 		!strings.Contains(want, `"tool_fingerprint":"app:ollama"`) || !strings.Contains(want, `"cool_down_seconds":300`) ||
 		!strings.Contains(want, `[{"customer_names":["Acme Corp"],"file_extensions":["dwg"],"file_names":["falcon-*.xlsx"],"label":"custom_project_falcon","words":["falcon"]}]`) {

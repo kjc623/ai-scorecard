@@ -268,6 +268,12 @@ CREATE TABLE ops.tenant (
   -- Windows desktop-app PAC and the per-device root in the trust store. Set by an admin on the
   -- Settings page and delivered as the bundle's interception.enabled.
   tls_inspection               boolean NOT NULL DEFAULT false,
+  -- How a device reports an AI app that was already running when the agent changed the
+  -- configuration the app reads only at start: 'dashboard' reports the app's tool_config collector
+  -- degraded with restart_required, 'notify' tells the person running it to restart it, 'both' does
+  -- both, 'off' neither. Delivered as the bundle's endpoint.restart_notice.
+  restart_notice               text NOT NULL DEFAULT 'dashboard'
+                                 CHECK (restart_notice IN ('off','dashboard','notify','both')),
   -- A search tier is a capability over data the tenant can collect: filenames cross at M1, prompt
   -- text only at M3.
   CONSTRAINT tenant_search_tier_requires_collection_mode

@@ -61,6 +61,15 @@ them without a restart. It rotates the certificate, presenting the current
 one, two thirds of the way through its validity. `capture-core --print-config` shows the resolved
 configuration and the enrolment; `--version` the build.
 
+The service is restarted when it fails: systemd by `Restart=on-failure`, launchd by `KeepAlive`, and
+on Windows by the recovery actions the service sets on itself at start (5 seconds after the first
+and second failure in a day, a minute after each later one). The agent also restarts itself when
+every certificate check of the device edge in its process has failed for 2 minutes, at least three
+times, and the edge verifies in a new process (`capture-core --check-edge-trust`): the fault is then
+state its process holds, such as the Windows certificate chain engine. It stops with an error so the
+service manager starts it again, at most once an hour, and records when in `edge-restart` in the
+state directory.
+
 ## The browser's native messaging host
 
 Chrome and Edge start the registered host with the extension's origin (`chrome-extension://<id>/`)
@@ -176,6 +185,17 @@ agent's settings (Claude Code 2.1.49, Codex 0.131.0, the Copilot CLI 1.0.4, Curs
 the scan could not read does not hold the write back. A row is `degraded` with `no_recent_events`
 when the process monitor saw the tool run in the last 24 hours, the agent's configuration had been in
 place all that time, and neither the OTLP receiver nor the hook relay had anything from the tool.
+
+Claude Code and Codex read their managed files only when they start, so a process that was already
+running when a file last changed runs without the change until it restarts. Every 60 seconds, while a
+tool's configuration is in place and the bundle's `endpoint.restart_notice` is not `off`, the service
+lists the running processes of the apps that read it (Claude Code and the Claude desktop app, which
+starts the Claude Code sessions of its Code tab and Cowork; Codex), as the catalog names them by their
+executable and package, and compares each one's start with the managed files' last change. With
+`dashboard` or `both`, the tool's row is `degraded` with `restart_required` while such a process runs.
+With `notify` or `both`, the person signed in to each session running one is shown a notification
+through the user-session helper, "Restart Claude" for a process the desktop app started and otherwise
+the app's own name, once for each change; one that is not shown is tried again at the next check.
 
 With TLS inspection on, the proxy decrypts the bundle's interception hosts (the catalogue's `tls`
 hosts and the domains of its inference APIs) for every process, and a desktop app's own inference

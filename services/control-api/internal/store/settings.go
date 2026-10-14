@@ -16,6 +16,7 @@ import (
 const (
 	SQLSettingsTenant = `
 SELECT ceiling_mode, coalesce(collection_mode, ''), scope_overrides, content_search, tls_inspection,
+       restart_notice,
        (SELECT ttl_days FROM ops.retention_policy rp
          WHERE rp.tenant_id = t.tenant_id AND rp.applies_to = 'event' LIMIT 1),
        (SELECT ttl_days FROM ops.retention_policy rp
@@ -86,6 +87,12 @@ UPDATE ops.tenant SET content_search = $2::text, updated_at = now()
 UPDATE ops.tenant SET tls_inspection = $2::boolean, updated_at = now()
  WHERE tenant_id = $1::uuid`
 
+	SQLCurrentRestartNotice = `SELECT restart_notice FROM ops.tenant WHERE tenant_id = $1::uuid`
+
+	SQLSetRestartNotice = `
+UPDATE ops.tenant SET restart_notice = $2::text, updated_at = now()
+ WHERE tenant_id = $1::uuid`
+
 	SQLCurrentToolState = `
 SELECT coalesce((SELECT sanctioned_state FROM ops.tool_sanction
                   WHERE tenant_id = $1::uuid AND tool_key = $2::text), 'unknown')`
@@ -142,7 +149,7 @@ func (s *SQLStore) Settings(ctx context.Context, tenantID string) (Settings, err
 		var scope []byte
 		var event, content sql.NullInt64
 		err := tx.QueryRowContext(ctx, SQLSettingsTenant, tenantID).
-			Scan(&out.CeilingMode, &out.CollectionMode, &scope, &out.ContentSearch, &out.TLSInspection, &event, &content)
+			Scan(&out.CeilingMode, &out.CollectionMode, &scope, &out.ContentSearch, &out.TLSInspection, &out.RestartNotice, &event, &content)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrUnknownTenant
 		}
@@ -343,6 +350,24 @@ func (s *SQLStore) SetTLSInspection(ctx context.Context, tenantID string, enable
 			return fmt.Errorf("store: set TLS inspection: %w", err)
 		}
 		audit = withChange(audit, previous, enabled)
+		return insertAudit(ctx, tx, audit)
+	})
+}
+
+// SetRestartNotice implements Store.
+func (s *SQLStore) SetRestartNotice(ctx context.Context, tenantID, value string, audit AuditEntry) error {
+	if !slices.Contains(RestartNotices, value) {
+		return ErrUnknownRestartNotice
+	}
+	return s.withTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		previous, err := currentText(ctx, tx, SQLCurrentRestartNotice, tenantID)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, SQLSetRestartNotice, tenantID, value); err != nil {
+			return fmt.Errorf("store: set restart notice: %w", err)
+		}
+		audit = withChange(audit, previous, value)
 		return insertAudit(ctx, tx, audit)
 	})
 }

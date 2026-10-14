@@ -1078,6 +1078,9 @@ export const SOURCES = Object.freeze({
       'd.collectors_absent AS collectors_absent',
       'd.collectors_tampered AS collectors_tampered',
       'd.collectors AS collectors',
+      // The collectors whose app was running when the agent changed the settings it reads only at
+      // start, so the list can say which apps need a restart without reading each device.
+      "ARRAY(SELECT cs.collector FROM ops.collector_state cs WHERE cs.tenant_id = d.tenant_id AND cs.device_id = d.device_id AND cs.error_code = 'restart_required' ORDER BY cs.collector) AS restart_required",
       'd.spool_depth AS spool_depth',
       'd.spool_dropped_total AS spool_dropped_total',
       'd.last_report_at AS last_report_at',

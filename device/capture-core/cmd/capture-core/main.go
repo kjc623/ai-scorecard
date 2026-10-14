@@ -2,7 +2,7 @@
 // the collectors (the local TLS proxy, the loopback broker and the CLI trust shim), the policy
 // engine, the spool, the classifier host as a child process, and the device-to-cloud drain.
 //
-// It runs in one of six ways:
+// It runs in one of seven ways:
 //
 //   - as the service: started by the Windows Service Control Manager, launchd or systemd with
 //     --config-file arguments, until stopped;
@@ -15,6 +15,8 @@
 //     and it asks the running service whether to allow, warn or block;
 //   - as the uninstall cleanup: the MSI runs it with --uninstall-cleanup at a full uninstall, and it
 //     returns every location the agent changed outside its own folders to how it found it;
+//   - as the edge trust check: the service runs it with --check-edge-trust to learn whether the
+//     device edge's certificate verifies in a new process;
 //   - as a diagnostic: --print-config or --version.
 package main
 
@@ -47,6 +49,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == uninstallCleanupArg {
 		os.Exit(runUninstallCleanup(os.Args[2:], os.Stdout))
+	}
+	if len(os.Args) > 1 && os.Args[1] == edgeTrustArg {
+		os.Exit(runEdgeTrustCheck(os.Args[2:], os.Stderr))
 	}
 	if len(os.Args) == 2 && os.Args[1] == userHelperArg {
 		if err := runUserHelper(); err != nil {

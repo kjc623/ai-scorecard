@@ -82,7 +82,8 @@ const endpointSection = `{
     "copilot":     {"otel": true,  "hooks": false},
     "cursor":      {"otel": false, "hooks": true}
   },
-  "discovery_daily_budget": 200
+  "discovery_daily_budget": 200,
+  "restart_notice": "both"
 }`
 
 // signWithEndpoint signs testBundle with section, as raw JSON, for its endpoint section, so the
@@ -134,6 +135,7 @@ func TestEndpointSectionDecodes(t *testing.T) {
 			"cursor":      {Hooks: true},
 		},
 		DiscoveryDailyBudget: 200,
+		RestartNotice:        RestartNoticeBoth,
 	}
 	if !reflect.DeepEqual(b.Endpoint, want) {
 		t.Fatalf("endpoint = %+v\nwant       %+v", b.Endpoint, want)
@@ -202,6 +204,7 @@ func TestEndpointSectionValidation(t *testing.T) {
 		"interval below 15":      {`"interval_minutes": 360`, `"interval_minutes": 14`},
 		"interval zero, enabled": {`"interval_minutes": 360`, `"interval_minutes": 0`},
 		"interval negative":      {`"interval_minutes": 360`, `"interval_minutes": -360`},
+		"unknown restart notice": {`"restart_notice": "both"`, `"restart_notice": "toast"`},
 	}
 	for name, r := range refused {
 		section := strings.Replace(endpointSection, r[0], r[1], 1)
@@ -217,6 +220,7 @@ func TestEndpointSectionValidation(t *testing.T) {
 		"interval at 15": {`"interval_minutes": 360`, `"interval_minutes": 15`},
 		"IPv6 loopback":  {`"127.0.0.1:47318"`, `"[::1]:47318"`},
 		"zero budget":    {`"discovery_daily_budget": 200`, `"discovery_daily_budget": 0`},
+		"notice off":     {`"restart_notice": "both"`, `"restart_notice": "off"`},
 	}
 	for name, r := range accepted {
 		section := strings.Replace(endpointSection, r[0], r[1], 1)

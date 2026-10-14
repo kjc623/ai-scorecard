@@ -49,6 +49,7 @@ type Memory struct {
 	retention       map[string]map[string]int
 	contentSearch   map[string]string
 	tlsInspection   map[string]bool
+	restartNotice   map[string]string
 	toolState       map[string]map[string]string
 	catalogueTools  []store.ToolDecision
 	endpoint        map[string]*store.EndpointCollectors
@@ -89,6 +90,7 @@ func New() *Memory {
 		retention:         map[string]map[string]int{},
 		contentSearch:     map[string]string{},
 		tlsInspection:     map[string]bool{},
+		restartNotice:     map[string]string{},
 		toolState:         map[string]map[string]string{},
 		endpoint:          map[string]*store.EndpointCollectors{},
 		endpointTools:     map[string]map[string]store.EndpointTool{},
@@ -732,6 +734,7 @@ func (m *Memory) PolicyInputs(_ context.Context, tenantID string) (store.PolicyI
 	in := store.PolicyInputs{Tenant: store.PolicyTenant{
 		TenantID: tenantID, Status: t.Status, IngestEnabled: t.IngestEnabled,
 		CeilingMode: ceiling, CollectionMode: requested, TLSInspection: m.tlsInspection[tenantID],
+		RestartNotice: m.restartNoticeOf(tenantID),
 	}}
 	in.ScopeOverrides = map[string]string{}
 	for k, v := range m.scopeOverrides[tenantID] {
@@ -825,6 +828,7 @@ func (m *Memory) Settings(_ context.Context, tenantID string) (store.Settings, e
 		ScopeOverrides:    map[string]string{},
 		ContentSearch:     m.contentSearch[tenantID],
 		TLSInspection:     m.tlsInspection[tenantID],
+		RestartNotice:     m.restartNoticeOf(tenantID),
 		RetentionDefaults: store.RetentionDefaults{EventDays: 90, ContentDays: 30},
 	}
 	if out.ContentSearch == "" {
@@ -1019,6 +1023,31 @@ func (m *Memory) SetTLSInspection(_ context.Context, tenantID string, enabled bo
 	audit.Detail = merge(audit.Detail, map[string]any{"previous": previous, "new": enabled})
 	m.audit(audit)
 	return nil
+}
+
+// SetRestartNotice implements store.Store.
+func (m *Memory) SetRestartNotice(_ context.Context, tenantID, value string, audit store.AuditEntry) error {
+	if !slices.Contains(store.RestartNotices, value) {
+		return store.ErrUnknownRestartNotice
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tenants[tenantID]; !ok {
+		return store.ErrUnknownTenant
+	}
+	previous := m.restartNoticeOf(tenantID)
+	m.restartNotice[tenantID] = value
+	audit.Detail = merge(audit.Detail, map[string]any{"previous": previous, "new": value})
+	m.audit(audit)
+	return nil
+}
+
+// restartNoticeOf is the tenant's restart notice, the schema's default when none was set.
+func (m *Memory) restartNoticeOf(tenantID string) string {
+	if v := m.restartNotice[tenantID]; v != "" {
+		return v
+	}
+	return "dashboard"
 }
 
 // SetToolSanction implements store.Store.

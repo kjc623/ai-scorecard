@@ -14,11 +14,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/shadow-ai-capture/device/capture-core/credential"
@@ -38,18 +41,31 @@ type client struct {
 	base string // scheme://host[:port], no trailing slash
 	http *http.Client
 	tr   *http.Transport
+	now  func() time.Time
 
 	mu   sync.Mutex
 	cert *tls.Certificate
+
+	// unverifiedSince is when the edge's certificate first failed verification after the last
+	// handshake that verified it, and unverifiedCount how many requests have failed verification
+	// since; both are zero while the last verification passed or none has failed.
+	trustMu         sync.Mutex
+	unverifiedSince time.Time
+	unverifiedCount int
 }
 
-// newClient builds the transport. caFile, when set, names a PEM CA set trusted in addition to the
-// system roots (a private CA in front of the device edge).
-func newClient(base, caFile string) (*client, error) {
+// edgeURL is the endpoint as the client addresses it: an https URL with no trailing slash.
+func edgeURL(base string) (string, error) {
 	u := strings.TrimRight(strings.TrimSpace(base), "/")
 	if !strings.HasPrefix(u, "https://") || len(u) == len("https://") {
-		return nil, fmt.Errorf("drain: endpoint %q must be an https URL", base)
+		return "", fmt.Errorf("drain: endpoint %q must be an https URL", base)
 	}
+	return u, nil
+}
+
+// edgeRoots is the pool the edge's certificate is verified under: the system roots, plus the PEM
+// CA set in caFile when it is set (a private CA in front of the device edge).
+func edgeRoots(caFile string) (*x509.CertPool, error) {
 	pool, err := x509.SystemCertPool()
 	if err != nil || pool == nil {
 		pool = x509.NewCertPool()
@@ -63,7 +79,65 @@ func newClient(base, caFile string) (*client, error) {
 			return nil, fmt.Errorf("drain: CA file %q carries no certificates", caFile)
 		}
 	}
-	c := &client{base: u}
+	return pool, nil
+}
+
+// VerifyEdge connects to the edge and reports whether its certificate verifies under the roots
+// this process sees: the system roots plus caFile, as the client verifies it. It sends no request,
+// and a refusal after the certificate verified (the edge wanting a device certificate) still
+// counts as verified.
+func VerifyEdge(ctx context.Context, endpoint, caFile string) error {
+	base, err := edgeURL(endpoint)
+	if err != nil {
+		return err
+	}
+	u, err := url.Parse(base)
+	if err != nil {
+		return fmt.Errorf("drain: endpoint %q: %w", endpoint, err)
+	}
+	pool, err := edgeRoots(caFile)
+	if err != nil {
+		return err
+	}
+	addr := u.Host
+	if u.Port() == "" {
+		addr = net.JoinHostPort(u.Hostname(), "443")
+	}
+	var verified atomic.Bool
+	dialer := tls.Dialer{Config: &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		RootCAs:    pool,
+		ServerName: u.Hostname(),
+		VerifyConnection: func(tls.ConnectionState) error {
+			verified.Store(true)
+			return nil
+		},
+	}}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if verified.Load() {
+		return nil
+	}
+	if err == nil {
+		err = errors.New("the handshake completed without verifying the certificate")
+	}
+	return fmt.Errorf("drain: %s: %w", u.Host, err)
+}
+
+// newClient builds the transport. caFile, when set, names a PEM CA set trusted in addition to the
+// system roots.
+func newClient(base, caFile string) (*client, error) {
+	u, err := edgeURL(base)
+	if err != nil {
+		return nil, err
+	}
+	pool, err := edgeRoots(caFile)
+	if err != nil {
+		return nil, err
+	}
+	c := &client{base: u, now: time.Now}
 	c.tr = &http.Transport{
 		TLSClientConfig: &tls.Config{
 			MinVersion: tls.VersionTLS13,
@@ -75,6 +149,13 @@ func newClient(base, caFile string) (*client, error) {
 					return &tls.Certificate{}, nil // no certificate yet: first enrolment
 				}
 				return c.cert, nil
+			},
+			// Runs only once the edge's certificate has verified.
+			VerifyConnection: func(tls.ConnectionState) error {
+				c.trustMu.Lock()
+				c.unverifiedSince, c.unverifiedCount = time.Time{}, 0
+				c.trustMu.Unlock()
+				return nil
 			},
 		},
 		ForceAttemptHTTP2:   true,
@@ -110,6 +191,7 @@ func (c *client) do(ctx context.Context, method, path string, body []byte, heade
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		c.noteVerification(err)
 		return nil, nil, &apiError{transport: true, cause: err}
 	}
 	defer resp.Body.Close()
@@ -118,6 +200,29 @@ func (c *client) do(ctx context.Context, method, path string, body []byte, heade
 		return resp, nil, &apiError{transport: true, cause: err}
 	}
 	return resp, b, nil
+}
+
+// noteVerification records a request that failed because the edge's certificate did not verify.
+func (c *client) noteVerification(err error) {
+	var cv *tls.CertificateVerificationError
+	if !errors.As(err, &cv) {
+		return
+	}
+	c.trustMu.Lock()
+	if c.unverifiedCount == 0 {
+		c.unverifiedSince = c.now()
+	}
+	c.unverifiedCount++
+	c.trustMu.Unlock()
+}
+
+// unverified reports when the edge's certificate first failed verification after the last
+// handshake that verified it, and how many requests have failed verification since; 0 while the
+// last verification passed or none has failed.
+func (c *client) unverified() (time.Time, int) {
+	c.trustMu.Lock()
+	defer c.trustMu.Unlock()
+	return c.unverifiedSince, c.unverifiedCount
 }
 
 // apiError is a refusal from the edge (a status with the error envelope's reason code, when it

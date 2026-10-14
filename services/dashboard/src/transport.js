@@ -15,7 +15,7 @@ import {
   ADMIN_SETTINGS_ENDPOINT, ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT, ADMIN_SETTINGS_SCOPE_OVERRIDE_ENDPOINT,
   ADMIN_SETTINGS_RETENTION_ENDPOINT, ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT, ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT,
   ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT, ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT, ADMIN_SETTINGS_RULES_ENDPOINT, ADMIN_SETTINGS_CUSTOM_LABELS_ENDPOINT,
-  ADMIN_SETTINGS_KILL_SWITCH_ENDPOINT,
+  ADMIN_SETTINGS_KILL_SWITCH_ENDPOINT, ADMIN_SETTINGS_RESTART_NOTICE_ENDPOINT,
 } from './vocab.js';
 
 /** An error the transport produced, carrying the same shape as an API refusal. */
@@ -438,6 +438,10 @@ export function createAdminApi({ transport }) {
     setTLSInspection(enabled) {
       return done({ method: 'PUT', path: ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT, body: { enabled } });
     },
+    /** How an app that needs a restart is reported: off, dashboard, notify or both. */
+    setRestartNotice(value) {
+      return done({ method: 'PUT', path: ADMIN_SETTINGS_RESTART_NOTICE_ENDPOINT, body: { restart_notice: value } });
+    },
     /** The rules in order, and who the values their users name are. */
     async rules() {
       const answer = await call({ method: 'GET', path: ADMIN_SETTINGS_RULES_ENDPOINT });
@@ -629,6 +633,7 @@ export function normaliseSettings(body) {
     }),
     content_search: ['disabled', 'attachment_names', 'full_text'].includes(body.content_search) ? body.content_search : 'disabled',
     tls_inspection: nullableBoolean(body.tls_inspection),
+    restart_notice: ['off', 'dashboard', 'notify', 'both'].includes(body.restart_notice) ? body.restart_notice : null,
     data_classes: Array.isArray(body.data_classes) ? Object.freeze(body.data_classes.filter((c) => typeof c === 'string' && c !== '')) : null,
     custom_labels: normaliseCustomLabels(body.custom_labels),
     app_categories: Array.isArray(body.app_categories) ? Object.freeze(body.app_categories.filter((c) => typeof c === 'string' && c !== '')) : null,

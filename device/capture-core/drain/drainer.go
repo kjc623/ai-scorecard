@@ -148,6 +148,7 @@ func New(cfg Config, store StoreFunc, creds *credential.Store, log Logger, clock
 	if err != nil {
 		return nil, err
 	}
+	c.now = clock
 	d := &Drainer{
 		cfg:     cfg,
 		store:   store,
@@ -173,6 +174,11 @@ func New(cfg Config, store StoreFunc, creds *credential.Store, log Logger, clock
 	}
 	return d, nil
 }
+
+// UnverifiedSince reports when the edge's certificate first failed verification after the last
+// handshake that verified it, and how many requests have failed verification since; 0 while the
+// last verification passed or none has failed.
+func (d *Drainer) UnverifiedSince() (time.Time, int) { return d.client.unverified() }
 
 // Start launches the background drain loop. Credential acquisition is the loop's job, and its
 // failures surface as a degraded status rather than an error.

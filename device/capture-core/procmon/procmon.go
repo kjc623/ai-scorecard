@@ -95,6 +95,19 @@ type host struct {
 
 var system = host{snapshot: snapshot, process: hostinfo.ProcessInfo, version: fileVersion}
 
+// snapshot lists the running processes.
+func snapshot() ([]proc, error) {
+	entries, err := hostinfo.Processes()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]proc, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, proc{pid: e.PID, parent: e.Parent, base: e.Name})
+	}
+	return out, nil
+}
+
 // proc is a process as an event or the process list names it.
 type proc struct {
 	pid, parent uint32

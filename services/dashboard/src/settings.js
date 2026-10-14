@@ -2,12 +2,12 @@
 //
 // The page an admin uses to change what the tenant collects and keeps: the collection mode (within
 // the ceiling) with an optional narrower per-tool override, the event and content retention
-// periods, the sanction decision per tool, the content search tier, which endpoint collectors
-// run on the devices, whether devices inspect TLS, and the kill switches that stop decryption and
-// enforcement on an interception route. Every read and write goes through the admin api
-// (transport.js), which control-api answers for an admin only and audits with the real actor, the
-// old value and the new value. The enforcement rules and the custom labels they name are on Rules
-// (rules.js).
+// periods, the sanction decision per tool, the content search tier, which endpoint collectors run
+// on the devices, whether devices inspect TLS, how an app that needs a restart is reported, and the
+// kill switches that stop decryption and enforcement on an interception route. Every read and write
+// goes through the admin api (transport.js), which control-api answers for an admin only and audits
+// with the real actor, the old value and the new value. The enforcement rules and the custom labels
+// they name are on Rules (rules.js).
 //
 // Split like the deployment settings (deployment.js): `createSettings` is DOM-free, so a test can
 // drive it without a browser. A mode increase that starts capturing content is not sent until the
@@ -34,6 +34,18 @@ export const ENDPOINT_TOOLS = Object.freeze([
   Object.freeze({ key: 'copilot', label: 'Copilot', otel: true, hooks: false, loopback: false, sends: Object.freeze(['otel', 'hooks']) }),
   Object.freeze({ key: 'cursor', label: 'Cursor', otel: false, hooks: true, loopback: false, sends: Object.freeze(['otel', 'hooks']) }),
   Object.freeze({ key: 'ollama', label: 'Ollama', otel: false, hooks: false, loopback: true, sends: Object.freeze(['loopback']) }),
+]);
+
+/**
+ * How a device reports an app that was already running when the agent changed the settings it
+ * reads only at start, in the order the card shows them: on the dashboard, to the person using the
+ * app, both, or not at all.
+ */
+export const RESTART_NOTICES = Object.freeze([
+  Object.freeze({ key: 'off', label: 'Off' }),
+  Object.freeze({ key: 'dashboard', label: 'Dashboard' }),
+  Object.freeze({ key: 'notify', label: 'Notify users' }),
+  Object.freeze({ key: 'both', label: 'Both' }),
 ]);
 
 /** The interception routes that have a kill switch, in the order the card shows them. */
@@ -79,6 +91,7 @@ const IDLE = Object.freeze({
   sanction: Object.freeze({ pending: null, problem: null }),
   endpoint: Object.freeze({ pending: null, problem: null }),
   tls: Object.freeze({ pending: null, problem: null }),
+  restartNotice: Object.freeze({ pending: null, problem: null }),
   // reasons holds the reason code typed for each route; pending is the route being written.
   killSwitch: Object.freeze({ pending: null, problem: null, reasons: Object.freeze({}) }),
 });
@@ -88,6 +101,7 @@ const onOff = (value) => (value === 'on' ? true : value === 'off' ? false : null
 
 const NOT_READ = Object.freeze({ code: 'endpoint_not_reported', message: 'The current endpoint settings were not read; reload the page and try again.' });
 const TLS_NOT_READ = Object.freeze({ code: 'tls_inspection_not_reported', message: 'The current TLS inspection setting was not read; reload the page and try again.' });
+const RESTART_NOTICE_NOT_READ = Object.freeze({ code: 'restart_notice_not_reported', message: 'The current setting for apps that need a restart was not read; reload the page and try again.' });
 const KILL_SWITCHES_NOT_READ = Object.freeze({ code: 'kill_switches_not_reported', message: 'The current kill switches were not read; reload the page and try again.' });
 const REASON_REQUIRED = Object.freeze({ code: 'invalid_reason_code', message: 'Give a reason code: a lower-case letter, then lower-case letters, digits, "_", "." or "-" (at most 64).' });
 
@@ -268,6 +282,25 @@ export function createSettings({ admin, onChange = () => {} }) {
     return load({ quiet: true });
   }
 
+  /** Choose how an app that needs a restart is reported. Nothing is sent over a setting that was not read. */
+  async function setRestartNotice(value) {
+    if (!RESTART_NOTICES.some((n) => n.key === value) || state.status !== 'ready' || state.restartNotice.pending) return state;
+    const current = state.data.restart_notice;
+    if (!RESTART_NOTICES.some((n) => n.key === current)) {
+      set({ restartNotice: Object.freeze({ pending: null, problem: RESTART_NOTICE_NOT_READ }) });
+      return state;
+    }
+    if (current === value) return state;
+    set({ restartNotice: Object.freeze({ pending: value, problem: null }) });
+    const answer = await admin.setRestartNotice(value);
+    if (answer.state !== 'done') {
+      set({ restartNotice: Object.freeze({ pending: null, problem: answer.error }) });
+      return state;
+    }
+    set({ restartNotice: IDLE.restartNotice });
+    return load({ quiet: true });
+  }
+
   // --- Kill switches: one per interception route, tripped with a reason code --------------------
 
   /** A typed reason code for a route. Held without a repaint, so the field keeps its focus. */
@@ -319,10 +352,11 @@ export function createSettings({ admin, onChange = () => {} }) {
       case 'endpoint': return setEndpointCollector(dataset.collector, onOff(dataset.value));
       case 'endpoint-tool': return setEndpointTool(dataset.tool, dataset.collector, onOff(dataset.value));
       case 'tls-inspection': return setTLSInspection(onOff(dataset.value));
+      case 'restart-notice': return setRestartNotice(dataset.value);
       case 'kill-switch': return setKillSwitch(dataset.route, onOff(dataset.value));
       default: return Promise.resolve(state);
     }
   }
 
-  return Object.freeze({ get state() { return state; }, load, chooseMode, setScopeOverride, setRetentionDraft, saveRetention, setContentSearch, setToolSanction, setEndpointCollector, setEndpointTool, setTLSInspection, setKillSwitchReason, setKillSwitch, act });
+  return Object.freeze({ get state() { return state; }, load, chooseMode, setScopeOverride, setRetentionDraft, saveRetention, setContentSearch, setToolSanction, setEndpointCollector, setEndpointTool, setTLSInspection, setRestartNotice, setKillSwitchReason, setKillSwitch, act });
 }
