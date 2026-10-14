@@ -358,13 +358,15 @@ const (
 
 	// Tool configuration. The tool is not installed, the platform has no managed location for it
 	// yet or the installed release is too old for it, the agent could not write the configuration
-	// it manages, a user's own configuration overrides it, or the tool ran with the configuration
-	// in place and sent none of the events it configures.
+	// it manages, a user's own configuration overrides it, the tool ran with the configuration in
+	// place and sent none of the events it configures, or a process of the tool that reads the
+	// configuration only when it starts was already running when the configuration changed.
 	DetailToolNotInstalled       Detail = "tool_not_installed"
 	DetailToolVersionUnsupported Detail = "tool_version_unsupported"
 	DetailConfigWriteFailed      Detail = "config_write_failed"
 	DetailConfigTampered         Detail = "config_tampered"
 	DetailNoRecentEvents         Detail = "no_recent_events"
+	DetailRestartRequired        Detail = "restart_required"
 
 	// ETW. The real-time session a collector reads could not be opened or stopped delivering
 	// events, or the platform has none.
@@ -392,7 +394,7 @@ var AllDetails = [...]Detail{
 	DetailIdentityUnresolved, DetailDisabledByPolicy,
 	DetailHelperUnavailable, DetailComponentCrashLoop,
 	DetailToolNotInstalled, DetailToolVersionUnsupported, DetailConfigWriteFailed,
-	DetailConfigTampered, DetailNoRecentEvents, DetailETWSessionFailed,
+	DetailConfigTampered, DetailNoRecentEvents, DetailRestartRequired, DetailETWSessionFailed,
 }
 
 // Valid reports whether the detail is in the closed vocabulary. An empty detail is valid: a

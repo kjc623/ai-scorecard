@@ -191,6 +191,9 @@ type PolicyTenant struct {
 	CollectionMode string
 	// TLSInspection is whether the tenant's devices intercept TLS (ops.tenant.tls_inspection).
 	TLSInspection bool
+	// RestartNotice is how devices report an AI app that needs a restart to read the configuration
+	// the agent wrote for it, one of RestartNotices (ops.tenant.restart_notice).
+	RestartNotice string
 }
 
 // Active mirrors Tenant.Active.
@@ -291,6 +294,11 @@ var EndpointToolKeys = []string{"claude_code", "codex", "copilot", "cursor", "ol
 // LoopbackToolKeys is the tools whose switch is Loopback rather than OTel and Hooks.
 var LoopbackToolKeys = []string{"ollama"}
 
+// RestartNotices is the closed set of ops.tenant.restart_notice: an app that was running when the
+// agent changed its configuration is reported to no one, on the dashboard (its tool_config
+// collector degraded with restart_required), to the person running it, or both.
+var RestartNotices = []string{"off", "dashboard", "notify", "both"}
+
 // EndpointCollectors is the tenant's switch for each endpoint collector (ops.endpoint_setting).
 type EndpointCollectors struct {
 	Inventory        bool
@@ -369,6 +377,7 @@ type Settings struct {
 	ContentRetentionDays *int
 	ContentSearch        string
 	TLSInspection        bool
+	RestartNotice        string
 	RetentionDefaults    RetentionDefaults
 	Tools                []ToolDecision
 	Endpoint             EndpointSettings
@@ -422,6 +431,8 @@ var (
 	ErrCustomLabelInUse = errors.New("store: custom label is named by an enforcement rule")
 	// ErrUnknownKillSwitchRoute is a kill switch for a route outside KillSwitchRoutes.
 	ErrUnknownKillSwitchRoute = errors.New("store: kill switch route unknown")
+	// ErrUnknownRestartNotice is a restart notice outside RestartNotices.
+	ErrUnknownRestartNotice = errors.New("store: restart notice unknown")
 )
 
 // Store is control-api's persistence. *SQLStore implements it; tests use storetest.Memory.
@@ -505,6 +516,9 @@ type Store interface {
 	SetEndpointTool(ctx context.Context, tenantID string, toolKey string, t EndpointTool, audit AuditEntry) error
 	// SetTLSInspection turns the tenant's TLS inspection on or off.
 	SetTLSInspection(ctx context.Context, tenantID string, enabled bool, audit AuditEntry) error
+	// SetRestartNotice sets how the tenant's devices report an app that needs a restart.
+	// ErrUnknownRestartNotice when the value is outside RestartNotices.
+	SetRestartNotice(ctx context.Context, tenantID string, value string, audit AuditEntry) error
 	// EnforcementRules reads the tenant's enforcement rules in order. ErrUnknownTenant when the
 	// tenant does not exist.
 	EnforcementRules(ctx context.Context, tenantID string) ([]EnforcementRule, error)

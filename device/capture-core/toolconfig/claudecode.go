@@ -513,7 +513,9 @@ func (c *ClaudeCode) Remove() error {
 }
 
 // claudeCodeTool describes Claude Code to its provider. 2.1.49 is the first release that reads the
-// Program Files managed file and lets no user setting disable its hooks.
+// Program Files managed file and lets no user setting disable its hooks. Claude Code reads the file
+// when it starts, and the Claude desktop app runs its Code tab and Cowork sessions on a Claude Code
+// it starts with the app, so either app restarts to read a change.
 var claudeCodeTool = tool{
 	key:         ClaudeCodeTool,
 	collector:   protocol.CollectorToolConfigClaudeCode,
@@ -523,4 +525,5 @@ var claudeCodeTool = tool{
 	managedOnly: true,
 	versionApp:  "claude_code",
 	minVersion:  "2.1.49",
+	restartApps: map[string]string{"claude_code": "Claude Code", "claude_desktop": "Claude"},
 }

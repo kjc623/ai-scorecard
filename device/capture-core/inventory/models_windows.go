@@ -5,9 +5,7 @@ package inventory
 import (
 	"errors"
 	"fmt"
-	"unsafe"
 
-	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
 
 	"github.com/shadow-ai-capture/device/capture-core/hostinfo"
@@ -41,20 +39,15 @@ func (winModelHost) UserEnv(sid, name string) (string, error) {
 	return v, nil
 }
 
-// Processes lists the running processes (CreateToolhelp32Snapshot).
+// Processes lists the running processes.
 func (winModelHost) Processes() ([]RunningProcess, error) {
-	h, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	entries, err := hostinfo.Processes()
 	if err != nil {
-		return nil, fmt.Errorf("CreateToolhelp32Snapshot: %w", err)
+		return nil, err
 	}
-	defer windows.CloseHandle(h)
-	var out []RunningProcess
-	e := windows.ProcessEntry32{Size: uint32(unsafe.Sizeof(windows.ProcessEntry32{}))}
-	for err = windows.Process32First(h, &e); err == nil; err = windows.Process32Next(h, &e) {
-		out = append(out, RunningProcess{PID: e.ProcessID, Name: windows.UTF16ToString(e.ExeFile[:])})
-	}
-	if !errors.Is(err, windows.ERROR_NO_MORE_FILES) {
-		return nil, fmt.Errorf("Process32Next: %w", err)
+	out := make([]RunningProcess, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, RunningProcess{PID: e.PID, Name: e.Name})
 	}
 	return out, nil
 }

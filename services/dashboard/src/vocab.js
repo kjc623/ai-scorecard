@@ -62,10 +62,11 @@ export const ADMIN_PROVIDERS_ENDPOINT = '/admin/v1/providers';
  * The admin API behind Settings → Collection and Policy. control-api's, admin-only and audited,
  * like the deployment settings: collection mode and its narrower per-tool overrides, event and
  * content retention, tool sanction decisions, the content search tier, the endpoint collector
- * switches, TLS inspection, the enforcement rules, the custom labels they may name and the
- * interception routes' kill switches. These are the only writes this client makes, besides the
- * deployment settings'. A tool's endpoint switches are at /tools/<tool_key> under the endpoint
- * settings; a route's kill switch is at /<route> under the kill switch endpoint.
+ * switches, TLS inspection, how an app that needs a restart is reported, the enforcement rules, the
+ * custom labels they may name and the interception routes' kill switches. These are the only writes
+ * this client makes, besides the deployment settings'. A tool's endpoint switches are at
+ * /tools/<tool_key> under the endpoint settings; a route's kill switch is at /<route> under the
+ * kill switch endpoint.
  */
 export const ADMIN_SETTINGS_ENDPOINT = '/admin/v1/settings';
 export const ADMIN_SETTINGS_COLLECTION_MODE_ENDPOINT = '/admin/v1/settings/collection-mode';
@@ -75,6 +76,7 @@ export const ADMIN_SETTINGS_CONTENT_SEARCH_ENDPOINT = '/admin/v1/settings/conten
 export const ADMIN_SETTINGS_TOOL_SANCTION_ENDPOINT = '/admin/v1/settings/tools';
 export const ADMIN_SETTINGS_ENDPOINT_COLLECTORS_ENDPOINT = '/admin/v1/settings/endpoint';
 export const ADMIN_SETTINGS_TLS_INSPECTION_ENDPOINT = '/admin/v1/settings/tls-inspection';
+export const ADMIN_SETTINGS_RESTART_NOTICE_ENDPOINT = '/admin/v1/settings/restart-notice';
 export const ADMIN_SETTINGS_RULES_ENDPOINT = '/admin/v1/settings/rules';
 export const ADMIN_SETTINGS_CUSTOM_LABELS_ENDPOINT = '/admin/v1/settings/custom-labels';
 export const ADMIN_SETTINGS_KILL_SWITCH_ENDPOINT = '/admin/v1/settings/kill-switch';
@@ -427,6 +429,7 @@ export const COLLECTOR_DETAILS = Object.freeze({
   config_write_failed: "The tool's settings could not be written",
   config_tampered: "A user's own settings override the tool's settings",
   no_recent_events: 'The tool ran but sent nothing for 24 hours',
+  restart_required: 'The app was running when its settings changed and needs a restart',
   etw_session_failed: 'The Windows event session failed',
 });
 

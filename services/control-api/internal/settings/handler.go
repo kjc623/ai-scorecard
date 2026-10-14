@@ -1,8 +1,9 @@
 // Package settings is the Settings admin API: the audited, admin-only reads and writes behind the
 // dashboard's Settings page. It changes a tenant's collection mode (and its narrower per-tool
 // overrides), event and content retention, tool sanction decisions, the content search tier, the
-// endpoint collector switches, TLS inspection, the ordered enforcement rules, the custom labels they
-// may name and the interception routes' kill switches.
+// endpoint collector switches, TLS inspection, how an app that needs a restart is reported, the
+// ordered enforcement rules, the custom labels they may name and the interception routes' kill
+// switches.
 //
 // Every route requires a product access token carrying the admin role (resolved by the injected
 // Authenticator); the tenant is the token's, never the request's. Every write is audited with the
@@ -73,6 +74,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /admin/v1/settings/endpoint", h.handleEndpoint)
 	mux.HandleFunc("PUT /admin/v1/settings/endpoint/tools/{tool_key}", h.handleEndpointTool)
 	mux.HandleFunc("PUT /admin/v1/settings/tls-inspection", h.handleTLSInspection)
+	mux.HandleFunc("PUT /admin/v1/settings/restart-notice", h.handleRestartNotice)
 	mux.HandleFunc("GET /admin/v1/settings/rules", h.handleGetRules)
 	mux.HandleFunc("PUT /admin/v1/settings/rules", h.handlePutRules)
 	mux.HandleFunc("PUT /admin/v1/settings/custom-labels", h.handlePutCustomLabels)
@@ -141,6 +143,7 @@ type settingsJSON struct {
 	RetentionDefaults    retentionJSON     `json:"retention_defaults"`
 	ContentSearch        string            `json:"content_search"`
 	TLSInspection        bool              `json:"tls_inspection"`
+	RestartNotice        string            `json:"restart_notice"`
 	Tools                []toolJSON        `json:"tools"`
 	Endpoint             endpointJSON      `json:"endpoint"`
 	// DataClasses is the classifier's labels, which an enforcement rule may name.
@@ -213,6 +216,7 @@ func (h *Handler) handleGet(w http.ResponseWriter, r *http.Request) {
 		RetentionDefaults:    retentionJSON{EventDays: s.RetentionDefaults.EventDays, ContentDays: s.RetentionDefaults.ContentDays},
 		ContentSearch:        s.ContentSearch,
 		TLSInspection:        s.TLSInspection,
+		RestartNotice:        s.RestartNotice,
 		Tools:                []toolJSON{},
 		DataClasses:          append([]string{}, s.DataClasses...),
 		CustomLabels:         customLabelsJSON(s.CustomLabels),
@@ -562,6 +566,38 @@ func (h *Handler) handleTLSInspection(w http.ResponseWriter, r *http.Request) {
 		return
 	case err != nil:
 		h.fail(w, apierr.Internal(fmt.Errorf("set TLS inspection: %w", err)))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// --- PUT /admin/v1/settings/restart-notice -------------------------------------------------
+
+func (h *Handler) handleRestartNotice(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.admin(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		RestartNotice *string `json:"restart_notice"`
+	}
+	if !h.decode(w, r, &req) {
+		return
+	}
+	if req.RestartNotice == nil || !slices.Contains(store.RestartNotices, *req.RestartNotice) {
+		h.fail(w, apierr.Detailed(http.StatusBadRequest, apierr.CodeInvalidRequest,
+			"restart_notice must be off, dashboard, notify or both", map[string]any{"supported": store.RestartNotices}))
+		return
+	}
+	now := h.cfg.Now().UTC()
+	err := h.store.SetRestartNotice(r.Context(), p.Tenant, *req.RestartNotice,
+		h.audit(p, "tenant.restart_notice.set", "tenant", p.Tenant, now, nil))
+	switch {
+	case errors.Is(err, store.ErrUnknownTenant):
+		h.fail(w, apierr.New(http.StatusForbidden, apierr.CodeUnknownTenant, "the tenant is unknown to this deployment"))
+		return
+	case err != nil:
+		h.fail(w, apierr.Internal(fmt.Errorf("set restart notice: %w", err)))
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

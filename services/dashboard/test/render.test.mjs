@@ -329,6 +329,19 @@ test('Policy → Rules as a viewer reads it: every rule with what it decided ove
   assert.equal(unread.tables[0].summary, 'The prompts each rule matched could not be read for the last 30 days.');
 });
 
+test('a device whose app waits for a restart says so in its status and gives the cause in words', () => {
+  const DEVICE = '9f1c0b6e-0000-4000-8000-000000000005';
+  const row = listOf([{ device: DEVICE, hostname: 'DEV-5', device_os: 'macos', liveness: 'reporting', collectors_reporting: 2, collectors_healthy: 1, collectors_degraded: 1, collectors_absent: 0, collectors_tampered: 0, restart_required: ['tool_config_claude_code'], last_seen_at: '2026-10-01T11:57:00Z' }], 'mart.v_device_liveness');
+  const collectors = listOf([
+    { device: DEVICE, collector: 'capture_core', collector_state: 'healthy', error_code: null, last_report_at: '2026-10-01T11:57:00Z' },
+    { device: DEVICE, collector: 'tool_config_claude_code', collector_state: 'degraded', error_code: 'restart_required', last_report_at: '2026-10-01T11:56:00Z' },
+  ], 'ops.collector_state');
+  const view = deviceView({ device: DEVICE, row, collectors }, { now: new Date('2026-10-01T12:00:00Z') });
+  assert.deepEqual(view.tiles[0].value, { kind: 'vocab', text: 'Restart needed', key: 'degraded' });
+  const html = renderScreen(view, SHELL);
+  assert.match(html, /tool_config_claude_code<\/span><\/td><td><span class="v-vocab v-vocab-degraded" title="degraded">degraded<\/span><\/td><td><span class="cell-stack" title="restart_required"><span class="cell-primary">The app was running when its settings changed and needs a restart<\/span><\/span><\/td>/);
+});
+
 test('a device lists every collector it reported, with its state, the cause in words and the code on hover', () => {
   const DEVICE = '9f1c0b6e-0000-4000-8000-000000000002';
   const row = listOf([{ device: DEVICE, hostname: 'MAC-DESIGN-2', device_os: 'macos', os_version: '15', agent_version: '1.4.2', collection_mode: 'm2', managed_state: 'managed', user_ref: 'u_9a02', subject_name: 'bob@contoso.example', liveness: 'reporting', collectors_reporting: 3, collectors_healthy: 1, collectors_degraded: 1, collectors_absent: 1, collectors_tampered: 0, last_seen_at: '2026-10-01T11:57:00Z' }], 'mart.v_device_liveness');

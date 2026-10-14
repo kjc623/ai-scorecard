@@ -4169,6 +4169,54 @@ END $$;
 RESET ROLE;
 
 -- =====================================================================================
+-- T97  An app that needs a restart is reported on the dashboard unless a tenant chooses otherwise
+-- =====================================================================================
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  n int;
+  v text;
+BEGIN
+  -- Tenant A was created without the setting: it reports to the dashboard.
+  SELECT restart_notice INTO v FROM ops.tenant;
+  IF v IS DISTINCT FROM 'dashboard' THEN
+    RAISE EXCEPTION 'FAIL T97 a tenant created without the setting has restart_notice %, want dashboard', v;
+  END IF;
+  UPDATE ops.tenant SET restart_notice = 'both'
+   WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T97 control-api could not change restart_notice for its tenant';
+  END IF;
+  UPDATE ops.tenant SET restart_notice = 'off'
+   WHERE tenant_id = '22222222-2222-7222-8222-222222222222';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T97 tenant A changed restart_notice for tenant B';
+  END IF;
+  BEGIN
+    UPDATE ops.tenant SET restart_notice = 'email'
+     WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
+    RAISE EXCEPTION 'FAIL T97 restart_notice accepted a value outside off, dashboard, notify and both';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    UPDATE ops.tenant SET restart_notice = NULL
+     WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
+    RAISE EXCEPTION 'FAIL T97 restart_notice accepted NULL';
+  EXCEPTION WHEN not_null_violation THEN NULL;
+  END;
+  UPDATE ops.tenant SET restart_notice = 'dashboard'
+   WHERE tenant_id = '11111111-1111-7111-8111-111111111111';
+  RAISE NOTICE 'PASS T97 restart_notice defaults to dashboard, refuses any other value, and control-api changes it for its own tenant only';
+END $$;
+
+RESET ROLE;
+
+-- =====================================================================================
 -- Report
 -- =====================================================================================
 

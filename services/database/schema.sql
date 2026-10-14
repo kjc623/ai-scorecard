@@ -268,6 +268,12 @@ CREATE TABLE ops.tenant (
   -- Windows desktop-app PAC and the per-device root in the trust store. Set by an admin on the
   -- Settings page and delivered as the bundle's interception.enabled.
   tls_inspection               boolean NOT NULL DEFAULT false,
+  -- How a device reports an AI app that was already running when the agent changed the
+  -- configuration the app reads only at start: 'dashboard' reports the app's tool_config collector
+  -- degraded with restart_required, 'notify' tells the person running it to restart it, 'both' does
+  -- both, 'off' neither. Delivered as the bundle's endpoint.restart_notice.
+  restart_notice               text NOT NULL DEFAULT 'dashboard'
+                                 CHECK (restart_notice IN ('off','dashboard','notify','both')),
   -- A search tier is a capability over data the tenant can collect: filenames cross at M1, prompt
   -- text only at M3.
   CONSTRAINT tenant_search_tier_requires_collection_mode
@@ -3562,7 +3568,6 @@ INSERT INTO ref.tool_catalogue (tool_fingerprint, display_name, vendor, signal_k
   ('tls_ba5b03450233e3fc', 'GitHub Copilot', 'github', 'tls', '{"host":"api.githubcopilot.com","path":"/models"}', 'github_copilot'),
   ('tls_7a4b6619639eeb3a', 'GitHub Copilot', 'github', 'tls', '{"host":"api.business.githubcopilot.com","path":"/chat/completions"}', 'github_copilot'),
   ('tls_37b0c18f488554d9', 'GitHub Copilot', 'github', 'tls', '{"host":"api.enterprise.githubcopilot.com","path":"/chat/completions"}', 'github_copilot'),
-  ('tls_3a0703d7a0dc3a68', 'Microsoft Copilot', 'microsoft', 'tls', '{"host":"copilot.microsoft.com","path":"/chat/completions"}', 'microsoft_copilot'),
   ('tls_7659f7a5e64cd885', 'Gemini (web)', 'google', 'tls', '{"host":"gemini.google.com","path":"/"}', 'gemini_web'),
   ('tls_0320fa08a4f64851', 'Gemini API', 'google', 'tls', '{"host":"generativelanguage.googleapis.com","path":"/v1beta/models"}', 'google_ai_api'),
   ('tls_a40a04ef6e27de9f', 'Perplexity (web)', 'perplexity', 'tls', '{"host":"www.perplexity.ai","path":"/"}', 'perplexity_web'),

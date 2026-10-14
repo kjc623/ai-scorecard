@@ -33,6 +33,10 @@ type tool struct {
 	// versionApp is the catalog app whose installed version is checked against minVersion, the
 	// first release that honours every setting the agent writes for the tool. Empty checks none.
 	versionApp, minVersion string
+	// restartApps are the catalog apps whose processes read the tool's configuration only when
+	// they start, each with the name a person knows it by. A process of one that started before
+	// the configuration last changed runs without it until it restarts.
+	restartApps map[string]string
 }
 
 // recentEvents is how long a tool that runs with the agent's configuration in place may send no
@@ -67,8 +71,13 @@ type Config struct {
 	Log         core.Logger
 	Clock       func() time.Time
 	// Watcher, when set, watches the tool's managed configuration while the provider runs and has
-	// it applied again when something else changes it.
+	// it applied again when something else changes it, and has the provider look for processes
+	// that need a restart to read it.
 	Watcher *Watcher
+	// Processes lists the running processes of catalog apps. nil looks for none that need a
+	// restart. Notify shows a notification to the person signed in to a session; nil tells no one.
+	Processes func(apps []string) ([]AppProcess, error)
+	Notify    func(session uint32, n protocol.Notify) error
 }
 
 // Provider is one tool's tool_config_<tool> collector: while the bundle switches the tool's OTel
@@ -102,6 +111,17 @@ type Provider struct {
 	// agent. It holds until a health report has carried it and a later comparison is clean.
 	tampered       bool
 	tamperReported bool
+
+	// notice is the last bundle's restart notice. restartDue: the last check found a process of a
+	// restart app running since before the configuration last changed. processesFailing: the last
+	// check could not list the processes.
+	notice           policy.RestartNotice
+	restartDue       bool
+	processesFailing bool
+	// notified is, per session and app, the restart notification for the last configuration change;
+	// notifying holds those being shown.
+	notified  map[restartKey]restartNotified
+	notifying map[restartKey]bool
 }
 
 type nopLogger struct{}
@@ -125,7 +145,8 @@ func newProvider(t tool, w Writer, cfg Config) *Provider {
 		cfg.Executable = os.Executable
 	}
 	now := cfg.Clock()
-	return &Provider{tool: t, w: w, cfg: cfg, startedAt: now, counters: core.NewCounterSet(now)}
+	return &Provider{tool: t, w: w, cfg: cfg, startedAt: now, counters: core.NewCounterSet(now),
+		notified: map[restartKey]restartNotified{}, notifying: map[restartKey]bool{}}
 }
 
 // Name implements core.Provider.
@@ -227,6 +248,8 @@ func (p *Provider) Stop(context.Context) error {
 	p.running = false
 	p.attempted = false
 	p.tampered, p.tamperReported = false, false
+	p.restartDue = false
+	clear(p.notified)
 	p.mu.Unlock()
 	if !p.tool.supported {
 		return nil
@@ -242,6 +265,9 @@ func (p *Provider) Stop(context.Context) error {
 // ApplyPolicy records what b asks for and, while running and switched on, applies it when it
 // differs from what was applied, or when the last apply did not complete.
 func (p *Provider) ApplyPolicy(b policy.Bundle) error {
+	p.mu.Lock()
+	p.notice = b.Endpoint.RestartNotice
+	p.mu.Unlock()
 	if !p.Enabled(&b) {
 		return nil
 	}
@@ -403,11 +429,14 @@ func (p *Provider) quiet(inPlaceSince time.Time) bool {
 // reported, else healthy only while the installed version honours the agent's settings, the file
 // on disk holds the agent's keys, no user's configuration overrides them, every installed part of
 // the tool has a machine-wide configuration the agent can write (else degraded with
-// tool_version_unsupported), and the tool, when it ran in the last day, sent an event in it.
+// tool_version_unsupported), no process that reads the configuration only when it starts has run
+// since before it changed while the restart notice includes the dashboard (else degraded with
+// restart_required), and the tool, when it ran in the last day, sent an event in it.
 func (p *Provider) Health() core.Health {
 	p.mu.Lock()
 	running, attempted, installed, unsupported, writeErr := p.running, p.attempted, p.installed, p.unsupported, p.writeErr
 	applied, since, last, tampered, inPlaceSince := p.applied, p.startedAt, p.lastSuccess, p.tampered, p.inPlaceSince
+	restartDue := p.restartDue && p.notice.Dashboard()
 	p.mu.Unlock()
 	switch {
 	case !p.tool.supported:
@@ -434,6 +463,9 @@ func (p *Provider) Health() core.Health {
 	}
 	if pw, ok := p.w.(partialWriter); ok && pw.Unenforced() {
 		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailToolVersionUnsupported, since, last)
+	}
+	if restartDue {
+		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailRestartRequired, since, last)
 	}
 	if p.quiet(inPlaceSince) {
 		return p.counters.Snapshot(protocol.StateDegraded, protocol.DetailNoRecentEvents, since, last)

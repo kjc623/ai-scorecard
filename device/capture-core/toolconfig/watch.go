@@ -33,7 +33,8 @@ type watchedRegistry interface {
 
 // Watcher notices when a running provider's managed files or registry values change, and has the
 // provider compare them with what it applied and apply its settings again when they differ. A file
-// is watched through its folder, so a file deleted and created again is seen.
+// is watched through its folder, so a file deleted and created again is seen. At every backstop it
+// also has each provider look for processes that need a restart to read its configuration.
 type Watcher struct {
 	log      core.Logger
 	debounce time.Duration
@@ -113,6 +114,7 @@ func (w *Watcher) Run(stop <-chan struct{}) {
 			w.mu.Unlock()
 			for _, p := range ps {
 				p.checkDrift()
+				p.checkRestart()
 			}
 			w.watchFolders()
 		}

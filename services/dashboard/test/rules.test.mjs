@@ -41,7 +41,7 @@ function falcon() {
 function settingsBody(overrides = {}) {
   return {
     ceiling_mode: 'm3', collection_mode: 'm3', scope_overrides: {}, retention_defaults: { event_days: 90, content_days: 30 },
-    content_search: 'disabled', devices: [], tls_inspection: false, kill_switches: [],
+    content_search: 'disabled', devices: [], tls_inspection: false, restart_notice: 'dashboard', kill_switches: [],
     // One catalogue tool can come back on more than one row; the page lists it once.
     tools: [
       { tool_key: 'chatgpt_web', display_name: 'ChatGPT (web)', sanctioned_state: 'unsanctioned', fingerprints: ['tls_f412811be7ac6539'] },

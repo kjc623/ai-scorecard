@@ -2173,16 +2173,35 @@ export function peopleView(state, { search = '', members = null } = {}) {
 
 const count = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0);
 
+/** The device's collectors that report an app running without the settings it reads at start. */
+const restartCollectors = (row) => (Array.isArray(row.restart_required) ? row.restart_required.filter((c) => typeof c === 'string' && c !== '') : []);
+
+/**
+ * Which apps need a restart, in words: "Claude Code needs a restart". A tool_config_<key>
+ * collector is named by its tool, any other by the collector; null when none needs one.
+ */
+function restartText(row) {
+  const names = restartCollectors(row).map((c) => ENDPOINT_TOOLS.find((tool) => `tool_config_${tool.key}` === c)?.label ?? c);
+  if (names.length === 0) return null;
+  const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+  return `${list} ${names.length === 1 ? 'needs' : 'need'} a restart`;
+}
+
 /**
  * One device's state in the words a customer uses, from its liveness and the worst state among
- * its collectors. The key keeps the vocabulary value's colour.
+ * its collectors. The key keeps the vocabulary value's colour. A device whose only degraded
+ * collectors are apps waiting for a restart says so, under the degraded key.
  */
 function deviceStatus(row) {
   if (row.liveness === 'revoked') return { key: 'revoked', text: 'Revoked' };
   if (count(row.collectors_tampered) > 0) return { key: 'tampered', text: 'Tampered' };
   if (row.liveness === 'never_reported') return { key: 'never_reported', text: 'Never checked in' };
   if (row.liveness === 'stale') return { key: 'stale', text: row.last_seen_at ? `Quiet since ${formatInstant(row.last_seen_at).slice(0, 10)}` : 'Quiet' };
-  if (row.liveness === 'reporting') return count(row.collectors_degraded) > 0 ? { key: 'degraded', text: 'Degraded' } : { key: 'reporting', text: 'Reporting' };
+  if (row.liveness === 'reporting') {
+    const degraded = count(row.collectors_degraded);
+    if (degraded === 0) return { key: 'reporting', text: 'Reporting' };
+    return { key: 'degraded', text: degraded === restartCollectors(row).length ? 'Restart needed' : 'Degraded' };
+  }
   return { key: 'unknown', text: 'Unknown' };
 }
 
@@ -2233,6 +2252,7 @@ function deviceRow(row, now) {
   const status = deviceStatus(row);
   const lastSeen = row.last_seen_at ? ago(row.last_seen_at, now) : null;
   const collectors = collectorsSummary(row);
+  const restart = restartText(row);
   // The device name is the hostname, with the UUID kept for the hover and as the fallback. The
   // user is the clear account name of the most recent submission, with the pseudonymous ref as
   // the fallback. directory_name is the directory's own current name, shown above it when a
@@ -2263,7 +2283,7 @@ function deviceRow(row, now) {
     }),
     status_cell: Object.freeze({
       chip: Object.freeze({ key: status.key, text: status.text }),
-      secondary: [lastSeen ? `Last seen ${lastSeen}` : null, collectors ? `Collectors ${collectors}` : null].filter(Boolean).join(' · ') || null,
+      secondary: [restart, lastSeen ? `Last seen ${lastSeen}` : null, collectors ? `Collectors ${collectors}` : null].filter(Boolean).join(' · ') || null,
     }),
   };
 }

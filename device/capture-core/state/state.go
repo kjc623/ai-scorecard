@@ -26,6 +26,9 @@ const (
 	DeviceCADir    = "device-ca"
 	HealthFile     = "health.json"
 	LogFile        = "capture-core.log"
+	// EdgeRestartFile holds when the agent last restarted itself because the device edge's
+	// certificate stopped verifying in its process.
+	EdgeRestartFile = "edge-restart"
 )
 
 // KeySize is the length of every symmetric key the agent keeps: 32 bytes, AES-256.

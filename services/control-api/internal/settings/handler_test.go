@@ -90,6 +90,7 @@ var routes = []struct{ method, path, body string }{
 	{"PUT", "/admin/v1/settings/endpoint", endpointBody},
 	{"PUT", "/admin/v1/settings/endpoint/tools/cursor", `{"otel":false,"hooks":false}`},
 	{"PUT", "/admin/v1/settings/tls-inspection", `{"enabled":true}`},
+	{"PUT", "/admin/v1/settings/restart-notice", `{"restart_notice":"both"}`},
 	{"GET", "/admin/v1/settings/rules", ""},
 	{"PUT", "/admin/v1/settings/rules", `{"rules":[]}`},
 	{"PUT", "/admin/v1/settings/custom-labels", `{"custom_labels":[]}`},
@@ -137,6 +138,7 @@ func TestGet(t *testing.T) {
 			ContentDays int `json:"content_days"`
 		} `json:"retention_defaults"`
 		ContentSearch string `json:"content_search"`
+		RestartNotice string `json:"restart_notice"`
 		Tools         []struct {
 			ToolKey         string   `json:"tool_key"`
 			SanctionedState string   `json:"sanctioned_state"`
@@ -160,6 +162,9 @@ func TestGet(t *testing.T) {
 	}
 	if got.ContentSearch != "attachment_names" {
 		t.Fatalf("content search = %s", got.ContentSearch)
+	}
+	if got.RestartNotice != "dashboard" {
+		t.Fatalf("restart notice = %q, want the default dashboard", got.RestartNotice)
 	}
 	if len(got.Tools) != 2 || got.Tools[1].ToolKey != "openai_api" || got.Tools[1].SanctionedState != "unsanctioned" ||
 		len(got.Tools[1].Fingerprints) != 2 || got.Tools[1].Fingerprints[1] != "tls_f32477ff734d70d1" {
@@ -537,6 +542,79 @@ func TestTLSInspection(t *testing.T) {
 		}
 		if a.Detail["previous"] != want.previous || a.Detail["new"] != want.next {
 			t.Fatalf("audit %d values: previous %v, new %v; want %v, %v", i, a.Detail["previous"], a.Detail["new"], want.previous, want.next)
+		}
+	}
+}
+
+func (r *rig) restartNotice(t *testing.T) string {
+	t.Helper()
+	rec := r.do(t, "admin", "GET", "/admin/v1/settings", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		RestartNotice *string `json:"restart_notice"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.RestartNotice == nil {
+		t.Fatalf("GET /admin/v1/settings has no restart_notice: %s", rec.Body)
+	}
+	return *got.RestartNotice
+}
+
+func TestRestartNotice(t *testing.T) {
+	r := newRig(t)
+	// A tenant that never set it reports on the dashboard.
+	if got := r.restartNotice(t); got != "dashboard" {
+		t.Fatalf("restart notice = %q for a tenant that never set it, want dashboard", got)
+	}
+	put := func(body string) *httptest.ResponseRecorder {
+		return r.do(t, "admin", "PUT", "/admin/v1/settings/restart-notice", body)
+	}
+	if rec := put(`{"restart_notice":"both"}`); rec.Code != http.StatusNoContent {
+		t.Fatalf("set both: %d %s", rec.Code, rec.Body)
+	}
+	if got := r.restartNotice(t); got != "both" {
+		t.Fatalf("restart notice = %q after setting both", got)
+	}
+	// A body without the value, with a value outside the set or another type, or with an unknown
+	// field changes nothing.
+	for _, body := range []string{`{}`, `{"restart_notice":null}`, `{"restart_notice":""}`, `{"restart_notice":"Both"}`, `{"restart_notice":"email"}`} {
+		if rec := put(body); rec.Code != http.StatusBadRequest || errorCode(t, rec) != apierr.CodeInvalidRequest {
+			t.Fatalf("body %s: %d %s", body, rec.Code, rec.Body)
+		}
+	}
+	for _, body := range []string{`{"restart_notice":true}`, `{"restart_notice":"off","enabled":true}`} {
+		if rec := put(body); rec.Code != http.StatusBadRequest {
+			t.Fatalf("body %s: %d %s", body, rec.Code, rec.Body)
+		}
+	}
+	if got := r.restartNotice(t); got != "both" {
+		t.Fatalf("a refused write changed the setting to %q", got)
+	}
+	for _, v := range []string{"off", "notify", "dashboard"} {
+		if rec := put(`{"restart_notice":"` + v + `"}`); rec.Code != http.StatusNoContent {
+			t.Fatalf("set %s: %d %s", v, rec.Code, rec.Body)
+		}
+		if got := r.restartNotice(t); got != v {
+			t.Fatalf("restart notice = %q after setting %s", got, v)
+		}
+	}
+
+	audits := r.store.Audits()
+	want := []struct{ previous, next string }{{"dashboard", "both"}, {"both", "off"}, {"off", "notify"}, {"notify", "dashboard"}}
+	if len(audits) != len(want) {
+		t.Fatalf("audits = %+v, want the %d accepted writes", audits, len(want))
+	}
+	for i, w := range want {
+		a := audits[i]
+		if a.Action != "tenant.restart_notice.set" || a.ActorID != admin.Actor || a.ObjectType != "tenant" || a.ObjectID != tenantA || a.Detail["subject"] != admin.Subject {
+			t.Fatalf("audit %d = %+v", i, a)
+		}
+		if a.Detail["previous"] != w.previous || a.Detail["new"] != w.next {
+			t.Fatalf("audit %d values: previous %v, new %v; want %v, %v", i, a.Detail["previous"], a.Detail["new"], w.previous, w.next)
 		}
 	}
 }

@@ -279,6 +279,9 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 		// The ceiling CHECK makes this unreachable from the database; refusing beats guessing.
 		return nil, fmt.Errorf("tenant collection_mode %q is outside {m0,m1,m2,m3}", in.Tenant.CollectionMode)
 	}
+	if !slices.Contains(store.RestartNotices, in.Tenant.RestartNotice) {
+		return nil, fmt.Errorf("tenant restart_notice %q is outside {off,dashboard,notify,both}", in.Tenant.RestartNotice)
+	}
 	hosts := append([]string(nil), in.InterceptionHosts...)
 	sort.Strings(hosts)
 	canary := ""
@@ -325,7 +328,7 @@ func (s *Service) compose(in store.PolicyInputs) (*Bundle, error) {
 			NoProxy:     append([]string(nil), s.cfg.NoProxy...),
 			NodeRequire: true,
 		},
-		Endpoint:        composeEndpoint(in.Endpoint),
+		Endpoint:        composeEndpoint(in.Endpoint, in.Tenant.RestartNotice),
 		Rules:           composeRules(in.Rules, in.ToolFingerprints, in.RuleUserRefs),
 		CustomLabels:    composeCustomLabels(in.CustomLabels),
 		SanctionedTools: sanctioned(in.SanctionedTools),
@@ -483,7 +486,7 @@ func sanctioned(fps []string) []string {
 }
 
 // composeEndpoint is the bundle's endpoint section for the tenant's settings.
-func composeEndpoint(e store.EndpointSettings) Endpoint {
+func composeEndpoint(e store.EndpointSettings, restartNotice string) Endpoint {
 	c := e.Collectors
 	// A tool whose switch is loopback is carried in the loopback section, not here.
 	tools := make(map[string]EndpointTool, len(e.Tools))
@@ -501,6 +504,7 @@ func composeEndpoint(e store.EndpointSettings) Endpoint {
 		Hooks:                EndpointHooks{Enabled: c.Hooks, ManagedOnly: c.HooksManagedOnly},
 		Tools:                tools,
 		DiscoveryDailyBudget: DiscoveryDailyBudget,
+		RestartNotice:        restartNotice,
 	}
 }
 

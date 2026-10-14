@@ -156,7 +156,10 @@ test('q7 needs no window and keeps four liveness values distinct', () => {
     assert.ok(read.text.includes(`'${value}'`), `liveness must keep ${value}`);
   }
   assert.match(read.text, /ORDER BY d\.device_id ASC NULLS LAST\s*\n/, 'one row per device: the device is the whole ordering');
-  assert.ok(!read.text.includes('ops.collector_state'), 'the list never fans out per collector');
+  // A device's collectors are read per row into one array, never joined, so no collector adds a row.
+  assert.ok(!/JOIN\s+ops\.collector_state/.test(read.text), 'the list never fans out per collector');
+  assert.match(read.text, /ARRAY\(SELECT cs\.collector FROM ops\.collector_state cs WHERE cs\.tenant_id = d\.tenant_id AND cs\.device_id = d\.device_id AND cs\.error_code = 'restart_required' ORDER BY cs\.collector\) AS restart_required/,
+    'each device names its collectors whose app needs a restart');
   // Fleet-wide counts by status, so the Devices cards describe the same population as the cursor
   // page. If this disappears, "Need attention" silently reverts to the page count.
   const status = p.statements.find((s) => s.id === 'device_status');
