@@ -7,13 +7,15 @@
  * in services/database/schema.sql, and looks the result up in the tool catalogue seeded there: every
  * web tool's hosts, a host under a tool's domain that no row lists, a domain an installed app shares
  * with a web service, and a host no app claims. It also checks that every `tf2:` row is the
- * fingerprint of the host its evidence names, so the prompts stored under it keep their tool.
+ * fingerprint of the host its evidence names, so the prompts stored under it keep their tool, and
+ * that the proxy decrypts no host whose prompt the extension reads from a WebSocket.
  */
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 
+import { SOCKET_HOSTS } from '../src/socket-submission.js';
 import { toolFingerprint } from '../src/tool-fingerprint.js';
 import { bundleCatalog, toolCatalogue } from '../test-support/tool-replay.mjs';
 
@@ -51,20 +53,29 @@ test('the Microsoft 365 Copilot socket host carries no name of its own: substrat
   assert.equal(named('https://substrate.office.com/m365Copilot/Chathub'), null);
 });
 
-test('the Copilot endpoints decrypted at the proxy are named, GitHub and Microsoft kept apart', () => {
+test('the GitHub Copilot endpoints decrypted at the proxy are named GitHub Copilot, each plan\'s host alike', () => {
   // tls rows are the proxy's view: ToolFingerprint(host, path) in device/capture-core/proxy/tlsproxy.
-  // copilot.microsoft.com is consumer Microsoft Copilot, not GitHub Copilot; the GitHub Business and
-  // Enterprise plan hosts are GitHub Copilot, named like the individual plan's host.
-  for (const [host, path, name, app_key] of [
-    ['copilot.microsoft.com', '/chat/completions', 'Microsoft Copilot', 'microsoft_copilot'],
-    ['api.githubcopilot.com', '/chat/completions', 'GitHub Copilot', 'github_copilot'],
-    ['api.business.githubcopilot.com', '/chat/completions', 'GitHub Copilot', 'github_copilot'],
-    ['api.enterprise.githubcopilot.com', '/chat/completions', 'GitHub Copilot', 'github_copilot'],
-  ]) {
-    const row = catalogue.get(tls(host, path));
+  for (const host of ['api.githubcopilot.com', 'api.business.githubcopilot.com', 'api.enterprise.githubcopilot.com']) {
+    const row = catalogue.get(tls(host, '/chat/completions'));
     assert.ok(row, `${host} has a tls row`);
-    assert.equal(row.display_name, name, host);
-    assert.equal(row.app_key, app_key, host);
+    assert.equal(row.display_name, 'GitHub Copilot', host);
+    assert.equal(row.app_key, 'github_copilot', host);
+  }
+});
+
+test('no Copilot socket host is decrypted at the proxy, which cannot carry a WebSocket', () => {
+  // What every process's connections decrypt: the tls rows' hosts and the inference APIs' domains,
+  // as control-api's SQLInterceptionHosts selects them. Decrypting a socket host would break the
+  // tool in the browser, where the extension reads the socket.
+  const decrypted = [...catalogue.values()].filter((row) => row.signal_kind === 'tls').map((row) => row.evidence.host.toLowerCase())
+    .concat(catalog.filter((app) => app.category === 'inference_api')
+      .flatMap((app) => app.signals.filter((s) => s.kind === 'inference_domain').map((s) => s.value.trim().toLowerCase())));
+  assert.ok(decrypted.includes('api.githubcopilot.com'), 'the interception set is read from the seed');
+  for (const host of SOCKET_HOSTS) {
+    // hostMatches in device/capture-core/policy: a leading dot, after any `*`, covers the domain and every host under it.
+    const covering = decrypted.map((d) => d.replace(/^\*/, ''))
+      .filter((d) => d === host || (d.startsWith('.') && (host === d.slice(1) || host.endsWith(d))));
+    assert.deepEqual(covering, [], `${host} is decrypted`);
   }
 });
 
