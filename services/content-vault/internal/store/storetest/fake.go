@@ -327,7 +327,11 @@ func (t *tx) ClaimRetrievalGrant(_ context.Context, grantID, usedBy string, now 
 // Search matches case-insensitively by substring for every form, which is enough to exercise the
 // vault's tier, filter, paging and audit rules; the SQL forms are covered by the live-database test.
 func (t *tx) Search(_ context.Context, q store.SearchQuery) ([]store.SearchHit, error) {
-	needle := strings.ToLower(strings.NewReplacer(" & ", " ", " <-> ", " ", `\%`, "%", `\_`, "_", `\\`, `\`).Replace(q.Text))
+	unquote := strings.NewReplacer(`\%`, "%", `\_`, "_", `\\`, `\`)
+	if q.Form == store.FormTerms {
+		unquote = strings.NewReplacer(" & ", " ", " <-> ", " ", "''", "'", "'", "", `\\`, `\`)
+	}
+	needle := strings.ToLower(unquote.Replace(q.Text))
 	var hits []store.SearchHit
 	for k, u := range t.s.search {
 		sub := t.s.submissions[key(t.tenant, u.SubmissionID)]

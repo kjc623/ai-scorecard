@@ -636,7 +636,7 @@ func TestSearchIsAuditedInTheSameTransaction(t *testing.T) {
 	a := r.store.Audit()
 	last := a[len(a)-1]
 	if last.Action != vault.ActionSearch || last.ActorID != "alice@example.com" || last.CaseReference != "CASE-1" ||
-		last.Detail["terms"] != "contoso & contract <-> renewal" || last.Detail["sid"] != "abcdef0123" {
+		last.Detail["terms"] != "'contoso' & 'contract' <-> 'renewal'" || last.Detail["sid"] != "abcdef0123" {
 		t.Fatalf("search audit = %+v", last)
 	}
 	r.store.FailAudit = true

@@ -164,10 +164,11 @@ func unitKinds(tier store.SearchTier) []string {
 
 // searchText turns what the analyst typed into the statement's parameter.
 //
-// For the terms form it is tsquery text built from sanitised terms: letters, digits and
-// underscores only, joined with &, a quoted phrase joined with <->. That removes every tsquery
-// operator, so to_tsquery cannot fail and an analyst cannot inject one. For substring it is the
-// text with LIKE's metacharacters escaped; for fuzzy, the text itself.
+// For the terms form it is tsquery text: each word a quoted lexeme, the words of a quoted phrase
+// joined with <->, the terms joined with &. Inside quotes a tsquery operator is only text, so an
+// analyst cannot inject one, and to_tsquery runs the word through the same parser as the index:
+// "sundial-check" matches the hyphenated word, "forecast.xlsx" the file name. For substring it is
+// the text with LIKE's metacharacters escaped; for fuzzy, the text itself.
 func searchText(form store.SearchForm, query string) (string, error) {
 	raw := strings.TrimSpace(query)
 	switch {
@@ -189,8 +190,8 @@ func searchText(form store.SearchForm, query string) (string, error) {
 	for _, term := range splitTerms(raw) {
 		var words []string
 		for _, w := range strings.Fields(term) {
-			if w = sanitiseTerm(w); w != "" {
-				words = append(words, w)
+			if searchable(w) {
+				words = append(words, lexeme(strings.ToLower(w)))
 			}
 		}
 		if len(words) > 0 {
@@ -217,15 +218,36 @@ func namePatterns(query string) []string {
 	return out
 }
 
-func sanitiseTerm(w string) string {
-	var b strings.Builder
-	for _, r := range w {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' {
-			b.WriteRune(unicode.ToLower(r))
+// searchable reports whether a word has a letter or a digit, without which the parser finds no
+// lexeme in it.
+func searchable(w string) bool {
+	return strings.IndexFunc(w, func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }) >= 0
+}
+
+// lexeme is a word as tsquery text. The parser indexes a hyphenated word whole and as its parts
+// ("gpt-4o", "gpt", "4o"), but a part of one ("check-claude" of "sundial-check-claude-desktop") is
+// only its parts, and a word whose part is a number keeps only the number's sign ("claude-3" is
+// "claude", "-3"), so a hyphenated word matches either way.
+func lexeme(w string) string {
+	whole := quoteLexeme(w)
+	var parts []string
+	for _, p := range strings.Split(w, "-") {
+		if searchable(p) {
+			parts = append(parts, quoteLexeme(p))
 		}
 	}
-	return b.String()
+	if len(parts) < 2 {
+		return whole
+	}
+	return "(" + whole + " | " + strings.Join(parts, " <-> ") + ")"
 }
+
+// quoteLexeme makes a word one quoted tsquery lexeme.
+func quoteLexeme(w string) string {
+	return "'" + lexemeEscaper.Replace(w) + "'"
+}
+
+var lexemeEscaper = strings.NewReplacer(`\`, `\\`, `'`, `''`)
 
 // splitTerms splits on whitespace, keeping double-quoted phrases together and dropping bare
 // and/or/not.
