@@ -114,8 +114,11 @@ they replaced.
 The file keeps its access control unless users could write it; a new file is readable by users and
 writable by administrators only. Its health row is `tool_config_claude_code`: `healthy` while the file
 holds the agent's keys, `absent` with `tool_not_installed` when the inventory's CLI scan finds no
-Claude Code in any user profile, `degraded` with
+Claude Code in any user profile and its installed-app scan finds no Claude Desktop, `degraded` with
 `config_write_failed` otherwise; on macOS and Linux it is `absent` with `tool_version_unsupported`.
+Claude Desktop counts because its Code tab and Cowork run their sessions on Claude Code, which reads
+the same file, so a prompt sent from the Code tab is captured by these hooks and this export, as
+Claude Code's.
 
 While the receiver and Copilot's OTel export are on, the service points GitHub Copilot at the
 receiver. For the Copilot extension (found by the IDE extension scan) it writes VS Code's machine
