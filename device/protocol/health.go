@@ -103,4 +103,7 @@ type HealthResponse struct {
 	// DeviceIdentity restates the tenant's identity setting so a device sees a change without
 	// waiting for its next enrolment. Empty means the server did not state one.
 	DeviceIdentity DeviceIdentity `json:"device_identity,omitempty"`
+	// DiagnosticsRequest is the id of the oldest diagnostics request waiting for this device, which
+	// it answers with POST /v1/diagnostics. Empty means none is waiting.
+	DiagnosticsRequest string `json:"diagnostics_request,omitempty"`
 }

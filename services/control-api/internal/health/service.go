@@ -23,6 +23,7 @@ import (
 type Store interface {
 	Tenant(ctx context.Context, tenantID string) (store.Tenant, error)
 	RecordHealth(ctx context.Context, tenantID, deviceID string, at time.Time, reports []store.CollectorState, dev store.DeviceHealth) error
+	PendingDiagnostics(ctx context.Context, tenantID, deviceID string, now time.Time) (string, error)
 }
 
 // Config tunes the response's cadence hint.
@@ -105,11 +106,15 @@ func (s *Service) Report(ctx context.Context, tenantID, deviceID string, req pro
 		}
 		return protocol.HealthResponse{}, apierr.Internal(err)
 	}
+	// A diagnostics request that cannot be read now is named in a later response: the report it
+	// rides on is not refused for it.
+	pending, _ := s.store.PendingDiagnostics(ctx, tenantID, deviceID, now)
 	return protocol.HealthResponse{
-		AckedAt:          now,
-		ServerTime:       now,
-		NextReportAfterS: s.next,
-		DeviceIdentity:   tenant.DeviceIdentity,
+		AckedAt:            now,
+		ServerTime:         now,
+		NextReportAfterS:   s.next,
+		DeviceIdentity:     tenant.DeviceIdentity,
+		DiagnosticsRequest: pending,
 	}, nil
 }
 

@@ -368,7 +368,9 @@ test('the only endpoints the pages call are the query endpoint, the two content 
   // The query endpoint takes a closed query document and never returns content. The two content
   // reads are forwarded to content-vault, which decides and audits. The admin endpoints are the
   // Settings pages', Policy's and Teams', control-api's, admin-only and audited; they read
-  // configuration and never data. Anything else named here would be another way in.
+  // configuration and never data. The devices endpoint is a device's diagnostics, its own health
+  // and logs, which an admin requests and downloads, each audited. Anything else named here would
+  // be another way in.
   const files = sourceFiles().filter((rel) => rel.startsWith('src/'));
   const allowed = [
     ['/v1/', 'query'], ['/v1/', 'content-search'], ['/v1/', 'content/retrieval'], ['/v1/', 'list-export'],
@@ -378,6 +380,7 @@ test('the only endpoints the pages call are the query endpoint, the two content 
     ['/admin/v1/', 'settings/retention'], ['/admin/v1/', 'settings/content-search'], ['/admin/v1/', 'settings/tools'],
     ['/admin/v1/', 'settings/endpoint'], ['/admin/v1/', 'settings/tls-inspection'], ['/admin/v1/', 'settings/restart-notice'], ['/admin/v1/', 'settings/rules'], ['/admin/v1/', 'settings/custom-labels'],
     ['/admin/v1/', 'settings/kill-switch'], ['/admin/v1/', 'directory'], ['/admin/v1/', 'teams'], ['/admin/v1/', 'providers'],
+    ['/admin/v1/', 'devices'],
   ].map((parts) => parts.join(''));
   const others = files.map((rel) => readFileSync(join(ROOT, rel), 'utf8')).join('\n');
   const urls = [...others.matchAll(/['"](\/(?:admin\/)?v1\/[a-z/-]+)['"]/g)].map((m) => m[1]);

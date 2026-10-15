@@ -46,6 +46,11 @@ export const ADMIN_SCIM_TOKENS_ENDPOINT = '/admin/v1/scim/tokens';
 export const ADMIN_DIRECTORY_ENDPOINT = '/admin/v1/directory';
 export const ADMIN_TEAMS_ENDPOINT = '/admin/v1/teams';
 /**
+ * A device's diagnostics on request: /<device>/diagnostics lists and makes requests, and
+ * /<device>/diagnostics/<request>/bundle downloads one the device sent.
+ */
+export const ADMIN_DEVICES_ENDPOINT = '/admin/v1/devices';
+/**
  * The AI providers whose records the product reads, and the tenant's connection to each. A
  * provider is connected, or its key or intake token replaced, with PUT /<provider>, disconnected
  * with DELETE /<provider>, and a provider with an admin API pulled at once with POST

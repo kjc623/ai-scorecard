@@ -70,6 +70,13 @@ state its process holds, such as the Windows certificate chain engine. It stops 
 service manager starts it again, at most once an hour, and records when in `edge-restart` in the
 state directory.
 
+An admin can ask a device for its diagnostics on the device's page in the console. The next health
+response names the request (reports follow the response's `next_report_after_s`, 900 s by default,
+held between 30 s and an hour), and the agent uploads to `/v1/diagnostics` a zip of `health.json` as of
+that moment, the `--print-config` summary, `capture-core.log` and its previous generation, and the
+update's `attempt.json` and each version's `install.log`, each cut to its last 8 MiB. It reads
+nothing else in the state directory.
+
 ## The browser's native messaging host
 
 Chrome and Edge start the registered host with the extension's origin (`chrome-extension://<id>/`)

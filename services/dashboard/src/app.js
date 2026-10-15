@@ -24,6 +24,8 @@ import { SECTIONS, sectionOf, shellNavItems, tabsFor, wireShell } from './shell.
 import { allowedPageIds, mayOpen } from './session.js';
 import { createDeployment } from './deployment.js';
 import { DEPLOYMENT_NOTES, renderAgentSetup } from './deployment-render.js';
+import { createDiagnostics } from './diagnostics.js';
+import { renderDeviceDiagnostics } from './diagnostics-render.js';
 import { createSettings } from './settings.js';
 import { createDirectory } from './directory.js';
 import { renderDirectory } from './directory-render.js';
@@ -562,6 +564,7 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   // The query screen on the page, kept so the admin section it carries can be repainted alone.
   let painted = null;
   let deployment = null;
+  let diagnostics = null;
   let settings = null;
   let directory = null;
   let integrations = null;
@@ -588,6 +591,7 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   function adminSection(screenId, filters) {
     if (!mayAdmin) return {};
     if (screenId === 'devices' && !filters.device) return { after: renderAgentSetup(deploymentController().state) };
+    if (screenId === 'devices' && filters.device) return { after: renderDeviceDiagnostics(diagnosticsController().state) };
     if (screenId === 'sanction') return { before: renderSanctionDecisions(settingsController().state) };
     return {};
   }
@@ -615,6 +619,15 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   function paintSettings(state) {
     if (paintedScreen === 'settings') repaint(document, root, renderSettings(state, { head: headNow('settings') }));
     if (paintedScreen === 'sanction') paintQuery();
+  }
+
+  function diagnosticsController() {
+    diagnostics ??= createDiagnostics({
+      admin: adminApi,
+      onChange: () => { if (paintedScreen === 'devices') paintQuery(); },
+      save: (data, filename) => saveDownload(document, data, filename),
+    });
+    return diagnostics;
   }
 
   function settingsController() {
@@ -769,6 +782,12 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     if (typing) root.querySelector?.('input[name="subject"]')?.focus();
     // An admin's section below or above the screen reads its own settings.
     if (setup) await loadOnce(deploymentController(), sameScreen);
+    // An admin's device page reads that device's diagnostics requests.
+    if (mayAdmin && screen.id === 'devices' && filters.device) {
+      const device = String(filters.device);
+      const controller = diagnosticsController();
+      if (controller.state.device !== device || controller.state.status !== 'ready') await controller.load(device);
+    }
     if (mayAdmin && screen.id === 'sanction') await loadOnce(settingsController(), sameScreen);
   }
 
@@ -883,6 +902,12 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       integrations.act({ ...intTarget.dataset });
       return;
     }
+    const diagTarget = event.target?.closest?.('[data-diag]');
+    if (diagTarget && diagnostics && !diagTarget.disabled) {
+      event.preventDefault();
+      diagnostics.act({ ...diagTarget.dataset });
+      return;
+    }
     const target = event.target?.closest?.('[data-dep]');
     if (!target || !deployment || target.disabled) return;
     event.preventDefault();
@@ -944,5 +969,5 @@ export async function boot({ document, api, admin, session: givenSession } = {})
   });
   await render();
 
-  return { render, dashboard, deployment: () => deployment, settings: () => settings, directory: () => directory, integrations: () => integrations, rules: () => rules, editor: () => editor };
+  return { render, dashboard, deployment: () => deployment, diagnostics: () => diagnostics, settings: () => settings, directory: () => directory, integrations: () => integrations, rules: () => rules, editor: () => editor };
 }

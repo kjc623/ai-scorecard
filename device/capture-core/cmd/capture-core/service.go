@@ -258,6 +258,8 @@ type service struct {
 	// updater replaces the agent with a newer release the deployment offers (nil where the
 	// platform has no installer for it).
 	updater *agentUpdater
+	// diagnostics answers the console's requests for the agent's logs.
+	diagnostics *diagnostics
 
 	// people is the console user observations are attributed to.
 	people  *people
@@ -440,6 +442,7 @@ func (s *service) buildDrainer(spoolKey []byte) error {
 		s.policySync = newPolicySync(s.store, policyCache{dir: s.dir.Path(state.PolicyDir)}, d, s.policyFetched, s.log)
 	}
 	s.updater = s.buildAgentUpdater(d)
+	s.diagnostics = newDiagnostics(d, s.diagnosticsFiles, s.log)
 	return nil
 }
 
@@ -889,6 +892,9 @@ func (s *service) Start(ctx context.Context) error {
 func (s *service) Stop(ctx context.Context) error {
 	s.native.Stop()
 	s.health.Stop()
+	if s.diagnostics != nil {
+		s.diagnostics.Stop()
+	}
 	select {
 	case <-s.bgStop:
 	default:

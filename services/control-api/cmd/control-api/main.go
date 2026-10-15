@@ -27,6 +27,7 @@ import (
 	"github.com/shadow-ai-capture/control-api/internal/content"
 	"github.com/shadow-ai-capture/control-api/internal/deploy"
 	"github.com/shadow-ai-capture/control-api/internal/deviceca"
+	"github.com/shadow-ai-capture/control-api/internal/diagnostics"
 	"github.com/shadow-ai-capture/control-api/internal/directory"
 	"github.com/shadow-ai-capture/control-api/internal/directoryadmin"
 	"github.com/shadow-ai-capture/control-api/internal/enrol"
@@ -311,16 +312,22 @@ func wire(cfg config, db *sql.DB, logger *slog.Logger) (*httpapi.Server, *sessio
 		return nil, nil, nil, err
 	}
 
+	diagnosticsHandler, err := diagnostics.New(st, adminAuthenticator(verifier), logger)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
 	return &httpapi.Server{
 		Store: st, CA: ca, Enrol: enrolSvc, Health: healthSvc, Policy: policy, Content: contentSvc,
-		Admin:      admin,
-		Settings:   settingsHandler,
-		Directory:  directoryHandler,
-		Providers:  providerHandler,
-		Intake:     intake,
-		Extensions: deploy.NewExtensions(cfg.AgentReleaseDir, cfg.PublicURL, logger),
-		Agents:     deploy.NewAgents(cfg.AgentReleaseDir, logger),
-		SCIM:       scim.NewHandler(scimSvc, "/scim/v2", logger),
+		Admin:       admin,
+		Diagnostics: diagnosticsHandler,
+		Settings:    settingsHandler,
+		Directory:   directoryHandler,
+		Providers:   providerHandler,
+		Intake:      intake,
+		Extensions:  deploy.NewExtensions(cfg.AgentReleaseDir, cfg.PublicURL, logger),
+		Agents:      deploy.NewAgents(cfg.AgentReleaseDir, logger),
+		SCIM:        scim.NewHandler(scimSvc, "/scim/v2", logger),
 		Mounts: map[string]http.Handler{
 			"/internal/v1/auth/": internalAPI,
 			onboard.PathPrefix:   onboarding.Handler(),

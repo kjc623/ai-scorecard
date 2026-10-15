@@ -84,12 +84,13 @@ func TestDeletesInBatchesUntilABatchComesBackShort(t *testing.T) {
 		statements int
 		removed    int64
 	}{
-		"ingest.search_text": {1, 0},
-		"ops.content":        {1, 0},
-		"ingest.observation": {3, 7},
-		"ingest.submission":  {3, 6},
-		"ingest.rejected":    {1, 0},
-		"ops.export":         {1, 0},
+		"ingest.search_text":     {1, 0},
+		"ops.content":            {1, 0},
+		"ingest.observation":     {3, 7},
+		"ingest.submission":      {3, 6},
+		"ingest.rejected":        {1, 0},
+		"ops.export":             {1, 0},
+		"ops.device_diagnostics": {1, 0},
 	}
 	for name, w := range want {
 		stmts := tx.statements(tableNamed(t, name).deleteSQL)
@@ -130,7 +131,7 @@ func TestSweepsEveryRetainedTableInOrder(t *testing.T) {
 			}
 		}
 	}
-	want := []string{"ingest.search_text", "ops.content", "ingest.observation", "ingest.submission", "ingest.rejected", "ops.export"}
+	want := []string{"ingest.search_text", "ops.content", "ingest.observation", "ingest.submission", "ingest.rejected", "ops.export", "ops.device_diagnostics"}
 	if strings.Join(order, ",") != strings.Join(want, ",") {
 		t.Errorf("deletion order %v, want %v", order, want)
 	}
@@ -178,7 +179,7 @@ func TestOneReceiptStatesWhatWasRemovedFromEachTable(t *testing.T) {
 	}
 	want := map[string]int64{
 		"ingest.search_text": 2, "ops.content": 1, "ingest.observation": 0,
-		"ingest.submission": 0, "ingest.rejected": 4, "ops.export": 0,
+		"ingest.submission": 0, "ingest.rejected": 4, "ops.export": 0, "ops.device_diagnostics": 0,
 	}
 	if len(counts) != len(want) {
 		t.Errorf("removed_counts = %v, want %v", counts, want)
