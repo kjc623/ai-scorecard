@@ -284,6 +284,11 @@ type service struct {
 // newService builds the graph without starting any provider. Every constructor can fail, and a
 // failure means nothing is running.
 func newService(ctx context.Context, cfg Config, log *slog.Logger) (*service, error) {
+	// Before the first TLS client or child process: a service process started after the CLI shim
+	// wrote its variables inherits them from the machine environment.
+	if dropped := cli.UnsetEnvironment(); len(dropped) > 0 {
+		log.Info("dropped the CLI shim's variables from the service environment", "names", dropped)
+	}
 	dir, err := state.Open(cfg.StateDir)
 	if err != nil {
 		return nil, err

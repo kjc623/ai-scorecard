@@ -430,3 +430,31 @@ func TestToolNormalizersAreRegistered(t *testing.T) {
 		}
 	}
 }
+
+// A service process started after the CLI shim wrote its variables inherits them from the machine
+// environment; the agent drops them before it builds anything that would honour them.
+func TestServiceDropsTheShimsVariablesFromItsEnvironment(t *testing.T) {
+	cloud := startFakeCloud(t, nil)
+	vars := map[string]string{
+		"HTTPS_PROXY":   "http://127.0.0.1:1",
+		"SSL_CERT_FILE": "missing-bundle.pem",
+		"NODE_OPTIONS":  "--require missing-node-proxy.cjs",
+	}
+	for n, v := range vars {
+		t.Setenv(n, v)
+	}
+	logs := &lockedBuffer{}
+	if _, err := newService(context.Background(), testConfig(t, cloud, nil), newLogger("info", logs)); err != nil {
+		t.Fatalf("newService: %v", err)
+	}
+	for n := range vars {
+		if v, ok := os.LookupEnv(n); ok {
+			t.Fatalf("%s=%q survived the service's start", n, v)
+		}
+	}
+	for n := range vars {
+		if !strings.Contains(logs.String(), n) {
+			t.Fatalf("the log does not name the dropped %s:\n%s", n, logs.String())
+		}
+	}
+}

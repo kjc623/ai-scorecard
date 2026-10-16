@@ -48,18 +48,10 @@ func (p *Provider) uninstallPlatform(ctx context.Context, rp resolvedPaths) {
 	if p.cfg.Runner == nil {
 		return
 	}
-	for _, name := range windowsEnvNames {
+	for _, name := range envNames {
 		_, _ = p.cfg.Runner.Run(ctx, "reg", "delete",
 			`HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment`,
 			"/v", name, "/f")
 	}
 	p.step("reg:delete-env")
-}
-
-// windowsEnvNames is every variable the shim can set on Windows.
-var windowsEnvNames = []string{
-	"HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY",
-	"http_proxy", "https_proxy", "no_proxy",
-	"NODE_EXTRA_CA_CERTS", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
-	"NODE_USE_ENV_PROXY", "NODE_OPTIONS",
 }
