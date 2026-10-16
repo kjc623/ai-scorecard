@@ -5,9 +5,10 @@ tabs under its title, and Archive and Settings at its foot; every other screen i
 a tile or a card. A role is offered only the pages it may open, and an address from an earlier
 layout lands on the page that holds it now.
 
-- **Overview**: the window's prompts, attachments, sensitive prompts, people and devices reporting,
-  the tools by sanction, the rules at work and the tools in use. Each tile and card opens the page
-  that holds the rest.
+- **Overview**: the window's prompts, attachments, sensitive prompts, users and devices reporting,
+  the tools by sanction, the rules at work and the tools in use. Every card that shows a figure, here
+  and on every other page, opens where its rows are: a page, Search, or the table below it on the
+  same page; what a figure counts is behind the (i) beside its label.
 - **Usage**: Tools (every tool by prompts, narrowed by sanction decision, and each tool's people and
   findings), Teams (an admin adds, edits and deletes teams from any mix of the people they tick, the
   groups, departments and units the identity provider synced, and other teams) and Users (everyone

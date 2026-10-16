@@ -49,13 +49,15 @@ test('Overview counts prompts, then the attachments and the sensitive prompts am
 
   const attachments = view.tiles[1];
   assert.equal(attachments.value.text, '240');
-  assert.equal(attachments.note, 'Counted on 3,803 of 4,836 prompts: metadata-only collection (M0) does not describe attachments.');
+  assert.equal(attachments.note, 'on 3,803 of 4,836 prompts');
+  assert.equal(attachments.info, 'Files attached to prompts in this window. Only the prompts sent above metadata-only collection (M0) describe their attachments, so the rest are not counted.', 'why the count is partial is behind the (i)');
   assert.equal(attachments.href, 'explore.html#events?attachments=yes', 'Search opens on the prompts that carried an attachment, in its own default window');
   assert.equal(attachments.moreLabel, undefined, 'the whole tile is the link, with no path written under it');
 
   const sensitive = view.tiles[2];
   assert.equal(sensitive.value.text, '161');
-  assert.equal(sensitive.note, 'of 4,836 prompts matched a rule on their labels');
+  assert.equal(sensitive.note, 'of 4,836 prompts');
+  assert.match(sensitive.info, /^Prompts that matched an enforcement rule on one of their labels/);
   assert.deepEqual(sensitive.split.map((p) => [p.key, p.count]), [['allowed', 68], ['blocked', 15], ['warned', 78]]);
   assert.equal(sensitive.href, '#activity');
 
@@ -76,11 +78,12 @@ test('an attachment count is unknown, not zero, when no prompt was sent in a mod
   const blind = usageOf([{ bucket: DAY, tool: 'a', submissions: 5, sensitive: 0, attachments: 0, content_prompts: 0 }]);
   const tile = postureView({ devices: null, tools: blind }).tiles[1];
   assert.equal(tile.value.kind, 'absent');
-  assert.match(tile.note, /^Not collected: every prompt in this window was sent at metadata-only collection \(M0\)/);
+  assert.equal(tile.note, 'Not collected');
+  assert.match(tile.info, /^Every prompt in this window was sent at metadata-only collection \(M0\)/);
   assert.equal(tile.href, undefined, 'there is nothing to open');
 
   const counted = postureView({ devices: null, tools: usageOf([{ bucket: DAY, tool: 'a', submissions: 5, attachments: 0, content_prompts: 5 }]) }).tiles[1];
-  assert.deepEqual([counted.value.kind, counted.value.text, counted.note], ['number', '0', 'Files attached to prompts in this window.'], 'every prompt could describe one and none did: a zero');
+  assert.deepEqual([counted.value.kind, counted.value.text, counted.note, counted.info], ['number', '0', null, 'Files attached to prompts in this window.'], 'every prompt could describe one and none did: a zero');
 
   const older = postureView({ devices: null, tools: usageOf([{ bucket: DAY, tool: 'a', submissions: 5 }]) }).tiles;
   assert.equal(older[1].value.kind, 'absent', 'a read that carries no attachment figure has none to show');

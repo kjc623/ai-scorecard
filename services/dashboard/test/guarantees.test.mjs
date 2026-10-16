@@ -34,7 +34,7 @@ test('no per-person ranking: without a subject the Users page lists people by na
   const list = sent.find((b) => b.source === 'mart.v_person');
   assert.equal(list.measures, undefined);
   assert.equal(list.order, undefined, 'the list keeps the API\'s order, by name');
-  const table = view.tables.find((t) => t.title === 'People');
+  const table = view.tables.find((t) => t.title === 'Users');
   assert.deepEqual(table.rows.map((r) => r.row.name), ['Ada Lovelace', 'Grace Hopper', 'u_1b77']);
   assert.deepEqual(table.rows.map((r) => r.row.submissions), [3, 17, 40], 'the prompts sit beside each name, in the directory\'s order, not ranked by them');
   assert.ok(table.columns.every((c) => !['bytes_total', 'tools_used'].includes(c.key)));
@@ -61,7 +61,7 @@ test('the Users page lists each person once, by name, with their teams and promp
   const roster = sent.find((b) => b.source === 'mart.v_team_member_period');
   assert.equal(roster.order, undefined, 'the roster read asks for no ordering by a measure');
   assert.deepEqual(roster.filters, [{ field: 'team', op: 'in', value: ['7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001', '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0002', '7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0003'] }], 'only the teams on the page are read');
-  assert.deepEqual(view.tables.map((t) => t.title), ['People'], 'one list');
+  assert.deepEqual(view.tables.map((t) => t.title), ['Users'], 'one list');
   const table = view.tables[0];
   assert.deepEqual(table.columns.map((c) => c.label), ['Name', 'Teams', 'Department', 'Directory', 'Last active', 'Prompts']);
   assert.deepEqual(
@@ -82,9 +82,9 @@ test('the Users page lists each person once, by name, with their teams and promp
   });
   const limited = (await viewer.load('person', { filters: {} })).view;
   assert.deepEqual(limited.tables[0].rows.map((r) => [r.row.team_names, r.row.submissions]), [[null, null], [null, null], [null, null]], 'not read is absent, never zero');
-  assert.ok(limited.notes.some((n) => /does not show each person's prompts/.test(n)));
+  assert.ok(limited.notes.some((n) => /does not show each user's prompts/.test(n)));
   const found = (await dashboard.load('person', { filters: { q: 'Ada' } })).view;
-  assert.equal(found.tables[0].title, 'People whose name starts with "Ada"');
+  assert.equal(found.tables[0].title, 'Users whose name starts with "Ada"');
 });
 
 test('no screen exposes a "most active people" table', async () => {

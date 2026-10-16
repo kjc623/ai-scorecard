@@ -37,7 +37,7 @@ const number = (n) => (n === null || n === undefined ? { kind: 'absent' } : { ki
 function dirTiles(data) {
   const sync = data.sync;
   return `<div class="tiles">${[
-    { label: 'People', value: number(data.people), note: data.people === null ? 'not reported by the server' : 'in the directory Sundial holds' },
+    { label: 'Users', value: number(data.people), note: data.people === null ? 'not reported by the server' : 'in the directory Sundial holds' },
     { label: 'Groups', value: number(data.groups), note: data.groups === null ? 'not reported by the server' : 'provisioned or imported' },
     {
       label: 'Last directory read', value: sync?.last_completed_at ? { kind: 'number', value: 0, text: formatInstant(sync.last_completed_at) } : { kind: 'absent' },
