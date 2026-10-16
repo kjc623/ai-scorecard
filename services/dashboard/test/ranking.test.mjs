@@ -52,7 +52,7 @@ test('the tool ranking folds the window per tool, ranks by submissions, says eac
   assert.equal(claude.href, '#tools?tool=tls_b6681b043244c43f');
   assert.equal(claude.chip.key, 'unsanctioned');
   assert.equal(Math.round(claude.share * 1000), Math.round((1000 / 5024) * 1000));
-  assert.deepEqual(claude.meta.map((m) => [m.label, m.value.kind === 'number' ? m.value.text ?? m.value.value : m.value.kind]), [['people', 214], ['blocked', 13], ['sent', '40 MB']], 'people is the largest cell, the rest are sums');
+  assert.deepEqual(claude.meta.map((m) => [m.label, m.value.kind === 'number' ? m.value.text ?? m.value.value : m.value.kind]), [['users', 214], ['blocked', 13], ['sent', '40 MB']], 'users is the largest cell, the rest are sums');
   assert.deepEqual(claude.trend.map((p) => p.value), [188, 812]);
   assert.equal(ranking.items[3].value.value, 0, 'a tool with no submissions ranks last with its zero, never dropped');
   const html = renderRanking(ranking);
@@ -160,11 +160,18 @@ test('a tool\'s own screen folds its usage, lists who uses it in the API\'s orde
   const lookup = sent.find((b) => b.source === 'mart.v_person');
   assert.deepEqual(lookup?.filters, [{ field: 'subject', op: 'in', value: ['u_9a02', 'u_4f21'] }], 'the roster\'s references are looked up by name, in one read');
   assert.deepEqual(view.actions.map((a) => a.href), ['explore.html#events?tool=tls_b6681b043244c43f', '#tools']);
-  const people = view.tables.find((t) => t.title === 'People using it');
-  assert.deepEqual(people.rows.map((r) => r.row.subject), ['u_9a02', 'u_4f21'], 'this tool\'s people, in the API order, not a volume ranking');
+  const people = view.tables.find((t) => t.title === 'Users');
+  assert.deepEqual(people.rows.map((r) => r.row.subject), ['u_9a02', 'u_4f21'], 'this tool\'s users, in the API order, not a volume ranking');
   const findings = view.tables.find((t) => t.title === 'Findings');
   assert.deepEqual(findings.rows.map((r) => r.row.rule), ['PAYMENT_CARD_PAN'], 'this tool\'s findings only');
   assert.equal(view.series[0].points[0].value.value, 812, 'the chart is this tool\'s series');
+  assert.deepEqual(view.tiles.map((t) => [t.label, t.jump ?? t.href]), [
+    ['Prompts', 'explore.html#events?tool=tls_b6681b043244c43f'],
+    ['Users', 'Users'],
+    ['Blocked', 'explore.html#events?tool=tls_b6681b043244c43f&action=blocked'],
+    ['Data sent', 'explore.html#events?tool=tls_b6681b043244c43f'],
+    ['Attachments', 'explore.html#events?tool=tls_b6681b043244c43f&attachments=yes'],
+  ], 'each figure opens this tool\'s events in Search, and the users open the roster below');
   const attachments = view.tiles.find((t) => t.label === 'Attachments');
   assert.equal(attachments.value.text, '30');
   assert.equal(attachments.href, 'explore.html#events?tool=tls_b6681b043244c43f&attachments=yes', 'this tool\'s prompts that carried a file');
@@ -183,7 +190,8 @@ test('a role that may not see people gets the tool\'s totals and is told why the
   });
   const { view } = await viewer.load('tools', { filters: { tool: 'tls_b6681b043244c43f' } });
   assert.equal(view.tiles[0].value.text, '812');
-  assert.ok(!view.tables.some((t) => t.title === 'People using it'));
+  assert.ok(!view.tables.some((t) => t.title === 'Users'));
+  assert.equal(view.tiles[1].href, 'explore.html#events?tool=tls_b6681b043244c43f', 'with no roster to open, the users open the tool\'s events');
   assert.ok(view.notes.some((n) => /totals only/.test(n)));
 });
 
@@ -241,16 +249,16 @@ test('the Teams screen ranks the teams and lists the admin\'s quiet teams with a
   assert.match(ranking.items[3].sublabel, /No usage recorded in this window/);
 });
 
-test('the Users page is one list under the search bar, each person once with their teams beside their name', async () => {
+test('the Users page is one list under the search bar, each user once with their teams beside their name', async () => {
   const { view } = await dashboardFor().load('person', { filters: {} });
-  assert.deepEqual(view.tables.map((t) => t.title), ['People']);
+  assert.deepEqual(view.tables.map((t) => t.title), ['Users']);
   assert.equal(view.tables[0].groupBy, undefined);
   const html = renderScreen(view, SHELL);
-  assert.ok(html.indexOf('search-form') < html.indexOf('<h3>People</h3>'), 'the list sits under the search bar');
-  const list = html.slice(html.indexOf('<h3>People</h3>'));
-  assert.equal((list.match(/>Grace Hopper</g) ?? []).length, 1, 'a person in two teams, on two days, is listed once');
+  assert.ok(html.indexOf('search-form') < html.indexOf('<h3>Users</h3>'), 'the list sits under the search bar');
+  const list = html.slice(html.indexOf('<h3>Users</h3>'));
+  assert.equal((list.match(/>Grace Hopper</g) ?? []).length, 1, 'a user in two teams, on two days, is listed once');
   assert.match(list, /Engineering, Finance/);
-  assert.match(list, /<span class="block-count">3<\/span>/, 'the count is people, not rows');
+  assert.match(list, /<span class="block-count">3<\/span>/, 'the count is users, not rows');
 });
 
 test('without the admin list the Teams screen still ranks the teams that have usage', async () => {
@@ -430,7 +438,7 @@ test('two or more unrecognised tools are one line in the ranking, and are listed
   assert.deepEqual(ranking.items.map((i) => [i.label, i.value.value, i.href]), [['Unrecognised tools', 9, null], ['ChatGPT', 4, '#tools?tool=tls_f412811be7ac6539']], 'the three fold into one line with no screen of its own');
   assert.equal(ranking.items[0].sublabel, '3 fingerprints the catalogue does not name');
   assert.deepEqual(ranking.items[0].chip, { key: 'unknown', text: 'No decision yet' });
-  assert.deepEqual(ranking.items[0].meta[0], { label: 'people', value: { kind: 'number', value: 2 } }, 'people is the largest cell, a floor, not 2+1+1');
+  assert.deepEqual(ranking.items[0].meta[0], { label: 'users', value: { kind: 'number', value: 2 } }, 'users is the largest cell, a floor, not 2+1+1');
   const view = toolsView(state, { preset: 'd30' });
   const listed = view.tables.find((t) => t.title === 'Not in the tool catalogue');
   assert.deepEqual(listed.rows.map((r) => [r.row.fingerprint_cell.primary, r.row.submissions, r.row.href]), [['tls_aaaa', 5, '#tools?tool=tls_aaaa&preset=d30'], ['tls_bbbb', 3, '#tools?tool=tls_bbbb&preset=d30'], ['tls_cccc', 1, '#tools?tool=tls_cccc&preset=d30']]);
@@ -481,12 +489,12 @@ test('a quiet team is listed when the read answered, on partial coverage too; a 
   const degraded = readState(envelope('coverage_degraded', { data: [], freshness: FRESH, coverage: PARTIAL, meta: { source: 'mart.agg_team_period', extras: { team_coverage: [{ users_all: 1, users_in_teams: 0, teams: 1 }] } } }));
   const view = teamsView(degraded, { teams });
   assert.deepEqual(view.blocks[0].items.map((i) => [i.label, i.value.value]), [['Engineering', 0]], 'the team exists, so it is listed, and the coverage line says every figure is a floor');
-  assert.match(view.blocks[0].items[0].sublabel, /^1 member · 1 person chosen · Department Engineering · Team Platform · 1 more · No usage recorded in this window$/);
-  assert.ok(view.notes.some((n) => n === '1 person used AI in this window; 0 are in at least one team and 1 is in none.'));
+  assert.match(view.blocks[0].items[0].sublabel, /^1 member · 1 user chosen · Department Engineering · Team Platform · 1 more · No usage recorded in this window$/);
+  assert.ok(view.notes.some((n) => n === '1 user used AI in this window; 0 are in at least one team and 1 is in none.'));
   assert.equal(view.banners.filter((b) => b.about === 'coverage').length, 1, 'partial coverage is said once, not as two banners');
   const own = teamView(degraded, { team: 't1', teams, preset: 'd90' });
   assert.equal(own.title, 'Engineering', 'named from the admin list when it has no cell in the window');
-  assert.match(own.subtitle, /^1 member · 1 person chosen · Department Engineering · Team Platform · 1 more\./);
+  assert.match(own.subtitle, /^1 member · 1 user chosen · Department Engineering · Team Platform · 1 more\./);
   assert.deepEqual(own.series, []);
   assert.equal(own.actions[0].href, '#teams?preset=d90');
 });
@@ -503,7 +511,7 @@ test('a tool\'s screen marks a tool with no recorded decision as unknown, names 
   } } });
   const dashboard = createDashboard({ api, now: NOW });
   const { view } = await dashboard.load('tools', { preset: 'd30', filters: { tool: 'tls_b6681b043244c43f' } });
-  const roster = view.tables.find((t) => t.title === 'People using it');
+  const roster = view.tables.find((t) => t.title === 'Users');
   assert.deepEqual(roster.columns.map((c) => c.label), ['User', 'Prompts', 'Data sent']);
   assert.deepEqual(roster.rows.map((r) => [r.row.subject, r.row.name]), [['u_9a02', 'Bob Jones'], ['u_4f21', null]], 'a name the directory knows; a reference it does not stays a reference');
   const html = renderScreen(view, SHELL);

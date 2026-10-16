@@ -76,12 +76,13 @@ test('an application found in two ways is one row, with what each found', () => 
 
 test('the tiles count what was found, what sends nothing, and the devices whose scan is not reporting', () => {
   const view = discoveredView({ found: foundOf(), prompts: promptsOf() }, { preset: 'd30' });
-  assert.deepEqual(view.tiles.map((t) => [t.label, t.value.text, t.note]), [
-    ['Found on devices', '4', 'applications found in this window'],
-    ['Not sending prompts', '2', 'found on a device but sent no prompt in this window'],
-    ['Not scanned', '200', 'of 4,620 enrolled devices: the inventory scan has not reported in the last 24 hours, so what they hold is not known. 20 more have it switched off by policy.'],
-  ]);
-  assert.equal(view.tiles[2].href, '#devices');
+  assert.deepEqual(view.tiles.map((t) => [t.label, t.value.text, t.note, t.jump ?? t.href]), [
+    ['Found on devices', '4', 'applications in this window', 'Found on devices'],
+    ['Not sending prompts', '2', 'of 4 applications found', 'Found on devices'],
+    ['Not scanned', '200', 'of 4,620 enrolled devices', '#devices'],
+  ], 'the first two open the table below; the scan opens Devices');
+  assert.equal(view.tiles[2].info, 'Enrolled devices whose inventory scan has not reported in the last 24 hours, so what they hold is not known. 20 more have it switched off by policy.');
+  assert.match(view.tiles[1].info, /sent no prompt/);
   assert.equal(table(view).rows[0].row.href, '#tools?tool=app%3Aollama&preset=d30', 'a drill-down keeps the window');
   assert.match(view.notes.join(' '), /devices is a distinct-subject count served as a lower bound/);
   assert.match(view.notes.join(' '), /on its busiest day in the window/, 'a month is read over days');

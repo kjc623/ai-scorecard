@@ -149,10 +149,30 @@ test('Policy at work says why it is empty: no rule set, the rules not read, or t
 test('a card with nothing to open inside it is one link, with no path written on it', () => {
   const view = postureView({ devices: null, tools: usage(), rules: rules(), ruleMatches: matches() }, { preset: 'd30' });
   const html = renderScreen(view, {});
-  assert.match(html, /<a class="share-block card card-link" href="#sanction"><div class="card-core"><header class="block-head"><h3>Applications<\/h3>/);
-  assert.match(html, /<a class="rank-block card card-link rank-flat" href="#rules"><div class="card-core"><header class="block-head"><h3>Policy at work<\/h3>/);
+  assert.match(html, /<a class="share-block card card-link" href="#sanction" id="b-applications"><div class="card-core"><header class="block-head"><h3>Applications<\/h3>/);
+  assert.match(html, /<a class="rank-block card card-link rank-flat" href="#rules" id="b-policy-at-work"><div class="card-core"><header class="block-head"><h3>Policy at work<\/h3>/);
   assert.doesNotMatch(html, /Decide which tools are sanctioned|→/, 'no link text names where a card goes');
   const cards = html.split('card-link').slice(1).map((part) => part.slice(0, part.indexOf('</a>')));
   assert.ok(cards.every((card) => !/<a /.test(card)), 'no link inside a card that is a link');
-  assert.match(html, /<section class="rank-block card rank-flat"><div class="card-core"><header class="block-head"><h3>Tools in use<\/h3>.*?<a class="block-link" href="#tools\?preset=d30">All tools<\/a>/, 'a card listing links keeps its own');
+  assert.match(html, /<section class="rank-block card rank-flat" id="b-tools-in-use"><div class="card-core"><header class="block-head"><h3>Tools in use<\/h3>.*?<a class="block-link" href="#tools\?preset=d30">All tools<\/a>/, 'a card listing links keeps its own');
+});
+
+// ---------------------------------------------------------------------------------------------
+// A card that opens a block on its own page, and the (i) beside a label
+// ---------------------------------------------------------------------------------------------
+
+test('a tile whose figure is a table on the same page opens that table, and the table carries the id it is opened by', async () => {
+  const { doc } = await booted('#teams?team=7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001');
+  const html = doc.html('app');
+  assert.match(html, /<div class="tile card tile-link" role="link" tabindex="0" data-jump="b-prompts-by-user"><div class="card-core"><span class="tile-label">Prompts</, 'the figure opens the roster it is folded from');
+  assert.match(html, /<section class="table-block card" id="b-prompts-by-user">/, 'which is reached by that id');
+  assert.doesNotMatch(html, /<a class="tile card tile-link"[^>]*data-jump/, 'a jump is not an address');
+});
+
+test('what a figure counts sits behind an (i) in the label, never as a sentence on the card', () => {
+  const view = postureView({ devices: null, tools: usage(), rules: rules(), ruleMatches: matches() }, { preset: 'd30' });
+  const html = renderScreen(view, {});
+  assert.match(html, /<span class="tile-label">Users<span class="tip" tabindex="0"><svg class="tip-icon"[^>]*>.*?<\/svg><span class="tip-text" role="tooltip">At least this many: the most users counted in any one period of the window\.[^<]*<\/span><\/span><\/span>/);
+  assert.doesNotMatch(html, /<span class="tile-note">[^<]*(?:counted once|lower bound|metadata-only)/, 'the explanations are not under the figures');
+  assert.match(html, /<h3>Applications<\/h3><span class="tip" tabindex="0">/, 'a block carries its (i) beside its title');
 });

@@ -36,7 +36,7 @@ test('each tool not sanctioned is a row of seats: its people, those in no team, 
   const table = block(view, 'Seats to license');
   assert.equal(table.rows[0].row.href, '#tools?tool=app%3Aclaude_code&preset=d30', 'opens its Tools row');
   assert.equal(table.rows[2].row.tool_cell.secondary, 'shadow_llm_gateway', 'an unrecognised tool is told apart by its fingerprint');
-  assert.equal(table.summary, '3 tools not sanctioned were used in this window; Claude Code had the most people, 230 in 3 teams.');
+  assert.equal(table.summary, '3 tools not sanctioned were used in this window; Claude Code had the most users, 230 in 3 teams.');
 });
 
 test('teams run down the side and the tools across the top, each cell a part of the team, both by people', () => {
@@ -49,11 +49,12 @@ test('teams run down the side and the tools across the top, each cell a part of 
     ['Legal', '1/12', '0/12', '0/12'],
   ]);
   assert.equal(table.rows[0].row.href, '#teams?team=7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001&preset=d30');
-  assert.deepEqual(view.tiles.map((t) => [t.label, t.value.text, t.note]), [
-    ['Tools not sanctioned', '3', 'unsanctioned or with no decision yet, used in this window'],
-    ['Teams using them', '3', 'of 4 teams have a member using one'],
-    ['Most seats', '230', 'people use Claude Code, the most of any tool not sanctioned'],
-  ]);
+  assert.deepEqual(view.tiles.map((t) => [t.label, t.value.text, t.note, t.jump ?? t.href]), [
+    ['Tools not sanctioned', '3', 'used in this window', 'Seats to license'],
+    ['Teams using them', '3', 'of 4 teams', 'Tools not sanctioned, by team'],
+    ['Most seats', '230', 'users of Claude Code', '#tools?tool=app%3Aclaude_code&preset=d30'],
+  ], 'each tile opens the table that holds its figure, and the most seats opens the tool');
+  assert.match(view.tiles[0].info, /^Tools marked unsanctioned or with no decision yet/);
 });
 
 test('past eight tools the table by team keeps the eight with the most people and says so', () => {
@@ -64,7 +65,7 @@ test('past eight tools the table by team keeps the eight with the most people an
   const view = demandView(stateOf(rows));
   assert.equal(block(view, 'Tools not sanctioned, by team').columns.length, 9);
   assert.equal(block(view, 'Seats to license').rows.length, 10);
-  assert.match(view.notes.join(' '), /The 8 tools with the most people are shown by team; Seats to license lists all 10\./);
+  assert.match(view.notes.join(' '), /The 8 tools with the most users are shown by team; Seats to license lists all 10\./);
 });
 
 test('with no team yet the table by team says so and opens Teams, and the seats still stand', () => {
