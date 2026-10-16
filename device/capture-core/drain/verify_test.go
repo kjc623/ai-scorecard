@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -97,5 +99,58 @@ func TestVerifyEdgeCountsARefusalAfterTheCertificateVerified(t *testing.T) {
 	}
 	if err := VerifyEdge(context.Background(), srv.URL, caFile); err != nil {
 		t.Fatalf("VerifyEdge: %v", err)
+	}
+}
+
+// The environment variables of the helper process that checks the edge's roots: the marker that
+// makes the test binary run as that helper, and the fake edge's URL.
+const (
+	envRootsHelper = "SAC_DRAIN_TEST_ROOTS_HELPER"
+	envRootsEdge   = "SAC_DRAIN_TEST_ROOTS_EDGE"
+)
+
+// TestHelperEdgeRootsAreThePlatforms is the helper process: SSL_CERT_FILE is set in its
+// environment, and the edge's roots must still be the platform's, so an edge that only the named
+// file trusts does not verify.
+func TestHelperEdgeRootsAreThePlatforms(t *testing.T) {
+	if os.Getenv(envRootsHelper) == "" {
+		t.Skip("run as a helper process only")
+	}
+	pool, err := edgeRoots("")
+	if err != nil {
+		t.Fatalf("edgeRoots: %v", err)
+	}
+	if pool.Equal(x509.NewCertPool()) {
+		t.Fatalf("the roots are an empty pool, not the platform's, with SSL_CERT_FILE=%q", os.Getenv("SSL_CERT_FILE"))
+	}
+	err = VerifyEdge(context.Background(), os.Getenv(envRootsEdge), "")
+	var cv *tls.CertificateVerificationError
+	if !errors.As(err, &cv) {
+		t.Fatalf("an edge trusted only by the file SSL_CERT_FILE names: %v, want a certificate verification error", err)
+	}
+}
+
+// The agent's trust in the edge is the platform's. A CA file that SSL_CERT_FILE names in the
+// environment (the CLI trust shim sets it machine-wide for command-line runtimes, and a service
+// started afterwards inherits it) neither replaces the system roots, whether the file exists or
+// not, nor adds to them. Only Windows and macOS verify through the platform.
+func TestEdgeRootsAreThePlatformsWhateverSSLCertFileNames(t *testing.T) {
+	if runtime.GOOS != "windows" && runtime.GOOS != "darwin" {
+		t.Skipf("%s has no platform verifier: its system roots are the files SSL_CERT_FILE names", runtime.GOOS)
+	}
+	e := newFakeEdge(t)
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, file := range map[string]string{
+		"the edge's CA":            e.caFile,
+		"a file that is not there": filepath.Join(t.TempDir(), "ca-bundle.pem"),
+	} {
+		cmd := exec.Command(exe, "-test.run=^TestHelperEdgeRootsAreThePlatforms$", "-test.v")
+		cmd.Env = append(os.Environ(), envRootsHelper+"=1", envRootsEdge+"="+e.srv.URL, "SSL_CERT_FILE="+file)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("SSL_CERT_FILE naming %s: %v\n%s", name, err, out)
+		}
 	}
 }

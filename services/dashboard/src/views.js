@@ -31,15 +31,19 @@ export function sumMeasure(state, measure) {
 }
 
 /**
- * A tile: a label, a value and a note. It may carry an address, the shape of its series, and a
- * split of its value into parts that each open the rows they count.
+ * A tile: a label, a value and a short note under it. It may carry an address, or the title of the
+ * block on its own page that holds its rows (`jump`); what the figure counts, when the label alone
+ * does not say, as `info`; the shape of its series; and a split of its value into parts that each
+ * open the rows they count.
  */
-function tile(label, value, note, { href = null, trend = null, split = null, moreLabel = null } = {}) {
+function tile(label, value, note, { href = null, jump = null, info = null, trend = null, split = null, moreLabel = null } = {}) {
   return Object.freeze({
     label,
     value,
     note: note ?? null,
     ...(href ? { href } : {}),
+    ...(jump ? { jump } : {}),
+    ...(info ? { info } : {}),
     ...(trend ? { trend } : {}),
     ...(split ? { split } : {}),
     ...(moreLabel ? { moreLabel } : {}),
@@ -194,9 +198,12 @@ export function trendOf(state, measure = 'submissions') {
   return Object.freeze(series.points.map((p) => Object.freeze({ bucket: p.bucket, value: p.value.value })));
 }
 
+/** Why a count of users is a floor: the most any one cell counted, not a sum. */
+const USERS_FLOOR = 'At least this many: the most users counted in any one period of the window. A user active in two periods is in both, so the periods are not added up.';
+
 /**
- * The most people one cell counted. It is a floor for the distinct people in the window; the sum
- * of the cells is not, because a person using two tools, or active on two days, is in two cells.
+ * The most users one cell counted. It is a floor for the distinct users in the window; the sum
+ * of the cells is not, because a user using two tools, or active on two days, is in two cells.
  */
 export function peopleTile(state, label, options = {}) {
   let most = null;
@@ -205,13 +212,13 @@ export function peopleTile(state, label, options = {}) {
     if (value.kind === 'number' && (most === null || value.value > most)) most = value.value;
   }
   if (most === null) return tile(label, { kind: 'absent', text: '—' }, absentNote(state), options);
-  return tile(label, { kind: 'number', text: formatCount(most) }, 'At least this many: the most counted in any one period of the window.', options);
+  return tile(label, { kind: 'number', text: formatCount(most) }, null, { ...options, info: USERS_FLOOR });
 }
 
-/** Who a count of people is out of, in words. */
+/** Who a count of users is out of, in words. */
 const PEOPLE_BASIS = Object.freeze({
-  directory: 'active people in the directory',
-  devices: 'people signed in on an enrolled device',
+  directory: 'active users in the directory',
+  devices: 'users signed in on an enrolled device',
 });
 
 /**
@@ -237,7 +244,7 @@ export function peopleOf(state) {
 }
 
 /**
- * Who the people counted are out of, in words. People not in the directory can send prompts, so the
+ * Who the users counted are out of, in words. Users not in the directory can send prompts, so the
  * count can exceed it; it is then beside the directory, not a part of it.
  */
 function outOf(counted) {
@@ -246,12 +253,14 @@ function outOf(counted) {
   return (counted.people ?? 0) <= counted.of ? `of ${whole}` : `more than the ${whole}`;
 }
 
-/** The people who used AI in the window, each once, out of the people who could have; the busiest period's count when the read did not count them. */
+/** The users who sent a prompt in the window, each once, out of the users who could have; the busiest period's count when the read did not count them. */
 function usersTile(state, options) {
   const counted = peopleOf(state);
   if (counted?.people === null || counted?.people === undefined) return peopleTile(state, 'Users', options);
-  const note = outOf(counted) ?? 'Each person counted once, however many tools they used.';
-  return tile('Users', { kind: 'number', text: formatCount(counted.people) }, note, options);
+  return tile('Users', { kind: 'number', text: formatCount(counted.people) }, outOf(counted), {
+    ...options,
+    info: 'Everyone who sent a prompt in this window, each counted once however many tools they used.',
+  });
 }
 
 /** A tile from one group's folded measure. */
@@ -261,8 +270,8 @@ function foldedTile(label, group, measure, formatter = formatCount, options = {}
   return tile(label, { kind: 'absent', text: '—' }, group ? NO_FIGURE : NOTHING_RECORDED, options);
 }
 
-/** The fact beside a ranked item that counts people: its noun agrees with the count. */
-const peopleFact = (value) => Object.freeze({ label: value.kind === 'number' && value.value === 1 ? 'person' : 'people', value });
+/** The fact beside a ranked item that counts users: its noun agrees with the count. */
+const peopleFact = (value) => Object.freeze({ label: value.kind === 'number' && value.value === 1 ? 'user' : 'users', value });
 
 const SANCTION_TEXT = Object.freeze({ sanctioned: 'Sanctioned', unsanctioned: 'Unsanctioned', unknown: 'No decision yet' });
 const sanctionChip = (state) => (state ? Object.freeze({ key: String(state), text: SANCTION_TEXT[state] ?? String(state) }) : null);
@@ -357,7 +366,7 @@ export function rankTools(state, { title = 'Tools in use', href = null, moreLabe
     emptyText,
     itemLabel: 'Tool',
     valueLabel: 'Prompts',
-    metaLabels: Object.freeze(['People', 'Blocked', 'Data sent']),
+    metaLabels: Object.freeze(['Users', 'Blocked', 'Data sent']),
     trendLabel: 'Trend',
     items: Object.freeze(items),
   });
@@ -387,7 +396,7 @@ export function uncataloguedTools(state, { link = toolHref } = {}) {
       columns: [
         column('fingerprint_cell', 'Site or fingerprint', 'stack'),
         column('submissions', 'Prompts', 'measure'),
-        column('users', 'People', 'measure'),
+        column('users', 'Users', 'measure'),
         column('bytes_total', 'Data sent', 'measure-bytes'),
         column('last_active', 'Last active', 'instant'),
       ],
@@ -425,7 +434,8 @@ export function sanctionShare(state, { title = 'Applications', emptyText = 'No t
     emptyText,
     ...(undecided ? { href: settingsHref, moreLabel: 'Decide which tools are sanctioned' } : {}),
     parts: Object.freeze(SANCTION_PARTS.map((key) => Object.freeze({ key, label: SANCTION_TEXT[key], count: counts.get(key), share: total > 0 ? counts.get(key) / total : 0 }))),
-    note: undecided ? 'No tool has a sanction decision yet.' : 'A tool with no decision is neither sanctioned nor unsanctioned.',
+    note: undecided ? 'No tool has a sanction decision yet.' : null,
+    info: 'The tools detected in this window, by their sanction decision. A tool with no decision is neither sanctioned nor unsanctioned.',
   });
 }
 
@@ -479,11 +489,10 @@ function reportingTile(cov) {
   const enrolled = known(cov?.devices_enrolled) ? Number(cov.devices_enrolled) : null;
   return tile('Devices reporting',
     reporting === null ? { kind: 'absent', text: '—' } : { kind: 'number', text: formatCount(reporting) },
-    enrolled === null
-      ? 'The enrolled denominator is unavailable: no fleet figure is shown without it.'
-      : `of ${formatCount(enrolled)} enrolled devices`,
+    enrolled === null ? 'The enrolled count could not be read.' : `of ${formatCount(enrolled)} enrolled devices`,
     {
       href: '#devices',
+      info: 'Enrolled devices whose agent has checked in recently, out of every device enrolled.',
       split: reporting !== null && enrolled !== null ? Object.freeze([
         Object.freeze({ key: 'reporting', label: 'Reporting', count: reporting }),
         Object.freeze({ key: 'never_reported', label: 'Not reporting', count: Math.max(0, enrolled - reporting) }),
@@ -507,6 +516,7 @@ function searchEventsLink(filters, preset) {
 }
 
 const METADATA_ONLY = 'metadata-only collection (M0)';
+const ATTACHMENTS_INFO = 'Files attached to prompts in this window.';
 
 /**
  * Every file attached to a prompt in the window, opening the prompts that carried one, narrowed by
@@ -519,16 +529,21 @@ function attachmentsTile(usage, { preset, filters = {} }) {
   const described = sumMeasure(usage, 'content_prompts');
   const prompts = sumMeasure(usage, 'submissions');
   const link = searchEventsLink({ ...filters, attachments: 'yes' }, preset);
-  if (attachments.kind !== 'number' || described.kind !== 'number') return tile('Attachments', { kind: 'absent', text: '—' }, absentNote(usage), link);
+  if (attachments.kind !== 'number' || described.kind !== 'number') return tile('Attachments', { kind: 'absent', text: '—' }, absentNote(usage), { ...link, info: ATTACHMENTS_INFO });
   if (described.value === 0 && prompts.kind === 'number' && prompts.value > 0) {
-    return tile('Attachments', { kind: 'absent', text: '—' }, `Not collected: every prompt in this window was sent at ${METADATA_ONLY}, which does not describe attachments.`);
+    return tile('Attachments', { kind: 'absent', text: '—' }, 'Not collected', {
+      info: `Every prompt in this window was sent at ${METADATA_ONLY}, which does not describe attachments.`,
+    });
   }
   const partly = prompts.kind === 'number' && described.value < prompts.value;
   return tile('Attachments', { kind: 'number', text: formatCount(attachments.value) },
-    partly
-      ? `Counted on ${formatCount(described.value)} of ${formatCount(prompts.value)} prompts: ${METADATA_ONLY} does not describe attachments.`
-      : 'Files attached to prompts in this window.',
-    link);
+    partly ? `on ${formatCount(described.value)} of ${formatCount(prompts.value)} prompts` : null,
+    {
+      ...link,
+      info: partly
+        ? `${ATTACHMENTS_INFO} Only the prompts sent above ${METADATA_ONLY} describe their attachments, so the rest are not counted.`
+        : ATTACHMENTS_INFO,
+    });
 }
 
 /**
@@ -538,10 +553,10 @@ function attachmentsTile(usage, { preset, filters = {} }) {
 function sensitiveTile(usage, { href }) {
   const sensitive = sumMeasure(usage, 'sensitive');
   const prompts = sumMeasure(usage, 'submissions');
-  const options = { href };
+  const options = { href, info: 'Prompts that matched an enforcement rule on one of their labels, and what happened to them.' };
   if (sensitive.kind !== 'number') return tile('Sensitive prompts', { kind: 'absent', text: '—' }, absentNote(usage), options);
   return tile('Sensitive prompts', { kind: 'number', text: formatCount(sensitive.value) },
-    prompts.kind === 'number' ? `of ${formatCount(prompts.value)} prompts matched a rule on their labels` : null,
+    prompts.kind === 'number' ? `of ${formatCount(prompts.value)} prompts` : null,
     {
       ...options,
       trend: trendOf(usage, 'sensitive'),
@@ -714,6 +729,8 @@ function exposureFunnel(usage, previous, { period, emptyText }) {
   return Object.freeze({
     kind: 'funnel',
     title: 'Exposure',
+    cardJump: 'Rules',
+    info: 'Prompts, the sensitive ones among them, and what happened to those. A prompt is sensitive when the rule it matched names one of its labels; the Rules table below counts them by rule.',
     stages: Object.freeze([
       stage('prompts', 'Prompts', prompts, null, 'submissions'),
       stage('sensitive', 'Sensitive prompts', sensitive, shareText(sensitive, prompts, 'prompts'), 'sensitive'),
@@ -1024,7 +1041,7 @@ export function sanctionView(state, { link = toolHref } = {}) {
   });
   return screen('sanction', 'Tools', null, 'mart.v_tool_usage', {
     subtitle: 'Each tool in use over the last 30 days with its sanction decision. A tool with no decision is unknown, never unsanctioned.',
-    lead: Object.freeze([sanctionShare(state, { emptyText: emptyLine(state, 'No tool was detected in the last 30 days.'), settingsHref: null })]),
+    lead: Object.freeze([{ ...sanctionShare(state, { emptyText: emptyLine(state, 'No tool was detected in the last 30 days.'), settingsHref: null }), cardJump: 'Tools by decision' }]),
     tiles: Object.freeze([]),
     tables: Object.freeze([
       Object.freeze({
@@ -1034,10 +1051,11 @@ export function sanctionView(state, { link = toolHref } = {}) {
             column('decision', 'Decision'),
             column('tool_cell', 'Tool', 'stack'),
             column('submissions', 'Prompts', 'measure'),
-            column('users', 'People', 'measure'),
+            column('users', 'Users', 'measure'),
           ],
           emptyText: emptyLine(state, 'No tool was in use in the last 30 days.'),
         }),
+        info: 'Every tool in use over the last 30 days, the ones waiting for a decision first. A tool\'s users is the most counted in any one day, a floor for the 30 days.',
         groupBy: 'decision',
         rowHref: 'href',
         breakdowns: false,
@@ -1046,7 +1064,7 @@ export function sanctionView(state, { link = toolHref } = {}) {
     series: Object.freeze([]),
     ...shared(state, [
       'A decision covers every fingerprint of the tool: each way a device recognises it. Only an admin can change it.',
-      'Prompts and people are the last 30 days. A tool\'s people is the most counted in any one day, a floor for the 30 days.',
+      'Prompts and users are the last 30 days. A tool\'s users is the most counted in any one day, a floor for the 30 days.',
     ]),
   });
 }
@@ -1055,7 +1073,7 @@ export function sanctionView(state, { link = toolHref } = {}) {
 // Insights: Adoption
 // ---------------------------------------------------------------------------------------------
 
-/** The people who used AI, out of the people who could have, split by the sanction of their tools. */
+/** The users who sent a prompt, out of the users who could have, split by the sanction of their tools. */
 function peopleShare(counted, before, { period, emptyText }) {
   const total = counted?.people ?? 0;
   const part = (key, label, count) => Object.freeze({ key, label, count: count ?? 0, share: total > 0 ? (count ?? 0) / total : 0 });
@@ -1064,10 +1082,12 @@ function peopleShare(counted, before, { period, emptyText }) {
   const change = counted && before ? changeOf({ kind: 'number', value: total }, { kind: 'number', value: before.people ?? 0 }, period) : null;
   return Object.freeze({
     kind: 'share',
-    title: 'People using AI',
+    title: 'Users of AI',
+    cardHref: '#person',
+    info: 'Everyone who sent a prompt in this window, each counted once, by whether the tools they used are sanctioned.',
     total,
-    totalLabel: of !== null ? `${outOf(counted)}${share}` : (total === 1 ? 'person' : 'people'),
-    emptyText: counted ? emptyText : 'The people could not be counted for this window.',
+    totalLabel: of !== null ? `${outOf(counted)}${share}` : (total === 1 ? 'user' : 'users'),
+    emptyText: counted ? emptyText : 'The users could not be counted for this window.',
     note: change?.text ?? null,
     parts: Object.freeze([
       part('sanctioned', 'Only sanctioned tools', counted?.sanctionedOnly),
@@ -1120,7 +1140,7 @@ function newToolsTable(firstSeen, { link, earliest }) {
         column('tool_cell', 'Application', 'stack'),
         column('sanctioned_state', 'Sanction', 'status'),
         column('first_seen_day', 'First seen'),
-        column('people', 'People since', 'measure'),
+        column('people', 'Users since', 'measure'),
       ],
       emptyText,
     }),
@@ -1191,21 +1211,21 @@ export function adoptionView({ usage, previous = null, firstSeen = null, shift =
   const counted = peopleOf(usage);
   const before = peopleOf(comparable(previous));
   const notes = [
-    'People using AI counts everyone who sent a prompt in the window once, however many tools and days they used.',
+    'Users of AI counts everyone who sent a prompt in the window once, however many tools and days they used.',
     'A tool not sanctioned is one marked unsanctioned or with no decision yet.',
   ];
-  if (counted?.basis === 'directory') notes.push('The people are out of everyone the directory lists as active.');
-  else if (counted?.basis === 'devices') notes.push('No directory is synced, so the people are out of everyone last signed in on an enrolled device.');
+  if (counted?.basis === 'directory') notes.push('The users are out of everyone the directory lists as active.');
+  else if (counted?.basis === 'devices') notes.push('No directory is synced, so the users are out of everyone last signed in on an enrolled device.');
   else if (counted) notes.push('No directory is synced and no enrolled device has said who is signed in, so there is no count to compare with.');
   notes.push(before
     ? `The change compares this window with ${period}.`
     : `${period[0].toUpperCase()}${period.slice(1)} could not be read, so no change is shown.`);
-  notes.push('An application counts from the day it sent its first prompt here, under any of its fingerprints; People since counts everyone who has used it from then until now.');
+  notes.push('An application counts from the day it sent its first prompt here, under any of its fingerprints; Users since counts everyone who has used it from then until now.');
   // Nothing before the window means collection began inside it, so every tool in use is new.
   const fresh = comparable(previous) && previous.data.length === 0 ? 'Nothing was recorded before this window, so every application in use is new.' : null;
   const shiftSeries = sanctionShift(shift);
   return screen('insights', 'Insights', null, 'mart.v_tool_usage', {
-    subtitle: 'Adoption: how many people use AI, which applications are new, and whether use is moving to sanctioned tools.',
+    subtitle: 'Adoption: how many users send prompts to AI, which applications are new, and whether use is moving to sanctioned tools.',
     lead: Object.freeze([peopleShare(counted, before, { period, emptyText: emptyLine(usage, 'No one sent a prompt in this window.') })]),
     tiles: Object.freeze([]),
     blocks: Object.freeze([
@@ -1359,9 +1379,10 @@ function notScannedTile(scan) {
   const options = { href: '#devices', moreLabel: 'Devices' };
   if (!scan) return tile('Not scanned', { kind: 'absent', text: '—' }, 'Where the inventory scan stands could not be read.', options);
   const off = scan.switchedOff > 0 ? ` ${plural(scan.switchedOff, 'more has', 'more have')} it switched off by policy.` : '';
-  return tile('Not scanned', { kind: 'number', text: formatCount(scan.notScanned) },
-    `of ${plural(scan.enrolled, 'enrolled device', 'enrolled devices')}: the inventory scan has not reported in the last 24 hours, so what they hold is not known.${off}`,
-    options);
+  return tile('Not scanned', { kind: 'number', text: formatCount(scan.notScanned) }, `of ${plural(scan.enrolled, 'enrolled device', 'enrolled devices')}`, {
+    ...options,
+    info: `Enrolled devices whose inventory scan has not reported in the last 24 hours, so what they hold is not known.${off}`,
+  });
 }
 
 /**
@@ -1398,10 +1419,16 @@ export function discoveredView({ found, prompts = null }, { preset = 'd7', link 
     subtitle: 'Discovered: the AI applications, CLIs, IDE extensions, local models and inference endpoints found on devices, whether or not they sent prompts.',
     tiles: Object.freeze([
       tools.length > 0
-        ? tile('Found on devices', { kind: 'number', text: formatCount(tools.length) }, `${tools.length === 1 ? 'application' : 'applications'} found in this window`)
+        ? tile('Found on devices', { kind: 'number', text: formatCount(tools.length) }, `${tools.length === 1 ? 'application' : 'applications'} in this window`, {
+          jump: 'Found on devices',
+          info: 'AI applications, CLIs, IDE extensions, local models and inference endpoints the inventory scan found on a device in this window.',
+        })
         : tile('Found on devices', { kind: 'absent', text: '—' }, absentNote(found)),
       prompted
-        ? tile('Not sending prompts', { kind: 'number', text: formatCount(silent) }, 'found on a device but sent no prompt in this window')
+        ? tile('Not sending prompts', { kind: 'number', text: formatCount(silent) }, `of ${plural(tools.length, 'application', 'applications')} found`, {
+          jump: 'Found on devices',
+          info: 'Applications found on a device in this window that sent no prompt in it.',
+        })
         : tile('Not sending prompts', { kind: 'absent', text: '—' }, 'The prompts could not be read for this window.'),
       notScannedTile(scanOf(found)),
     ]),
@@ -1486,14 +1513,14 @@ function seatsTable(demand, teamNames, { link, emptyText }) {
       title: 'Seats to license',
       columns: [
         column('tool_cell', 'Application', 'stack'),
-        column('people', 'People', 'measure'),
+        column('people', 'Users', 'measure'),
         column('no_team', 'In no team', 'measure'),
         column('teams', 'Teams they are in'),
       ],
       emptyText,
     }),
     ...(top && top.people !== null
-      ? { summary: `${plural(rows.length, 'tool not sanctioned was', 'tools not sanctioned were')} used in this window; ${toolName(top.row)} had the most people, ${formatCount(top.people)}${top.teams.size > 0 ? ` in ${plural(top.teams.size, 'team', 'teams')}` : ''}.` }
+      ? { summary: `${plural(rows.length, 'tool not sanctioned was', 'tools not sanctioned were')} used in this window; ${toolName(top.row)} had the most users, ${formatCount(top.people)}${top.teams.size > 0 ? ` in ${plural(top.teams.size, 'team', 'teams')}` : ''}.` }
       : {}),
     rowHref: 'href',
     breakdowns: false,
@@ -1550,23 +1577,32 @@ export function demandView(state, { preset = 'd7', tools = toolHref, teams = tea
   });
   const top = demand?.tools?.[0];
   const notes = [
-    'People counts everyone who sent the tool a prompt in the window once, under any of its fingerprints: the seats a licence would need.',
+    'Users counts everyone who sent the tool a prompt in the window once, under any of its fingerprints: the seats a licence would need.',
     'A tool not sanctioned is one marked unsanctioned or with no decision yet.',
     ...(demand && demand.tools.length > DEMAND_TOOLS_SHOWN
-      ? [`The ${DEMAND_TOOLS_SHOWN} tools with the most people are shown by team; Seats to license lists all ${formatCount(demand.tools.length)}.`]
+      ? [`The ${DEMAND_TOOLS_SHOWN} tools with the most users are shown by team; Seats to license lists all ${formatCount(demand.tools.length)}.`]
       : []),
   ];
   return screen('insights', 'Insights', null, 'mart.agg_team_period', {
-    subtitle: 'Demand: the tools not sanctioned that people use, by team, and the seats each would need.',
+    subtitle: 'Demand: the tools not sanctioned that users send prompts to, by team, and the seats each would need.',
     tiles: Object.freeze([
       demand
-        ? tile('Tools not sanctioned', { kind: 'number', text: formatCount(demand.tools.length) }, 'unsanctioned or with no decision yet, used in this window')
+        ? tile('Tools not sanctioned', { kind: 'number', text: formatCount(demand.tools.length) }, 'used in this window', {
+          jump: 'Seats to license',
+          info: 'Tools marked unsanctioned or with no decision yet that someone sent a prompt to in this window.',
+        })
         : tile('Tools not sanctioned', { kind: 'absent', text: '—' }, unread),
       demand && teamCount !== null && teamCount > 0
-        ? tile('Teams using them', { kind: 'number', text: formatCount(demand.teams.length) }, `of ${plural(teamCount, 'team', 'teams')} have a member using one`)
+        ? tile('Teams using them', { kind: 'number', text: formatCount(demand.teams.length) }, `of ${plural(teamCount, 'team', 'teams')}`, {
+          jump: 'Tools not sanctioned, by team',
+          info: 'Teams with at least one member who sent a prompt to a tool not sanctioned in this window.',
+        })
         : tile('Teams using them', { kind: 'absent', text: '—' }, teamCount === 0 ? 'No team exists yet.' : unread, teamCount === 0 ? { href: '#teams', moreLabel: 'Teams' } : {}),
       top && top.people !== null
-        ? tile('Most seats', { kind: 'number', text: formatCount(top.people) }, `people use ${toolName(top.row)}, the most of any tool not sanctioned`)
+        ? tile('Most seats', { kind: 'number', text: formatCount(top.people) }, `users of ${toolName(top.row)}`, {
+          ...(tools ? { href: tools(String(top.row.tool), preset) } : {}),
+          info: 'The tool not sanctioned with the most users in this window: the seats a licence for it would need.',
+        })
         : tile('Most seats', { kind: 'absent', text: '—' }, demand ? 'No tool that is not sanctioned was used.' : unread),
     ]),
     blocks: Object.freeze([seats, byTeam]),
@@ -1653,7 +1689,7 @@ function agentToolsTable(tools, before, { period, emptyText }) {
       title: 'By tool',
       columns: [
         column('tool_cell', 'Tool', 'stack'),
-        column('people', 'People', 'measure'),
+        column('people', 'Users', 'measure'),
         column('actions', 'Agent actions', 'measure'),
         column('input_tokens', 'Input tokens', 'measure'),
         column('output_tokens', 'Output tokens', 'measure'),
@@ -1683,7 +1719,7 @@ function agentModelsTable(models, { emptyText }) {
         column('model', 'Model'),
         column('tools', 'Used by'),
         column('input_tokens', 'Input tokens', 'measure'),
-        column('people', 'People', 'measure'),
+        column('people', 'Users', 'measure'),
       ],
       emptyText,
     }),
@@ -1692,11 +1728,11 @@ function agentModelsTable(models, { emptyText }) {
   });
 }
 
-/** A count tile with its change against the period before, when that period was read. */
-function agentTile(label, value, previous, note, period) {
+/** A count tile with its change against the period before, when that period was read, opening the table that holds it. */
+function agentTile(label, value, previous, info, period) {
   if (value === null) return null;
   const change = previous === null ? null : changeOf({ kind: 'number', value }, { kind: 'number', value: previous }, period);
-  return tile(label, { kind: 'number', text: formatCount(value) }, change ? `${note}. ${change.text}.` : note);
+  return tile(label, { kind: 'number', text: formatCount(value) }, change?.text ?? null, { jump: 'By tool', info });
 }
 
 /**
@@ -1720,7 +1756,7 @@ export function agentsView({ agents, previous = null }, { preset = 'd7' } = {}) 
   const notes = [
     `${names(exporting)} report here while their OpenTelemetry switch is on in Settings${silent.length > 0 ? `; ${names(silent)} ${silent.length === 1 ? 'has' : 'have'} no telemetry the device can collect, so ${silent.length === 1 ? 'its' : 'their'} prompts are on Tools but not ${silent.length === 1 ? 'its' : 'their'} tokens` : ''}. A tool with no row reported nothing in this window.`,
     'Input tokens are the code and context an agent sent to a model; agent actions are the tool calls it made, such as running a command or editing a file.',
-    `People counts the most people on any one ${agents.meta?.applied_bucket === 'hour' ? 'hour' : 'day'} in the window: a floor for the window, as on Tools.`,
+    `Users counts the most users on any one ${agents.meta?.applied_bucket === 'hour' ? 'hour' : 'day'} in the window: a floor for the window, as on Tools.`,
     before
       ? `Each change compares this window with ${period}.`
       : `${period[0].toUpperCase()}${period.slice(1)} could not be read, so no change is shown.`,
@@ -1729,10 +1765,13 @@ export function agentsView({ agents, previous = null }, { preset = 'd7' } = {}) 
   return screen('insights', 'Insights', null, 'mart.agg_agent_period', {
     subtitle: 'Coding agents: what coding agents send, and to which models.',
     tiles: Object.freeze([
-      agentTile('Input tokens', total.input, earlier ? earlier.input ?? 0 : null, 'code and context sent to models in this window', period) ?? fallback('Input tokens'),
-      agentTile('Agent actions', total.actions, earlier ? earlier.actions ?? 0 : null, 'tool calls the agents made in this window', period) ?? fallback('Agent actions'),
+      agentTile('Input tokens', total.input, earlier ? earlier.input ?? 0 : null, 'The code and context the coding agents sent to models in this window.', period) ?? fallback('Input tokens'),
+      agentTile('Agent actions', total.actions, earlier ? earlier.actions ?? 0 : null, 'The tool calls the coding agents made in this window, such as running a command or editing a file.', period) ?? fallback('Agent actions'),
       tools.length > 0
-        ? tile('Models', { kind: 'number', text: formatCount(reported) }, `called by ${plural(tools.length, 'coding agent', 'coding agents')} in this window`)
+        ? tile('Models', { kind: 'number', text: formatCount(reported) }, `called by ${plural(tools.length, 'coding agent', 'coding agents')}`, {
+          jump: 'By model',
+          info: 'The models that received code and context from a coding agent in this window.',
+        })
         : fallback('Models'),
     ]),
     blocks: Object.freeze([
@@ -1774,15 +1813,17 @@ export function toolsView(state, { link = toolHref, preset = null, sanction = nu
   const shown = sanction ? Object.freeze({ ...state, data: Object.freeze(state.data.filter((row) => decisionOf(row) === sanction)) }) : state;
   const href = (value) => withPreset(value ? `#tools?sanction=${value}` : '#tools', preset);
   const none = sanction ? NONE_WITH[sanction] : 'No tool was in use in this window.';
+  // The figures are the ranking's, folded: each opens it. The sanction split opens where a decision is made.
+  const ranking = 'Tools by prompts';
   return screen('tools', 'Tools', null, 'mart.v_tool_usage', {
     subtitle: 'Every AI tool seen in this window, by prompts. Open a tool to see who uses it and what was sent.',
     lead: Object.freeze([
-      sanctionShare(state, { emptyText: emptyLine(state, 'No tool was detected in this window.') }),
+      { ...sanctionShare(state, { emptyText: emptyLine(state, 'No tool was detected in this window.') }), cardHref: '#sanction' },
     ]),
     tiles: Object.freeze([
-      measureTile('Prompts', shown, 'submissions', formatCount, { trend: trendOf(shown) }),
-      measureTile('Blocked', shown, 'blocked'),
-      measureTile('Data sent', shown, 'bytes_total', formatBytes),
+      measureTile('Prompts', shown, 'submissions', formatCount, { trend: trendOf(shown), jump: ranking }),
+      measureTile('Blocked', shown, 'blocked', formatCount, { jump: ranking, info: 'Prompts an enforcement rule blocked before they were sent.' }),
+      measureTile('Data sent', shown, 'bytes_total', formatBytes, { jump: ranking, info: 'The size of every prompt and attachment sent, together.' }),
       attachmentsTile(shown, { preset }),
     ]),
     filters: Object.freeze([Object.freeze({
@@ -1791,7 +1832,7 @@ export function toolsView(state, { link = toolHref, preset = null, sanction = nu
       items: Object.freeze([{ id: '', label: 'All', href: href(null) }, ...SANCTION_PARTS.map((key) => ({ id: key, label: SANCTION_TEXT[key], href: href(key) }))]),
     })]),
     blocks: Object.freeze([
-      rankTools(shown, { title: 'Tools by prompts', link: linkTo, emptyText: emptyLine(state, none) }),
+      rankTools(shown, { title: ranking, link: linkTo, emptyText: emptyLine(state, none) }),
     ]),
     tables: Object.freeze([uncataloguedTools(shown, { link: linkTo })].filter(Boolean)),
     // A window with no cell has no shape to draw: the ranking's empty line says why.
@@ -1799,7 +1840,7 @@ export function toolsView(state, { link = toolHref, preset = null, sanction = nu
     ...shared(state, [
       'Rank is by prompts with a deterministic tie-break, and is never a sanction signal.',
       'Unknown is its own answer: a tool with no decision renders as unknown, never as unsanctioned.',
-      'A tool\'s people is the most counted in any one period, a floor for the window: a person active on two days is counted on both.',
+      'A tool\'s users is the most counted in any one period, a floor for the window: a user active on two days is counted on both.',
     ]),
   });
 }
@@ -1833,11 +1874,13 @@ export function toolView({ usage, people = null, findings = null, names = {} }, 
       ? 'Your role shows the tool\'s totals only; an analyst or admin also sees who is using it.'
       : `Who is using it could not be read: ${people.error?.message ?? people.resultState}.`);
   } else if (roster) {
-    notes.push('People are listed in the order the read returned them, never by volume. Reading this list is audited.');
+    notes.push('Users are listed in the order the read returned them, never by volume. Reading this list is audited.');
   } else if (group) {
     notes.push('Who is using it was not read for this window.');
   }
   if (findings?.isRefusal) notes.push(`Findings could not be read: ${findings.error?.message ?? findings.resultState}.`);
+  // Each figure opens the events behind it in Search, narrowed to this tool; the users open their roster below.
+  const events = (filters = {}) => searchEventsLink({ tool: String(tool), ...filters }, preset);
   return screen('tool', name, null, 'mart.v_tool_usage', {
     subtitle: String(tool).startsWith(SITE_PREFIX) ? 'A site the tool catalogue does not name.'
       : name === String(tool) ? 'A tool known only by its fingerprint.' : `Fingerprint ${tool}`,
@@ -1847,15 +1890,15 @@ export function toolView({ usage, people = null, findings = null, names = {} }, 
       Object.freeze({ label: 'All tools', href: withPreset('#tools', preset) }),
     ]),
     tiles: Object.freeze([
-      foldedTile('Prompts', group, 'submissions', formatCount, { trend: group && group.trend.length > 1 ? group.trend : null }),
-      foldedTile('People (lower bound)', group, 'users'),
-      foldedTile('Blocked', group, 'blocked'),
-      foldedTile('Data sent', group, 'bytes_total', formatBytes),
+      foldedTile('Prompts', group, 'submissions', formatCount, { trend: group && group.trend.length > 1 ? group.trend : null, ...events() }),
+      foldedTile('Users', group, 'users', formatCount, { ...(roster ? { jump: 'Users' } : events()), info: USERS_FLOOR }),
+      foldedTile('Blocked', group, 'blocked', formatCount, { ...events({ action: 'blocked' }), info: 'Prompts an enforcement rule blocked before they were sent.' }),
+      foldedTile('Data sent', group, 'bytes_total', formatBytes, { ...events(), info: 'The size of every prompt and attachment sent to this tool, together.' }),
       attachmentsTile(usage, { preset, filters: { tool: String(tool) } }),
     ]),
     tables: Object.freeze([
       ...(roster ? [tableFrom({ data: roster }, {
-        title: 'People using it',
+        title: 'Users',
         columns: [
           column('name', 'User', 'person'),
           column('submissions', 'Prompts', 'measure'),
@@ -1884,10 +1927,10 @@ export function toolView({ usage, people = null, findings = null, names = {} }, 
 }
 
 /**
- * The people behind the team totals, by team and then by name: a roster with numbers, not a
- * ranking. Null when there was nothing to read; a refusal says why the people are missing.
+ * The users behind the team totals, by team and then by name: a roster with numbers, not a
+ * ranking. Null when there was nothing to read; a refusal says why the users are missing.
  */
-function teamMembersTable(members, { byTeam = true, title = 'Prompts by person' } = {}) {
+function teamMembersTable(members, { byTeam = true, title = 'Prompts by user' } = {}) {
   const byName = (a, b) => String(a ?? '').localeCompare(String(b ?? ''), undefined, { sensitivity: 'base' });
   const rows = foldMembers(members.data).sort((a, b) => byName(a.name, b.name) || byName(a.subject, b.subject));
   return Object.freeze({
@@ -1933,18 +1976,18 @@ function teamMembersNotes(members) {
   if (!members) return [];
   if (members.isRefusal) {
     return [members.resultState === 'unauthorised_role'
-      ? 'Your role does not show each person\'s prompts; an analyst or admin sees them.'
-      : `Each person's prompts could not be read: ${members.error?.message ?? members.resultState}.`];
+      ? 'Your role does not show each user\'s prompts; an analyst or admin sees them.'
+      : `Each user's prompts could not be read: ${members.error?.message ?? members.resultState}.`];
   }
-  const notes = ['Each person is listed once, by name, with the teams they are in. Reading this list is audited.'];
-  if (members.meta?.truncated) notes.push(`The roster was cut short at ${formatCount(members.data.length)} rows, so some people or days are missing.`);
+  const notes = ['Each user is listed once, by name, with the teams they are in. Reading this list is audited.'];
+  if (members.meta?.truncated) notes.push(`The roster was cut short at ${formatCount(members.data.length)} rows, so some users or days are missing.`);
   if (members.audit?.entry_id) notes.push(`Audited read: entry ${members.audit.entry_id} at ${formatInstant(members.audit.written_at)}.`);
   return notes;
 }
 
 const INCLUDE_LABELS = Object.freeze({ group: 'Group', department: 'Department', org_unit: 'Unit', team: 'Team' });
 
-/** How a team is made: its members, the people chosen for it, and the first things it includes. */
+/** How a team is made: its members, the users chosen for it, and the first things it includes. */
 function teamFacts(team) {
   if (!team) return null;
   const includes = team.includes ?? [];
@@ -1952,7 +1995,7 @@ function teamFacts(team) {
   if (includes.length > shown.length) shown.push(`${formatCount(includes.length - shown.length)} more`);
   return [
     team.members === null || team.members === undefined ? null : plural(team.members, 'member', 'members'),
-    team.people ? plural(team.people, 'person chosen', 'people chosen') : null,
+    team.people ? plural(team.people, 'user chosen', 'users chosen') : null,
     ...shown,
   ].filter(Boolean).join(' · ') || null;
 }
@@ -2002,7 +2045,7 @@ function rankTeams(state, { teams = null, link = teamHref, emptyText }) {
     emptyText,
     itemLabel: 'Team',
     valueLabel: 'Prompts',
-    metaLabels: Object.freeze(['People']),
+    metaLabels: Object.freeze(['Users']),
     trendLabel: 'Trend',
     items: Object.freeze(items),
   });
@@ -2023,12 +2066,12 @@ export function teamsView(state, { mayManage = false, teams = null, link = teamH
   const all = num(cov?.users_all);
   const inTeams = num(cov?.users_in_teams);
   const teamCount = num(cov?.teams) ?? (teams ? teams.length : null);
-  // People in no team are said beside the people in one, so a team view cannot quietly stand for
+  // Users in no team are said beside the users in one, so a team view cannot quietly stand for
   // everyone.
   const outside = all === null || inTeams === null ? null : Math.max(0, all - inTeams);
   const notes = [];
   if (cov && all !== null && inTeams !== null) {
-    notes.push(`${plural(all, 'person', 'people')} used AI in this window; ${inTeams === 1 ? '1 is' : `${formatCount(inTeams)} are`} in at least one team and ${outside === 1 ? '1 is' : `${formatCount(outside)} are`} in none.`);
+    notes.push(`${plural(all, 'user', 'users')} used AI in this window; ${inTeams === 1 ? '1 is' : `${formatCount(inTeams)} are`} in at least one team and ${outside === 1 ? '1 is' : `${formatCount(outside)} are`} in none.`);
   }
   if (teamCount === 0) {
     notes.push(mayManage
@@ -2036,7 +2079,7 @@ export function teamsView(state, { mayManage = false, teams = null, link = teamH
       : 'No team exists yet. An admin adds teams on this page.');
   }
   return screen('teams', 'Teams', null, 'mart.agg_team_period', {
-    subtitle: 'Usage per team. A team counts the usage of the people in it now; a person in two teams counts in both.',
+    subtitle: 'Usage per team. A team counts the usage of the users in it now; a user in two teams counts in both.',
     tiles: Object.freeze([]),
     blocks: Object.freeze([
       rankTeams(state, { teams, link: (team) => link(team, preset), emptyText: teamCount === 0 ? 'There are no teams yet.' : emptyLine(state, 'No team has usage in this window.') }),
@@ -2048,25 +2091,29 @@ export function teamsView(state, { mayManage = false, teams = null, link = teamH
 }
 
 /**
- * One team: its figures over the window and the people behind them, by name. The team is named
+ * One team: its figures over the window and the users behind them, by name. The team is named
  * by the totals read, or by the roster when the totals carry no row for it.
  */
 export function teamView(state, { team, members = null, teams = null, preset = null }) {
   const group = foldCells(state, 'team', { sum: ['submissions'], max: ['users'] }).find((g) => g.key === String(team)) ?? null;
   const known = (teams ?? []).find((t) => t.team_id === String(team)) ?? null;
   const name = String(group?.first.team_name ?? known?.name ?? members?.data?.find((row) => row.team_name)?.team_name ?? 'Team');
-  const listed = members && !members.isRefusal ? new Set(members.data.map((row) => row.subject)).size : null;
+  const roster = members && !members.isRefusal ? teamMembersTable(members, { byTeam: false }) : null;
+  const listed = roster ? new Set(members.data.map((row) => row.subject)).size : null;
   const facts = teamFacts(known);
+  // Every figure is the roster's, folded: each opens it.
+  const below = roster ? { jump: roster.title } : {};
   return screen('team', name, null, 'mart.agg_team_period', {
-    subtitle: facts ? `${facts}. A team counts the usage of the people in it now.` : 'One team\'s usage. A team counts the usage of the people in it now.',
+    subtitle: facts ? `${facts}. A team counts the usage of the users in it now.` : 'One team\'s usage. A team counts the usage of the users in it now.',
     actions: Object.freeze([Object.freeze({ label: 'All teams', href: withPreset('#teams', preset) })]),
     tiles: Object.freeze([
-      foldedTile('Prompts', group, 'submissions', formatCount, { trend: group && group.trend.length > 1 ? group.trend : null }),
-      foldedTile('People (lower bound)', group, 'users'),
-      tile('People listed', listed === null ? { kind: 'absent', text: '—' } : { kind: 'number', text: formatCount(listed) },
-        listed === null ? 'The roster could not be read.' : 'Members who sent a prompt in this window.'),
+      foldedTile('Prompts', group, 'submissions', formatCount, { trend: group && group.trend.length > 1 ? group.trend : null, ...below }),
+      foldedTile('Users', group, 'users', formatCount, { ...below, info: USERS_FLOOR }),
+      tile('Users listed', listed === null ? { kind: 'absent', text: '—' } : { kind: 'number', text: formatCount(listed) },
+        listed === null ? 'The roster could not be read.' : 'sent a prompt in this window',
+        { ...below, info: 'The members named in the roster below: each who sent a prompt in this window.' }),
     ]),
-    tables: Object.freeze(members && !members.isRefusal ? [teamMembersTable(members, { byTeam: false })] : []),
+    tables: Object.freeze(roster ? [roster] : []),
     series: Object.freeze(group ? [seriesFrom(state, { measure: 'submissions', title: seriesTitle(state) })] : []),
     ...shared(state, teamMembersNotes(members)),
   });
@@ -2079,24 +2126,26 @@ export function personView(state, { subject, person = null, preset = null, explo
   const tools = state.meta?.extras?.subject_tools?.[0]?.tools ?? null;
   const notes = [];
   if (flush) {
-    notes.push(`${formatCount(flush.rows_in_window)} rows for this person in the window, ${formatCount(flush.late_flush_rows)} received more than an hour after they occurred: a spool flush spikes received time, not behaviour.`);
+    notes.push(`${formatCount(flush.rows_in_window)} rows for this user in the window, ${formatCount(flush.late_flush_rows)} received more than an hour after they occurred: a spool flush spikes received time, not behaviour.`);
   }
   const name = person?.name && person.name !== subject ? person.name : null;
   const facts = [person?.department, person?.org_unit].filter(Boolean).join(' · ');
+  // Each figure opens the events behind it in Search, narrowed to this user.
+  const events = (filters = {}) => searchEventsLink({ subject, ...filters }, preset);
   return screen('person', name ?? 'Users', null, 'mart.agg_user_period', {
     subtitle: name ? `${facts ? `${facts} · ` : ''}${subject}` : null,
     search: Object.freeze({ value: name ? '' : subject }),
     actions: Object.freeze([
       Object.freeze({ label: 'Prompts and events', href: `${exploreHref}#events?subject=${encodeURIComponent(subject)}` }),
-      Object.freeze({ label: 'All people', href: '#person' }),
+      Object.freeze({ label: 'All users', href: '#person' }),
     ]),
     tiles: Object.freeze([
-      measureTile('Prompts', state, 'submissions'),
+      measureTile('Prompts', state, 'submissions', formatCount, events()),
       tools === null
         ? tile('Tools used', { kind: 'absent', text: '—' }, absentNote(state))
-        : tile('Tools used', { kind: 'number', text: formatCount(Number(tools)) }),
-      measureTile('Block events', state, 'block_events'),
-      measureTile('Bytes', state, 'bytes_total', formatBytes),
+        : tile('Tools used', { kind: 'number', text: formatCount(Number(tools)) }, null, { ...events(), info: 'Each tool this user sent a prompt to in this window, counted once.' }),
+      measureTile('Blocked', state, 'block_events', formatCount, { ...events({ action: 'blocked' }), info: 'Prompts an enforcement rule blocked before they were sent.' }),
+      measureTile('Data sent', state, 'bytes_total', formatBytes, { ...events(), info: 'The size of every prompt and attachment this user sent, together.' }),
       attachmentsTile(state, { preset, filters: { subject } }),
     ]),
     tables: Object.freeze([
@@ -2109,19 +2158,19 @@ export function personView(state, { subject, person = null, preset = null, explo
           column('block_events', 'Blocked', 'measure'),
           column('attachments', 'Attachments', 'measure'),
         ],
-        emptyText: 'No usage recorded for this person in this window.',
+        emptyText: 'No usage recorded for this user in this window.',
       }),
     ]),
     series: Object.freeze([series]),
     ...shared(state, notes.concat([
-      'No cohort percentile, no ranking, no people sorted by volume. A spike is compared against this person\'s own trailing baseline only.',
+      'No cohort percentile, no ranking, no users sorted by volume. A spike is compared against this user\'s own trailing baseline only.',
       'The spike rule needs at least 14 observed buckets. Below that the answer is not_yet_covered, not "no change".',
     ])),
   });
 }
 
 /**
- * The people the directory and the devices know, by name, to open one person's page, each with
+ * The users the directory and the devices know, by name, to open one user's page, each with
  * the teams they are in and their prompts in the window from those teams' rosters. It is a
  * directory, not a ranking: it is in name order, and nothing sorts it by usage.
  */
@@ -2135,7 +2184,7 @@ export function peopleView(state, { search = '', members = null } = {}) {
     return Object.freeze({ ...row, team_names: member?.team_names ?? null, submissions: member ? member.submissions : null });
   });
   const table = tableFrom({ ...state, data: rows }, {
-    title: search ? `People whose name starts with "${search}"` : 'People',
+    title: search ? `Users whose name starts with "${search}"` : 'Users',
     columns: [
       column('name', 'Name', 'person'),
       column('team_names', 'Teams'),
@@ -2144,10 +2193,10 @@ export function peopleView(state, { search = '', members = null } = {}) {
       column('last_active_day', 'Last active', 'instant'),
       column('submissions', 'Prompts', 'measure'),
     ],
-    emptyText: search ? 'Nobody\'s name starts with that.' : 'Nobody is known yet: people arrive from the directory, or with their first prompt.',
+    emptyText: search ? 'Nobody\'s name starts with that.' : 'No user is known yet: users arrive from the directory, or with their first prompt.',
   });
   return screen('person', 'Users', null, 'mart.v_person', {
-    subtitle: 'Everyone the directory or a device has named. Open a person to see their usage and prompts.',
+    subtitle: 'Everyone the directory or a device has named. Open a user to see their usage and prompts.',
     search: Object.freeze({ value: search }),
     tiles: Object.freeze([]),
     tables: Object.freeze([
@@ -2160,9 +2209,9 @@ export function peopleView(state, { search = '', members = null } = {}) {
     series: Object.freeze([]),
     ...shared(state, [
       ...(state.data.length > 0 && named === 0
-        ? ['No name is known for anyone on this page: the tenant keeps people hashed, or no directory has been read yet. Each is listed by reference.']
+        ? ['No name is known for anyone on this page: the tenant keeps users hashed, or no directory has been read yet. Each is listed by reference.']
         : []),
-      ...(roster ? ['Teams and prompts come from the rosters of the teams with usage in this window: a person in none of them shows a dash, not a zero.'] : []),
+      ...(roster ? ['Teams and prompts come from the rosters of the teams with usage in this window: a user in none of them shows a dash, not a zero.'] : []),
       ...teamMembersNotes(members),
     ]),
     // A list of people is current state, not a measurement: fleet coverage and aggregate age say
@@ -2447,10 +2496,15 @@ export function deviceView({ device, row, collectors = null }, { now = new Date(
   }
   const read = collectors && !collectors.isRefusal;
   const reported = read ? collectors.data.length : found.collectors_reporting ?? null;
+  // The status and the collector count are the collectors' table, folded: each opens it when it was
+  // read. The mode the device applied is set on Settings → Collection.
+  const below = read ? { jump: 'Collectors' } : {};
   const tiles = [
-    tile('Status', { kind: 'vocab', text: d.status_text, key: d.status }, d.last_seen_at_ago ? `Last seen ${d.last_seen_at_ago}` : 'Never seen'),
-    tile('Applied mode', d.mode ? { kind: 'vocab', text: d.mode, key: found.collection_mode } : { kind: 'absent', text: '—' }, d.mode ? null : 'The device has not reported a mode.'),
-    tile('Collectors', reported === null ? { kind: 'absent', text: '—' } : { kind: 'number', text: formatCount(count(reported)) }, d.collectors),
+    tile('Status', { kind: 'vocab', text: d.status_text, key: d.status }, d.last_seen_at_ago ? `Last seen ${d.last_seen_at_ago}` : 'Never seen',
+      { ...below, info: 'The worst state among the device\'s collectors, and whether its agent has checked in.' }),
+    tile('Applied mode', d.mode ? { kind: 'vocab', text: d.mode, key: found.collection_mode } : { kind: 'absent', text: '—' }, d.mode ? null : 'The device has not reported a mode.',
+      { href: '#settings', info: 'The collection mode the device last reported it applied. It can trail the mode set in Settings until the device next checks in.' }),
+    tile('Collectors', reported === null ? { kind: 'absent', text: '—' } : { kind: 'number', text: formatCount(count(reported)) }, d.collectors, below),
   ];
   const notes = [];
   if (collectors?.isRefusal) notes.push(`The collectors could not be read: ${collectors.error?.message ?? collectors.resultState}.`);
@@ -2516,9 +2570,11 @@ export function auditView(state, { filters = {}, preset = null } = {}) {
       clearHref: filtered ? at({}) : null,
     }),
     tiles: Object.freeze([
-      tile('Entries in page', { kind: 'number', text: formatCount(state.data.length) }, null),
-      tile('Hash links', { kind: 'vocab', text: state.resultState === 'audit_chain_broken' ? 'broken' : 'verified in this page' }, 'Whole-chain verification is the reconciler\'s job, not a page\'s.'),
-      tile('Anchored head', { kind: 'absent', text: 'not exposed' }, 'This API returns no anchor head or anchor time; the dashboard cannot show the last anchored entry.'),
+      tile('Entries', { kind: 'number', text: formatCount(state.data.length) }, 'in this page', { jump: 'Audit entries' }),
+      tile('Integrity', state.resultState === 'audit_chain_broken' ? { kind: 'vocab', text: 'broken', key: 'broken' } : { kind: 'vocab', text: 'verified', key: 'ok' }, 'hash links in this page', {
+        jump: 'Audit entries',
+        info: 'Each entry carries the hash of the one before it. The links between the entries on this page were checked; the whole chain is verified by the reconciler.',
+      }),
     ]),
     tables: Object.freeze([
       Object.freeze({
@@ -2578,10 +2634,16 @@ export function eventView(state) {
   return screen('event', 'Event detail', TEMPLATES.q9_event_detail.title, 'ingest.submission', {
     subtitle: 'One event, its observation routes, and what the content state permits. No query returns content.',
     tiles: Object.freeze([
-      tile('Content state', { kind: 'vocab', text: contentState }, contentAnswer),
-      tile('Routes', { kind: 'number', text: formatCount(head?.observation_count ?? observations.length) }, 'One observation per route, so an overlapping count can be explained.'),
-      tile('Mode', { kind: 'vocab', text: head?.collection_mode ?? '—' }, null),
-      tile('Merge confidence', { kind: 'vocab', text: head?.merge_confidence ?? '—' }, head?.merge_confidence === 'low' ? 'A weak dedup key produced this row: counted, never discarded.' : null),
+      tile('Content state', { kind: 'vocab', text: contentState }, null, { jump: 'Metadata', info: contentAnswer }),
+      tile('Routes', { kind: 'number', text: formatCount(head?.observation_count ?? observations.length) }, null,
+        { jump: 'Observation routes', info: 'The routes that collected this event, one observation each, so an overlapping count can be explained.' }),
+      tile('Mode', { kind: 'vocab', text: head?.collection_mode ?? '—' }, null, { href: '#settings', info: 'The collection mode the device applied when it collected this event.' }),
+      tile('Merge confidence', { kind: 'vocab', text: head?.merge_confidence ?? '—' }, null, {
+        jump: 'Observation routes',
+        info: head?.merge_confidence === 'low'
+          ? 'A weak dedup key produced this row: counted, never discarded.'
+          : 'How surely the observations of this event were matched as one: a strong dedup key is high, a weak one low.',
+      }),
     ]),
     tables: Object.freeze([
       Object.freeze({
@@ -2671,8 +2733,8 @@ export function refusalView(state, { title }) {
     sourceLabel: null,
     subtitle: state.spec?.label ?? 'The read was refused.',
     tiles: Object.freeze([
-      tile('Result state', { kind: 'vocab', text: state.resultState }, state.spec?.label ?? null),
-      tile('Rows served', { kind: 'number', text: '0' }, 'A refusal carries no data, by construction.'),
+      tile('Result state', { kind: 'vocab', text: state.resultState }, state.spec?.label ?? null, { jump: 'What the API said' }),
+      tile('Rows served', { kind: 'number', text: '0' }, null, { jump: 'What the API said', info: 'A refusal carries no data, by construction.' }),
     ]),
     tables: Object.freeze([
       Object.freeze({

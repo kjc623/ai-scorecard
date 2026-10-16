@@ -114,6 +114,11 @@ export function wireShell({ document, session = null }) {
   document.addEventListener('click', (event) => {
     const target = event.target;
     if (typeof target?.closest !== 'function') return;
+    // The (i) beside a label is read, not followed: a click on it inside a card that is a link stays put.
+    if (target.closest('.tip')) {
+      if (target.closest('a, [data-jump]')) event.preventDefault();
+      return;
+    }
     if (target.closest('#theme')) {
       const dark = html.dataset.theme
         ? html.dataset.theme === 'dark'
@@ -130,6 +135,9 @@ export function wireShell({ document, session = null }) {
     if (target.closest('.nav a')) document.body.classList.remove('menu-open');
     const row = target.closest('tr[data-href]');
     if (row && !target.closest('a, button')) follow(document, row.dataset.href);
+    // A card that opens a block on the same page scrolls to it.
+    const jump = target.closest('[data-jump]');
+    if (jump && !target.closest('a, button')) jumpTo(document, jump.dataset.jump);
   });
 
   document.addEventListener('keydown', (event) => {
@@ -137,6 +145,11 @@ export function wireShell({ document, session = null }) {
     if (row && (event.key === 'Enter' || event.key === ' ')) {
       event.preventDefault();
       follow(document, row.dataset.href);
+    }
+    const jump = event.target?.closest?.('[data-jump]');
+    if (jump && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault();
+      jumpTo(document, jump.dataset.jump);
     }
     if (event.key === 'Escape') document.body?.classList?.remove('menu-open');
   });
@@ -146,4 +159,16 @@ export function wireShell({ document, session = null }) {
 function follow(document, href) {
   if (String(href).startsWith('#')) document.location.hash = href;
   else document.location.href = href;
+}
+
+/** Scroll a block on this page into view and mark it for a moment, so the eye lands on it. */
+function jumpTo(document, id) {
+  const block = typeof document.getElementById === 'function' ? document.getElementById(id) : null;
+  if (!block) return;
+  block.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+  if (!block.classList) return;
+  block.classList.remove('jumped');
+  // Restart the mark on a second click: the class is re-added on the next frame.
+  (document.defaultView?.requestAnimationFrame ?? ((fn) => fn()))(() => block.classList.add('jumped'));
+  block.addEventListener?.('animationend', () => block.classList.remove('jumped'), { once: true });
 }

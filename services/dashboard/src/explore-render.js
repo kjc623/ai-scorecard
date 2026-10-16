@@ -537,7 +537,7 @@ function exploreRecord(detail, dataset, state) {
     )).join('')}</tbody></table>`;
 
   return (detail.row && 'rule' in detail.row ? exploreFindingFacts(detail.row) : '')
-    + exploreContent(state, String(contentTile.value.text), contentTile.note)
+    + exploreContent(state, String(contentTile.value.text), contentTile.info)
     + '<section><h3>Who and where</h3>' + exploreFacts([
       ['User', `${renderExploreValue(head, col('subject', 'person'))}${exploreFilterButton(dataset, 'subject', head.subject)}`],
       ['Tool', `${renderExploreValue(head, col('tool', 'mono'))}${exploreFilterButton(dataset, 'tool', head.tool)}`],

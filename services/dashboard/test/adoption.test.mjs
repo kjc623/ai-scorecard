@@ -39,16 +39,19 @@ function dashboardWith({ previous = { ...PEOPLE_ROW, people: 1900 }, previousRow
   return { sent, dashboard: createDashboard({ api: createQueryApi({ transport }), now: NOW }) };
 }
 
-test('the Overview Users tile counts each person once, out of the directory, else the enrolled devices', () => {
+test('the Overview Users tile counts each user once, out of the directory, else the enrolled devices', () => {
   const directory = postureView({ devices: null, tools: usageWith(PEOPLE_ROW) }).tiles[3];
-  assert.deepEqual([directory.label, directory.value.text, directory.note], ['Users', '2,050', 'of 4,210 active people in the directory']);
+  assert.deepEqual([directory.label, directory.value.text, directory.note], ['Users', '2,050', 'of 4,210 active users in the directory']);
+  assert.equal(directory.info, 'Everyone who sent a prompt in this window, each counted once however many tools they used.', 'what the figure counts is behind the (i), not on the card');
   const devices = postureView({ devices: null, tools: usageWith({ ...PEOPLE_ROW, directory_people: 0 }) }).tiles[3];
-  assert.equal(devices.note, 'of 3,980 people signed in on an enrolled device');
+  assert.equal(devices.note, 'of 3,980 users signed in on an enrolled device');
   const alone = postureView({ devices: null, tools: usageWith({ ...PEOPLE_ROW, directory_people: 0, device_people: 0 }) }).tiles[3];
-  assert.equal(alone.note, 'Each person counted once, however many tools they used.');
+  assert.equal(alone.note, null, 'nothing to be out of, so no line under the figure');
+  assert.equal(alone.info, directory.info);
   const older = postureView({ devices: null, tools: usageWith(null) }).tiles[3];
   assert.equal(older.value.text, '1,877');
-  assert.equal(older.note, 'At least this many: the most counted in any one period of the window.', 'a read that did not count people keeps the floor it had');
+  assert.equal(older.note, null);
+  assert.match(older.info, /^At least this many: the most users counted in any one period of the window\./, 'a read that did not count users keeps the floor it had');
 });
 
 test('Adoption reads the window and the period before it, the applications first seen, and prompts by sanction', async () => {
@@ -72,43 +75,44 @@ test('Adoption reads the window and the period before it, the applications first
   assert.ok(sent.some((b) => b.source === 'mart.v_tool_first_seen'), 'Adoption is the default tab');
 });
 
-test('People using AI is the people out of the directory, split by the sanction of the tools they used, against the previous period', async () => {
+test('Users of AI is the users out of the directory, split by the sanction of the tools they used, against the previous period, opening Users', async () => {
   const { view } = await dashboardWith().dashboard.load('insights', { filters: { view: 'adoption' } });
   const people = view.lead[0];
   assert.equal(people.kind, 'share');
-  assert.equal(people.title, 'People using AI');
+  assert.equal(people.title, 'Users of AI');
+  assert.equal(people.cardHref, '#person', 'the whole card opens the users it counts');
   assert.equal(people.total, 2050);
-  assert.equal(people.totalLabel, 'of 4,210 active people in the directory (49%)');
+  assert.equal(people.totalLabel, 'of 4,210 active users in the directory (49%)');
   assert.equal(people.note, '+8% on the previous 7 days');
   assert.deepEqual(people.parts.map((p) => [p.key, p.label, p.count]), [
     ['sanctioned', 'Only sanctioned tools', 1820], ['both', 'Both', 190], ['unsanctioned', 'Only tools not sanctioned', 40],
   ]);
   assert.ok(view.notes.includes('A tool not sanctioned is one marked unsanctioned or with no decision yet.'));
-  assert.ok(view.notes.includes('The people are out of everyone the directory lists as active.'));
+  assert.ok(view.notes.includes('The users are out of everyone the directory lists as active.'));
   const html = renderScreen(view, {});
-  assert.match(html, /<span class="tile-value">2,050<\/span><span class="share-total-label">of 4,210 active people in the directory \(49%\)<\/span>/);
+  assert.match(html, /<span class="tile-value">2,050<\/span><span class="share-total-label">of 4,210 active users in the directory \(49%\)<\/span>/);
   assert.match(html, /<span class="dist-seg v-vocab-both" style="flex-grow:190"/);
 });
 
-test('without a directory the people are out of the enrolled devices, and with neither there is nothing to compare with', () => {
+test('without a directory the users are out of the enrolled devices, and with neither there is nothing to compare with', () => {
   const devices = adoptionView({ usage: usageWith({ ...PEOPLE_ROW, directory_people: 0 }) });
-  assert.equal(devices.lead[0].totalLabel, 'of 3,980 people signed in on an enrolled device (52%)');
-  assert.ok(devices.notes.includes('No directory is synced, so the people are out of everyone last signed in on an enrolled device.'));
+  assert.equal(devices.lead[0].totalLabel, 'of 3,980 users signed in on an enrolled device (52%)');
+  assert.ok(devices.notes.includes('No directory is synced, so the users are out of everyone last signed in on an enrolled device.'));
   const none = adoptionView({ usage: usageWith({ ...PEOPLE_ROW, directory_people: 0, device_people: 0 }) });
-  assert.equal(none.lead[0].totalLabel, 'people');
+  assert.equal(none.lead[0].totalLabel, 'users');
   assert.equal(none.lead[0].note, null, 'no previous period, no change');
   assert.ok(none.notes.includes('The previous 7 days could not be read, so no change is shown.'));
   const more = adoptionView({ usage: usageWith({ ...PEOPLE_ROW, directory_people: 1000 }) });
-  assert.equal(more.lead[0].totalLabel, 'more than the 1,000 active people in the directory', 'no share above the whole');
-  assert.equal(postureView({ devices: null, tools: usageWith({ ...PEOPLE_ROW, directory_people: 1000 }) }).tiles[3].note, 'more than the 1,000 active people in the directory');
+  assert.equal(more.lead[0].totalLabel, 'more than the 1,000 active users in the directory', 'no share above the whole');
+  assert.equal(postureView({ devices: null, tools: usageWith({ ...PEOPLE_ROW, directory_people: 1000 }) }).tiles[3].note, 'more than the 1,000 active users in the directory');
   const uncounted = adoptionView({ usage: usageWith(null) });
-  assert.equal(uncounted.lead[0].emptyText, 'The people could not be counted for this window.');
+  assert.equal(uncounted.lead[0].emptyText, 'The users could not be counted for this window.');
 });
 
 test('New this period lists the applications that sent their first prompt in the window, each opening its tool', async () => {
   const { view } = await dashboardWith().dashboard.load('insights', { preset: 'd30', filters: { view: 'adoption' } });
   const table = block(view, 'New this period');
-  assert.deepEqual(table.columns.map((c) => c.label), ['Application', 'Sanction', 'First seen', 'People since']);
+  assert.deepEqual(table.columns.map((c) => c.label), ['Application', 'Sanction', 'First seen', 'Users since']);
   assert.deepEqual(table.rows.map(({ row }) => [row.tool_cell.primary, row.tool_cell.secondary, row.sanctioned_state, row.sanctioned_state_text, row.first_seen_day, row.people, row.href]), [
     ['Unrecognised tool', 'shadow_llm_gateway', 'unknown', 'No decision yet', '2026-09-29', 2, '#tools?tool=shadow_llm_gateway&preset=d30'],
     ['Claude Code', null, 'unsanctioned', 'Unsanctioned', '2026-09-26', 230, '#tools?tool=tls_b6681b043244c43f&preset=d30'],
@@ -168,5 +172,5 @@ test('Insights switches between its tabs beside its window, and each keeps the o
   assert.match(html, /<span class="eyebrow">Archive<\/span><h2>Insights<\/h2>/);
   assert.match(html, /<nav class="page-tabs" aria-label="Insights"><a class="page-tab" href="#insights\?preset=d30" aria-current="page">Adoption<\/a><a class="page-tab" href="#insights\?preset=d30&amp;view=discovered">Discovered<\/a><a class="page-tab" href="#insights\?preset=d30&amp;view=demand">Demand<\/a><a class="page-tab" href="#insights\?preset=d30&amp;view=agents">Coding agents<\/a><\/nav>/);
   assert.match(html, /<a class="seg-item" href="#insights\?view=adoption&amp;preset=d7">7d<\/a>/, 'a window keeps the tab');
-  assert.match(html, /People using AI/);
+  assert.match(html, /Users of AI/);
 });

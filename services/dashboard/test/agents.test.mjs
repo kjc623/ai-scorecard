@@ -45,11 +45,13 @@ test('each model is one row with the tools that called it; a request that named 
     ['Not reported by the agent', 'GitHub Copilot CLI', 200_000, 2],
   ]);
   assert.equal(block(view, 'By model').summary, '4 models received code and context from coding agents in this window; claude-sonnet-4 received the most.');
-  assert.deepEqual(view.tiles.map((t) => [t.label, t.value.text, t.note]), [
-    ['Input tokens', '79,200,000', 'code and context sent to models in this window'],
-    ['Agent actions', '11,300', 'tool calls the agents made in this window'],
-    ['Models', '4', 'called by 4 coding agents in this window'],
-  ]);
+  assert.deepEqual(view.tiles.map((t) => [t.label, t.value.text, t.note, t.jump]), [
+    ['Input tokens', '79,200,000', null, 'By tool'],
+    ['Agent actions', '11,300', null, 'By tool'],
+    ['Models', '4', 'called by 4 coding agents', 'By model'],
+  ], 'each tile opens the table that holds its figure');
+  assert.match(view.tiles[0].info, /^The code and context the coding agents sent to models/);
+  assert.match(view.tiles[1].info, /^The tool calls the coding agents made/);
 });
 
 test('each tool and tile moves against the period before, and a tool new to the window says so', () => {
@@ -62,16 +64,16 @@ test('each tool and tile moves against the period before, and a tool new to the 
     ['GitHub Copilot CLI', 'None in the previous 30 days'],
   ]);
   assert.deepEqual(view.tiles.slice(0, 2).map((t) => t.note), [
-    'code and context sent to models in this window. +148% on the previous 30 days.',
-    'tool calls the agents made in this window. −42% on the previous 30 days.',
-  ]);
+    '+148% on the previous 30 days',
+    '−42% on the previous 30 days',
+  ], 'the change is the line under the figure');
   assert.match(view.notes.join(' '), /Each change compares this window with the previous 30 days\./);
 });
 
 test('the notes name the agents that report and the one that cannot, so a missing row is not read as no use', () => {
   const view = agentsView({ agents: stateOf() });
   assert.ok(view.notes.includes('Claude Code, Codex and Copilot report here while their OpenTelemetry switch is on in Settings; Cursor has no telemetry the device can collect, so its prompts are on Tools but not its tokens. A tool with no row reported nothing in this window.'));
-  assert.match(view.notes.join(' '), /People counts the most people on any one day in the window/);
+  assert.match(view.notes.join(' '), /Users counts the most users on any one day in the window/);
 });
 
 test('a window with no agent activity says so, and a read that failed is a dash, not a zero', () => {

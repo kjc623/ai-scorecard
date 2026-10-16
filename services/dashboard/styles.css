@@ -239,9 +239,15 @@ code {
 .tiles:has(> .tile:nth-child(5)) > .tile:first-child { grid-column: auto; }
 .tiles:has(> .tile:nth-child(5)) > .tile:first-child .tile-value { font-size: 44px; }
 a.tile, a.card-link { display: block; text-decoration: none; color: inherit; }
-a.card-link { transition: transform .5s var(--ease); }
-a.card-link:hover { transform: translateY(-2px); }
+.card-link { cursor: pointer; transition: transform .5s var(--ease); }
+.card-link:hover { transform: translateY(-2px); }
+.tile-link { cursor: pointer; }
 .tile-link:hover .tile-more { text-decoration: underline; }
+/* A block a card jumped to: scrolled under the top edge, then marked for a moment. The mark
+   outlives the rule that stills a repainted screen, so it is seen after a filter change too. */
+.card { scroll-margin-top: 20px; }
+.jumped { animation: flash 1.8s var(--ease) both !important; }
+@keyframes flash { 0%, 35% { outline: 2px solid var(--accent); outline-offset: 3px; } 100% { outline: 2px solid transparent; outline-offset: 3px; } }
 .tile-split { margin-top: 10px; }
 .tile .dist-legend { margin-top: 8px; }
 .filter-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; }
@@ -251,7 +257,31 @@ a.card-link:hover { transform: translateY(-2px); }
 .filter-form .card-core { padding: 14px 16px; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 14px; }
 .form-field { display: flex; flex-direction: column; gap: 6px; flex: 1 1 170px; min-width: 0; }
 .form-actions { display: flex; gap: 8px; align-items: center; }
-.tile-label { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em; color: var(--ink-soft); }
+.tile-label { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .12em; color: var(--ink-soft); }
+
+/* The (i) beside a label: a ring with what the figure counts under it, on hover or focus. Beside a
+   block's title it opens rightwards from the ring; in a tile it spans the card under the label, so
+   it never leaves the card whichever column the tile is in. */
+.tip {
+  position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center;
+  width: 16px; height: 16px; border-radius: 9999px; border: 1px solid var(--line-strong);
+  color: var(--ink-soft); cursor: help; vertical-align: middle;
+  transition: color .3s var(--ease), border-color .3s var(--ease), background .3s var(--ease);
+}
+.tip:hover, .tip:focus-visible { color: var(--ink); border-color: var(--ink-soft); background: var(--tray); }
+.tip-icon { width: 10px; height: 10px; }
+.tip-text {
+  position: absolute; top: calc(100% + 8px); left: -4px; z-index: 6; width: max-content; max-width: min(300px, 70vw);
+  padding: 8px 11px; border-radius: 10px; background: var(--ink); color: var(--on-ink);
+  font: 400 12px/1.45 var(--sans); letter-spacing: 0; text-transform: none; text-align: left; white-space: normal;
+  opacity: 0; transform: translateY(4px); pointer-events: none;
+  transition: opacity .3s var(--ease), transform .3s var(--ease);
+}
+.tip:hover .tip-text, .tip:focus-visible .tip-text { opacity: 1; transform: none; }
+.tile .card-core { position: relative; }
+.tile .tip { position: static; }
+.tile .tip-text { top: 44px; left: 14px; right: 14px; width: auto; max-width: none; }
+.block-head .tip { margin-left: -2px; }
 .tile-value { font: 400 36px/1.1 var(--serif); letter-spacing: -0.02em; color: var(--ink); }
 .tile-value .v-vocab { font: 12px/1.7 var(--mono); letter-spacing: 0; vertical-align: middle; }
 .tile-note { font-size: 12.5px; color: var(--ink-soft); }
@@ -670,6 +700,8 @@ td.dp-action { text-align: right; white-space: nowrap; }
   .screen-switches .seg { flex-wrap: wrap; border-radius: 18px; }
   .tile:first-child { grid-column: auto; }
   .tile:first-child .tile-value { font-size: 40px; }
+  /* The navigation bar stays at the top, so a block a card jumps to lands under it, not behind it. */
+  .card { scroll-margin-top: 80px; }
   .axis, .bars { height: 150px; }
   /* A ranked row folds: the name and number first, the bar under them, the facts and trend last. */
   .rank-head { display: none; }
