@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shadow-ai-capture/device/protocol/canon"
+
 	"github.com/shadow-ai-capture/control-api/internal/graphsync"
 )
 
@@ -85,7 +87,8 @@ func copilotFixture(t *testing.T, licensed map[string]bool) (*httptest.Server, *
 		_ = json.NewEncoder(w).Encode(map[string]any{"value": []map[string]any{
 			{"id": "1732148399000", "interactionType": "userPrompt", "createdDateTime": "2026-10-13T09:20:00Z",
 				"body":        map[string]string{"contentType": "html", "content": "<p>Summarise <b>Q3</b> &amp; plan</p><p>for Contoso</p>"},
-				"attachments": []map[string]any{{"name": "Q3.xlsx", "contentType": "reference"}, {"name": nil, "contentType": "application/vnd.microsoft.card.adaptive"}}},
+				"attachments": []map[string]any{{"name": "Q3.xlsx", "contentType": "reference"}, {"name": nil, "contentType": "application/vnd.microsoft.card.adaptive"}},
+				"links":       []map[string]any{{"displayName": "OnCall DRI Handbook-v3.pdf", "linkType": "File"}, {"displayName": "Q3 review", "linkType": "Meeting"}}},
 		}})
 	}))
 	t.Cleanup(srv.Close)
@@ -123,7 +126,8 @@ func TestCopilotReadsEachLicensedPersonsPrompts(t *testing.T) {
 		got[0].ObjectID != oidAda || got[0].Text != "What is on my radar?" {
 		t.Fatalf("first record %+v", got[0])
 	}
-	if got[1].Text != "\nSummarise Q3 & plan\n\nfor Contoso\n" || len(got[1].Attachments) != 1 || got[1].Attachments[0].Name != "Q3.xlsx" {
+	if got[1].Text != "\nSummarise Q3 & plan\n\nfor Contoso\n" || len(got[1].Attachments) != 2 ||
+		got[1].Attachments[0].Name != "Q3.xlsx" || got[1].Attachments[1].Name != "OnCall DRI Handbook-v3.pdf" {
 		t.Fatalf("second record %q %+v", got[1].Text, got[1].Attachments)
 	}
 	// The window starts a little before the cursor, since Graph lists an interaction late.
@@ -158,6 +162,31 @@ func TestCopilotRefusedForEveryoneIsMissingConsent(t *testing.T) {
 	_, _, _, err = pull(t, newTestCopilot(t, srv, people, fakeTokens{}), Connection{EntraTenantID: entraTID})
 	if failureCode(Microsoft365Copilot, err) != ErrProviderFailed {
 		t.Fatalf("directory unavailable: %v", err)
+	}
+}
+
+func TestCopilotAttachmentsCombineForLinksAndCountEachFileOnce(t *testing.T) {
+	var it aiInteraction
+	const fixture = `{
+		"attachments": [{"name": "Q3.xlsx", "contentType": "reference"}, {"contentType": "application/vnd.microsoft.card.adaptive"}],
+		"links": [
+			{"displayName": "Q3.xlsx", "linkType": "File"},
+			{"displayName": "Plan.pdf", "linkType": "File"},
+			{"displayName": "Q3 review", "linkType": "Meeting"}
+		]
+	}`
+	if err := json.Unmarshal([]byte(fixture), &it); err != nil {
+		t.Fatal(err)
+	}
+	atts := copilotAttachments(it)
+	if len(atts) != 2 {
+		t.Fatalf("%d attachments: %+v", len(atts), atts)
+	}
+	if atts[0].Name != "Q3.xlsx" || atts[0].MediaType != "reference" || atts[0].ContentDigest != canon.Unreadable {
+		t.Fatalf("first attachment %+v", atts[0])
+	}
+	if atts[1].Name != "Plan.pdf" || atts[1].MediaType != "" || atts[1].ContentDigest != canon.Unreadable {
+		t.Fatalf("second attachment %+v", atts[1])
 	}
 }
 

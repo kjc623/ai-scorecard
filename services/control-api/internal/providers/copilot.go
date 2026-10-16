@@ -73,6 +73,12 @@ type aiInteraction struct {
 		Name        string `json:"name"`
 		ContentType string `json:"contentType"`
 	} `json:"attachments"`
+	// Links are the resources an interaction references: a file the prompt named (linkType "File")
+	// as well as meetings, events and messages, which are not attachments.
+	Links []struct {
+		DisplayName string `json:"displayName"`
+		LinkType    string `json:"linkType"`
+	} `json:"links"`
 }
 
 // Pull implements Source.
@@ -148,21 +154,40 @@ func (a *Copilot) person(ctx context.Context, tid, oid, upn string, start, end t
 			if strings.EqualFold(it.Body.ContentType, "html") {
 				text = htmlText(text)
 			}
-			var atts []canon.Attachment
-			for _, f := range it.Attachments {
-				if strings.TrimSpace(f.Name) != "" {
-					atts = append(atts, canon.Attachment{Name: f.Name, MediaType: f.ContentType, ContentDigest: canon.Unreadable})
-				}
-			}
 			// An interaction's id is unique within the person's history.
 			if err := emit(Record{ID: oid + "/" + it.ID, OccurredAt: parseTime(it.CreatedDateTime), App: "m365_copilot",
-				UPN: upn, ObjectID: oid, Text: text, Attachments: atts}); err != nil {
+				UPN: upn, ObjectID: oid, Text: text, Attachments: copilotAttachments(it)}); err != nil {
 				return err
 			}
 		}
 		next = body.NextLink
 	}
 	return nil
+}
+
+// copilotAttachments is the files the interaction sent or referenced: its attachments, and its
+// links to files. Graph names each file but not its bytes, so every digest is unreadable. A file
+// Graph lists both ways is one attachment; a link to anything but a file is not one.
+func copilotAttachments(it aiInteraction) []canon.Attachment {
+	var atts []canon.Attachment
+	seen := make(map[string]bool)
+	add := func(name, mediaType string) {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			return
+		}
+		seen[name] = true
+		atts = append(atts, canon.Attachment{Name: name, MediaType: mediaType, ContentDigest: canon.Unreadable})
+	}
+	for _, f := range it.Attachments {
+		add(f.Name, f.ContentType)
+	}
+	for _, l := range it.Links {
+		if strings.EqualFold(strings.TrimSpace(l.LinkType), "File") {
+			add(l.DisplayName, "")
+		}
+	}
+	return atts
 }
 
 // graphFailure is a failure of the people listing as the pass reports it.
