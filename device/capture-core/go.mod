@@ -2,6 +2,11 @@ module github.com/shadow-ai-capture/device/capture-core
 
 go 1.27
 
+// The agent verifies TLS peers through the platform's certificate store on Windows and macOS even
+// when SSL_CERT_FILE or SSL_CERT_DIR is set: the CLI trust shim sets them machine-wide for
+// command-line runtimes, and a process of the agent started afterwards inherits them.
+godebug x509sslcertoverrideplatform=0
+
 require (
 	github.com/0xrawsec/golang-etw v1.6.2
 	github.com/BurntSushi/toml v1.6.0

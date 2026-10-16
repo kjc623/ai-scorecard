@@ -292,17 +292,47 @@ func (p *Provider) Stop(ctx context.Context) error {
 	return nil
 }
 
-// removeFiles deletes the managed files and runs the platform uninstall. It is shared by
-// Stop and the kill switch, so "stop" and "kill" cannot drift apart on what they remove.
+// removeFiles runs the platform uninstall, then deletes the managed files: the machine environment
+// stops naming the bundle before the bundle goes, so a process started in between does not name a
+// file that is not there. It is shared by Stop and the kill switch, so "stop" and "kill" cannot
+// drift apart on what they remove.
 func (p *Provider) removeFiles(ctx context.Context) {
+	p.uninstallPlatform(ctx, p.paths)
 	for _, f := range p.managedFiles() {
 		if err := os.Remove(f); err != nil && !os.IsNotExist(err) {
 			p.counters.Add(protocol.CounterErrors)
 			p.logf("cli: removing %s: %v", f, err)
 		}
 	}
-	p.uninstallPlatform(ctx, p.paths)
 	p.step("remove:files")
+}
+
+// envNames is every variable the shim can set, from a configuration that sets them all.
+var envNames = func() []string {
+	vars := envVars(Config{ProxyAddr: "proxy", NodeRequire: true}, resolvedPaths{})
+	names := make([]string, len(vars))
+	for i, v := range vars {
+		names[i] = v.Name
+	}
+	return names
+}()
+
+// UnsetEnvironment removes every variable the shim can set from this process's environment and
+// returns the names that were set. The variables address the command-line runtimes, not the agent:
+// a service process started after the shim wrote them inherits them from the machine environment,
+// and would otherwise honour the proxy and CA-bundle variables itself and pass all of them to the
+// processes it starts.
+func UnsetEnvironment() []string {
+	var set []string
+	for _, n := range envNames {
+		if _, ok := os.LookupEnv(n); ok {
+			set = append(set, n)
+		}
+	}
+	for _, n := range envNames {
+		_ = os.Unsetenv(n)
+	}
+	return set
 }
 
 // managedFiles is every file the shim could have written, for removal and rollback.

@@ -601,3 +601,110 @@ func TestShimIsToggledByTLSInspection(t *testing.T) {
 		}
 	}
 }
+
+// The service drops the shim's variables from its own environment, so neither it nor a process it
+// starts honours them.
+func TestUnsetEnvironmentClearsTheProcessAndItsChildren(t *testing.T) {
+	if os.Getenv("SAC_CLI_SHIM_CHILD") == "1" {
+		// The child: report every shim variable that reached it.
+		for _, n := range envNames {
+			if v, ok := os.LookupEnv(n); ok {
+				_, _ = os.Stdout.WriteString(n + "=" + v + "\n")
+			}
+		}
+		return
+	}
+	for _, n := range envNames {
+		t.Setenv(n, "shim")
+	}
+	if got := UnsetEnvironment(); len(got) != len(envNames) {
+		t.Fatalf("dropped %v, want all of %v", got, envNames)
+	}
+	for _, n := range envNames {
+		if v, ok := os.LookupEnv(n); ok {
+			t.Fatalf("%s=%q is still set", n, v)
+		}
+	}
+	if got := UnsetEnvironment(); len(got) != 0 {
+		t.Fatalf("a second call dropped %v, want nothing", got)
+	}
+
+	// A child started the way the agent starts its own, with the inherited environment.
+	t.Setenv("SAC_CLI_SHIM_CHILD", "1")
+	out, err := exec.Command(os.Args[0], "-test.run=^TestUnsetEnvironmentClearsTheProcessAndItsChildren$").CombinedOutput()
+	if err != nil {
+		t.Fatalf("child: %v\n%s", err, out)
+	}
+	for _, n := range envNames {
+		if strings.Contains(string(out), n+"=") {
+			t.Fatalf("a child inherited the shim's variables:\n%s", out)
+		}
+	}
+}
+
+// Stop removes the machine environment's entries before the files they name, so a process started
+// in between does not name a bundle that is not there.
+func TestStopUnnamesTheBundleBeforeDeletingIt(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Skip("the Linux shim's environment is its own files; nothing names them from outside")
+	}
+	root := testRootPEM(t)
+	cfg := testConfig(t, root)
+	r := &presenceRunner{files: []string{cfg.ProfilePath, cfg.CABundlePath}}
+	cfg.Runner = r
+	p := New(cfg)
+	if err := p.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	installed := len(r.calls)
+	if err := p.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	removals := r.calls[installed:]
+	if len(removals) == 0 {
+		t.Fatal("Stop ran no platform uninstall")
+	}
+	deleted := map[string]bool{}
+	for _, c := range removals {
+		if !c.present {
+			t.Fatalf("%v ran after the shim's files were deleted", c.argv)
+		}
+		if runtime.GOOS == "windows" && c.argv[0] == "reg" && c.argv[1] == "delete" {
+			deleted[c.argv[4]] = true
+		}
+	}
+	if runtime.GOOS == "windows" {
+		for _, n := range envNames {
+			if !deleted[n] {
+				t.Fatalf("Stop left %s in the machine environment; deleted %v", n, deleted)
+			}
+		}
+	}
+	for _, f := range r.files {
+		if _, err := os.Stat(f); !os.IsNotExist(err) {
+			t.Fatalf("%s still present after Stop", f)
+		}
+	}
+}
+
+// presenceRunner records each command and whether the shim's files were present when it ran.
+type presenceRunner struct {
+	files []string
+	calls []presenceCall
+}
+
+type presenceCall struct {
+	argv    []string
+	present bool
+}
+
+func (r *presenceRunner) Run(_ context.Context, name string, args ...string) (string, error) {
+	present := true
+	for _, f := range r.files {
+		if _, err := os.Stat(f); err != nil {
+			present = false
+		}
+	}
+	r.calls = append(r.calls, presenceCall{argv: append([]string{name}, args...), present: present})
+	return "", nil
+}
