@@ -64,7 +64,11 @@ func edgeURL(base string) (string, error) {
 }
 
 // edgeRoots is the pool the edge's certificate is verified under: the system roots, plus the PEM
-// CA set in caFile when it is set (a private CA in front of the device edge).
+// CA set in caFile when it is set (a private CA in front of the device edge). On Windows and macOS
+// the system roots are the platform's store, verified through the platform, whatever SSL_CERT_FILE
+// or SSL_CERT_DIR names in the environment (go.mod's x509sslcertoverrideplatform=0): the CLI trust
+// shim sets those for command-line runtimes, and the agent must not inherit its own bundle as the
+// edge's trust.
 func edgeRoots(caFile string) (*x509.CertPool, error) {
 	pool, err := x509.SystemCertPool()
 	if err != nil || pool == nil {
