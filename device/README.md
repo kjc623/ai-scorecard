@@ -48,7 +48,11 @@ The CLI trust shim writes the CA bundle and environment profile that command-lin
 a directory users can read, outside the state directory: `C:\ProgramData\ShadowAICapture\cli`
 (Windows), `/var/db/shadow-ai-capture` (macOS, with `state/` inside it, root only) and
 `/etc/shadow-ai-capture` plus `/etc/profile.d/shadow-ai-capture.sh` (Linux). The directory is the
-agent's own default, never taken from the policy bundle.
+agent's own default, never taken from the policy bundle. The variables address the runtimes, not the
+agent: a service process started after they were set inherits them from the machine environment, so
+the agent drops them from its own environment at start, before its first TLS client or child
+process, and when the shim stops it removes the machine environment's entries before the files they
+name.
 
 On first start the agent enrols with the deployment key (a CSR; the edge returns a device
 certificate), fetches the signed policy bundle, mints its per-device interception CA, and starts the
