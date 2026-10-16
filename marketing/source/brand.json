@@ -1,0 +1,45 @@
+{
+  "product": "Sundial",
+  "domain": "sundial.solutions",
+  "contact": "[Placeholder: contact name, email and booking link]",
+  "plansTitle": "Plans",
+  "plansNote": "Proposed, not final: names and prices will change.",
+  "priceUnit": "per monthly active user, billed annually",
+  "plans": [
+    {
+      "name": "Observe",
+      "price": "$5",
+      "minimum": "$6,000 a year minimum",
+      "summary": "See it",
+      "features": [
+        "AI tool usage, people and devices",
+        "Sensitive data findings",
+        "Search and CSV export",
+        "Captured prompts kept 30 days"
+      ]
+    },
+    {
+      "name": "Govern",
+      "price": "$9",
+      "minimum": "$10,800 a year minimum",
+      "summary": "Steer it",
+      "features": [
+        "Everything in Observe",
+        "Rules that warn and block",
+        "Redirects to the tools you approve"
+      ]
+    },
+    {
+      "name": "Enterprise",
+      "price": "$14",
+      "minimum": "$16,800 a year minimum",
+      "summary": "Prove it",
+      "features": [
+        "Everything in Govern",
+        "Connectors for enterprise AI plans (beta)",
+        "Event records kept a year"
+      ],
+      "planned": "an EU data region and an uptime SLA"
+    }
+  ]
+}

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Product sheet</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,500&display=swap">
+<!--
+  The product sheet. render.mjs fills every [data-name], [data-domain], [data-contact] and the plans
+  from brand.json, then prints this page to PDF. Edit brand.json to change the name or the plans.
+-->
+<style>
+  @page { size: Letter; margin: 0; }
+  :root {
+    --bg: #f6f5f1; --panel: #fff; --ink: #131312; --text: #2f3437;
+    --soft: #6c6b66; --faint: #a3a19b; --line: rgb(17 17 17 / .08); --accent: #4b47c9;
+    --accent-soft: rgb(75 71 201 / .10); --ok: #2f6235; --bad: #9f2f2d; --warn: #8a5d00;
+    --sans: "Inter", system-ui, sans-serif; --serif: "Newsreader", Georgia, serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); color: var(--text); font: 400 10pt/1.45 var(--sans); -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .page { width: 8.5in; height: 11in; padding: .45in .6in .5in; position: relative; overflow: hidden; page-break-after: always;
+    background: radial-gradient(60% 40% at 100% 0%, rgb(75 71 201 / .07), transparent 70%), radial-gradient(50% 35% at 0% 100%, rgb(202 138 4 / .06), transparent 70%), var(--bg); }
+  .page:last-child { page-break-after: auto; }
+  .top { display: flex; align-items: center; justify-content: space-between; margin-bottom: .28in; }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 11.5pt; color: var(--ink); }
+  .tag { font-size: 7.5pt; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--soft); }
+  .eyebrow { font-size: 7.5pt; font-weight: 600; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin-bottom: 10px; }
+  h1 { font: 400 31pt/1.04 var(--serif); letter-spacing: -.02em; color: var(--ink); max-width: 6.4in; }
+  h2 { font: 400 17pt/1.15 var(--serif); letter-spacing: -.01em; color: var(--ink); margin-bottom: 6px; }
+  h3 { font-size: 9.5pt; font-weight: 600; color: var(--ink); margin-bottom: 3px; }
+  .lede { font-size: 12pt; line-height: 1.45; max-width: 5.6in; margin-top: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 1px 1px rgb(17 17 17 / .03), 0 12px 32px -18px rgb(17 17 17 / .14); }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); margin-top: .42in; }
+  .stat { padding: 14px 18px; }
+  .stat + .stat { border-left: 1px solid var(--line); }
+  .stat b { display: block; font: 400 25pt/1 var(--serif); color: var(--ink); margin-bottom: 6px; }
+  .stat span { font-size: 8.5pt; color: var(--soft); line-height: 1.35; display: block; text-wrap: balance; }
+  .outcomes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: .3in; }
+  .outcome { padding: 13px 13px 14px; }
+  .outcome .k { font: 400 15pt/1 var(--serif); color: var(--ink); margin-bottom: 5px; }
+  .outcome p { font-size: 9pt; line-height: 1.4; text-wrap: pretty; }
+  .shot { margin-top: .44in; padding: 8px; border-radius: 16px; background: rgb(17 17 17 / .035); border: 1px solid var(--line); }
+  .crop { overflow: hidden; border-radius: 10px; border: 1px solid var(--line); background: #fff; }
+  .crop img { display: block; }
+  .caption { font-size: 7.8pt; color: var(--soft); margin-top: 7px; padding: 0 4px; }
+  .foot { position: absolute; left: .6in; right: .6in; bottom: .2in; display: flex; justify-content: space-between; font-size: 7.5pt; color: var(--faint); }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: .16in; }
+  .cover { width: 100%; border-collapse: collapse; }
+  .cover td, .cover th { text-align: left; vertical-align: top; padding: 5px 0; border-bottom: 1px solid var(--line); font-size: 8.2pt; line-height: 1.38; }
+  .cover th { width: 1.15in; font-weight: 600; color: var(--ink); padding-right: 10px; }
+  .cover tr:last-child td, .cover tr:last-child th { border-bottom: 0; }
+  .section { padding: 14px 16px; }
+  ul.ticks { list-style: none; }
+  ul.ticks li { position: relative; padding-left: 15px; font-size: 8.4pt; margin-top: 5px; line-height: 1.38; }
+  ul.ticks li::before { content: ""; position: absolute; left: 0; top: 5px; width: 6px; height: 6px; border-radius: 2px; background: var(--accent); }
+  ul.ticks b { color: var(--ink); font-weight: 600; }
+  .pill { display: inline-block; font: 500 7pt/1 var(--sans); padding: 3px 6px; border-radius: 99px; margin-right: 3px; }
+  .warnp { background: #fbf3db; color: var(--warn); } .badp { background: #fdebec; color: var(--bad); } .okp { background: #e9f2e8; color: var(--ok); } .accp { background: var(--accent-soft); color: var(--accent); }
+  .plans-head { display: flex; align-items: baseline; justify-content: space-between; margin-top: .2in; margin-bottom: 8px; }
+  .plans-head h2 { margin: 0; }
+  .note { font-size: 7.8pt; font-weight: 600; color: var(--warn); background: #fbf3db; padding: 3px 8px; border-radius: 99px; }
+  .plans { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .plan { padding: 12px 14px 12px; }
+  .plan .n { display: flex; align-items: baseline; justify-content: space-between; }
+  .plan .n b { font-size: 10pt; color: var(--ink); }
+  .plan .later { margin-top: 7px; padding-top: 6px; border-top: 1px dashed var(--line); font-size: 7.8pt; color: var(--soft); }
+  .plan .n span { font-size: 7.5pt; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--soft); }
+  .plan .p { font: 400 20pt/1 var(--serif); color: var(--ink); margin-top: 5px; }
+  .plan .u { font-size: 7.4pt; color: var(--soft); margin-top: 3px; line-height: 1.3; }
+  .plan ul { margin-top: 2px; }
+  .plan ul li { font-size: 7.9pt; margin-top: 3px; }
+  .cta { margin-top: .18in; display: flex; align-items: center; justify-content: space-between; padding: 14px 20px; border-radius: 14px; background: var(--ink); color: #f3f1ec; }
+  .cta .t { font: 400 15pt/1.1 var(--serif); }
+  .cta .s { font-size: 8.4pt; color: #b9b7b1; margin-top: 3px; }
+  .cta .btn { background: #fff; color: var(--ink); font-weight: 600; font-size: 9pt; padding: 9px 14px; border-radius: 10px; white-space: nowrap; }
+  .cols4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-top: 4px; }
+  .cols3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 4px; }
+  .beta { font: 600 6.5pt/1 var(--sans); letter-spacing: .08em; text-transform: uppercase; color: var(--accent); background: var(--accent-soft); padding: 2px 5px; border-radius: 99px; vertical-align: 1px; }
+  .cols4 p, .cols3 p, p.body { font-size: 8.6pt; line-height: 1.4; }
+  .covers p.tools { color: var(--ink); margin-top: 5px; }
+  .covers p.act { color: var(--soft); font-size: 8pt; }
+  ul.ticks.roomy li { font-size: 9pt; margin-top: 9px; }
+  .page > .card.section, .page > .two { margin-top: .22in; }
+  .plans-head h2 small { font: 400 8.2pt var(--sans); color: var(--soft); letter-spacing: 0; margin-left: 4px; }
+  sup { font-size: 6pt; color: var(--soft); }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute"><defs><linearGradient id="mark" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#fff"/><stop offset=".5" stop-color="#e4e2dc"/><stop offset=".5" stop-color="#d6d4cd"/><stop offset="1" stop-color="#f3f1ec"/></linearGradient></defs></svg>
+
+<!-- Page 1 -->
+<section class="page">
+  <div class="top">
+    <div class="brand"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x=".5" y=".5" width="21" height="21" rx="6" fill="url(#mark)" stroke="rgb(17 17 17 / .18)"/></svg><span data-name></span></div>
+    <div class="tag">Product overview</div>
+  </div>
+
+  <div class="eyebrow">AI usage visibility and control</div>
+  <h1>Your people already use AI. Now you can see it, and steer it.</h1>
+  <p class="lede">See which AI tools your people use and what goes into them, then steer them to the ones you approve.</p>
+
+  <div class="card stats">
+    <div class="stat"><b>1 in 5</b><span>breached organizations had a shadow AI breach<sup>1</sup></span></div>
+    <div class="stat"><b>+$670K</b><span>breach cost where shadow AI use was high<sup>1</sup></span></div>
+    <div class="stat"><b>63%</b><span>had no AI policy, or were still writing one<sup>1</sup></span></div>
+  </div>
+
+  <div class="outcomes">
+    <div class="card outcome"><div class="k">Know</div><p>Which AI tools people use, and how many use each.</p></div>
+    <div class="card outcome"><div class="k">Protect</div><p>Sensitive data detected on the device. Unapproved tools redirected.</p></div>
+    <div class="card outcome"><div class="k">Prove</div><p>A tamper-evident audit trail, and CSV exports for auditors.</p></div>
+    <div class="card outcome"><div class="k">Decide</div><p>Which tools to approve, and for how many seats.</p></div>
+  </div>
+
+  <div class="shot">
+    <div class="crop"><img src="img/tools.png" style="width:100%"></div>
+    <div class="caption">The Usage page, with sample data.</div>
+  </div>
+
+  <div class="foot"><span><sup>1</sup> IBM, Cost of a Data Breach Report 2025.</span><span data-domain></span></div>
+</section>
+
+<!-- Page 2 -->
+<section class="page">
+  <div class="top">
+    <div class="brand"><svg width="22" height="22" viewBox="0 0 22 22" aria-hidden="true"><rect x=".5" y=".5" width="21" height="21" rx="6" fill="url(#mark)" stroke="rgb(17 17 17 / .18)"/></svg><span data-name></span></div>
+    <div class="tag">How it works</div>
+  </div>
+
+  <div class="card section">
+    <h2>What it covers</h2>
+    <div class="cols3 covers">
+      <div><h3>In Chrome and Edge</h3><p class="tools">ChatGPT, Claude, Gemini, Perplexity</p><p class="act">Warn, block or redirect</p><p class="tools">Microsoft Copilot, Microsoft 365 Copilot</p><p class="act">Recorded</p></div>
+      <div><h3>In coding agents, on Windows</h3><p class="tools">Claude Code, Codex CLI, Cursor</p><p class="act">Warn or block, including sensitive prompts</p><p class="tools">GitHub Copilot</p><p class="act">Recorded</p></div>
+      <div><h3>Enterprise plans <span class="beta">Beta</span></h3><p class="tools">ChatGPT Enterprise, Claude Enterprise, Microsoft 365 Copilot</p><p class="act">Their admin records, for devices without the agent</p></div>
+    </div>
+  </div>
+
+  <div class="two">
+    <div class="card section">
+      <h2>Redirect, not just block</h2>
+      <p class="body">Your message, and one click to the tool you approve.</p>
+      <div class="crop" style="margin-top:9px;background:#f6f5f1"><img src="img/splash.png" style="width:100%"></div>
+    </div>
+    <div class="card section">
+      <h2>Private by design</h2>
+      <ul class="ticks roomy">
+        <li>Prompt text stays on the device by default.</li>
+        <li>Only set roles can open a prompt, and every look is audited.</li>
+        <li>No leaderboards of people in the console.</li>
+        <li>A device that stops reporting says so.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="card section">
+    <h2>Deploys with the tools you already run</h2>
+    <div class="cols4">
+      <div><h3>Microsoft Intune</h3><p>Installs the agent, which updates itself.</p></div>
+      <div><h3>Browser policy</h3><p>Force-installs the extension in Chrome and Edge.</p></div>
+      <div><h3>Microsoft Entra ID</h3><p>Work-account sign-in and directory sync.</p></div>
+      <div><h3>Hosted for you</h3><p>No servers for you to run.</p></div>
+    </div>
+  </div>
+
+  <div class="plans-head"><h2><span data-plans-title></span> <small data-price-unit></small></h2><span class="note" data-plans-note></span></div>
+  <div class="plans" id="plans"></div>
+
+  <div class="cta">
+    <div><div class="t">See what AI your people use, on your own devices.</div><div class="s" data-contact></div></div>
+    <div class="btn" data-domain></div>
+  </div>
+</section>
+
+<template id="plan">
+  <div class="card plan">
+    <div class="n"><b data-f="name"></b><span data-f="summary"></span></div>
+    <div class="p" data-f="price"></div>
+    <div class="u" data-f="minimum"></div>
+    <ul class="ticks" data-f="features"></ul>
+    <div class="later" data-f="planned"></div>
+  </div>
+</template>
+
+<script>
+  // Fills the page from brand.json; render.mjs calls it before printing.
+  window.fill = (brand) => {
+    const set = (sel, text) => document.querySelectorAll(sel).forEach((el) => { el.textContent = text; });
+    set('[data-name]', brand.product);
+    set('[data-domain]', brand.domain);
+    set('[data-contact]', brand.contact);
+    set('[data-plans-title]', brand.plansTitle);
+    set('[data-plans-note]', brand.plansNote);
+    set('[data-price-unit]', brand.priceUnit);
+    document.title = `${brand.product} product sheet`;
+    const host = document.getElementById('plans');
+    host.replaceChildren();
+    for (const plan of brand.plans) {
+      const card = document.getElementById('plan').content.cloneNode(true);
+      card.querySelector('[data-f=name]').textContent = plan.name;
+      card.querySelector('[data-f=summary]').textContent = plan.summary;
+      card.querySelector('[data-f=price]').textContent = plan.price;
+      card.querySelector('[data-f=minimum]').textContent = plan.minimum;
+      const list = card.querySelector('[data-f=features]');
+      for (const f of plan.features) { const li = document.createElement('li'); li.textContent = f; list.append(li); }
+      const later = card.querySelector('[data-f=planned]');
+      if (plan.planned) later.textContent = `Planned, not yet available: ${plan.planned}.`; else later.remove();
+      host.append(card);
+    }
+  };
+</script>
+</body>
+</html>

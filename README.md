@@ -27,6 +27,7 @@ the backend grants that one event. `docs/architecture.md` describes the system.
 | `fly/` | The pre-prod deployment on Fly.io and Supabase, its runbook and scripts |
 | `localdev/` | A local lab of the whole system |
 | `tools/` | The acceptance gate and the cross-component checks |
+| `marketing/` | The product sheet, demo videos and slide deck, and the sources that build them |
 
 ## Build and test
 

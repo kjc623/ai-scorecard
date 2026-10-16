@@ -49,7 +49,7 @@ jobs:
             # and control-api's tests read device/.
             go:
               - '**'
-              - '!{docs,backlog,refactor-endpoint,refactor-endpoint-macos-linux}/**'
+              - '!{docs,backlog,marketing,refactor-endpoint,refactor-endpoint-macos-linux}/**'
               - '!{*,*/*,*/*/*}.md'
               - '!{.github,azure,fly,tools}/**'
               - '!services/{dashboard,query-api}/**'
@@ -57,7 +57,7 @@ jobs:
             # manifest, the database schema, query-api, control-api and tools/check-vocab.mjs.
             node:
               - '**'
-              - '!{docs,backlog,refactor-endpoint,refactor-endpoint-macos-linux}/**'
+              - '!{docs,backlog,marketing,refactor-endpoint,refactor-endpoint-macos-linux}/**'
               - '!{*,*/*,*/*/*}.md'
               - '!{.github,azure,fly}/**'
             bicep:
