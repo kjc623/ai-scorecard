@@ -220,7 +220,7 @@ export function renderTable(table) {
     : '';
   const count = table.rows.length > 0 ? `<span class="block-count">${table.rows.length}</span>` : '';
   const more = table.href ? `<a class="block-link" href="${escapeHtml(table.href)}">${escapeHtml(table.moreLabel ?? 'View all')}</a>` : '';
-  return `<section class="table-block card"><div class="card-core"><header class="block-head"><h3>${escapeHtml(table.title)}</h3>${count}${more}</header>`
+  return `<section class="table-block card" id="${escapeHtml(blockId(table.title))}"><div class="card-core"><header class="block-head"><h3>${escapeHtml(table.title)}</h3>${renderInfo(table.info)}${count}${more}</header>`
     + (table.summary ? `<p class="block-summary">${escapeHtml(table.summary)}</p>` : '')
     + (table.breakdowns === false ? '' : renderBreakdowns(table))
     + `<div class="table-scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}${empty}</tbody></table></div></div></section>`;
@@ -229,7 +229,7 @@ export function renderTable(table) {
 /** A series: one column per bucket, with the axis scaled to the largest value. */
 export function renderSeries(series) {
   if (!series) return '';
-  const open = (inner) => `<section class="series-block card"><div class="card-core"><header class="block-head"><h3>${escapeHtml(series.title)}</h3></header>`
+  const open = (inner) => `<section class="series-block card" id="${escapeHtml(blockId(series.title))}"><div class="card-core"><header class="block-head"><h3>${escapeHtml(series.title)}</h3></header>`
     + `${series.summary ? `<p class="block-summary">${escapeHtml(series.summary)}</p>` : ''}${inner}</div></section>`;
   if (series.unavailable) return open(`<p class="series-unavailable">No chart: ${escapeHtml(series.reason)}</p>`);
   if (series.points.length === 0) return open('<p class="series-unavailable">No points.</p>');
@@ -279,18 +279,37 @@ const vocabClass = (key) => `v-vocab-${escapeHtml(String(key ?? '').replace(/[^a
 /** A finding's severity is keyed apart from the other vocabularies: "high" is a serious state here, where elsewhere it is a strong signal. */
 const vocabKey = (column, value) => (column === 'severity' ? `severity_${value}` : value);
 
+/** The element id a block is reached by on its own page, from its title: a tile jumps to it. */
+export const blockId = (title) => `b-${String(title ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
+
+/** An (i) beside a label: what the figure counts, shown on hover or focus and read by assistive tech as it is. */
+function renderInfo(text) {
+  if (!text) return '';
+  return '<span class="tip" tabindex="0"><svg class="tip-icon" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="4.4" r="1.1" fill="currentColor"/><path d="M8 7v5.2" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>'
+    + `<span class="tip-text" role="tooltip">${escapeHtml(text)}</span></span>`;
+}
+
+/** The attributes that make an element open a block on the same page: a link in all but address. */
+const jumpAttrs = (title) => ` role="link" tabindex="0" data-jump="${escapeHtml(blockId(title))}"`;
+
 /**
- * A block's frame: the same panel as a table, with its title, count and link to the whole. A block
- * with a `cardHref` is itself the link, so it holds no other.
+ * A block's frame: the same panel as a table, with its title, what it counts, its count and a link
+ * to the whole. A block with a `cardHref` is itself the link, so it holds no other; one with a
+ * `cardJump` opens the block it names on the same page.
  */
 function blockFrame(kind, block, inner, { count = 0, classes = '' } = {}) {
+  const id = ` id="${escapeHtml(blockId(block.title))}"`;
   const n = count > 0 ? `<span class="block-count">${count}</span>` : '';
   const note = block.note ? `<span class="table-note">${escapeHtml(block.note)}</span>` : '';
+  const head = `<h3>${escapeHtml(block.title)}</h3>${renderInfo(block.info)}${n}${note}`;
   if (block.cardHref) {
-    return `<a class="${kind}-block card card-link${classes}" href="${escapeHtml(block.cardHref)}"><div class="card-core"><header class="block-head"><h3>${escapeHtml(block.title)}</h3>${n}${note}</header>${inner}</div></a>`;
+    return `<a class="${kind}-block card card-link${classes}" href="${escapeHtml(block.cardHref)}"${id}><div class="card-core"><header class="block-head">${head}</header>${inner}</div></a>`;
+  }
+  if (block.cardJump) {
+    return `<div class="${kind}-block card card-link${classes}"${jumpAttrs(block.cardJump)}${id}><div class="card-core"><header class="block-head">${head}</header>${inner}</div></div>`;
   }
   const more = block.href ? `<a class="block-link" href="${escapeHtml(block.href)}">${escapeHtml(block.moreLabel ?? 'View all')}</a>` : '';
-  return `<section class="${kind}-block card${classes}"><div class="card-core"><header class="block-head"><h3>${escapeHtml(block.title)}</h3>${n}${note}${more}</header>${inner}</div></section>`;
+  return `<section class="${kind}-block card${classes}"${id}><div class="card-core"><header class="block-head">${head}${more}</header>${inner}</div></section>`;
 }
 
 /**
@@ -421,19 +440,24 @@ function renderSplit(split) {
 
 /**
  * A tile. One with an address is a link, unless its split already holds links: then the address
- * is a line of its own, because a link inside a link is not a thing a browser can follow.
+ * is a line of its own, because a link inside a link is not a thing a browser can follow. One with
+ * a `jump` opens the block it names on the same page. Its `info` is the (i) beside its label.
  */
 export function renderTile(t) {
   const nested = (t.split ?? []).some((part) => part.href && (Number(part.count) || 0) > 0);
   const wraps = Boolean(t.href) && !nested;
+  const jumps = Boolean(t.jump) && !wraps && !nested;
   const tag = wraps ? 'a' : 'div';
+  const open = wraps ? `<a class="tile card tile-link" href="${escapeHtml(t.href)}">`
+    : jumps ? `<div class="tile card tile-link"${jumpAttrs(t.jump)}>`
+      : '<div class="tile card">';
   const trend = t.trend ? `<span class="tile-spark">${renderSparkline(t.trend, { width: 160, height: 36 })}</span>` : '';
   // A tile that is itself the link says where it goes on its last line; one whose split holds the
   // links gets a link of its own.
   const more = !t.href ? ''
     : wraps ? (t.moreLabel ? `<span class="tile-more">${escapeHtml(t.moreLabel)}</span>` : '')
       : `<a class="tile-more" href="${escapeHtml(t.href)}">${escapeHtml(t.moreLabel ?? 'View all')}</a>`;
-  return `<${tag} class="tile card${wraps ? ' tile-link' : ''}"${wraps ? ` href="${escapeHtml(t.href)}"` : ''}><div class="card-core"><span class="tile-label">${escapeHtml(t.label)}</span>`
+  return `${open}<div class="card-core"><span class="tile-label">${escapeHtml(t.label)}${renderInfo(t.info)}</span>`
     + `<span class="tile-figure"><span class="tile-value">${renderValue(t.value)}</span>${trend}</span>`
     + renderSplit(t.split)
     + (t.note ? `<span class="tile-note">${escapeHtml(t.note)}</span>` : '')
@@ -446,13 +470,13 @@ export function renderNeeds(view) {
 }
 
 /**
- * The Users search bar. It is the one input a reader can type: there is no list of people to pick
- * from, so a person is reached by reference and shown on the same screen.
+ * The Users search bar. It is the one input a reader can type: there is no list of users to pick
+ * from, so a user is reached by reference and shown on the same screen.
  */
 function renderSearch(search) {
   if (!search) return '';
   return '<form class="needs-form search-form" data-screen="person" role="search">'
-    + `<input name="subject" type="search" aria-label="Find a person" placeholder="Search by name, or enter a user reference" value="${escapeHtml(search.value ?? '')}" autocomplete="off" spellcheck="false">`
+    + `<input name="subject" type="search" aria-label="Find a user" placeholder="Search by name, or enter a user reference" value="${escapeHtml(search.value ?? '')}" autocomplete="off" spellcheck="false">`
     + '<button type="submit">Search</button></form>';
 }
 
