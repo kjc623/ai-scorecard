@@ -1,0 +1,29 @@
+<section id="coverage" data-transition="fade" style="background:#f6f5f1;color:#131312;font-family:'Inter', Arial, sans-serif;padding:128px;display:flex;flex-direction:column;justify-content:space-between;gap:56px">
+<div style="display:flex;flex-direction:column;gap:20px">
+<p style="font-size:24px;font-weight:600;letter-spacing:3px;text-transform:uppercase;color:#4b47c9">Coverage</p>
+<h2 style="font-family:'Newsreader', Georgia, serif;font-size:72px;font-weight:400;line-height:1.1;letter-spacing:-1px">In the browser, and beyond it</h2>
+</div>
+<div style="display:grid;grid-template-columns:repeat(3, 1fr);gap:24px">
+<div style="display:flex;flex-direction:column;gap:20px;background:#fbfbf8;padding:44px;border:1px solid #e3e1da;border-radius:24px">
+<h3 style="font-size:36px;font-weight:600">In Chrome and Edge</h3>
+<p style="font-size:30px;font-weight:600;color:#131312;line-height:1.4">ChatGPT, Claude, Gemini, Perplexity</p>
+<p style="font-size:28px;color:#4f4e4a;line-height:1.4">Warn, block or redirect</p>
+<p style="margin-top:auto;padding-top:20px;border-top:1px solid #e3e1da;font-size:24px;color:#6c6b66;line-height:1.4">Microsoft Copilot, Microsoft 365 Copilot: recorded</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:20px;background:#fbfbf8;padding:44px;border:1px solid #e3e1da;border-radius:24px">
+<h3 style="font-size:36px;font-weight:600">In coding agents, on Windows</h3>
+<p style="font-size:30px;font-weight:600;color:#131312;line-height:1.4">Claude Code, Codex CLI, Cursor</p>
+<p style="font-size:28px;color:#4f4e4a;line-height:1.4">Warn or block, including sensitive prompts</p>
+<p style="margin-top:auto;padding-top:20px;border-top:1px solid #e3e1da;font-size:24px;color:#6c6b66;line-height:1.4">GitHub Copilot: recorded</p>
+</div>
+<div style="display:flex;flex-direction:column;gap:20px;background:#fbfbf8;padding:44px;border:1px solid #e3e1da;border-radius:24px">
+<div style="display:flex;flex-direction:row;align-items:center;gap:16px">
+<h3 style="font-size:36px;font-weight:600">Enterprise plans</h3>
+<p style="font-size:24px;font-weight:600;color:#4b47c9;background:#e7e6f6;padding:4px 14px;border-radius:999px">Beta</p>
+</div>
+<p style="font-size:30px;font-weight:600;color:#131312;line-height:1.4">ChatGPT Enterprise, Claude Enterprise, Microsoft 365 Copilot</p>
+<p style="font-size:28px;color:#4f4e4a;line-height:1.4">Their admin records, for devices without the agent</p>
+</div>
+</div>
+<aside>In the browser, a rule acts on the tool itself: the extension decides before the prompt is checked for sensitive data, which happens on the device right after. Claude Code, Codex CLI and Cursor check each prompt before it is sent, so there a rule can also act on sensitive data. Microsoft Copilot and Microsoft 365 Copilot send prompts over a connection the extension reads but cannot hold, so they are recorded, not blocked. The enterprise connectors are in beta.</aside>
+</section>
