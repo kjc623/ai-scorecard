@@ -4217,6 +4217,71 @@ END $$;
 RESET ROLE;
 
 -- =====================================================================================
+-- T98  A provider connection is pulled every hour unless its admin chooses another schedule
+-- =====================================================================================
+
+SET ROLE sac_control;
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+
+DO $$
+DECLARE
+  n int;
+  v int;
+BEGIN
+  -- T90's Claude connection was created without a schedule: it is pulled hourly.
+  SELECT pull_every_minutes INTO v FROM ops.provider_connection
+   WHERE connection_id = 'c0000000-0000-7000-8000-000000000090';
+  IF v IS DISTINCT FROM 60 THEN
+    RAISE EXCEPTION 'FAIL T98 a connection created without a schedule is pulled every % minutes, want 60', v;
+  END IF;
+  UPDATE ops.provider_connection SET pull_every_minutes = 360
+   WHERE connection_id = 'c0000000-0000-7000-8000-000000000090';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 1 THEN
+    RAISE EXCEPTION 'FAIL T98 control-api could not change its tenant''s connection schedule';
+  END IF;
+  BEGIN
+    UPDATE ops.provider_connection SET pull_every_minutes = 45
+     WHERE connection_id = 'c0000000-0000-7000-8000-000000000090';
+    RAISE EXCEPTION 'FAIL T98 pull_every_minutes accepted a schedule outside 15, 30, 60, 360 and 1440';
+  EXCEPTION WHEN check_violation THEN NULL;
+  END;
+  BEGIN
+    UPDATE ops.provider_connection SET pull_every_minutes = NULL
+     WHERE connection_id = 'c0000000-0000-7000-8000-000000000090';
+    RAISE EXCEPTION 'FAIL T98 pull_every_minutes accepted NULL';
+  EXCEPTION WHEN not_null_violation THEN NULL;
+  END;
+END $$;
+
+SET app.tenant_id = '22222222-2222-7222-8222-222222222222';
+DO $$
+DECLARE
+  n int;
+BEGIN
+  UPDATE ops.provider_connection SET pull_every_minutes = 15
+   WHERE connection_id = 'c0000000-0000-7000-8000-000000000090';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n <> 0 THEN
+    RAISE EXCEPTION 'FAIL T98 tenant B changed the schedule of tenant A''s connection';
+  END IF;
+END $$;
+
+SET app.tenant_id = '11111111-1111-7111-8111-111111111111';
+DO $$
+BEGIN
+  IF (SELECT pull_every_minutes FROM ops.provider_connection
+       WHERE connection_id = 'c0000000-0000-7000-8000-000000000090') IS DISTINCT FROM 360 THEN
+    RAISE EXCEPTION 'FAIL T98 the schedule control-api set did not hold';
+  END IF;
+  UPDATE ops.provider_connection SET pull_every_minutes = 60
+   WHERE connection_id = 'c0000000-0000-7000-8000-000000000090';
+  RAISE NOTICE 'PASS T98 pull_every_minutes defaults to 60, refuses any other schedule, and control-api changes it for its own tenant only';
+END $$;
+
+RESET ROLE;
+
+-- =====================================================================================
 -- Report
 -- =====================================================================================
 

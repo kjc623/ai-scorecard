@@ -63,6 +63,11 @@ type ConnectionState struct {
 	LastError       string     `json:"last_error"`
 	RecordsRead     int64      `json:"records_read"`
 	RecordsNew      int64      `json:"records_new"`
+	// PullEveryMinutes is how often the connection is pulled, one of PullEvery.
+	PullEveryMinutes int `json:"pull_every_minutes"`
+	// NextPullAt is when an active pulled connection's next scheduled pass is due; null when it has
+	// never been pulled, which makes it due at once, and for an intake.
+	NextPullAt *time.Time `json:"next_pull_at"`
 	// IntakeURL is where an active intake connection's deliveries are sent; empty otherwise.
 	IntakeURL string `json:"intake_url"`
 }
@@ -92,6 +97,9 @@ type AdminStore interface {
 	// Connection returns the connection to a provider and whether it is active; ErrNotFound when
 	// the tenant has none.
 	Connection(ctx context.Context, tenantID, provider string) (id string, active bool, err error)
+	// Schedule sets how often an active connection is pulled, in minutes; ErrNotFound when there is
+	// none.
+	Schedule(ctx context.Context, tenantID, provider string, minutes int, a Audit) error
 	Audit(ctx context.Context, tenantID string, a Audit) error
 }
 
@@ -144,6 +152,7 @@ func (h *Handler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("PUT /admin/v1/providers/{provider}", h.handleConnect)
 	mux.HandleFunc("DELETE /admin/v1/providers/{provider}", h.handleDisconnect)
 	mux.HandleFunc("POST /admin/v1/providers/{provider}/run", h.handleRun)
+	mux.HandleFunc("PUT /admin/v1/providers/{provider}/schedule", h.handleSchedule)
 }
 
 // Bounds on what a request carries.
@@ -158,8 +167,10 @@ const (
 var accountPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,200}$`)
 
 type listJSON struct {
-	EntraConnected bool       `json:"entra_connected"`
-	Providers      []Provider `json:"providers"`
+	EntraConnected bool `json:"entra_connected"`
+	// PullEveryChoices is every schedule a pulled connection can be given, in minutes.
+	PullEveryChoices []int      `json:"pull_every_choices"`
+	Providers        []Provider `json:"providers"`
 }
 
 func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
@@ -179,6 +190,10 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 		p := &list[i]
 		p.Available = h.available(*p)
 		if p.Credential != CredentialIntake {
+			if c := p.Connection; c != nil && c.Status == "active" && c.LastStartedAt != nil {
+				next := NextPull(*c.LastStartedAt, c.PullEveryMinutes)
+				c.NextPullAt = &next
+			}
 			continue
 		}
 		p.Intake = h.intake.Kind(p.Provider)
@@ -186,7 +201,7 @@ func (h *Handler) handleList(w http.ResponseWriter, r *http.Request) {
 			c.IntakeURL = h.intake.URL(p.Provider, c.ConnectionID)
 		}
 	}
-	h.writeJSON(w, http.StatusOK, listJSON{EntraConnected: entra, Providers: list})
+	h.writeJSON(w, http.StatusOK, listJSON{EntraConnected: entra, PullEveryChoices: PullEvery, Providers: list})
 }
 
 type connectJSON struct {
@@ -325,6 +340,48 @@ func (h *Handler) handleRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeJSON(w, http.StatusAccepted, map[string]bool{"queued": h.pull.Trigger(p.Tenant, id)})
+}
+
+type scheduleJSON struct {
+	PullEveryMinutes int `json:"pull_every_minutes"`
+}
+
+// handleSchedule sets how often a connected provider is pulled. Its next scheduled pass is due that
+// long after its last one started.
+func (h *Handler) handleSchedule(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.admin(w, r)
+	if !ok {
+		return
+	}
+	prov, ok := h.provider(w, r, p)
+	if !ok {
+		return
+	}
+	if prov.Credential == CredentialIntake {
+		h.fail(w, apierr.New(http.StatusConflict, apierr.CodeInvalidRequest,
+			prov.DisplayName+" sends its log as it is written; there is nothing to schedule"))
+		return
+	}
+	var req scheduleJSON
+	if !h.decode(w, r, &req) {
+		return
+	}
+	if !slices.Contains(PullEvery, req.PullEveryMinutes) {
+		h.fail(w, apierr.New(http.StatusBadRequest, apierr.CodeInvalidRequest,
+			fmt.Sprintf("pull_every_minutes is one of %v", PullEvery)))
+		return
+	}
+	a := h.audit(p, "provider.schedule", map[string]any{"provider": prov.Provider, "pull_every_minutes": req.PullEveryMinutes})
+	err := h.store.Schedule(r.Context(), p.Tenant, prov.Provider, req.PullEveryMinutes, a)
+	if errors.Is(err, ErrNotFound) {
+		h.fail(w, apierr.New(http.StatusConflict, apierr.CodeInvalidRequest, "connect "+prov.DisplayName+" first"))
+		return
+	}
+	if h.storeFailed(w, err, "schedule provider") {
+		return
+	}
+	h.logger.Info("control: provider schedule set", "tenant", p.Tenant, "provider", prov.Provider, "pull_every_minutes", req.PullEveryMinutes)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // provider resolves the path's provider: one ref.provider holds and this deployment reads.

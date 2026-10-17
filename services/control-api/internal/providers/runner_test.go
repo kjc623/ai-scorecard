@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 )
@@ -147,5 +148,112 @@ func TestTriggerRunsTheNamedConnection(t *testing.T) {
 	<-done
 	if len(src.calls) != 1 || len(st.finished) != 1 {
 		t.Fatalf("%d pulls, %d results; want 1: the unknown connection is not pulled", len(src.calls), len(st.finished))
+	}
+}
+
+func TestAConnectionIsDueItsScheduleAfterItsLastPassStarted(t *testing.T) {
+	at := time.Date(2026, 10, 17, 9, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		started time.Time
+		every   int
+		due     bool
+	}{
+		{time.Time{}, 60, true},
+		{at.Add(-59 * time.Minute), 60, false},
+		{at.Add(-time.Hour), 60, true},
+		{at.Add(-16 * time.Minute), 15, true},
+		{at.Add(-5 * time.Hour), 360, false},
+		{at.Add(-23 * time.Hour), 1440, false},
+		// A schedule the store did not read is the default.
+		{at.Add(-61 * time.Minute), 0, true},
+	} {
+		tg := Target{LastStartedAt: c.started, PullEveryMinutes: c.every}
+		if got := tg.Due(at); got != c.due {
+			t.Errorf("started %v, every %d minutes: due %v, want %v", c.started, c.every, got, c.due)
+		}
+	}
+	if !NextPull(time.Time{}, 60).IsZero() {
+		t.Fatal("a connection never pulled has a next pull time")
+	}
+	if got := NextPull(at, 360); !got.Equal(at.Add(6 * time.Hour)) {
+		t.Fatalf("next pull %v", got)
+	}
+}
+
+func TestRunDuePullsOnlyTheConnectionsWhoseScheduleHasCome(t *testing.T) {
+	at := time.Date(2026, 10, 17, 9, 0, 0, 0, time.UTC)
+	scheduled := func(id string, started time.Time, every int) Target {
+		tg := target(ClaudeEnterprise)
+		tg.ConnectionID, tg.LastStartedAt, tg.PullEveryMinutes = id, started, every
+		return tg
+	}
+	st := newFakeStore()
+	st.targets = []Target{
+		scheduled("c-new", time.Time{}, 60),
+		scheduled("c-hourly-waiting", at.Add(-30*time.Minute), 60),
+		scheduled("c-hourly-due", at.Add(-61*time.Minute), 60),
+		scheduled("c-quarterly-due", at.Add(-15*time.Minute), 15),
+		scheduled("c-daily-waiting", at.Add(-12*time.Hour), 1440),
+	}
+	src := &fakeSource{}
+	r := newTestRunner(st, map[string]Source{ClaudeEnterprise: src})
+	r.Now = func() time.Time { return at }
+	r.RunDue(context.Background())
+	var pulled []string
+	for _, c := range src.calls {
+		pulled = append(pulled, c.ConnectionID)
+	}
+	if want := "c-new c-hourly-due c-quarterly-due"; strings.Join(pulled, " ") != want {
+		t.Fatalf("pulled %v, want %s", pulled, want)
+	}
+	// Each pass recorded its start, so a minute later nothing is due.
+	at = at.Add(time.Minute)
+	r.RunDue(context.Background())
+	if len(src.calls) != 3 {
+		t.Fatalf("%d pulls; a connection was pulled twice inside its schedule", len(src.calls))
+	}
+	// Its schedule after that pass, a connection is due again.
+	at = at.Add(15 * time.Minute)
+	r.RunDue(context.Background())
+	if len(src.calls) != 4 || src.calls[3].ConnectionID != "c-quarterly-due" {
+		t.Fatalf("calls %+v", src.calls)
+	}
+}
+
+func TestAScheduledPassAnotherReplicaJustRanIsLeftAlone(t *testing.T) {
+	at := time.Date(2026, 10, 17, 9, 0, 0, 0, time.UTC)
+	stale := target(ClaudeEnterprise)
+	stale.LastStartedAt, stale.PullEveryMinutes = at.Add(-2*time.Hour), 60
+	fresh := stale
+	fresh.LastStartedAt, fresh.Cursor = at.Add(-time.Minute), "2026-10-17T08:59:00Z"
+	st := newFakeStore()
+	st.listed, st.targets = []Target{stale}, []Target{fresh}
+	src := &fakeSource{}
+	r := newTestRunner(st, map[string]Source{ClaudeEnterprise: src})
+	r.Now = func() time.Time { return at }
+	r.RunDue(context.Background())
+	if len(src.calls) != 0 || st.started != 0 {
+		t.Fatal("a connection another replica pulled a minute ago was pulled again from a stale list")
+	}
+	// Once it is due again, the pass resumes from the cursor that replica left.
+	at = at.Add(time.Hour)
+	r.RunDue(context.Background())
+	if len(src.calls) != 1 || src.calls[0].Cursor != fresh.Cursor {
+		t.Fatalf("calls %+v", src.calls)
+	}
+}
+
+func TestPullNowRunsWhateverTheSchedule(t *testing.T) {
+	at := time.Date(2026, 10, 17, 9, 0, 0, 0, time.UTC)
+	tg := target(ClaudeEnterprise)
+	tg.LastStartedAt, tg.PullEveryMinutes = at.Add(-time.Minute), 1440
+	st := newFakeStore()
+	st.targets = []Target{tg}
+	src := &fakeSource{}
+	r := newTestRunner(st, map[string]Source{ClaudeEnterprise: src})
+	r.Now = func() time.Time { return at }
+	r.RunConnection(context.Background(), tg)
+	if len(src.calls) != 1 {
+		t.Fatal("a pull asked for was held to the schedule")
 	}
 }

@@ -25,10 +25,20 @@ type Store interface {
 	Policy(ctx context.Context, tenantID string) (Policy, error)
 }
 
-// Target is one active connection as the store holds it: its key still sealed.
+// Target is one active connection as the store holds it: its key still sealed, and its schedule.
 type Target struct {
 	Connection
 	SealedKey []byte
+	// LastStartedAt is when the connection's last pass started; zero before its first.
+	LastStartedAt time.Time
+	// PullEveryMinutes is how often the connection is pulled, one of PullEvery.
+	PullEveryMinutes int
+}
+
+// Due reports whether the connection's scheduled pass is due at now.
+func (t Target) Due(now time.Time) bool {
+	next := NextPull(t.LastStartedAt, t.PullEveryMinutes)
+	return next.IsZero() || !now.Before(next)
 }
 
 // Opener opens a key sealed under the tenant's directory key. *directory.Cipher implements it.
@@ -54,14 +64,35 @@ type Result struct {
 	Error string
 }
 
-// DefaultInterval is how often every connection is pulled.
-const DefaultInterval = time.Hour
+// PullEvery is every schedule an admin can choose for a connection, in minutes, shortest first. The
+// check on ops.provider_connection.pull_every_minutes admits exactly these.
+var PullEvery = []int{15, 30, 60, 360, 1440}
+
+// DefaultPullEvery is a connection's schedule, in minutes, until its admin chooses another.
+const DefaultPullEvery = 60
+
+// NextPull is when a connection whose last pass started at lastStarted is next due, pulled every
+// minutes: zero when it has never been pulled, which makes it due at once.
+func NextPull(lastStarted time.Time, minutes int) time.Time {
+	if lastStarted.IsZero() {
+		return time.Time{}
+	}
+	if minutes <= 0 {
+		minutes = DefaultPullEvery
+	}
+	return lastStarted.Add(time.Duration(minutes) * time.Minute)
+}
+
+// checkEvery is how often the runner looks for the connections whose pass is due.
+const checkEvery = time.Minute
 
 // maxRounds bounds how many times one pass goes back to a provider that has more records, so a
 // backlog is caught up in a few passes rather than held in one.
 const maxRounds = 24
 
-// Runner pulls every active connection on a schedule and on demand.
+// Runner pulls every active connection on its schedule and on demand. The schedule is the
+// database's, not the process's: a connection is due its schedule after its last pass started,
+// whichever replica ran it, so a restart or a second replica does not pull it more often.
 type Runner struct {
 	// Sources is the adapter of each provider this deployment reads.
 	Sources     map[string]Source
@@ -69,7 +100,6 @@ type Runner struct {
 	Recorder    *Recorder
 	Keys        Opener
 	UserRefKeys UserRefKeys
-	Interval    time.Duration
 	Logger      *slog.Logger
 	Now         func() time.Time
 
@@ -87,7 +117,7 @@ func NewRunner(sources map[string]Source, st Store, rec *Recorder, keys Opener, 
 		logger = slog.Default()
 	}
 	return &Runner{Sources: sources, Store: st, Recorder: rec, Keys: keys, UserRefKeys: refs,
-		Interval: DefaultInterval, Logger: logger, Now: time.Now, kick: make(chan kick, 16)}, nil
+		Logger: logger, Now: time.Now, kick: make(chan kick, 16)}, nil
 }
 
 // Available reports whether this deployment reads provider.
@@ -104,11 +134,11 @@ func (r *Runner) Trigger(tenantID, connectionID string) bool {
 	}
 }
 
-// Run pulls every connection a minute after it starts and then every Interval, and a connection
-// whenever Trigger names it, until ctx ends.
+// Run looks every minute for the connections whose pass is due and pulls them, and pulls a
+// connection whenever Trigger names it, until ctx ends.
 func (r *Runner) Run(ctx context.Context) {
-	timer := time.NewTimer(time.Minute)
-	defer timer.Stop()
+	ticker := time.NewTicker(checkEvery)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -122,24 +152,35 @@ func (r *Runner) Run(ctx context.Context) {
 			if ok {
 				r.RunConnection(ctx, t)
 			}
-		case <-timer.C:
-			targets, err := r.Store.Targets(ctx)
-			if err != nil {
-				r.Logger.Error("provider pull: list connections", "error", err)
-			}
-			for _, t := range targets {
-				if ctx.Err() != nil {
-					return
-				}
-				r.RunConnection(ctx, t)
-			}
-			timer.Reset(r.Interval)
+		case <-ticker.C:
+			r.RunDue(ctx)
+		}
+	}
+}
+
+// RunDue pulls every connection whose scheduled pass is due.
+func (r *Runner) RunDue(ctx context.Context) {
+	targets, err := r.Store.Targets(ctx)
+	if err != nil {
+		r.Logger.Error("provider pull: list connections", "error", err)
+	}
+	for _, t := range targets {
+		if ctx.Err() != nil {
+			return
+		}
+		if t.Due(r.Now()) {
+			r.run(ctx, t, true)
 		}
 	}
 }
 
 // RunConnection runs one connection's pass under its lock and records the outcome.
-func (r *Runner) RunConnection(ctx context.Context, t Target) {
+func (r *Runner) RunConnection(ctx context.Context, t Target) { r.run(ctx, t, false) }
+
+// run runs t's pass under its lock. A scheduled pass reads the connection again once it holds the
+// lock and goes ahead only if it is still due: another replica may have pulled it since the list
+// was read.
+func (r *Runner) run(ctx context.Context, t Target, scheduled bool) {
 	log := r.Logger.With("tenant", t.TenantID, "connection", t.ConnectionID, "provider", t.Provider)
 	unlock, ok, err := r.Store.Lock(ctx, t.ConnectionID)
 	if err != nil {
@@ -150,6 +191,17 @@ func (r *Runner) RunConnection(ctx context.Context, t Target) {
 		return
 	}
 	defer unlock()
+	if scheduled {
+		fresh, ok, err := r.Store.Target(ctx, t.TenantID, t.ConnectionID)
+		if err != nil {
+			log.Error("provider pull: read connection", "error", err)
+			return
+		}
+		if !ok || !fresh.Due(r.Now()) {
+			return
+		}
+		t = fresh
+	}
 	if err := r.Store.Started(ctx, t.TenantID, t.ConnectionID, r.Now().UTC()); err != nil {
 		log.Error("provider pull: record start", "error", err)
 		return

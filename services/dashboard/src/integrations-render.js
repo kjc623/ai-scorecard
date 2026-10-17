@@ -10,13 +10,13 @@
 import { escapeHtml, renderPageHead } from './render.js';
 import { formatCount } from './format.js';
 import { depButton, depCard, depChip, depInstant, depProblem } from './deployment-render.js';
-import { DELIVERY_ERRORS, INTAKE_SETUP, PULL_ERRORS, connectKind, isConnected } from './integrations.js';
+import { DELIVERY_ERRORS, INTAKE_SETUP, PULL_ERRORS, connectKind, isConnected, isScheduled, pullEveryText } from './integrations.js';
 
 function intHeader(head) {
   return renderPageHead({
     title: 'Integrations',
     ...head,
-    subtitle: 'Connect the AI providers whose records Sundial can read: from a provider\'s admin API every hour, or from the log a provider writes in your cloud, which your cloud sends to Sundial as it is written. Either way Sundial reads each provider\'s own record of the prompts your people sent, with no device in between.',
+    subtitle: 'Connect the AI providers whose records Sundial can read: from a provider\'s admin API, every hour or as often as you choose, or from the log a provider writes in your cloud, which your cloud sends to Sundial as it is written. Either way Sundial reads each provider\'s own record of the prompts your people sent, with no device in between.',
   });
 }
 
@@ -56,6 +56,25 @@ function intLastPull(c) {
   return '<span class="v-absent">not run yet</span>';
 }
 
+/** When the next scheduled pull is due: its time, "due" once that has passed, or at once before the first. */
+function intNextPull(c, now) {
+  if (!c.next_pull_at) return c.last_started_at ? '<span class="v-absent">not reported</span>' : 'due now';
+  return Date.parse(c.next_pull_at) <= now.getTime() ? `${depInstant(c.next_pull_at)} <span class="dp-sub">due</span>` : depInstant(c.next_pull_at);
+}
+
+/** How often the connection is pulled, as a choice of the schedules the server offers. */
+function intSchedule(state, provider) {
+  const c = provider.connection;
+  const choices = state.data.pull_every_choices;
+  if (c.pull_every_minutes === null || !choices.includes(c.pull_every_minutes)) return '<span class="v-absent">not reported</span>';
+  const options = choices.map((m) => `<option value="${m}"${m === c.pull_every_minutes ? ' selected' : ''}>${escapeHtml(capitalised(pullEveryText(m)))}</option>`).join('');
+  const busy = Boolean(state.action.pending);
+  return `<select class="dp-input dp-select" data-int="schedule" data-provider="${escapeHtml(provider.provider)}" aria-label="How often Sundial pulls ${escapeHtml(provider.display_name)}"${busy ? ' disabled' : ''}>${options}</select>`
+    + (state.action.provider === provider.provider && state.action.pending === 'schedule' ? ' <span class="dp-sub" role="status">Saving…</span>' : '');
+}
+
+const capitalised = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+
 function intLastDelivery(c) {
   if (c.last_completed_at) return `${depInstant(c.last_completed_at)}${c.last_status ? ` ${depChip(c.last_status)}` : ''}`;
   return '<span class="v-absent">none yet</span>';
@@ -67,7 +86,7 @@ function intRecords(c) {
     + (c.records_new === null ? '' : ` <span class="dp-sub">${escapeHtml(formatCount(c.records_new))} of them new to Sundial</span>`);
 }
 
-function intFacts(provider) {
+function intFacts(state, provider, now) {
   const c = provider.connection;
   const rows = [['Covers', provider.tools.length > 0 ? escapeHtml(provider.tools.map((t) => t.name).join(', ')) : '<span class="v-absent">no tool listed</span>']];
   const intake = provider.credential === 'intake';
@@ -77,6 +96,7 @@ function intFacts(provider) {
     rows.push(['Connected', `${depInstant(c.created_at, 'not reported')}${by(c.created_by)}`]);
     if (c.updated_at && c.updated_at !== c.created_at) rows.push(['Last changed', `${depInstant(c.updated_at)}${by(c.updated_by)}`]);
     rows.push(intake ? ['Last delivery', intLastDelivery(c)] : ['Last pull', intLastPull(c)]);
+    if (isScheduled(provider)) rows.push(['Pulled', intSchedule(state, provider)], ['Next pull', intNextPull(c, now)]);
     rows.push(['Records read', intRecords(c)]);
   } else if (c) {
     rows.push(['Disconnected', `${depInstant(c.updated_at, 'not reported')}${by(c.updated_by)}`]);
@@ -102,10 +122,13 @@ function intOutcome(provider, action) {
     replace: 'Token replaced. The previous token no longer works.',
     disconnect: `Disconnected. Sundial no longer receives ${provider.display_name}${forgotten}.`,
   }[action.done] : {
-    connect: action.queued ? 'Connected. The first pull has started: it reads the last 7 days.' : 'Connected. The first pull runs within the hour and reads the last 7 days.',
+    connect: action.queued ? 'Connected. The first pull has started: it reads the last 7 days.' : 'Connected. The first pull starts within a few minutes and reads the last 7 days.',
     replace: action.queued ? 'Key replaced. A pull has started with it.' : 'Key replaced. The next pull uses it.',
     disconnect: `Disconnected. Sundial no longer reads ${provider.display_name}${forgotten}.`,
     run: action.queued ? 'A pull has started.' : 'A pull is already running.',
+    schedule: isConnected(provider) && provider.connection.pull_every_minutes
+      ? `Saved. Sundial pulls ${provider.display_name} ${pullEveryText(provider.connection.pull_every_minutes)}, counted from the last pull.`
+      : 'Saved.',
   }[action.done];
   if (!sentence) return '';
   return `<p class="${action.done === 'run' ? 'dp-note' : 'dp-done'}" role="status">${escapeHtml(sentence)}</p>`;
@@ -199,14 +222,14 @@ function intActions(state, provider, mine) {
   return buttons.length > 0 ? `<div class="dp-actions">${buttons.join('')}</div>` : '';
 }
 
-function intCard(state, provider) {
+function intCard(state, provider, now) {
   const mine = state.action.provider === provider.provider ? state.action : null;
   const kind = connectKind(provider);
   const docs = kind && provider.source_url
     ? `<p class="dp-note"><a href="${escapeHtml(provider.source_url)}" target="_blank" rel="noopener noreferrer">${{ key: 'How to issue a key', consent: 'How it is read', intake: 'How to turn on its log' }[kind]}</a></p>`
     : '';
   const setup = kind === 'intake' && INTAKE_SETUP[provider.intake] ? `<p class="dp-note">${escapeHtml(INTAKE_SETUP[provider.intake])}</p>` : '';
-  const body = intFacts(provider)
+  const body = intFacts(state, provider, now)
     + intPullFailed(provider)
     + (kind ? '' : '<p class="dp-note">Not available on this deployment.</p>')
     + (kind === 'consent' ? intConsentNote(state, provider) : '')
@@ -220,18 +243,18 @@ function intCard(state, provider) {
   return depCard(provider.display_name, body, { extra });
 }
 
-function intProviders(state) {
+function intProviders(state, now) {
   const providers = state.data.providers;
   if (providers.length === 0) {
     return depCard('Providers', '<p class="dp-empty">No provider is listed yet. Each AI provider whose admin API Sundial can read appears here once it is added.</p>', { wide: true });
   }
-  return `<div class="dp-grid">${providers.map((p) => intCard(state, p)).join('')}</div>`;
+  return `<div class="dp-grid">${providers.map((p) => intCard(state, p, now)).join('')}</div>`;
 }
 
 const INT_NOTES = Object.freeze([
-  'Every connection, replaced key or token, disconnection and pull you start is written to the audit trail under your name.',
+  'Every connection, replaced key or token, schedule you choose, disconnection and pull you start is written to the audit trail under your name.',
   'A key is sent once, when you connect, and kept sealed. Sundial never shows it again: to change it, replace it with a new one.',
-  'Sundial pulls each provider connected with a key or consent every hour and right after it is connected. A connection\'s first pull reads the last 7 days.',
+  'Sundial pulls each provider connected with a key or consent right after it is connected, then on the schedule its card shows: every hour unless you choose another. Each pull reads from where the last one stopped, and the next is due that long after the last one started, Pull now included. A connection\'s first pull reads the last 7 days.',
   'A provider with no admin API writes its log in your cloud, and your cloud sends it to the endpoint shown with the token issued when you connect. Sundial keeps only a hash of the token and shows it once.',
   'A prompt a device also captured is counted once: the provider\'s record joins the device\'s.',
 ]);
@@ -242,8 +265,9 @@ const INT_NOTES = Object.freeze([
  * @param {object} state  createIntegrations().state
  * @param {object} [options]
  * @param {object} [options.head]  the page's title, eyebrow and tabs
+ * @param {Date} [options.now]  when a next pull counts as due
  */
-export function renderIntegrations(state, { head = {} } = {}) {
+export function renderIntegrations(state, { head = {}, now = new Date() } = {}) {
   const top = intHeader(head);
   if (state.status === 'idle' || state.status === 'loading') {
     return `<article class="screen dp" aria-busy="true">${top}<p class="sr" role="status">Loading the integrations…</p></article>`;
@@ -252,6 +276,6 @@ export function renderIntegrations(state, { head = {} } = {}) {
     ? `<div class="banner banner-warning" role="status"><strong>Not refreshed</strong><span>${escapeHtml(state.refreshProblem.message ?? '')} What is shown is from the last read.</span></div>`
     : '';
   const notes = `<details class="notes"><summary>About these settings<span class="notes-count">${INT_NOTES.length}</span></summary><ul>${INT_NOTES.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`;
-  const body = state.status === 'refused' || !state.data ? intRefused(state.problem) : `${refresh}${intProviders(state)}`;
+  const body = state.status === 'refused' || !state.data ? intRefused(state.problem) : `${refresh}${intProviders(state, now)}`;
   return `<article class="screen dp">${top}${body}${notes}</article>`;
 }

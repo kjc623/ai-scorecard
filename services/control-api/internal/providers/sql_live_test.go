@@ -109,7 +109,8 @@ func TestConnectAndPullAgainstPostgres(t *testing.T) {
 		}
 	}
 	if target.ConnectionID != id || target.Provider != ClaudeEnterprise || target.Account != "org-1" ||
-		string(target.SealedKey) != "sealed-1" || target.Cursor != "" {
+		string(target.SealedKey) != "sealed-1" || target.Cursor != "" || !target.LastStartedAt.IsZero() ||
+		target.PullEveryMinutes != DefaultPullEvery {
 		t.Fatalf("target %+v", target)
 	}
 	if got, ok, err := st.Target(ctx, tenant, id); err != nil || !ok || got.ConnectionID != id {
@@ -195,7 +196,25 @@ func TestConnectAndPullAgainstPostgres(t *testing.T) {
 		t.Fatalf("after the second pass: %q read %d new %d, %d stored", cursor, read, added, len(vault.puts))
 	}
 
-	// Reconnecting to the same account resumes; to another, starts over.
+	// A pass records when it started, which the schedule counts from; an admin chooses the schedule
+	// from the closed set.
+	if got, _, err := st.Target(ctx, tenant, id); err != nil || got.LastStartedAt.IsZero() || !got.Due(got.LastStartedAt.Add(time.Hour)) ||
+		got.Due(got.LastStartedAt.Add(59*time.Minute)) {
+		t.Fatalf("after two passes the target is %+v (%v)", got, err)
+	}
+	schedule := Audit{Actor: "admin@live.test", Action: "provider.schedule", ObjectType: "provider_connection", At: at,
+		Detail: map[string]any{"provider": ClaudeEnterprise, "pull_every_minutes": 360}}
+	if err := st.Schedule(ctx, tenant, ClaudeEnterprise, 360, schedule); err != nil {
+		t.Fatalf("Schedule: %v", err)
+	}
+	if err := st.Schedule(ctx, tenant, ChatGPTEnterprise, 360, schedule); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Schedule an unconnected provider = %v", err)
+	}
+	if err := st.Schedule(ctx, tenant, ClaudeEnterprise, 45, schedule); err == nil {
+		t.Fatal("the database took a schedule outside the choices")
+	}
+
+	// Reconnecting to the same account resumes; to another, starts over. Either keeps the schedule.
 	if _, err := st.Connect(ctx, tenant, ClaudeEnterprise, "org-1", []byte("sealed-2"), "", connect); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +240,8 @@ func TestConnectAndPullAgainstPostgres(t *testing.T) {
 		if p.Provider == ClaudeEnterprise {
 			c := p.Connection
 			if c == nil || c.ConnectionID != id || c.Account != "org-2" || c.Status != "active" || c.LastStatus != "ok" ||
-				c.RecordsRead != 4 || c.RecordsNew != 2 || c.LastCompletedAt == nil || c.CreatedBy != "admin@live.test" {
+				c.RecordsRead != 4 || c.RecordsNew != 2 || c.LastCompletedAt == nil || c.CreatedBy != "admin@live.test" ||
+				c.PullEveryMinutes != 360 || c.LastStartedAt == nil {
 				t.Fatalf("listed connection %+v", c)
 			}
 		}
@@ -261,7 +281,7 @@ func TestConnectAndPullAgainstPostgres(t *testing.T) {
 	  WHERE tenant_id = $1::uuid AND object_type = 'provider_connection' AND object_id = $2`, tenant, id).Scan(&actions); err != nil {
 		t.Fatal(err)
 	}
-	if actions != "provider.connect,provider.connect,provider.connect,provider.disconnect" {
+	if actions != "provider.connect,provider.schedule,provider.connect,provider.connect,provider.disconnect" {
 		t.Fatalf("audits %q", actions)
 	}
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM ops.audit WHERE tenant_id = $1::uuid AND detail::text LIKE '%sealed%'`,

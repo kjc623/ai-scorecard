@@ -8,8 +8,9 @@
 // Integrations page: with a key its admin issued, or, for Microsoft, with the consent the tenant
 // already gave the vendor's Entra application, or, for a provider with no API to read, with an
 // intake token the page issues, which the customer's cloud presents when it forwards the
-// provider's log (intake.go). The runner pulls every other active connection on a schedule and on
-// demand: a provider's adapter (Source) reads the records after the connection's cursor. The
+// provider's log (intake.go). The runner pulls every other active connection on the schedule its
+// admin chose and on demand: a provider's adapter (Source) reads the records after the
+// connection's cursor. The
 // recorder writes each record through ingest.record_provider_event, whose event id derives from the
 // provider's own id for the record, so a record read twice is recorded once. A record of a prompt a
 // device also captured merges into the device's submission, so the prompt counts once.
