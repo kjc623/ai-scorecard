@@ -135,9 +135,11 @@ export function wireShell({ document, session = null }) {
     if (target.closest('.nav a')) document.body.classList.remove('menu-open');
     const row = target.closest('tr[data-href]');
     if (row && !target.closest('a, button')) follow(document, row.dataset.href);
-    // A card that opens a block on the same page scrolls to it.
+    // A card that opens a block on the same page scrolls to it, as does a button that is the jump
+    // itself; a link or button inside such a card keeps its own meaning.
     const jump = target.closest('[data-jump]');
-    if (jump && !target.closest('a, button')) jumpTo(document, jump.dataset.jump);
+    const control = target.closest('a, button');
+    if (jump && (!control || control === jump)) jumpTo(document, jump.dataset.jump);
   });
 
   document.addEventListener('keydown', (event) => {

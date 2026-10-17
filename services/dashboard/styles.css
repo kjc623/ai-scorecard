@@ -228,6 +228,8 @@ code {
   box-shadow: inset 0 1px 0 var(--hi), var(--shadow);
 }
 
+/* Nothing on a screen is wider than the screen: a grid child shrinks, and a wide table scrolls inside its card. */
+.screen > *, .tiles > *, .card { min-width: 0; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; }
 .tile { transition: transform .5s var(--ease); }
 .tile:hover { transform: translateY(-2px); }
@@ -306,9 +308,16 @@ a.tile, a.card-link { display: block; text-decoration: none; color: inherit; }
 .v-time { font: 12px/1.4 var(--mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .v-device-clock { color: var(--warn); }
 .v-vocab {
-  display: inline-block; font: 11px/1.8 var(--mono); border-radius: 9999px;
+  display: inline-block; font: 500 11.5px/1.8 var(--sans); border-radius: 9999px;
   padding: 0 9px; background: var(--sunken); color: var(--text); white-space: nowrap;
 }
+/* An actor's address keeps to one line, so an entry is as tall as its action. */
+.v-actor { white-space: nowrap; }
+/* A folded group opens from its heading; the decision control sits in its row at the table's size. */
+.fold { display: inline-flex; align-items: center; gap: 8px; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; }
+.fold::before { content: ""; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .3s var(--ease); }
+.fold[aria-expanded="true"]::before { transform: rotate(45deg); }
+.seg-decision .seg-item { padding: 4px 10px; font-size: 12px; white-space: nowrap; }
 .v-vocab-unsanctioned, .v-vocab-tampered, .v-vocab-absent, .v-vocab-critical, .v-vocab-shredded,
 .v-vocab-revoked, .v-vocab-never_reported, .v-vocab-broken, .v-vocab-blocked { background: var(--bad-bg); color: var(--bad); }
 .v-vocab-degraded, .v-vocab-stale, .v-vocab-disputed, .v-vocab-low, .v-vocab-warned, .v-vocab-uploaded, .v-vocab-partial { background: var(--warn-bg); color: var(--warn); }
@@ -395,6 +404,8 @@ tr.row-empty td { color: var(--ink-soft); font-style: italic; }
 .block-empty { margin: 0; padding: 0 22px 20px; color: var(--ink-soft); font-style: italic; }
 /* The sentence a block leads with, above its list. */
 .block-summary { margin: 0; padding: 0 22px 14px; font-size: 14px; color: var(--ink); }
+.block-summary-link { margin-left: 8px; font-size: 13px; font-weight: 500; color: var(--accent); text-decoration: none; white-space: nowrap; }
+.block-summary-link:hover { text-decoration: underline; }
 
 /* What happened to a sensitive prompt: allowed is the accent; blocked and warned keep their state colours. */
 .dist-seg.v-vocab-allowed, .dist-dot.v-vocab-allowed, .bar-seg.v-vocab-allowed { background: var(--accent); }
@@ -600,6 +611,13 @@ tr.row-group:first-child th { border-top: 0; padding-top: 4px; }
 .dp-note { margin: 0; font-size: 13px; color: var(--ink-soft); }
 .dp-empty { margin: 0; color: var(--ink-soft); }
 .dp-sub { display: block; margin-top: 3px; font-size: 11.5px; color: var(--ink-soft); }
+.dp-advanced { padding: 6px; border-radius: var(--r-shell); background: var(--tray); border: 1px solid var(--line); }
+.dp-advanced > summary { display: flex; flex-direction: column; gap: 2px; padding: 12px 16px; border-radius: calc(var(--r-shell) - 4px); font-size: 14.5px; font-weight: 600; color: var(--ink); cursor: pointer; list-style: none; }
+.dp-advanced > summary::-webkit-details-marker { display: none; }
+.dp-advanced > summary::before { content: ""; float: left; margin: 7px 10px 0 0; width: 6px; height: 6px; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; transform: rotate(-45deg); transition: transform .3s var(--ease); }
+.dp-advanced[open] > summary::before { transform: rotate(45deg); }
+.dp-advanced > summary .dp-sub { font-weight: 400; max-width: 78ch; }
+.dp-advanced-body { display: grid; gap: 14px; padding: 8px 0 0; }
 .dp-optional { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--ink-faint); margin-left: 4px; }
 .dp-seg { width: fit-content; }
 .dp-seg .seg-item { border: 0; background: transparent; font-family: inherit; cursor: pointer; padding: 6px 14px; }
@@ -684,6 +702,13 @@ td.dp-action { text-align: right; white-space: nowrap; }
 @keyframes grow-y { from { transform: scaleY(0); } to { transform: none; } }
 @keyframes grow-x { from { transform: scaleX(0); } to { transform: none; } }
 @keyframes slide { from { opacity: 0; transform: translateX(-6px); } to { opacity: 1; transform: none; } }
+
+/* ── a narrow window: a ranked list drops the shape of its series and its facts tighten ───── */
+@media (max-width: 1100px) {
+  .rank, .rank-head { --rank-cols: minmax(140px, 1.3fr) minmax(60px, 2fr) 90px minmax(140px, 1.4fr); }
+  .rank-trend { display: none; }
+  .rank-link, .rank-head { gap: 12px; }
+}
 
 /* ── narrow screens: the navigation becomes a floating bar that opens over the page ───────── */
 @media (max-width: 900px) {

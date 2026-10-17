@@ -85,7 +85,8 @@ export function effectiveMode(data) {
 
 const IDLE = Object.freeze({
   mode: Object.freeze({ pending: null, confirm: null, problem: null }),
-  override: Object.freeze({ pending: null, problem: null }),
+  // adding is the tool picked for a new override, listed with a mode to choose until one is written.
+  override: Object.freeze({ pending: null, problem: null, adding: null }),
   retention: Object.freeze({ pending: null, problem: null, drafts: Object.freeze({}) }),
   search: Object.freeze({ pending: null, problem: null }),
   sanction: Object.freeze({ pending: null, problem: null }),
@@ -103,7 +104,7 @@ const NOT_READ = Object.freeze({ code: 'endpoint_not_reported', message: 'The cu
 const TLS_NOT_READ = Object.freeze({ code: 'tls_inspection_not_reported', message: 'The current TLS inspection setting was not read; reload the page and try again.' });
 const RESTART_NOTICE_NOT_READ = Object.freeze({ code: 'restart_notice_not_reported', message: 'The current setting for apps that need a restart was not read; reload the page and try again.' });
 const KILL_SWITCHES_NOT_READ = Object.freeze({ code: 'kill_switches_not_reported', message: 'The current kill switches were not read; reload the page and try again.' });
-const REASON_REQUIRED = Object.freeze({ code: 'invalid_reason_code', message: 'Give a reason code: a lower-case letter, then lower-case letters, digits, "_", "." or "-" (at most 64).' });
+const REASON_REQUIRED = Object.freeze({ code: 'invalid_reason_code', message: 'A reason is required: a short code such as app_breakage, in lower-case letters, digits, "_", "." or "-" (at most 64).' });
 
 /**
  * The page's behaviour over one admin api.
@@ -163,6 +164,13 @@ export function createSettings({ admin, onChange = () => {} }) {
     }
     set({ mode: IDLE.mode });
     return load({ quiet: true });
+  }
+
+  /** Pick a tool for a new override; it is listed with a mode to choose, and nothing is written until one is. */
+  function setOverrideDraft(tool) {
+    if (state.status !== 'ready') return state;
+    const known = (state.data.tools ?? []).some((t) => t.tool_key === tool);
+    return set({ override: Object.freeze({ ...state.override, adding: known ? tool : null }) });
   }
 
   /** Change or clear (value null) one tool's narrower override. */
@@ -346,6 +354,7 @@ export function createSettings({ admin, onChange = () => {} }) {
       case 'mode-confirm': return setCollectionMode(state.mode.confirm);
       case 'mode-cancel': return Promise.resolve(cancelMode());
       case 'override': return setScopeOverride(dataset.tool, dataset.value === '' ? null : dataset.value);
+      case 'override-add': return Promise.resolve(setOverrideDraft(dataset.value));
       case 'save-retention': return saveRetention(dataset.appliesTo);
       case 'search': return setContentSearch(dataset.value);
       case 'sanction': return setToolSanction(dataset.tool, dataset.value);
@@ -358,5 +367,5 @@ export function createSettings({ admin, onChange = () => {} }) {
     }
   }
 
-  return Object.freeze({ get state() { return state; }, load, chooseMode, setScopeOverride, setRetentionDraft, saveRetention, setContentSearch, setToolSanction, setEndpointCollector, setEndpointTool, setTLSInspection, setRestartNotice, setKillSwitchReason, setKillSwitch, act });
+  return Object.freeze({ get state() { return state; }, load, chooseMode, setOverrideDraft, setScopeOverride, setRetentionDraft, saveRetention, setContentSearch, setToolSanction, setEndpointCollector, setEndpointTool, setTLSInspection, setRestartNotice, setKillSwitchReason, setKillSwitch, act });
 }

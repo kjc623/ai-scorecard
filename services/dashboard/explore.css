@@ -85,6 +85,20 @@
 }
 input.x-filter { width: 124px; cursor: text; }
 .x-filter-on, .x-select.x-filter-on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+/* Advanced and Columns open under the rail as a row of their own; their summaries read as filters. */
+.x-advanced, .x-columns { position: relative; }
+.x-advanced summary, .x-columns summary { display: inline-flex; align-items: center; gap: 6px; list-style: none; }
+.x-advanced summary::-webkit-details-marker, .x-columns summary::-webkit-details-marker { display: none; }
+.x-advanced[open] summary, .x-columns[open] summary { background: var(--panel); color: var(--ink); }
+.x-count { padding: 0 6px; border-radius: 9999px; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 600; }
+.x-advanced-row, .x-columns-list {
+  position: absolute; left: 0; top: calc(100% + 6px); z-index: 5; display: flex; flex-wrap: wrap; gap: 8px; min-width: 280px; max-width: min(640px, calc(100vw - 32px)); padding: 10px;
+  border-radius: 14px; border: 1px solid var(--line); background: var(--panel); box-shadow: var(--shadow), 0 12px 30px -12px rgb(0 0 0 / .3);
+}
+.x-columns-list { flex-direction: column; gap: 6px; min-width: 180px; }
+.x-column { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text); cursor: pointer; }
+.x-column input { accent-color: var(--accent); margin: 0; }
+.x-include { border: 1px solid var(--line); background: var(--tray); }
 .x-retrieve label { font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-3); }
 .x-input::placeholder { color: var(--ink-faint); }
 .x-input:hover, .x-select:hover { border-color: var(--line-strong); }
@@ -146,7 +160,7 @@ input.x-filter { width: 124px; cursor: text; }
 .x-table-plain td { padding: 6px 8px 6px 0; }
 
 .x-chip {
-  display: inline-block; font: 11px/1.7 var(--mono); padding: 0 8px; white-space: nowrap;
+  display: inline-block; font: 500 11.5px/1.7 var(--sans); padding: 0 8px; white-space: nowrap;
   border-radius: 9999px; background: var(--sunken); color: var(--ink-2);
 }
 .x-chip-warn { background: var(--warn-bg); color: var(--warn); }

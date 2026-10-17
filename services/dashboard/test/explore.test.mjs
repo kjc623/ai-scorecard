@@ -263,12 +263,12 @@ test('nothing found on partial coverage is not reported as "no data"', async () 
   assert.match(renderExploreResults(adequate.explorer.state), /We looked, coverage was adequate/);
 });
 
-test('both clocks are shown and the device clock is marked', async () => {
+test('the device clock is the When column and is marked as the device\'s', async () => {
   const { explorer } = explorerFor();
   await explorer.restore('#events?window=d30');
   const html = renderExploreResults(explorer.state);
-  assert.match(html, /Received \(server\)/);
-  assert.match(html, /Occurred \(device\)/);
+  assert.match(html, /<th scope="col">When<\/th>/, 'the device clock is the one column, in words');
+  assert.doesNotMatch(html, /<th scope="col">Received<\/th>/, 'the server clock is a column to add');
   assert.match(html, /x-device-clock/);
   assert.match(html, /possibly skewed/);
   assert.match(html, /before receipt/, 'a late flush is named as one');
@@ -292,7 +292,7 @@ test('opening an event re-reads the one record and shows what its content state 
   assert.equal(explorer.state.detail.status, 'ready');
   const html = renderExploreDetail(explorer.state);
   assert.match(html, /no content path behind it/, 'with no content path, the page says the prompt cannot be read');
-  assert.match(html, /Observation routes/);
+  assert.match(html, /Collected by/);
   assert.match(html, /audited read: entry/);
   assert.ok(html.includes(row.submission_id), 'the id is shown in full');
   for (const forbidden of ['content_excerpt', 'prompt_text', 'attachment_body', 'ciphertext', 'plaintext']) {
@@ -395,7 +395,7 @@ test('the rail renders the include toggle for events, with the pressed state it 
   await explorer.restore('#events?window=d30');
   let html = renderExploreRail(explorer.state);
   assert.match(html, /data-act="include"/);
-  assert.match(html, /Include client-generated requests/);
+  assert.match(html, /Include requests the tool sent on its own/);
   assert.match(html, /aria-pressed="false"/);
   await explorer.setIncludeClientGenerated(true);
   html = renderExploreRail(explorer.state);

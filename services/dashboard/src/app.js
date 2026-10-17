@@ -31,7 +31,7 @@ import { createDirectory } from './directory.js';
 import { renderDirectory } from './directory-render.js';
 import { createIntegrations } from './integrations.js';
 import { renderIntegrations } from './integrations-render.js';
-import { renderSanctionDecisions, renderSettings } from './settings-render.js';
+import { renderSettings } from './settings-render.js';
 import { createRules } from './rules.js';
 import { renderRuleDialog, renderRules } from './rules-render.js';
 import { createTeamEditor } from './team-editor.js';
@@ -151,15 +151,17 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
       switch (screen.kind) {
         case 'posture': {
           const devices = await ask('q7_devices', context({ preset: ctx.preset, limit: 500, filters: params.filters ?? {}, now: now() }));
-          // The summary reads the window's usage, and the rules with what they matched in it.
+          // The summary reads the window's usage and the same window before it, and the rules with
+          // what they matched in it.
           const tools = await part(() => ask('q1_tools_ranked', ctx));
+          const previous = tools ? await part(() => ask('q1_tools_ranked', before(ctx))) : null;
           const rules = await part(async () => readState(await api.run(buildListDocument('ops.enforcement_rule', {}, 100))));
           const ruleMatches = await part(async () => readState(await api.run(buildRuleMatchesDocument({ window: ctx.window }))));
-          return { view: postureView({ devices, tools, rules, ruleMatches }, { preset: ctx.preset, activity: params.activity !== false }), shell: shell() };
+          return { view: postureView({ devices, tools, previous, rules, ruleMatches }, { preset: ctx.preset, activity: params.activity !== false }), shell: shell() };
         }
         case 'answer': {
           if (screen.id === 'tools') {
-            if (params.filters.tool) return { view: await toolScreen(String(params.filters.tool), ctx), shell: shell() };
+            if (params.filters.tool) return { view: await toolScreen(String(params.filters.tool), ctx, params.filters.people), shell: shell() };
             const sanction = SANCTION_FILTER.includes(params.filters.sanction) ? params.filters.sanction : null;
             return { view: toolsView(await ask('q1_tools_ranked', ctx), { preset: ctx.preset, sanction }), shell: shell() };
           }
@@ -167,7 +169,14 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
           if (screen.id === 'rules') return { view: await rulesScreen(), shell: shell() };
           if (screen.id === 'sanction') {
             const usage = await ask('q1_tools_ranked', context({ preset: POLICY_PRESET, now: now() }));
-            return { view: sanctionView(usage), shell: shell() };
+            const rules = await part(async () => readState(await api.run(buildListDocument('ops.enforcement_rule', {}, 100))));
+            // The table is built again whenever the catalogue and the decisions on it change.
+            const rebuild = (settings) => sanctionView(usage, {
+              rules,
+              catalogue: settings?.status === 'ready' && settings.data ? settings.data.tools : null,
+              decisions: settings ? { editable: true, pending: settings.sanction.pending, problem: settings.sanction.problem } : null,
+            });
+            return { view: rebuild(null), shell: shell(), rebuild };
           }
           if (screen.id === 'activity') return { view: await activityScreen(ctx), shell: shell() };
           if (screen.id === 'insights') {
@@ -218,11 +227,14 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
     }
   }
 
+  /** How many of a roster a page shows: the address says, else the first page. */
+  const rosterPage = (value) => (Number.isInteger(Number(value)) && Number(value) > 0 ? Number(value) : undefined);
+
   /**
    * One tool's screen: its usage, who is using it (a subject-bearing read, refused for a role
    * that may not see people, and shown as such), and the findings it produced.
    */
-  async function toolScreen(tool, ctx) {
+  async function toolScreen(tool, ctx, shown = null) {
     const usage = await ask('q1_tools_ranked', context({ preset: ctx.preset, filters: { tool }, now: now() }));
     // The people read names the tool, so it lists its people whatever its sanction; a tool with
     // no cell in the window has nobody to list. Both reads match every fingerprint of the tool.
@@ -230,7 +242,7 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
       ? await refusable(() => ask('q2_unsanctioned_users', context({ preset: ctx.preset, filters: { tool }, now: now() })))
       : null;
     const findings = await refusable(() => ask('q5_findings', context({ preset: ctx.preset, filters: { tool }, now: now() })));
-    return toolView({ usage, people, findings, names: await namesFor(people) }, { tool, preset: ctx.preset });
+    return toolView({ usage, people, findings, names: await namesFor(people) }, { tool, preset: ctx.preset, people: rosterPage(shown) });
   }
 
   /**
@@ -383,7 +395,7 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
       : null;
     if (team) {
       const state = await ask('q3_team_growth', context({ preset: ctx.preset, filters: { team }, now: now() }));
-      return teamView(state, { team, members: await teamMembers(state, ctx, [team]), teams, preset: ctx.preset });
+      return teamView(state, { team, members: await teamMembers(state, ctx, [team]), teams, preset: ctx.preset, people: rosterPage(params.filters.people) });
     }
     const state = await ask('q3_team_growth', ctx);
     return teamsView(state, { mayManage: Boolean(params.mayManage), teams, preset: ctx.preset });
@@ -622,15 +634,39 @@ export async function boot({ document, api, admin, session: givenSession } = {})
    */
   function adminSection(screenId, filters) {
     if (!mayAdmin) return {};
-    if (screenId === 'devices' && !filters.device) return { after: renderAgentSetup(deploymentController().state) };
+    // Until the fleet has a device the install section leads; after that it follows the list,
+    // with a way to reach it from the top.
+    if (screenId === 'devices' && !filters.device) {
+      const setup = renderAgentSetup(deploymentController().state);
+      const fleet = (painted?.view?.tables?.[0]?.rows?.length ?? 0) > 0;
+      return fleet
+        ? { before: '<nav class="screen-actions"><button type="button" class="btn btn-small" data-jump="install">Install on more devices</button></nav>', after: setup }
+        : { before: setup };
+    }
     if (screenId === 'devices' && filters.device) return { after: renderDeviceDiagnostics(diagnosticsController().state) };
-    if (screenId === 'sanction') return { before: renderSanctionDecisions(settingsController().state) };
     return {};
   }
 
   function paintQuery() {
     if (!painted || painted.screen !== paintedScreen) return;
+    // Policy → Tools lists the catalogue and its decisions, which an admin's settings carry.
+    if (painted.rebuild) painted.view = painted.rebuild(mayAdmin ? settingsController().state : null);
     repaint(document, root, renderScreen(painted.view, { ...painted.shell, ...adminSection(painted.screen, painted.filters) }));
+    applyFolds();
+  }
+
+  /** The folded groups a reader has opened, by heading, kept open across repaints of the same screen. */
+  const openFolds = new Set();
+  function applyFolds() {
+    for (const fold of root.querySelectorAll?.('[data-fold]') ?? []) {
+      const open = openFolds.has(`${paintedScreen}|${fold.dataset.fold}`);
+      fold.setAttribute('aria-expanded', String(open));
+      let row = fold.closest('tr')?.nextElementSibling;
+      while (row && !row.classList.contains('row-group')) {
+        row.hidden = !open;
+        row = row.nextElementSibling;
+      }
+    }
   }
 
   function paintDeployment() {
@@ -776,6 +812,12 @@ export async function boot({ document, api, admin, session: givenSession } = {})
         paintRules(controller.state);
         // Rules and Labels are one rulebase: moving between them reads nothing again.
         await loadOnce(controller, before === 'rules' || before === 'labels');
+        // Reached from a tool's row on Policy → Tools: a new rule naming that tool, open to be finished.
+        if (screen.id === 'rules' && typeof filters.tool === 'string' && filters.tool !== '' && !controller.state.panel) {
+          await controller.act({ rl: 'add' });
+          if (controller.state.panel) await controller.act({ rl: 'match', field: 'tools', value: filters.tool });
+          replaceHash(document, '#rules');
+        }
         return;
       }
       if (screen.id === 'directory') {
@@ -799,17 +841,20 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     const typing = sameScreen && document.activeElement?.name === 'subject';
     // While the next read runs the page keeps what it shows, dimmed: no blank, no jump.
     root.setAttribute?.('aria-busy', 'true');
-    const { view, shell } = await dashboard.load(screen.id, { preset, filters, mayManage: mayAdmin, activity: mayOpen(allowed, 'activity') });
+    const { view, shell, rebuild = null } = await dashboard.load(screen.id, { preset, filters, mayManage: mayAdmin, activity: mayOpen(allowed, 'activity') });
     root.setAttribute?.('aria-busy', 'false');
     const { preset: _preset, ...others } = filters;
     const setup = mayAdmin && screen.id === 'devices' && !filters.device;
+    if (!sameScreen) openFolds.clear();
     painted = {
       screen: screen.id,
       filters,
-      view: setup ? { ...view, notes: [...(view.notes ?? []), ...DEPLOYMENT_NOTES] } : view,
+      view: setup ? { ...view, notes: [...(view.notes ?? []), ...DEPLOYMENT_NOTES] } : rebuild && mayAdmin ? rebuild(settingsController().state) : view,
       shell: { ...shell, ...headFor(screen, preset, others, allowed), presets: presetsFor(screen, preset, others), tool: toolFor(screen, filters) },
+      rebuild,
     };
     root.innerHTML = renderScreen(painted.view, { ...painted.shell, ...adminSection(screen.id, filters) });
+    applyFolds();
     document.title = `${view?.title ?? screen.label} · ${brand}`;
     if (typing) root.querySelector?.('input[name="subject"]')?.focus();
     // An admin's section below or above the screen reads its own settings.
@@ -902,6 +947,16 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     for (const menu of document.querySelectorAll?.('details.rl-menu[open]') ?? []) {
       if (!menu.contains(event.target)) menu.open = false;
     }
+    // A folded group of rows opens and closes from its heading.
+    const fold = event.target?.closest?.('[data-fold]');
+    if (fold) {
+      event.preventDefault();
+      const key = `${paintedScreen}|${fold.dataset.fold}`;
+      if (openFolds.has(key)) openFolds.delete(key);
+      else openFolds.add(key);
+      applyFolds();
+      return;
+    }
     const rlTarget = event.target?.closest?.('[data-rl]');
     if (rlTarget && rules && rlTarget.tagName !== 'SELECT' && !rlTarget.disabled) {
       event.preventDefault();
@@ -986,8 +1041,8 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     }
     if (event.target?.dataset?.rlQuery !== undefined && rules) {
       rules.setQuery(event.target.value);
-      // Emptying the filter lists every rule again.
-      if (event.target.value === '' && rules.state.filter !== '') rules.act({ rl: 'filter' });
+      // The list narrows as the filter is typed.
+      if (event.target.value.trim() !== rules.state.filter) rules.act({ rl: 'filter' });
     }
     const labelField = event.target?.dataset?.rlLabelDraft;
     if (labelField && rules) rules.setLabelDraft(labelField, event.target.value);

@@ -31,7 +31,8 @@ const MAX_VALUE_LENGTH = 256;
 
 /**
  * A filter field. `values` with `closed: true` is a vocabulary the API enforces, so anything else
- * is refused here first; `values` with `closed: false` is a list of suggestions only.
+ * is refused here first; `values` with `closed: false` is a list of suggestions only. An `advanced`
+ * field is collection mechanics, folded away on the rail until asked for.
  */
 function exploreField(name, label, opts = {}) {
   return Object.freeze({
@@ -40,11 +41,18 @@ function exploreField(name, label, opts = {}) {
     values: opts.values ? Object.freeze([...opts.values]) : null,
     closed: opts.values ? opts.closed !== false : false,
     hint: opts.hint ?? null,
+    advanced: opts.advanced === true,
   });
 }
 
-function exploreColumn(key, label, kind = 'text') {
-  return Object.freeze({ key, label, kind });
+/** A column of the list. An `optional` one is off until a reader picks it; the rest are the list. */
+function exploreColumn(key, label, kind = 'text', { optional = false } = {}) {
+  return Object.freeze({ key, label, kind, optional });
+}
+
+/** The columns a reader sees: every column that is not optional, and the optional ones they picked. */
+export function exploreColumns(dataset, picked = []) {
+  return dataset.columns.filter((c) => !c.optional || picked.includes(c.key));
 }
 
 /** A user reference as the API mints it; anything else typed into the User field is a name. */
@@ -79,30 +87,34 @@ export const EXPLORE_DATASETS = Object.freeze({
     fields: Object.freeze([
       USER_FIELD,
       exploreField('tool', 'Tool', { hint: 'A tool or any of its fingerprints, such as app:chatgpt_web' }),
-      exploreField('action', 'Policy action', { values: ['blocked', 'warned', 'logged'] }),
-      exploreField('class', 'Data class', { values: DATA_CLASSES, closed: false }),
+      exploreField('action', 'Action', { values: ['blocked', 'warned', 'logged'] }),
+      exploreField('class', 'Label', { values: DATA_CLASSES, closed: false }),
       exploreField('content_state', 'Content', { values: ['not_captured', 'local_only', 'uploaded', 'shredded'] }),
-      exploreField('mode', 'Collection mode', { values: COLLECTION_MODES }),
-      exploreField('prompt_kind', 'Request kind', { values: ['user', 'client_generated', 'unknown'] }),
+      exploreField('mode', 'Collection', { values: COLLECTION_MODES }),
       exploreField('attachments', 'Attachments', { values: ['yes'] }),
-      // Any route that collected the event, whichever won; `several` finds the events more than one
-      // route collected, such as a device and a provider's admin API.
-      exploreField('route', 'Route', { values: ROUTES }),
-      exploreField('routes', 'Routes', { values: ['several'] }),
       exploreField('department', 'Department', { hint: 'As the directory spells it' }),
       exploreField('device', 'Device', { hint: 'A device id' }),
+      // Collection mechanics, under Advanced: who sent the request, which route collected the
+      // event (whichever won), and `several` for the events more than one route collected, such
+      // as a device and a provider's admin API.
+      exploreField('prompt_kind', 'Sent by', { values: ['user', 'client_generated', 'unknown'], advanced: true }),
+      exploreField('route', 'Collected by', { values: ROUTES, advanced: true }),
+      exploreField('routes', 'Routes', { values: ['several'], advanced: true }),
     ]),
+    // When is the device's clock, which says when the prompt was sent; the server's clock, the
+    // mode and the rest read well in the event panel and are columns only when picked.
     columns: Object.freeze([
-      exploreColumn('received_at', 'Received (server)', 'server-clock'),
-      exploreColumn('first_occurred_at', 'Occurred (device)', 'device-clock'),
+      exploreColumn('first_occurred_at', 'When', 'when'),
       exploreColumn('subject', 'User', 'person'),
       exploreColumn('tool', 'Tool', 'mono'),
       exploreColumn('action', 'Action', 'vocab'),
-      exploreColumn('labels', 'Classes', 'classes'),
+      exploreColumn('labels', 'Labels', 'classes'),
       exploreColumn('content_state', 'Content', 'vocab'),
-      exploreColumn('mode', 'Mode', 'vocab'),
-      exploreColumn('attachment_count', 'Attachments', 'count'),
-      exploreColumn('observed_routes', 'Routes', 'routes'),
+      exploreColumn('received_at', 'Received', 'server-clock', { optional: true }),
+      exploreColumn('mode', 'Collection', 'vocab', { optional: true }),
+      exploreColumn('attachment_count', 'Attachments', 'count', { optional: true }),
+      exploreColumn('observed_routes', 'Collected by', 'routes', { optional: true }),
+      exploreColumn('device', 'Device', 'id', { optional: true }),
     ]),
   }),
 
@@ -119,7 +131,7 @@ export const EXPLORE_DATASETS = Object.freeze({
     fields: Object.freeze([
       exploreField('severity', 'Severity', { values: SEVERITIES }),
       exploreField('review_state', 'Review', { values: ['open', 'disputed', 'confirmed'] }),
-      exploreField('class', 'Data class', { values: DATA_CLASSES, closed: false }),
+      exploreField('class', 'Label', { values: DATA_CLASSES, closed: false }),
       exploreField('rule', 'Rule', { hint: 'A rule code, such as PAYMENT_CARD_PAN' }),
       USER_FIELD,
       exploreField('tool', 'Tool', { hint: 'A tool or any of its fingerprints, such as app:chatgpt_web' }),
@@ -128,7 +140,7 @@ export const EXPLORE_DATASETS = Object.freeze({
       exploreColumn('detected_at', 'Detected', 'server-clock'),
       exploreColumn('severity', 'Severity', 'vocab'),
       exploreColumn('rule_title', 'Rule', 'rule'),
-      exploreColumn('class', 'Class', 'vocab'),
+      exploreColumn('class', 'Label', 'vocab'),
       exploreColumn('subject', 'User', 'person'),
       exploreColumn('tool', 'Tool', 'mono'),
       exploreColumn('review_state', 'Review', 'vocab'),

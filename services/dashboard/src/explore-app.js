@@ -27,7 +27,7 @@ import {
 } from './explore-model.js';
 import {
   renderExploreDatasets, renderExploreWindow,
-  renderExploreProblems, renderExploreRail, renderExploreSummary, renderExploreResults, renderExploreDetail,
+  renderExploreProblems, renderExploreRail, renderExploreColumns, renderExploreSummary, renderExploreResults, renderExploreDetail,
   renderExploreText,
 } from './explore-render.js';
 import { eventView } from './views.js';
@@ -81,6 +81,19 @@ function exploreRefusalFrom(error) {
   return readState({ api_version: '1', query_version: '1', result_state: envelope.result_state, error: envelope.error });
 }
 
+/** Where a reader's choice of optional columns is kept, in their own browser. */
+const COLUMNS_KEY = 'sundial.search.columns';
+
+/** The optional columns a storage holds for this reader; none when it holds nothing or cannot be read. */
+function storedColumns(storage) {
+  try {
+    const parsed = JSON.parse(storage?.getItem?.(COLUMNS_KEY) ?? '[]');
+    return Array.isArray(parsed) ? Object.freeze(parsed.filter((key) => typeof key === 'string')) : Object.freeze([]);
+  } catch {
+    return Object.freeze([]);
+  }
+}
+
 /**
  * The page's behaviour over one api.
  *
@@ -91,13 +104,16 @@ function exploreRefusalFrom(error) {
  * @param {(url: string) => void} [input.save]  hands a download link to the browser
  * @param {() => Date} [input.now]
  * @param {(state: object) => void} [input.onChange]
+ * @param {Storage} [input.storage]  where the reader's column choice is kept; none forgets it on reload
  */
-export function createExplorer({ api, content = null, export: exportApi = null, save = () => {}, now = () => new Date(), onChange = () => {} }) {
+export function createExplorer({ api, content = null, export: exportApi = null, save = () => {}, now = () => new Date(), onChange = () => {}, storage = null }) {
   const first = EXPLORE_DATASETS[EXPLORE_DEFAULT_DATASET];
   let state = Object.freeze({
     dataset: first.id,
     windowPreset: first.defaultWindow,
     filters: Object.freeze({}),
+    /** The optional columns this reader has picked, remembered in their browser. */
+    columns: storedColumns(storage),
     /** The name behind each user reference the page has matched; null when the people list has none. */
     names: Object.freeze({}),
     includeClientGenerated: false,
@@ -328,6 +344,20 @@ export function createExplorer({ api, content = null, export: exportApi = null, 
     }
     set({ dataset: dataset.id, windowPreset: exploreWindowPreset(dataset, state.windowPreset) });
     return applyFilters(dataset, carried);
+  }
+
+  /** Show or hide one of the list's optional columns, and remember the choice for this browser. */
+  function setColumn(key, on) {
+    const dataset = EXPLORE_DATASETS[state.dataset];
+    if (!dataset.columns.some((c) => c.key === key && c.optional)) return state;
+    const columns = Object.freeze(on ? [...new Set([...state.columns, key])] : state.columns.filter((k) => k !== key));
+    set({ columns });
+    try {
+      storage?.setItem?.(COLUMNS_KEY, JSON.stringify(columns));
+    } catch {
+      // A browser that refuses storage keeps the choice for this page only.
+    }
+    return state;
   }
 
   function setWindow(preset) {
@@ -602,7 +632,7 @@ export function createExplorer({ api, content = null, export: exportApi = null, 
 
   return Object.freeze({
     get state() { return state; },
-    run, loadMore, setQuery, setFilter, clearFilters, setDataset, setWindow, setIncludeClientGenerated, open, close, restore, hash,
+    run, loadMore, setQuery, setFilter, clearFilters, setDataset, setWindow, setIncludeClientGenerated, setColumn, open, close, restore, hash,
     searchText, loadMoreText, setTextPageSize, clearText, openHit, retrieveContent, hideContent, exportList,
   });
 }
@@ -651,7 +681,14 @@ export async function bootExplore({ document, api: given, content: givenContent,
     link.remove();
   };
 
-  const explorer = createExplorer({ api, content, export: exportApi, save, onChange: paint });
+  // The column choice lives in this browser; a browser that offers no storage forgets it on reload.
+  let storage = null;
+  try {
+    storage = document.defaultView?.localStorage ?? null;
+  } catch {
+    storage = null;
+  }
+  const explorer = createExplorer({ api, content, export: exportApi, save, onChange: paint, storage });
 
   /** Replace a region only when its markup changed, so an untouched region keeps its focus. */
   const painted = new Map();
@@ -684,6 +721,11 @@ export async function bootExplore({ document, api: given, content: givenContent,
     put('x-problems', renderExploreProblems(state));
     put('x-text', renderExploreText(state));
     put('x-rail', renderExploreRail(state));
+    // A picker stays open while a box in it is ticked.
+    const columnsOpen = el('x-columns')?.querySelector?.('details')?.open ?? false;
+    put('x-columns', renderExploreColumns(state));
+    const picker = el('x-columns')?.querySelector?.('details');
+    if (picker && columnsOpen) picker.open = true;
     put('x-summary', renderExploreSummary(state));
     put('x-results', renderExploreResults(state));
     el('x-results').setAttribute('aria-busy', String(state.status === 'loading'));
@@ -763,6 +805,10 @@ export async function bootExplore({ document, api: given, content: givenContent,
   el('x-rail').addEventListener('change', (event) => {
     const field = event.target.dataset?.field;
     if (field) explorer.setFilter(field, event.target.value);
+  });
+  el('x-columns')?.addEventListener('change', (event) => {
+    const column = event.target.dataset?.column;
+    if (column) explorer.setColumn(column, Boolean(event.target.checked));
   });
 
   document.addEventListener('keydown', (event) => {

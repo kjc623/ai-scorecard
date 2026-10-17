@@ -18,7 +18,9 @@ export const UNRECOGNISED_TOOL = 'Unrecognised tool';
 export const SITE_PREFIX = 'host:';
 
 /** The collection modes as the console names them, wherever a mode is shown. */
-export const COLLECTION_MODE_LABELS = Object.freeze({ m0: 'M0 · metadata', m1: 'M1 · digest & labels', m2: 'M2 · excerpt', m3: 'M3 · prompt' });
+export const COLLECTION_MODE_LABELS = Object.freeze({ m0: 'Metadata only', m1: 'Labels and digest', m2: 'Short excerpt', m3: 'Full prompt' });
+/** The code each mode is known by on devices and in support, said after its name. */
+export const COLLECTION_MODE_CODES = Object.freeze({ m0: 'M0', m1: 'M1', m2: 'M2', m3: 'M3' });
 
 /**
  * The endpoints this client may call. test/guarantees.test.mjs asserts there are no others.
@@ -375,6 +377,103 @@ export const STATE_PAIRS = Object.freeze({
   review_state: Object.freeze(['open', 'disputed', 'confirmed']),
   sanctioned_state: Object.freeze(['sanctioned', 'unsanctioned', 'unknown']),
   merge_confidence: Object.freeze(['high', 'low']),
+});
+
+/** What each collector on a device watches, in words; a collector not listed here is shown by its code. */
+export const COLLECTOR_NAMES = Object.freeze({
+  capture_core: 'Capture core',
+  capture_extension: 'Browser extension',
+  classifier_host: 'Classifier',
+  cli_shim: 'Command-line tools',
+  desktop_proxy: 'Desktop apps',
+  egress_proxy: 'Network proxy',
+  flow_monitor: 'Network flows',
+  flows: 'Network flows',
+  hook_relay: 'Coding-tool hooks',
+  hooks: 'Coding-tool hooks',
+  inventory: 'Inventory',
+  inventory_scanner: 'Inventory',
+  loopback: 'Local model capture',
+  loopback_broker: 'Local model capture',
+  otel: 'Coding-tool telemetry',
+  otel_receiver: 'Coding-tool telemetry',
+  process_detector: 'Running apps',
+  user_helper: 'User notices',
+  tool_config_claude_code: 'Claude Code settings',
+  tool_config_codex: 'Codex CLI settings',
+  tool_config_copilot: 'GitHub Copilot settings',
+  tool_config_cursor: 'Cursor settings',
+});
+
+/** What an audit entry's action means, in words; its code stays beside it. */
+export const AUDIT_ACTIONS = Object.freeze({
+  'query.aggregate': 'Read a report',
+  'query.events': 'Searched the events',
+  'query.findings': 'Searched the findings',
+  'query.record': 'Opened an event',
+  'query.people': 'Read the users list',
+  'query.devices': 'Read the device list',
+  'content.search': 'Searched prompt text',
+  'content.reveal': 'Opened a stored prompt',
+  'export.list': 'Exported a list',
+  'audit.read': 'Read the audit trail',
+  'tool.sanction': 'Changed a sanction decision',
+  'tenant.enforcement_rules.set': 'Changed the rules',
+  'tenant.custom_labels.set': 'Changed the custom labels',
+  'tenant.collection_mode.set': 'Changed the collection mode',
+  'tenant.scope_override.set': 'Changed a per-tool override',
+  'tenant.retention.set': 'Changed retention',
+  'tenant.content_search.set': 'Changed prompt storage',
+  'tenant.kill_switch.set': 'Set a kill switch',
+  'tenant.tls_inspection.set': 'Changed TLS inspection',
+  'tenant.restart_notice.set': 'Changed the restart notice',
+  'tenant.endpoint_collectors.set': 'Changed the collectors',
+  'tenant.endpoint_tool.set': 'Changed a tool\'s collectors',
+  'tenant.device_verification.set': 'Changed device verification',
+  'tenant.create': 'Created the tenant',
+  'team.create': 'Created a team',
+  'team.delete': 'Deleted a team',
+  'team.rename': 'Renamed a team',
+  'team.includes.set': 'Changed a team\'s groups',
+  'team.members.change': 'Changed a team\'s members',
+  'device.enrol': 'Enrolled a device',
+  'device.enrol_refused': 'Refused a device enrolment',
+  'device.diagnostics.request': 'Requested device diagnostics',
+  'device.diagnostics.receive': 'Received device diagnostics',
+  'device.diagnostics.download': 'Downloaded device diagnostics',
+  'auth.sign_in': 'Signed in',
+  'auth.sign_in_refused': 'Refused a sign-in',
+  'auth.session_end': 'Signed out',
+  'auth.revoke': 'Revoked a session',
+  'deployment_key.revoke': 'Revoked a deployment key',
+  'directory_sync.enable': 'Turned directory sync on',
+  'directory_sync.disable': 'Turned directory sync off',
+  'identity_connection.create': 'Added an identity provider',
+  'identity_connection.activate': 'Activated an identity provider',
+  'onboarding_invite.use': 'Used an onboarding invite',
+  'policy_bundle.publish': 'Published the policy bundle',
+  'provider.connect': 'Connected a provider',
+  'provider.disconnect': 'Disconnected a provider',
+  'provider.schedule': 'Scheduled a provider fetch',
+  'role.grant': 'Granted a role',
+  'scim.user.update': 'Updated a user from SCIM',
+});
+
+/** What a report read names, by the source it read, for an audit entry's sentence. */
+export const AUDIT_REPORTS = Object.freeze({
+  'mart.agg_tool_period': 'the Tools report',
+  'mart.v_tool_usage': 'the Tools report',
+  'mart.agg_tool_user_period': 'who uses a tool',
+  'mart.agg_team_period': 'the Teams report',
+  'mart.v_team_member_period': 'a team\'s members',
+  'mart.agg_class_period': 'the Labels report',
+  'mart.agg_rule_period': 'what the rules matched',
+  'mart.agg_discovery_period': 'what discovery found',
+  'mart.agg_agent_period': 'what coding agents reported',
+  'mart.v_tool_first_seen': 'the tools new this period',
+  'mart.v_person': 'the users list',
+  'mart.v_device_liveness': 'the device list',
+  'ops.collector_state': 'a device\'s collectors',
 });
 
 /**

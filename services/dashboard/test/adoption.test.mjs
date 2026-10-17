@@ -51,10 +51,10 @@ test('the Overview Users tile counts each user once, out of the directory, else 
   const older = postureView({ devices: null, tools: usageWith(null) }).tiles[3];
   assert.equal(older.value.text, '1,877');
   assert.equal(older.note, null);
-  assert.match(older.info, /^At least this many: the most users counted in any one period of the window\./, 'a read that did not count users keeps the floor it had');
+  assert.equal(older.info, 'The most users seen in any one period of the window, never a sum across periods.', 'a read that did not count users keeps the floor it had');
 });
 
-test('Adoption reads the last 30 days and the 30 before, the applications first seen, and prompts by sanction', async () => {
+test('Adoption reads the last 30 days and the 30 before, the tools first seen, and prompts by sanction', async () => {
   const { dashboard, sent } = dashboardWith();
   const { view } = await dashboard.load('insights', { filters: { view: 'adoption' } });
   assert.match(view.subtitle, /^Adoption: /);
@@ -75,17 +75,17 @@ test('Adoption reads the last 30 days and the 30 before, the applications first 
   }
 });
 
-test('Users of AI is the users out of the directory, split by the sanction of the tools they used, against the previous period, opening Users', async () => {
+test('Users is the users out of the directory, split by the sanction of the tools they used, against the previous period, opening Users', async () => {
   const { view } = await dashboardWith().dashboard.load('insights', { filters: { view: 'adoption' } });
   const people = view.lead[0];
   assert.equal(people.kind, 'share');
-  assert.equal(people.title, 'Users of AI');
+  assert.equal(people.title, 'Users');
   assert.equal(people.cardHref, '#person', 'the whole card opens the users it counts');
   assert.equal(people.total, 2050);
   assert.equal(people.totalLabel, 'of 4,210 active users in the directory (49%)');
   assert.equal(people.note, '+8% on the previous 30 days');
   assert.deepEqual(people.parts.map((p) => [p.key, p.label, p.count]), [
-    ['sanctioned', 'Only sanctioned tools', 1820], ['both', 'Both', 190], ['unsanctioned', 'Only tools not sanctioned', 40],
+    ['sanctioned', 'Sanctioned only', 1820], ['both', 'Both', 190], ['unsanctioned', 'Unsanctioned only', 40],
   ]);
   assert.ok(view.notes.includes('A tool not sanctioned is one marked unsanctioned or with no decision yet.'));
   assert.ok(view.notes.includes('The users are out of everyone the directory lists as active.'));
@@ -109,36 +109,36 @@ test('without a directory the users are out of the enrolled devices, and with ne
   assert.equal(uncounted.lead[0].emptyText, 'The users could not be counted for this window.');
 });
 
-test('New this period lists the applications that sent their first prompt in the window, each opening its tool over the same 30 days', async () => {
+test('New this period lists the tools that sent their first prompt in the window, each opening its tool over the same 30 days', async () => {
   const { view } = await dashboardWith().dashboard.load('insights', { filters: { view: 'adoption' } });
   const table = block(view, 'New this period');
-  assert.deepEqual(table.columns.map((c) => c.label), ['Application', 'Sanction', 'First seen', 'Users since']);
+  assert.deepEqual(table.columns.map((c) => c.label), ['Tool', 'Sanction', 'First seen', 'Users']);
   assert.deepEqual(table.rows.map(({ row }) => [row.tool_cell.primary, row.tool_cell.secondary, row.sanctioned_state, row.sanctioned_state_text, row.first_seen_day, row.people, row.href]), [
     ['Unrecognised tool', 'shadow_llm_gateway', 'unknown', 'No decision yet', '2026-09-29', 2, '#tools?tool=shadow_llm_gateway&preset=d30'],
     ['Claude Code', null, 'unsanctioned', 'Unsanctioned', '2026-09-26', 230, '#tools?tool=tls_b6681b043244c43f&preset=d30'],
   ]);
-  assert.equal(table.summary, '2 applications sent their first prompt in this window; 1 is unsanctioned and 1 has no decision yet.');
+  assert.equal(table.summary, '2 tools sent their first prompt in this window; 1 is unsanctioned and 1 has no decision yet.');
   const html = renderScreen(view, {});
-  assert.match(html, /<p class="block-summary">2 applications sent their first prompt in this window; 1 is unsanctioned and 1 has no decision yet\.<\/p>/);
+  assert.match(html, /<p class="block-summary">2 tools sent their first prompt in this window; 1 is unsanctioned and 1 has no decision yet\.<\/p>/);
   assert.match(html, /<span class="v-vocab v-vocab-unsanctioned" title="unsanctioned">Unsanctioned<\/span>/);
 });
 
-test('the New this period line says when every application is sanctioned, when more were seen than listed, and when collection began in the window', () => {
+test('the New this period line says when every tool is sanctioned, when more were seen than listed, and when collection began in the window', () => {
   const sanctioned = [{ ...FIRST_SEEN_ROWS[1], sanctioned_state: 'sanctioned' }];
   const one = adoptionView({ usage: usageWith(PEOPLE_ROW), firstSeen: listOf(sanctioned, 'mart.v_tool_first_seen') });
-  assert.equal(block(one, 'New this period').summary, '1 application sent its first prompt in this window; it is sanctioned.');
+  assert.equal(block(one, 'New this period').summary, '1 tool sent its first prompt in this window; it is sanctioned.');
   const cut = adoptionView({ usage: usageWith(PEOPLE_ROW), firstSeen: listOf(sanctioned, 'mart.v_tool_first_seen', { next_cursor: 'c.s', returned: 1 }) });
-  assert.equal(block(cut, 'New this period').summary, 'More than 1 application sent their first prompt in this window; all are sanctioned.');
+  assert.equal(block(cut, 'New this period').summary, 'More than 1 tool sent their first prompt in this window; all are sanctioned.');
   const first = adoptionView({ usage: usageWith(PEOPLE_ROW), previous: usageWith(PEOPLE_ROW, []), firstSeen: listOf(FIRST_SEEN_ROWS, 'mart.v_tool_first_seen') });
-  assert.match(block(first, 'New this period').summary, / Nothing was recorded before this window, so every application in use is new\.$/);
+  assert.match(block(first, 'New this period').summary, / Nothing was recorded before this window, so every tool in use is new\.$/);
 });
 
 test('New this period says why it is empty', () => {
   const none = adoptionView({ usage: usageWith(PEOPLE_ROW), firstSeen: listOf([], 'mart.v_tool_first_seen') });
-  assert.equal(block(none, 'New this period').emptyText, 'No application sent its first prompt in this window.');
+  assert.equal(block(none, 'New this period').emptyText, 'No tool sent its first prompt in this window.');
   assert.equal(block(none, 'New this period').summary, undefined);
   const failed = adoptionView({ usage: usageWith(PEOPLE_ROW), firstSeen: refused() });
-  assert.equal(block(failed, 'New this period').emptyText, 'The applications new in this window could not be read: The window is too broad for this read.');
+  assert.equal(block(failed, 'New this period').emptyText, 'The tools new in this window could not be read: The window is too broad for this read.');
 });
 
 test('the shift stacks each bucket\'s prompts by sanction and says how the sanctioned share moved', async () => {
@@ -172,7 +172,7 @@ test('Insights is its own destination: its title, its four tabs and no window to
   assert.match(html, /<div class="screen-title"><h2>Insights<\/h2><\/div><\/header>/, 'no eyebrow and no window switcher');
   assert.match(html, /<nav class="page-tabs" aria-label="Insights"><a class="page-tab" href="#insights">Briefing<\/a><a class="page-tab" href="#insights\?view=adoption" aria-current="page">Adoption<\/a><a class="page-tab" href="#insights\?view=risk">Risk<\/a><a class="page-tab" href="#insights\?view=licensing">Licensing<\/a><\/nav>/);
   assert.doesNotMatch(html, /class="seg-item"/);
-  assert.match(html, /Users of AI/);
+  assert.match(html, /Sanctioned only/);
   assert.match(doc.html('nav'), /<a href="#insights" class="active" aria-current="page">/);
 
   await doc.navigate('#insights');

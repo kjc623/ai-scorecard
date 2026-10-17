@@ -8,7 +8,7 @@
 // as an absent marker, and a genuine zero renders as `0`. They are different CSS classes fed by
 // different value kinds, so a stylesheet change cannot merge them by accident either.
 
-import { formatBytes, formatCount, formatInstant, formatPercent, formatScore } from './format.js';
+import { formatBytes, formatCount, formatInstant, formatPercent, formatScore, formatWhen } from './format.js';
 import { UNRECOGNISED_TOOL } from './vocab.js';
 
 export { UNRECOGNISED_TOOL };
@@ -32,7 +32,8 @@ export function renderValue(value) {
     case 'number':
       return `<span class="v-number">${escapeHtml(value.text ?? formatCount(value.value))}</span>`;
     case 'vocab':
-      return `<span class="v-vocab ${vocabClass(value.key ?? value.text)}">${escapeHtml(value.text)}</span>`;
+      // A vocabulary value reads as words, with the value it stands for kept on hover.
+      return `<span class="v-vocab ${vocabClass(value.key ?? value.text)}" title="${escapeHtml(value.key ?? value.text)}">${escapeHtml(vocabWords(value.text))}</span>`;
     case 'absent':
     default:
       return '<span class="v-absent" title="Not carried by this response">—</span>';
@@ -40,6 +41,9 @@ export function renderValue(value) {
 }
 
 const MEASURE_KINDS = Object.freeze(['measure', 'measure-bytes', 'measure-score', 'count', 'share']);
+
+/** The three sanction decisions, as the decision control and its chip spell them. */
+const DECISION_TEXT = Object.freeze({ sanctioned: 'Sanctioned', unsanctioned: 'Unsanctioned', unknown: 'No decision yet' });
 
 /** A data bar behind a number: the same value, drawn, scaled to the largest value in its column. */
 function dataBar(raw, max) {
@@ -87,8 +91,16 @@ function renderCell(row, column, max = 0) {
   if (kind === 'count') {
     return raw === null || raw === undefined ? renderValue({ kind: 'absent' }) : `${dataBar(raw, max)}<span class="v-number">${escapeHtml(formatCount(Number(raw)))}</span>`;
   }
+  // An instant reads as "Oct 16 14:33", with the full form on hover; a day is the day alone.
   if (kind === 'instant') {
-    return raw ? `<span class="v-time">${escapeHtml(formatInstant(raw))}</span>` : renderValue({ kind: 'absent' });
+    return raw ? `<span class="v-time" title="${escapeHtml(formatInstant(raw))}">${escapeHtml(formatWhen(raw))}</span>` : renderValue({ kind: 'absent' });
+  }
+  if (kind === 'day') {
+    return raw ? `<span class="v-time" title="${escapeHtml(formatInstant(raw))}">${escapeHtml(formatWhen(raw).replace(/ \d\d:\d\d$/, ''))}</span>` : renderValue({ kind: 'absent' });
+  }
+  // An actor's address stays on one line, so a row is as tall as its action, not its email.
+  if (kind === 'actor') {
+    return raw === null || raw === undefined || raw === '' ? renderValue({ kind: 'absent' }) : `<span class="v-text v-actor">${escapeHtml(String(raw))}</span>`;
   }
   if (kind === 'device-clock') {
     return raw
@@ -130,6 +142,21 @@ function renderCell(row, column, max = 0) {
   }
   if (kind === 'link') {
     return raw ? `<a class="cell-link" href="${escapeHtml(String(raw))}">${escapeHtml(column.linkLabel ?? 'Open')}</a>` : '';
+  }
+  // A sanction decision: a segmented control for a reader who may decide, the decision as a chip for
+  // one who may not, and nothing to decide for a tool outside the catalogue.
+  if (kind === 'decision') {
+    if (!raw) return renderValue({ kind: 'absent' });
+    const current = String(raw.current ?? 'unknown');
+    if (!raw.editable) {
+      return raw.tool_key
+        ? chip({ key: current, text: DECISION_TEXT[current] ?? current })
+        : `<span class="v-absent" title="Not in the tool catalogue">${escapeHtml(DECISION_TEXT.unknown)}</span>`;
+    }
+    const items = Object.keys(DECISION_TEXT).map((value) => (
+      `<button type="button" class="seg-item" aria-pressed="${current === value}" data-action="sanction" data-tool="${escapeHtml(raw.tool_key)}" data-value="${value}"${raw.pending ? ' disabled' : ''}>${escapeHtml(DECISION_TEXT[value])}</button>`
+    )).join('');
+    return `<div class="seg dp-seg seg-decision" role="group" aria-label="Sanction for ${escapeHtml(raw.name ?? raw.tool_key)}">${items}</div>`;
   }
   if (kind === 'vocab') {
     // A vocabulary value is rendered even when it is a value people forget: `unknown` and
@@ -183,19 +210,25 @@ function renderBreakdowns(table) {
 }
 
 /**
- * A table. `groupBy` names a column whose value heads a run of rows instead of repeating in each;
- * `rowHref` names the column holding the address a whole row opens. A row that names a submission
- * opens it regardless: the event screen is reached from a row, not typed.
+ * A table. `groupBy` names a column whose value heads a run of rows instead of repeating in each,
+ * and `collapsed` lists the groups folded away until their heading is opened; `rowHref` names the
+ * column holding the address a whole row opens. A row that names a submission opens it regardless:
+ * the event screen is reached from a row, not typed.
  */
 export function renderTable(table) {
   const numeric = (c) => MEASURE_KINDS.includes(c.kind);
   const columns = table.columns.filter((c) => c.key !== table.groupBy);
+  // A table of people draws no bars: a count is a count, a bar makes a league table.
   const maxima = new Map(columns.filter(numeric).map((c) => [
     c.key,
-    Math.max(0, ...table.rows.map(({ row }) => Number(row[c.key]) || 0)),
+    table.bars === false ? 0 : Math.max(0, ...table.rows.map(({ row }) => Number(row[c.key]) || 0)),
   ]));
   const head = columns.map((c) => `<th scope="col"${numeric(c) ? ' class="num"' : ''}>${escapeHtml(c.label)}</th>`).join('');
+  const collapsed = new Set(table.collapsed ?? []);
+  const sizes = new Map();
+  if (table.groupBy) for (const { row } of table.rows) sizes.set(String(row[table.groupBy] ?? ''), (sizes.get(String(row[table.groupBy] ?? '')) ?? 0) + 1);
   let group = null;
+  let folded = false;
   const body = table.rows.map(({ row }) => {
     const cells = columns.map((c) => `<td${numeric(c) ? ' class="num"' : ''}>${renderCell(row, c, maxima.get(c.key))}</td>`).join('');
     let heading = '';
@@ -203,7 +236,12 @@ export function renderTable(table) {
       const value = row[table.groupBy] === null || row[table.groupBy] === undefined ? '' : String(row[table.groupBy]);
       if (value !== group) {
         group = value;
-        heading = `<tr class="row-group"><th scope="rowgroup" colspan="${columns.length}">${value === '' ? '<span class="v-absent">—</span>' : escapeHtml(value)}</th></tr>`;
+        folded = collapsed.has(value);
+        // A folded group's heading is the control that opens it, with how many rows it holds.
+        const label = value === '' ? '<span class="v-absent">—</span>' : escapeHtml(value);
+        heading = folded
+          ? `<tr class="row-group row-fold"><th scope="rowgroup" colspan="${columns.length}"><button type="button" class="fold" data-fold="${escapeHtml(value)}" aria-expanded="false">${label}<span class="block-count">${sizes.get(value)}</span></button></th></tr>`
+          : `<tr class="row-group"><th scope="rowgroup" colspan="${columns.length}">${label}</th></tr>`;
       }
     }
     let href = null;
@@ -213,7 +251,8 @@ export function renderTable(table) {
     } else if (table.rowHref && typeof row[table.rowHref] === 'string' && row[table.rowHref] !== '') {
       href = row[table.rowHref];
     }
-    return heading + (href ? `<tr class="row-link" tabindex="0" data-href="${escapeHtml(href)}">${cells}</tr>` : `<tr>${cells}</tr>`);
+    const hidden = folded ? ' hidden' : '';
+    return heading + (href ? `<tr class="row-link" tabindex="0" data-href="${escapeHtml(href)}"${hidden}>${cells}</tr>` : `<tr${hidden}>${cells}</tr>`);
   }).join('');
   const empty = table.rows.length === 0
     ? `<tr class="row-empty"><td colspan="${columns.length}">${escapeHtml(table.emptyText ?? 'No rows.')}</td></tr>`
@@ -221,7 +260,7 @@ export function renderTable(table) {
   const count = table.rows.length > 0 ? `<span class="block-count">${table.rows.length}</span>` : '';
   const more = table.href ? `<a class="block-link" href="${escapeHtml(table.href)}">${escapeHtml(table.moreLabel ?? 'View all')}</a>` : '';
   return `<section class="table-block card" id="${escapeHtml(blockId(table.title))}"><div class="card-core"><header class="block-head"><h3>${escapeHtml(table.title)}</h3>${renderInfo(table.info)}${count}${more}</header>`
-    + (table.summary ? `<p class="block-summary">${escapeHtml(table.summary)}</p>` : '')
+    + (table.summary ? `<p class="block-summary">${escapeHtml(table.summary)}${table.summaryLink ? ` <a class="block-summary-link" href="${escapeHtml(table.summaryLink.href)}">${escapeHtml(table.summaryLink.label)}</a>` : ''}</p>` : '')
     + (table.breakdowns === false ? '' : renderBreakdowns(table))
     + `<div class="table-scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}${empty}</tbody></table></div></div></section>`;
 }
@@ -278,6 +317,12 @@ export function renderSparkline(points, { width = 96, height = 28 } = {}) {
 const vocabClass = (key) => `v-vocab-${escapeHtml(String(key ?? '').replace(/[^a-z_]/gi, ''))}`;
 /** A finding's severity is keyed apart from the other vocabularies: "high" is a serious state here, where elsewhere it is a strong signal. */
 const vocabKey = (column, value) => (column === 'severity' ? `severity_${value}` : value);
+
+/** A vocabulary value as words: "not_captured" reads "Not captured". A value already in words is kept. */
+const vocabWords = (text) => {
+  const s = String(text ?? '');
+  return /^[a-z][a-z0-9_]*$/.test(s) ? `${s[0].toUpperCase()}${s.slice(1).replace(/_/g, ' ')}` : s;
+};
 
 /** The element id a block is reached by on its own page, from its title: a tile jumps to it. */
 export const blockId = (title) => `b-${String(title ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;

@@ -56,14 +56,14 @@ test('Overview counts prompts, then the attachments and the sensitive prompts am
 
   const sensitive = view.tiles[2];
   assert.equal(sensitive.value.text, '161');
-  assert.equal(sensitive.note, 'of 4,836 prompts');
+  assert.equal(sensitive.note, 'of 4,836 prompts · 15 blocked', 'the blocked count is the line under the figure, not a bar');
   assert.match(sensitive.info, /^Prompts that matched an enforcement rule on one of their labels/);
-  assert.deepEqual(sensitive.split.map((p) => [p.key, p.count]), [['allowed', 68], ['blocked', 15], ['warned', 78]]);
+  assert.equal(sensitive.split, undefined, 'the tile has the one shape every tile has');
   assert.equal(sensitive.href, '#activity');
 
   const html = renderScreen(view, {});
   assert.match(html, /<a class="tile card tile-link" href="explore.html#events\?attachments=yes">/);
-  assert.match(html, /<a class="tile card tile-link" href="#activity">/, 'the split draws its parts without links, so the whole tile opens Activity');
+  assert.match(html, /<a class="tile card tile-link" href="#activity">/, 'the whole tile opens Activity');
 });
 
 test('the attachments link keeps the window where Search offers it, and takes Search\'s widest where it does not', async () => {
