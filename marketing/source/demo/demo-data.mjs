@@ -30,6 +30,8 @@ const ARJUN = `arjun.mehta@${DOMAIN}`;
 /** The ChatGPT redirect rule took effect this many working days back, at this hour (UTC). */
 const REDIRECT_WORKDAYS_AGO = 3;
 const REDIRECT_HOUR = 10;
+/** Codex CLI reached Engineering this many working days back: before that, nobody had sent it a prompt. */
+const CODEX_WORKDAYS_AGO = 9;
 
 // ── Seeded randomness ─────────────────────────────────────────────────────────────────────────
 
@@ -368,12 +370,17 @@ function makePrompt(rand, person, k, t) {
   };
 }
 
-/** Every prompt of the history, oldest first. From the redirect on, ChatGPT is tried less each day and Copilot takes its prompts. */
+/**
+ * Every prompt of the history, oldest first. From the redirect on, ChatGPT is tried less each day
+ * and Copilot takes its prompts; Codex CLI has prompts only from the day it arrived.
+ */
 function simulate(people, today) {
   const prompts = [];
   const redirectAt = workdaysBack(today, REDIRECT_WORKDAYS_AGO) + REDIRECT_HOUR * HOUR;
   const chatgpt = TOOL_INDEX.get('chatgpt_web');
   const copilot = TOOL_INDEX.get('microsoft_copilot');
+  const codex = TOOL_INDEX.get('codex');
+  const codexFrom = workdaysBack(today, CODEX_WORKDAYS_AGO);
   for (let back = HISTORY_DAYS - 1; back >= 0; back -= 1) {
     const day = today - back * DAY;
     const weekend = isWeekend(day);
@@ -387,6 +394,7 @@ function simulate(people, today) {
         const t = day + weighted(rand, weekend ? WEEKEND_HOURS : WEEKDAY_HOURS) * HOUR + Math.floor(rand() * HOUR);
         if (t >= away) continue;
         let k = TOOL_INDEX.get(person.tools[weighted(rand, person.weights)]);
+        if (k === codex && t < codexFrom) continue;
         if (k === chatgpt && t >= redirectAt) {
           if (rand() < 0.6 * Math.exp(-(t - redirectAt) / (1.5 * DAY))) {
             const attempt = makePrompt(rand, person, chatgpt, t - 40_000);
@@ -1077,6 +1085,196 @@ function auditTrail(body) {
   return envelope(w, now, slice, { source: 'ops.audit', window, page, audit: true, current: true });
 }
 
+// ── Insights: the window's coarse reads ─────────────────────────────────────────────────────
+
+const CATALOGUE_NAMES = new Map(CATALOGUE);
+
+/** A tool as the aggregates name it: its fingerprint, its name, and the decision on it or null. */
+const toolRef = (key) => ({ tool: `app:${key}`, tool_name: CATALOGUE_NAMES.get(key) ?? key, sanctioned_state: TOOLS[TOOL_INDEX.get(key)]?.sanction ?? null });
+const toolKey = (x) => TOOLS[x.k].key;
+
+/** The buckets a window touches, as the state reads repeat their rows per bucket. */
+function bucketsOf(window, bucket, now) {
+  const from = window ? Date.parse(window.from) : now - 7 * DAY;
+  const to = window ? Date.parse(window.to) : now;
+  const seen = new Set();
+  for (let t = from; t < to; t += bucket === 'hour' ? HOUR : DAY) seen.add(bucketOf(t, bucket));
+  return [...seen].sort((a, b) => a - b);
+}
+
+/**
+ * Each team's prompts per tool, with the demand for every tool not sanctioned beside them: who used
+ * it across everyone and per team, each person counted once over the window.
+ */
+function teamDemand(body) {
+  const now = Date.now();
+  const w = world(now);
+  const { window } = readOf(body);
+  const bucket = readOf(body).bucket ?? 'month';
+  const prompts = promptsIn(w, window, nativeOf(bucket), now);
+  const team = (x) => w.people[x.p].team;
+  const cells = cellsOf(prompts, (x) => (team(x) ? `${bucketOf(x.t, bucket)}|${team(x)}|${x.k}` : null))
+    .map((c) => ({ ...c, bucket: bucketOf(c.first.t, bucket), team: team(c.first) }));
+  cells.sort((a, b) => b.bucket - a.bucket || a.team.localeCompare(b.team) || b.submissions - a.submissions);
+  const data = cells.map((c) => ({ bucket: iso(c.bucket), team: c.team, team_name: TEAM_NAMES.get(c.team), ...toolRef(toolKey(c.first)), submissions: c.submissions }));
+  const demand = [];
+  for (const t of TOOLS) {
+    if (t.sanction === 'sanctioned') continue;
+    const users = new Set(prompts.filter((x) => toolKey(x) === t.key).map((x) => x.p));
+    if (users.size === 0) continue;
+    const inTeams = [...users].filter((p) => w.people[p].team);
+    demand.push({ ...toolRef(t.key), team_id: null, team_name: null, team_size: null, people: users.size, people_in_teams: inTeams.length });
+    for (const team of TEAMS) {
+      const people = inTeams.filter((p) => w.people[p].team === team.id).length;
+      if (people > 0) demand.push({ ...toolRef(t.key), team_id: team.id, team_name: team.name, team_size: team.size, people, people_in_teams: null });
+    }
+  }
+  const active = new Set(prompts.map((x) => x.p));
+  const team_coverage = [{ users_all: active.size, users_in_teams: [...active].filter((p) => w.people[p].team).length, teams: TEAMS.length }];
+  return envelope(w, now, data, { source: 'mart.agg_team_period', window, bucket, meta: { extras: { demand, team_coverage } } });
+}
+
+/** The prompts holding each built-in label, per tool and its decision, and those a rule naming the label acted on. */
+function labelCoverage(body) {
+  const now = Date.now();
+  const w = world(now);
+  const { window } = readOf(body);
+  const bucket = readOf(body).bucket ?? 'month';
+  const prompts = promptsIn(w, window, nativeOf(bucket), now).filter((x) => x.label && x.label !== FALCON.label);
+  const cells = cellsOf(prompts, (x) => `${bucketOf(x.t, bucket)}|${x.label}|${x.k}`).map((c) => ({ ...c, bucket: bucketOf(c.first.t, bucket) }));
+  cells.sort((a, b) => b.bucket - a.bucket || a.first.label.localeCompare(b.first.label) || b.submissions - a.submissions);
+  const data = cells.map((c) => ({ bucket: iso(c.bucket), class: c.first.label, ...toolRef(toolKey(c.first)), submissions: c.submissions, flagged: c.sensitive }));
+  return envelope(w, now, data, { source: 'mart.agg_class_period', window, bucket });
+}
+
+/** Prompts per tool over the window, or per bucket by the decision on the tool: the two ways Insights reads tool usage. */
+function toolUsage(body) {
+  const now = Date.now();
+  const w = world(now);
+  const { window } = readOf(body);
+  const byDecision = (body?.dimensions ?? []).includes('sanctioned_state');
+  const bucket = readOf(body).bucket ?? (byDecision ? 'day' : 'month');
+  const prompts = promptsIn(w, window, nativeOf(bucket), now);
+  const keyOf = byDecision ? (x) => sanctionOf(x.k) : (x) => x.k;
+  const cells = cellsOf(prompts, (x) => `${bucketOf(x.t, bucket)}|${keyOf(x)}`).map((c) => ({ ...c, bucket: bucketOf(c.first.t, bucket) }));
+  cells.sort((a, b) => (byDecision ? a.bucket - b.bucket : b.bucket - a.bucket) || b.submissions - a.submissions);
+  const data = cells.map((c) => (byDecision
+    ? { bucket: iso(c.bucket), sanctioned_state: TOOLS[c.first.k].sanction, submissions: c.submissions }
+    : { bucket: iso(c.bucket), ...toolRef(toolKey(c.first)), submissions: c.submissions }));
+  return envelope(w, now, data, { source: 'mart.v_tool_usage', aggregate: 'mart.agg_tool_period', window, bucket });
+}
+
+// What device discovery finds beyond prompts: the coding tools installed where their users work and
+// on a few other developer machines, Copilot in some editors, a desktop app and a local runtime on
+// a few laptops. Drawn per device from a seed, so the inventory holds still between reads.
+const DISCOVERED = Object.freeze({
+  claude_code: ['cli_installed', 'coding_agent'],
+  codex: ['cli_installed', 'coding_agent'],
+  cursor: ['app_installed', 'ide'],
+  github_copilot: ['ide_extension', 'ide_assistant'],
+  chatgpt_desktop: ['app_installed', 'chat_assistant'],
+  ollama: ['app_installed', 'local_runtime'],
+});
+
+function discovery(body) {
+  const now = Date.now();
+  const w = world(now);
+  const { window } = readOf(body);
+  const bucket = readOf(body).bucket ?? 'month';
+  const scanned = w.devices.filter((d) => !d.neverReported);
+  const found = new Map();
+  const add = (key, type, item, d) => {
+    const id = `${key}|${type}|${item}`;
+    const entry = found.get(id) ?? { key, type, item, devices: new Set(), lastSeen: 0 };
+    entry.devices.add(d.id);
+    entry.lastSeen = Math.max(entry.lastSeen, d.lastSeen ?? now - d.quietMinutes * MINUTE);
+    found.set(id, entry);
+  };
+  for (const d of scanned) {
+    const rand = random(seedOf('discovery', d.id));
+    const used = new Set(d.person?.tools ?? []);
+    for (const key of ['claude_code', 'codex', 'cursor']) if (used.has(key) || (d.developer && rand() < 0.08)) add(key, DISCOVERED[key][0], '', d);
+    if (d.developer && rand() < 0.3) add('github_copilot', DISCOVERED.github_copilot[0], '', d);
+    if (rand() < 0.04) add('chatgpt_desktop', DISCOVERED.chatgpt_desktop[0], '', d);
+    if (d.developer && rand() < 0.12) {
+      add('ollama', DISCOVERED.ollama[0], '', d);
+      add('ollama', 'local_model', 'llama3.1', d);
+      if (rand() < 0.4) add('ollama', 'local_model', 'qwen2.5-coder', d);
+    }
+  }
+  const entries = [...found.values()].sort((a, b) => a.key.localeCompare(b.key) || a.type.localeCompare(b.type) || a.item.localeCompare(b.item));
+  // Ollama arrived after the rollout; everything else was on the devices when discovery first ran.
+  const firstSeen = (key) => iso(key === 'ollama' ? dayOf(now) - 16 * DAY : rolloutAt(now));
+  const data = bucketsOf(window, bucket, now).flatMap((b) => entries.map((e) => ({
+    bucket: iso(b), tool: `app:${e.key}`, discovery_type: e.type, item: e.item, devices: e.devices.size, last_seen: iso(e.lastSeen),
+    tool_name: CATALOGUE_NAMES.get(e.key), category: DISCOVERED[e.key][1], sanctioned_state: toolRef(e.key).sanctioned_state, first_seen: firstSeen(e.key),
+  })));
+  const inventory_scan = [{ devices_enrolled: w.devices.length, scanned: scanned.length, not_scanned: w.devices.length - scanned.length, switched_off: 0 }];
+  return envelope(w, now, data, { source: 'mart.agg_discovery_period', window, bucket, meta: { measure_semantics: { devices: 'distinct_lower_bound' }, extras: { inventory_scan } } });
+}
+
+// What a coding agent reports beyond its prompts: the models it calls, in the share of requests each
+// takes, how many actions it runs per prompt, and how much context it sends with each prompt.
+const AGENTS = Object.freeze({
+  claude_code: { models: [['claude-sonnet-4-5', 0.78], ['claude-haiku-4-5', 0.22]], actions: 2.4, context: 4 },
+  codex: { models: [['gpt-5-codex', 1]], actions: 1.8, context: 3 },
+  cursor: { models: [['claude-sonnet-4-5', 0.55], ['gpt-5', 0.45]], actions: 1.2, context: 3 },
+});
+
+/** The model a prompt went to, spread by its sender and minute so the shares hold over any window. */
+function modelOf(x) {
+  const agent = AGENTS[toolKey(x)];
+  const share = ((x.p * 7919 + Math.floor(x.t / MINUTE)) % 1000) / 1000;
+  let acc = 0;
+  for (const [model, part] of agent.models) {
+    acc += part;
+    if (share < acc) return model;
+  }
+  return agent.models.at(-1)[0];
+}
+
+function agents(body) {
+  const now = Date.now();
+  const w = world(now);
+  const { window } = readOf(body);
+  const bucket = readOf(body).bucket ?? 'month';
+  const prompts = promptsIn(w, window, nativeOf(bucket), now).filter((x) => AGENTS[toolKey(x)]);
+  const byTool = cellsOf(prompts, (x) => `${bucketOf(x.t, bucket)}|${x.k}`).map((c) => ({ ...c, bucket: bucketOf(c.first.t, bucket) }));
+  const byModel = cellsOf(prompts, (x) => `${bucketOf(x.t, bucket)}|${x.k}|${modelOf(x)}`).map((c) => ({ ...c, bucket: bucketOf(c.first.t, bucket), model: modelOf(c.first) }));
+  const data = [];
+  for (const tool of byTool.sort((a, b) => b.bucket - a.bucket || a.first.k - b.first.k)) {
+    const agent = AGENTS[toolKey(tool.first)];
+    const base = { bucket: iso(tool.bucket), ...toolRef(toolKey(tool.first)) };
+    data.push({ ...base, model: '', requests: 0, actions: Math.round(tool.submissions * agent.actions), input_tokens: 0, output_tokens: 0, users: tool.people.size, tool_users: tool.people.size });
+    for (const c of byModel.filter((m) => m.bucket === tool.bucket && m.first.k === tool.first.k).sort((a, b) => b.submissions - a.submissions)) {
+      const input = Math.round((c.bytes / 4) * agent.context);
+      data.push({ ...base, model: c.model, requests: c.submissions, actions: 0, input_tokens: input, output_tokens: Math.round(input / 20), users: c.people.size, tool_users: tool.people.size });
+    }
+  }
+  return envelope(w, now, data, { source: 'mart.agg_agent_period', window, bucket, meta: { measure_semantics: { users: 'distinct_lower_bound', tool_users: 'distinct_lower_bound' } } });
+}
+
+/** The tools whose first prompt ever fell in the window, newest first, with who used each in it. */
+function firstSeen(body) {
+  const now = Date.now();
+  const w = world(now);
+  const { window } = readOf(body);
+  const from = window ? Date.parse(window.from) : now - 7 * DAY;
+  const to = Math.min(window ? Date.parse(window.to) : now, now - LAG);
+  const first = new Map();
+  for (const x of w.prompts) {
+    if (x.t >= to) break;
+    if (!first.has(x.k)) first.set(x.k, x.t);
+  }
+  const inWindow = promptsIn(w, window, 'day', now);
+  const rows = [...first.entries()].filter(([, t]) => t >= from).sort((a, b) => b[1] - a[1])
+    .map(([k, t]) => ({ first_seen: iso(dayOf(t)), ...toolRef(TOOLS[k].key), people: new Set(inWindow.filter((x) => x.k === k).map((x) => x.p)).size }));
+  const limit = body?.limit ?? 200;
+  const data = rows.slice(0, limit);
+  const page = { returned: data.length, next_cursor: null, snapshot_upper_bound: iso(now), newer_events_exist: false };
+  return envelope(w, now, data, { source: 'mart.v_tool_first_seen', aggregate: 'mart.agg_tool_period', window, page, meta: rows.length > limit ? { truncated: true } : {} });
+}
+
 const QUERY = {
   q1_tools_ranked: toolsRanked,
   q2_unsanctioned_users: toolUsers,
@@ -1093,6 +1291,12 @@ const QUERY = {
   'ops.collector_state': collectorStates,
   'ops.enforcement_rule': ruleList,
   'mart.agg_rule_period': ruleMatches,
+  'mart.agg_team_period': teamDemand,
+  'mart.agg_class_period': labelCoverage,
+  'mart.v_tool_usage': toolUsage,
+  'mart.agg_discovery_period': discovery,
+  'mart.agg_agent_period': agents,
+  'mart.v_tool_first_seen': firstSeen,
 };
 
 /** The answer to a query document, or null to fall back to the dashboard's fixtures. */

@@ -51,8 +51,8 @@ test('teams run down the side and the tools across the top, each cell a part of 
   assert.equal(table.rows[0].row.href, '#teams?team=7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0001&preset=d30');
   assert.deepEqual(view.tiles.map((t) => [t.label, t.value.text, t.note, t.jump ?? t.href]), [
     ['Tools not sanctioned', '3', 'used in this window', 'Seats to license'],
-    ['Teams using them', '3', 'of 4 teams', 'Tools not sanctioned, by team'],
-    ['Most seats', '230', 'users of Claude Code', '#tools?tool=app%3Aclaude_code&preset=d30'],
+    ['Teams affected', '3', 'of 4 teams', 'Tools not sanctioned, by team'],
+    ['Largest licence', '230', 'users of Claude Code', '#tools?tool=app%3Aclaude_code&preset=d30'],
   ], 'each tile opens the table that holds its figure, and the most seats opens the tool');
   assert.match(view.tiles[0].info, /^Tools marked unsanctioned or with no decision yet/);
 });
@@ -111,5 +111,5 @@ test('the old Demand address opens Licensing', async () => {
   assert.equal(doc.location.hash, '#insights?view=licensing');
   const html = doc.html('app');
   assert.match(html, /<a class="page-tab" href="#insights\?view=licensing" aria-current="page">Licensing<\/a>/);
-  assert.match(html, /Most seats/);
+  assert.match(html, /Largest licence/);
 });

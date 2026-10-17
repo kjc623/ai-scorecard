@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderScreen, renderValue, renderTable, renderSeries, escapeHtml } from '../src/render.js';
 import { readState } from '../src/states.js';
-import { devicesView, deviceView, postureView, rulesView, sanctionView, teamsView, toolsView, eventView } from '../src/views.js';
+import { devicesView, deviceView, postureView, rulesView, sanctionView, teamsView, toolView, toolsView, eventView } from '../src/views.js';
 import { STATE_ENVELOPES, SCENARIO_NAMES, RECORD_ROWS, RULE_ROWS, TOOL_ROWS, fixtureTransport } from './fixtures.mjs';
 import { createDashboard, SCREENS, refusalFrom } from '../src/app.js';
 import { createQueryApi } from '../src/transport.js';
@@ -86,14 +86,14 @@ test('a tool cell shows the name, and the fingerprint only beside an unrecognise
 });
 
 test('the tile for a total counts a small cell in full, and says absent when no cell carries the measure', () => {
-  const mixed = readState(envelope('ok', { data: [{ submissions: 10 }, { submissions: 2 }], freshness: FRESH, coverage: COMPLETE }));
-  const submissions = toolsView(mixed).tiles.find((t) => t.label === 'Prompts');
+  const mixed = readState(envelope('ok', { data: [{ tool: 'a', submissions: 10 }, { tool: 'a', submissions: 2 }], freshness: FRESH, coverage: COMPLETE }));
+  const submissions = toolView({ usage: mixed }, { tool: 'a' }).tiles.find((t) => t.label === 'Prompts');
   assert.equal(submissions.value.kind, 'number');
   assert.equal(submissions.value.text, '12');
   assert.equal(submissions.note, null);
 
   const none = readState(envelope('ok', { data: [{ tool: 'a' }], freshness: FRESH, coverage: COMPLETE }));
-  assert.equal(toolsView(none).tiles.find((t) => t.label === 'Prompts').value.kind, 'absent');
+  assert.equal(toolView({ usage: none }, { tool: 'a' }).tiles.find((t) => t.label === 'Prompts').value.kind, 'absent');
 });
 
 test('a series refuses to exist for an event source and draws every bucket to scale, small ones included', () => {
@@ -120,10 +120,10 @@ test('the overview summarises usage beside the enrolled denominator', async () =
   assert.equal(view.id, 'posture');
   assert.equal(view.title, 'Overview');
   assert.deepEqual(view.tiles.map((t) => t.label), ['Prompts', 'Attachments', 'Sensitive prompts', 'Users', 'Devices reporting']);
-  assert.match(view.tiles[4].note, /of 4,620 enrolled devices/);
-  assert.deepEqual(view.tiles[4].split.map((p) => [p.label, p.count, p.href]), [['Reporting', 4180, undefined], ['Not reporting', 440, undefined]], 'the whole tile opens Devices');
+  assert.equal(view.tiles[4].note, 'of 4,620 enrolled · 440 not reporting', 'the missing devices are the line under the figure');
+  assert.equal(view.tiles[4].split, undefined, 'every tile is one figure and one line');
   assert.equal(view.tiles[4].href, '#devices');
-  assert.deepEqual(view.blocks.map((b) => [b.kind, b.title]), [['share', 'Applications'], ['ranking', 'Policy at work'], ['ranking', 'Tools in use']]);
+  assert.deepEqual(view.blocks.map((b) => [b.kind, b.title]), [['share', 'Tools by decision'], ['ranking', 'Policy at work'], ['ranking', 'Tools in use']]);
   assert.deepEqual(view.blocks.map((b) => b.cardHref ?? null), ['#sanction', '#rules', null], 'a card with no link inside it is one link');
   assert.equal(view.blocks[2].href, '#tools');
   assert.deepEqual(view.tables, []);
@@ -177,7 +177,7 @@ test('the devices screen says the fleet, what needs attention, and each device i
   assert.match(html, /alice@contoso\.example/);
   assert.match(html, /Alice Smith/, 'the directory display name is shown beside the account name');
   assert.match(html, /1\.4\.2/);
-  assert.match(html, /M3 · prompt/, 'the collection mode is said in words, not as a code');
+  assert.match(html, /Full prompt · M3/, 'the collection mode is said in words, with its code after');
   assert.match(html, /2 healthy/, 'a device sums its collectors by state');
   assert.match(html, /1 degraded · 1 healthy/, 'the worst state leads');
   assert.ok(!/Spool|watermark/i.test(html), 'pipeline internals are not on this screen');
@@ -310,14 +310,14 @@ const listOf = (data, source, meta = {}) => readState(envelope('ok', { data, fre
 test('Policy → Tools lists the tools waiting for a decision first, then the unsanctioned and the sanctioned, each opening its last 30 days', () => {
   const view = sanctionView(listOf(TOOL_ROWS, 'mart.v_tool_usage', { applied_bucket: 'day' }));
   const table = view.tables[0];
-  assert.equal(table.groupBy, 'decision');
-  assert.deepEqual(table.rows.map(({ row }) => [row.decision, row.tool_cell.primary]), [
-    ['No decision yet', 'Unrecognised tool'], ['Unsanctioned', 'Claude Code'], ['Sanctioned', 'ChatGPT'], ['Sanctioned', 'Legacy summariser'],
+  assert.equal(table.groupBy, 'group');
+  assert.deepEqual(table.rows.map(({ row }) => [row.group, row.tool_cell.primary, row.decision.current]), [
+    ['In use, no decision yet', 'Unrecognised tool', 'unknown'], ['In use', 'Claude Code', 'unsanctioned'], ['In use', 'ChatGPT', 'sanctioned'], ['In use', 'Legacy summariser', 'sanctioned'],
   ]);
+  assert.deepEqual(table.columns.map((c) => c.label), ['Group', 'Tool', 'Users', 'Prompts', 'Sensitive', 'Rules', 'Decision']);
   assert.equal(table.rows[1].row.href, '#tools?tool=tls_b6681b043244c43f&preset=d30');
-  assert.equal(view.lead[0].title, 'Applications');
-  assert.equal(view.lead[0].href, undefined, 'the page itself is where a decision is made, so the share links nowhere');
-  assert.match(view.subtitle, /A tool with no decision is unknown, never unsanctioned\./);
+  assert.equal(view.lead, undefined, 'the decisions are in the rows, so no share sits above them');
+  assert.match(view.subtitle, /A tool with no decision is neither sanctioned nor unsanctioned\./);
 });
 
 test('Policy → Rules as a viewer reads it: every rule with what it decided over the last 30 days', () => {
@@ -339,7 +339,7 @@ test('a device whose app waits for a restart says so in its status and gives the
   const view = deviceView({ device: DEVICE, row, collectors }, { now: new Date('2026-10-01T12:00:00Z') });
   assert.deepEqual(view.tiles[0].value, { kind: 'vocab', text: 'Restart needed', key: 'degraded' });
   const html = renderScreen(view, SHELL);
-  assert.match(html, /tool_config_claude_code<\/span><\/td><td><span class="v-vocab v-vocab-degraded" title="degraded">degraded<\/span><\/td><td><span class="cell-stack" title="restart_required"><span class="cell-primary">The app was running when its settings changed and needs a restart<\/span><\/span><\/td>/);
+  assert.match(html, /<span class="cell-primary">Claude Code settings<\/span><span class="cell-secondary">tool_config_claude_code<\/span><\/span><\/td><td><span class="v-vocab v-vocab-degraded" title="degraded">Degraded<\/span><\/td><td><span class="cell-stack" title="restart_required"><span class="cell-primary">The app was running when its settings changed and needs a restart<\/span><\/span><\/td>/);
 });
 
 test('a device lists every collector it reported, with its state, the cause in words and the code on hover', () => {
@@ -353,11 +353,18 @@ test('a device lists every collector it reported, with its state, the cause in w
   const view = deviceView({ device: DEVICE, row, collectors }, { now: new Date('2026-10-01T12:00:00Z') });
   assert.equal(view.title, 'MAC-DESIGN-2');
   assert.equal(view.subtitle, `macOS 15 · Managed · Agent 1.4.2 · Last used by bob@contoso.example · ${DEVICE}`);
-  assert.deepEqual(view.tiles.map((t) => [t.label, t.value.text]), [['Status', 'Degraded'], ['Applied mode', 'M2 · excerpt'], ['Collectors', '3']]);
+  assert.deepEqual(view.tiles.map((t) => [t.label, t.value.text]), [['Status', 'Degraded'], ['Applied mode', 'Short excerpt · M2'], ['Collectors', '3']]);
   assert.deepEqual(view.actions.map((a) => a.href), [`explore.html#events?device=${DEVICE}`, '#devices']);
   const html = renderScreen(view, SHELL);
-  assert.match(html, /<td><span class="v-text">egress_proxy<\/span><\/td><td><span class="v-vocab v-vocab-degraded" title="degraded">degraded<\/span><\/td><td><span class="cell-stack" title="client_pinned"><span class="cell-primary">An app pins its certificates, so its traffic cannot be inspected<\/span><\/span><\/td>/);
-  assert.match(html, /tool_config_cursor<\/span><\/td><td><span class="v-vocab v-vocab-disabled" title="disabled">Off in policy<\/span><\/td><td><span class="cell-stack"><span class="cell-primary">None<\/span><\/span><\/td>/, 'switched off by policy is not a fault and gives no cause');
+  const table = view.tables[0];
+  assert.equal(table.groupBy, 'group');
+  assert.deepEqual(table.rows.map(({ row }) => [row.group, row.collector.primary, row.collector.secondary]), [
+    ['1 collector needs attention', 'Network proxy', 'egress_proxy'], ['1 healthy, 1 off in policy', 'Capture core', 'capture_core'], ['1 healthy, 1 off in policy', 'Cursor settings', 'tool_config_cursor'],
+  ], 'the collector that needs attention leads, named by what it watches');
+  assert.deepEqual(table.collapsed, ['1 healthy, 1 off in policy'], 'the ones that are fine stay folded');
+  assert.match(html, /<td><span class="cell-stack"><span class="cell-primary">Network proxy<\/span><span class="cell-secondary">egress_proxy<\/span><\/span><\/td><td><span class="v-vocab v-vocab-degraded" title="degraded">Degraded<\/span><\/td><td><span class="cell-stack" title="client_pinned"><span class="cell-primary">An app pins its certificates, so its traffic cannot be inspected<\/span><\/span><\/td>/);
+  assert.match(html, /tool_config_cursor<\/span><\/span><\/td><td><span class="v-vocab v-vocab-disabled" title="disabled">Off in policy<\/span><\/td><td><span class="cell-stack"><span class="cell-primary">None<\/span><\/span><\/td>/, 'switched off by policy is not a fault and gives no cause');
+  assert.match(html, /<button type="button" class="fold" data-fold="1 healthy, 1 off in policy" aria-expanded="false">1 healthy, 1 off in policy<span class="block-count">2<\/span><\/button>/);
 
   const busy = readState(envelope('busy', { error: { code: 'rate_limited', message: 'Busy, try again shortly' } }));
   const unread = deviceView({ device: DEVICE, row, collectors: busy }, { now: new Date('2026-10-01T12:00:00Z') });

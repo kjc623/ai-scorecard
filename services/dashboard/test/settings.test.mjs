@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 
 import { createAdminApi, createQueryApi, normaliseSettings } from '../src/transport.js';
 import { createSettings, modeIncreaseNeedsConfirmation, searchTierAllowed, effectiveMode } from '../src/settings.js';
-import { renderSanctionDecisions, renderSettings } from '../src/settings-render.js';
+import { renderSettings } from '../src/settings-render.js';
 import { boot } from '../src/app.js';
 import { fakeDocument } from './helpers.mjs';
 import { fixtureTransport } from './fixtures.mjs';
@@ -76,7 +76,7 @@ async function loaded(answers) {
   const changes = [];
   const controller = createSettings({ admin, onChange: (s) => changes.push(s.status) });
   await controller.load();
-  const html = () => renderSettings(controller.state) + renderSanctionDecisions(controller.state);
+  const html = () => renderSettings(controller.state);
   return { controller, requests, changes, html };
 }
 
@@ -106,20 +106,15 @@ test('refused: a 403 says only an admin can open it', async () => {
   assert.match(down.html(), /The admin API could not be reached/);
 });
 
-test('populated: Collection shows the requested mode and retention; the sanction decisions list every tool', async () => {
+test('populated: Collection shows the requested mode and retention, and no sanction decision', async () => {
   const { controller } = await loaded({ [GET]: () => ({ status: 200, body: populated() }) });
   const page = renderSettings(controller.state);
   assert.match(page, /Collection mode/);
-  assert.match(page, /M3 · prompt/);
+  assert.match(page, /Full prompt · M3/, 'the mode in words, with its code after');
   assert.match(page, /Claude Code/);
   assert.match(page, /Store and search prompts/, 'prompt storage is one switch');
   assert.doesNotMatch(page, /Attachment names|Full text|bytes|MB/, 'no search tiers and no byte allowance are offered');
-  assert.doesNotMatch(page, /Sanction decisions/, 'sanction is decided on Policy → Tools');
-  const decisions = renderSanctionDecisions(controller.state);
-  assert.match(decisions, /<h3>Sanction decisions<\/h3>/);
-  assert.match(decisions, /aria-label="Sanction for Claude Code"/);
-  assert.match(decisions, /unsanctioned/);
-  assert.match(decisions, /A tool with no decision is <em>unknown<\/em>, never unsanctioned\./);
+  assert.doesNotMatch(page, /Sanction for Claude Code|data-action="sanction"/, 'sanction is decided on Policy → Tools, in the tool\'s own row');
 });
 
 test('the prompt switch turns storage and search on as one setting, and says what off means', async () => {
@@ -545,7 +540,7 @@ test('kill switch: a control per interception route, off by default, with a reas
   }
   assert.doesNotMatch(card, /data-value="off"/, 'nothing to clear while no switch is tripped');
   assert.match(card, /stops decryption and enforcement/);
-  assert.match(card, /reason code is required/i);
+  assert.match(card, /A reason is required and goes into the audit trail as a short code/);
 });
 
 test('kill switch: tripping needs a reason code, sends it, and the card shows the switch tripped; clearing sends off', async () => {
@@ -651,7 +646,7 @@ test('a viewer\'s Settings is Devices alone; Collection is refused in the page a
   await doc.navigate('#settings');
   assert.match(doc.html('app'), /This page is not offered to you here/);
   await doc.navigate('#sanction');
-  assert.doesNotMatch(doc.html('app'), /Sanction decisions/, 'a viewer reads the decisions and changes none');
+  assert.doesNotMatch(doc.html('app'), /data-action="sanction"/, 'a viewer reads the decisions and changes none');
   assert.equal(requests.length, 0, 'the admin API was not asked');
 });
 
@@ -669,8 +664,10 @@ test('an admin opens Settings on Collection over the admin API, and decides sanc
   await doc.navigate('#sanction');
   const policy = doc.html('app');
   assert.match(policy, /<h2>Policy<\/h2>/);
-  assert.match(policy, /<h3>Sanction decisions<\/h3>/);
-  assert.ok(policy.indexOf('Sanction decisions') < policy.indexOf('Tools by decision'), 'the decisions sit above the tools in use');
+  assert.doesNotMatch(policy, /<h3>Sanction decisions<\/h3>/, 'no list of its own: the decision is a control in each tool\'s row');
+  assert.match(policy, /<div class="seg dp-seg seg-decision" role="group" aria-label="Sanction for Claude Code">/);
+  assert.match(policy, /data-action="sanction" data-tool="claude_code" data-value="sanctioned"/);
+  assert.match(policy, /<button type="button" class="fold" data-fold="Unobserved in the last 30 days" aria-expanded="false">/, 'the catalogue tools not seen are folded away');
 });
 
 test('an absent count is null after normalising, never 0', () => {

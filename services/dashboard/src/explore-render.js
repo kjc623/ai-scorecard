@@ -11,11 +11,12 @@
 //     after a retrieval the content vault approved for that record, and never from a query.
 
 import { UNRECOGNISED_TOOL, escapeHtml } from './render.js';
-import { formatBytes, formatCount, formatDuration, formatInstant, formatScore } from './format.js';
+import { formatBytes, formatCount, formatDuration, formatInstant, formatScore, formatWhen } from './format.js';
 import { coverageText, freshnessText, emptyStateFor, fixSentence } from './states.js';
 import { eventView, eventObservations } from './views.js';
-import { EXPLORE_DATASETS, EXPLORE_DATASET_IDS, exploreWindows, TEXT_PAGE_SIZES } from './explore-model.js';
+import { EXPLORE_DATASETS, EXPLORE_DATASET_IDS, exploreColumns, exploreWindows, TEXT_PAGE_SIZES } from './explore-model.js';
 import { RULE_ROUTES } from './rules.js';
+import { COLLECTION_MODE_LABELS, COLLECTION_MODE_CODES, DATA_CLASS_NAMES } from './vocab.js';
 
 /** Which values of which field get a tint. Only real warning and fault states are tinted. */
 const EXPLORE_TONES = Object.freeze({
@@ -37,10 +38,30 @@ const EXPLORE_ABSENT = Object.freeze({
   collector: 'none',
   collector_state: 'unknown',
   last_seen_at: 'never',
-  confidence: 'not classified',
+  confidence: 'Not classified',
 });
 
 const DEVICE_CLOCK_TITLE = 'The device clock: possibly skewed, never normalised into server time';
+
+/** What a stored value is called in a cell, a filter or the event panel; a value not listed reads as itself. */
+const EXPLORE_WORDS = Object.freeze({
+  action: Object.freeze({ blocked: 'Blocked', warned: 'Warned', logged: 'Logged' }),
+  content_state: Object.freeze({ not_captured: 'Not captured', local_only: 'On device', uploaded: 'Stored', shredded: 'Shredded' }),
+  mode: Object.freeze(Object.fromEntries(Object.keys(COLLECTION_MODE_LABELS).map((m) => [m, `${COLLECTION_MODE_LABELS[m]} (${COLLECTION_MODE_CODES[m]})`]))),
+  prompt_kind: Object.freeze({ user: 'A person', client_generated: 'The tool itself', unknown: 'Unknown' }),
+  routes: Object.freeze({ several: 'More than one route' }),
+  attachments: Object.freeze({ yes: 'With attachments' }),
+  severity: Object.freeze({ low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical' }),
+  review_state: Object.freeze({ open: 'Open', disputed: 'Disputed', confirmed: 'Confirmed' }),
+  confidence: Object.freeze({ degraded: 'Degraded' }),
+  class: Object.freeze(Object.fromEntries(Object.entries(DATA_CLASS_NAMES).map(([code, name]) => [code, `${name[0].toUpperCase()}${name.slice(1)}`]))),
+});
+
+/** A value in words: the word for it, else the value itself. */
+function wordFor(key, value) {
+  if (key === 'route') return ROUTE_NAMES[value] ?? value;
+  return EXPLORE_WORDS[key]?.[value] ?? value;
+}
 const LATE_FLUSH_MS = 3_600_000;
 
 function exploreAbsent(key) {
@@ -49,7 +70,7 @@ function exploreAbsent(key) {
 
 function exploreChip(key, value) {
   const tone = EXPLORE_TONES[key]?.[value];
-  return `<span class="x-chip${tone ? ` x-chip-${tone}` : ''}">${escapeHtml(value)}</span>`;
+  return `<span class="x-chip${tone ? ` x-chip-${tone}` : ''}" title="${escapeHtml(value)}">${escapeHtml(wordFor(key, value))}</span>`;
 }
 
 /** The routes by the names the Rules page gives them; a provider's admin API is not a rule route. */
@@ -72,10 +93,11 @@ function exploreRoutes(row, routes) {
   return ordered.map((r) => `<span class="x-chip" title="${escapeHtml(r)}">${escapeHtml(routeName(r, providerOf(row)))}</span>`).join(' ');
 }
 
+/** The labels on a prompt by name, with the code on hover; none found and not classified are different answers. */
 function exploreClasses(labels) {
-  if (labels === null || labels === undefined) return '<span class="x-absent">not classified</span>';
-  if (!Array.isArray(labels) || labels.length === 0) return '<span class="x-absent">none found</span>';
-  return labels.map((l) => `<span class="x-chip">${escapeHtml(typeof l === 'string' ? l : l.class)}</span>`).join(' ');
+  if (labels === null || labels === undefined) return '<span class="x-absent">Not classified</span>';
+  if (!Array.isArray(labels) || labels.length === 0) return '<span class="x-absent">No labels</span>';
+  return labels.map((l) => exploreChip('class', typeof l === 'string' ? l : l.class)).join(' ');
 }
 
 /** One value, rendered by the kind its column declares. */
@@ -85,7 +107,15 @@ export function renderExploreValue(row, column, { full = false } = {}) {
   if (raw === null || raw === undefined || raw === '') return exploreAbsent(column.key);
   switch (column.kind) {
     case 'server-clock':
-      return `<time class="x-time" datetime="${escapeHtml(raw)}">${escapeHtml(formatInstant(raw))}</time>`;
+      return `<time class="x-time" datetime="${escapeHtml(raw)}" title="${escapeHtml(formatInstant(raw))}">${escapeHtml(formatWhen(raw))}</time>`;
+    case 'when': {
+      // The device's clock, as the list scans it; the full form and the clock's caveat on hover.
+      const lag = row.received_at && !providerOf(row) ? Date.parse(row.received_at) - Date.parse(raw) : 0;
+      const late = lag > LATE_FLUSH_MS
+        ? ` <span class="x-lag" title="Received long after the device clock said it happened: a spool flush, not a burst of activity">${escapeHtml(formatDuration(raw, row.received_at))} before receipt</span>`
+        : '';
+      return `<time class="x-time x-device-clock" datetime="${escapeHtml(raw)}" title="${escapeHtml(formatInstant(raw))} · ${DEVICE_CLOCK_TITLE}">${escapeHtml(formatWhen(raw))}</time>${late}`;
+    }
     case 'device-clock': {
       // A provider's record is read on a schedule, so it always arrives after it happened.
       const lag = row.received_at && !providerOf(row) ? Date.parse(row.received_at) - Date.parse(raw) : 0;
@@ -159,11 +189,15 @@ export function renderExploreProblems(state) {
   return `<div class="x-problems"><p class="x-problems-head">Not searched. Nothing is dropped from a query, so fix ${state.problems.length === 1 ? 'this' : 'these'} first:</p><ul>${items}</ul></div>`;
 }
 
-/** The filters, as one row: a list for a field with known values, a short text field otherwise. */
+/**
+ * The filters, as one row: a list for a field with known values, a short text field otherwise. The
+ * collection mechanics sit under Advanced, with the toggle that shows the requests a tool sent on
+ * its own; Advanced opens of itself while one of them is set.
+ */
 export function renderExploreRail(state) {
   const dataset = EXPLORE_DATASETS[state.dataset];
   const active = dataset.fields.filter((f) => state.filters[f.name]).length;
-  const fields = dataset.fields.map((field) => {
+  const control = (field) => {
     const held = state.filters[field.name] ?? '';
     // The User field shows the person's name once the reference has been matched to one; the
     // reference is the value behind it, on hover.
@@ -176,19 +210,37 @@ export function renderExploreRail(state) {
     if (field.values) {
       const values = field.values.includes(value) || !value ? field.values : [...field.values, value];
       const options = values.map((v) => (
-        `<option value="${escapeHtml(v)}"${v === value ? ' selected' : ''}>${v === value ? `${escapeHtml(field.label)}: ` : ''}${escapeHtml(v)}</option>`
+        `<option value="${escapeHtml(v)}"${v === value ? ' selected' : ''}>${v === value ? `${escapeHtml(field.label)}: ` : ''}${escapeHtml(wordFor(field.name, v))}</option>`
       )).join('');
       return `<select class="x-select x-filter${on}" id="${id}" data-field="${field.name}" aria-label="${escapeHtml(field.label)}"><option value="">${escapeHtml(field.label)}</option>${options}</select>`;
     }
     const title = named ? `User reference ${held}` : field.hint ?? field.label;
     return `<input class="x-input x-filter${on}" id="${id}" type="text" data-field="${field.name}" value="${escapeHtml(value)}" autocomplete="off" spellcheck="false" placeholder="${escapeHtml(field.label)}" aria-label="${escapeHtml(field.label)}" title="${escapeHtml(title)}">`;
-  }).join('');
+  };
+  const plain = dataset.fields.filter((f) => !f.advanced).map(control).join('');
+  const advancedFields = dataset.fields.filter((f) => f.advanced);
   // The event list hides the requests a client made for itself unless this toggle is on. It is a
   // page setting, not a filter: it adds the `prompt_kind_not` predicate rather than a rail value.
   const include = dataset.id === 'events'
-    ? `<button type="button" class="x-seg-item" data-act="include" aria-pressed="${state.includeClientGenerated}" title="Show requests the client made for itself — titling, summaries, telemetry — alongside what people typed">Include client-generated requests</button>`
+    ? `<button type="button" class="x-seg-item x-include" data-act="include" aria-pressed="${state.includeClientGenerated}" title="Show the requests a tool sent on its own, such as titling, summaries and telemetry, alongside what people typed">Include requests the tool sent on its own</button>`
     : '';
-  return fields + include + (active > 0 ? `<button type="button" class="x-link" data-act="clear">Clear ${active}</button>` : '');
+  const advancedOn = advancedFields.filter((f) => state.filters[f.name]).length + (state.includeClientGenerated ? 1 : 0);
+  const advanced = advancedFields.length > 0 || include
+    ? `<details class="x-advanced"${advancedOn > 0 ? ' open' : ''}><summary class="x-filter">Advanced${advancedOn > 0 ? ` <span class="x-count">${advancedOn}</span>` : ''}</summary><div class="x-advanced-row">${advancedFields.map(control).join('')}${include}</div></details>`
+    : '';
+  return plain + advanced + (active > 0 ? `<button type="button" class="x-link" data-act="clear">Clear ${active}</button>` : '');
+}
+
+/** The optional columns of the list, each a box to tick; nothing for a list with none. */
+export function renderExploreColumns(state) {
+  const dataset = EXPLORE_DATASETS[state.dataset];
+  const optional = dataset.columns.filter((c) => c.optional);
+  if (optional.length === 0) return '';
+  const picked = state.columns ?? [];
+  const boxes = optional.map((c) => (
+    `<label class="x-column"><input type="checkbox" data-column="${escapeHtml(c.key)}"${picked.includes(c.key) ? ' checked' : ''}> ${escapeHtml(c.label)}</label>`
+  )).join('');
+  return `<details class="x-columns"><summary class="x-filter">Columns${picked.length > 0 ? ` <span class="x-count">+${picked.length}</span>` : ''}</summary><div class="x-columns-list">${boxes}</div></details>`;
 }
 
 function exploreNoun(dataset, count) {
@@ -204,7 +256,7 @@ export function renderExploreSummary(state) {
   const parts = [
     `<strong>${escapeHtml(formatCount(state.rows.length))} ${escapeHtml(exploreNoun(dataset, state.rows.length))}</strong> loaded${more ? ', more available' : ''}`,
   ];
-  if (state.result.audit?.entry_id) parts.push(`Audited read, entry ${escapeHtml(state.result.audit.entry_id)}`);
+  if (state.result.audit?.entry_id) parts.push(`<span title="Audited read, entry ${escapeHtml(state.result.audit.entry_id)}">Recorded in the audit trail</span>`);
   const newer = state.result.page?.newer_events_exist
     ? '<button type="button" class="x-link" data-act="run">Newer rows have arrived. Search again</button>'
     : '';
@@ -230,16 +282,16 @@ function exploreExportNote(state, dataset) {
   return '<button type="button" class="x-link" data-act="export">Export CSV</button>';
 }
 
-function exploreHead(dataset) {
-  return `<thead><tr>${dataset.columns.map((c) => `<th scope="col">${escapeHtml(c.label)}</th>`).join('')}</tr></thead>`;
+function exploreHead(columns) {
+  return `<thead><tr>${columns.map((c) => `<th scope="col">${escapeHtml(c.label)}</th>`).join('')}</tr></thead>`;
 }
 
-function exploreSkeleton(dataset) {
+function exploreSkeleton(columns) {
   const widths = [72, 64, 40, 56, 44, 60, 48, 36, 28];
   const rows = Array.from({ length: 8 }, (_, r) => (
-    `<tr>${dataset.columns.map((_c, i) => `<td><span class="x-skel" style="width:${widths[(i + r) % widths.length]}%"></span></td>`).join('')}</tr>`
+    `<tr>${columns.map((_c, i) => `<td><span class="x-skel" style="width:${widths[(i + r) % widths.length]}%"></span></td>`).join('')}</tr>`
   )).join('');
-  return `<table class="x-table" aria-hidden="true">${exploreHead(dataset)}<tbody>${rows}</tbody></table><p class="x-sr" role="status">Searching</p>`;
+  return `<table class="x-table" aria-hidden="true">${exploreHead(columns)}<tbody>${rows}</tbody></table><p class="x-sr" role="status">Searching</p>`;
 }
 
 /** The message, the fix the API named, and the one action that makes sense for a refusal. */
@@ -275,13 +327,14 @@ export function renderExploreResults(state) {
   if (state.status === 'blocked') {
     return '<div class="x-state"><h3>Not searched</h3><p>The query has something this page cannot place. Fix it above and search again. Nothing was sent.</p></div>';
   }
-  if (state.status === 'loading' || state.status === 'idle') return exploreSkeleton(dataset);
+  const columns = exploreColumns(dataset, state.columns ?? []);
+  if (state.status === 'loading' || state.status === 'idle') return exploreSkeleton(columns);
   if (state.status === 'refused') return exploreRefusal(state.result);
   if (state.rows.length === 0) return exploreEmpty(state, dataset);
 
   const body = state.rows.map((row) => {
     const key = dataset.rowKey(row);
-    const cells = dataset.columns.map((c) => `<td>${renderExploreValue(row, c)}</td>`).join('');
+    const cells = columns.map((c) => `<td>${renderExploreValue(row, c)}</td>`).join('');
     return `<tr class="x-row" tabindex="0" data-act="open" data-key="${escapeHtml(key)}" aria-selected="${key === state.detail.key}">${cells}</tr>`;
   }).join('');
 
@@ -289,12 +342,12 @@ export function renderExploreResults(state) {
   if (state.moreProblem) {
     foot = exploreRefusal(state.moreProblem);
   } else if (state.result.page?.next_cursor) {
-    foot = `<button type="button" class="x-btn" data-act="more"${state.loadingMore ? ' disabled' : ''}>${state.loadingMore ? 'Loading' : 'Load next page'}</button>`;
+    foot = `<button type="button" class="x-btn" data-act="more"${state.loadingMore ? ' disabled' : ''}>${state.loadingMore ? 'Loading' : 'Show more'}</button>`;
   } else {
     foot = `<p class="x-end">End of results.</p>`;
   }
   return `<table class="x-table"><caption class="x-sr">${escapeHtml(dataset.label)}. ${escapeHtml(dataset.ordering)}. Press Enter on a row for its detail.</caption>`
-    + `${exploreHead(dataset)}<tbody>${body}</tbody></table><div class="x-more">${foot}</div>`;
+    + `${exploreHead(columns)}<tbody>${body}</tbody></table><div class="x-more">${foot}</div>`;
 }
 
 /** The provider whose admin API recorded an event, or null for an event a device observed. */
@@ -523,12 +576,12 @@ function exploreRecord(detail, dataset, state) {
   const contentTile = view.tiles[0];
   const col = (key, kind) => ({ key, kind });
   const labels = Array.isArray(head.labels) && head.labels.length > 0
-    ? head.labels.map((l) => `<span class="x-chip">${escapeHtml(l.class)}</span>${typeof l.score === 'number' ? ` <span class="x-sub">score ${escapeHtml(formatScore(l.score))}</span>` : ''}`).join('<br>')
+    ? head.labels.map((l) => `${exploreChip('class', l.class)}${typeof l.score === 'number' ? ` <span class="x-sub">score ${escapeHtml(formatScore(l.score))}</span>` : ''}`).join('<br>')
     : exploreClasses(head.labels);
 
   const routes = observations.length === 0
     ? '<p class="x-absent">This response carries no observation rows.</p>'
-    : `<table class="x-table x-table-plain"><thead><tr><th scope="col">Route</th><th scope="col">From</th><th scope="col">Kind</th><th scope="col">Direction</th><th scope="col">Occurred (device)</th><th scope="col">Size</th></tr></thead><tbody>${observations.map((o) => (
+    : `<table class="x-table x-table-plain"><thead><tr><th scope="col">Collected by</th><th scope="col">From</th><th scope="col">Kind</th><th scope="col">Direction</th><th scope="col">Occurred (device)</th><th scope="col">Size</th></tr></thead><tbody>${observations.map((o) => (
       `<tr><td><span title="${escapeHtml(o.observation_source ?? '')}">${escapeHtml(o.observation_source ? routeName(o.observation_source, null) : 'unknown')}</span></td>`
       + `<td>${observationOrigin(o)}</td>`
       + `<td>${escapeHtml(o.observation_kind ?? 'unknown')}</td><td>${escapeHtml(o.direction ?? 'unknown')}</td>`
@@ -551,21 +604,21 @@ function exploreRecord(detail, dataset, state) {
       ...(head.department ? [['Department', `<span>${escapeHtml(head.department)}</span>${exploreFilterButton(dataset, 'department', head.department)}`]] : []),
     ]) + '</section>'
     + '<section><h3>What was decided</h3>' + exploreFacts([
-      ['Policy action', renderExploreValue(head, col('action', 'vocab'))],
-      ['Classes', labels],
-      ['Classifier confidence', renderExploreValue(head, col('confidence', 'vocab'))],
-      ['Collection mode', renderExploreValue(head, col('mode', 'vocab'))],
-      ['Detection basis', renderExploreValue(head, col('detection_basis', 'mono'))],
+      ['Action', renderExploreValue(head, col('action', 'vocab'))],
+      ['Labels', labels],
+      ['Confidence', renderExploreValue(head, col('confidence', 'vocab'))],
+      ['Collection', renderExploreValue(head, col('mode', 'vocab'))],
+      ['Classified from', renderExploreValue(head, col('detection_basis', 'mono'))],
       ['Size', typeof head.size_bytes === 'number' ? `<span class="x-num">${escapeHtml(formatBytes(head.size_bytes))}</span>` : exploreAbsent('size_bytes')],
     ]) + '</section>'
-    + '<section><h3>Two clocks</h3>' + exploreFacts([
+    + '<section><h3>Timing</h3>' + exploreFacts([
       ['Received (server)', renderExploreValue(head, col('received_at', 'server-clock'))],
       ['First occurred (device)', renderExploreValue(head, col('first_occurred_at', 'device-clock'))],
       ['Last occurred (device)', head.last_occurred_at
         ? `<time class="x-time x-device-clock" title="${DEVICE_CLOCK_TITLE}">${escapeHtml(formatInstant(head.last_occurred_at))}</time>`
         : exploreAbsent('last_occurred_at')],
     ]) + '<p class="x-sub">Neither clock is converted into the other. The device clock may be skewed.</p></section>'
-    + `<section><h3>Observation routes</h3>${observations.length > 1 ? `<p class="x-sub">${escapeHtml(collectedBy(observations))}. It is one event, counted once.</p>` : ''}${routes}`
+    + `<section><h3>Collected by</h3>${observations.length > 1 ? `<p class="x-sub">${escapeHtml(collectedBy(observations))}. It is one event, counted once.</p>` : ''}${routes}`
     + (head.merge_confidence === 'low' ? '<p class="x-sub">Merge confidence is low: a weak key joined these observations. The row is counted, not discarded.</p>' : '')
     + '</section>'
     + (record.audit?.entry_id ? `<p class="x-audit">Opening this record was an audited read: entry ${escapeHtml(record.audit.entry_id)} at ${escapeHtml(formatInstant(record.audit.written_at))}.</p>` : '');

@@ -334,7 +334,7 @@ export function renderAgentSetup(state, { now = new Date() } = {}) {
   const head = '<header class="screen-section"><h3>Install the agent</h3>'
     + '<p class="subtitle">Put the capture agent on your organisation\'s Windows devices.</p></header>';
   const pending = depPending(state, 'the deployment settings');
-  return `<section class="dp setup"${pending && state.status !== 'refused' ? ' aria-busy="true"' : ''}>${head}`
+  return `<section class="dp setup" id="install"${pending && state.status !== 'refused' ? ' aria-busy="true"' : ''}>${head}`
     + (pending ?? `${depRefreshed(state)}${depTiles(state.data, now)}${depDownload(state)}${depVerification(state)}${depKeys(state, now)}`)
     + '</section>';
 }

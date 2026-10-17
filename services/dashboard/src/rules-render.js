@@ -9,6 +9,7 @@
 import { escapeHtml, renderPageHead } from './render.js';
 import { formatCount, plural } from './format.js';
 import { depButton, depProblem } from './deployment-render.js';
+import { DATA_CLASS_NAMES } from './vocab.js';
 import {
   CUSTOM_LABEL_FIELDS, MAX_CUSTOM_LABELS, MAX_RULE_MESSAGE, MAX_RULES, PICK_FILTERS, RULE_ACTIONS, RULE_ACTION_LABELS,
   RULE_CATEGORIES, RULE_ROUTES, RULE_SANCTIONS, USER_KIND_LABELS,
@@ -18,6 +19,9 @@ import {
 const CATEGORY_LABELS = Object.freeze(Object.fromEntries(RULE_CATEGORIES.map((c) => [c.key, c.label])));
 const ROUTE_LABELS = Object.freeze(Object.fromEntries(RULE_ROUTES.map((r) => [r.key, r.label])));
 const SANCTION_LABELS = Object.freeze({ sanctioned: 'Sanctioned', unsanctioned: 'Unsanctioned' });
+
+/** A built-in label by its name, capitalised for a list; a code this console has no name for stands as it is. */
+const labelName = (code) => (DATA_CLASS_NAMES[code] ? `${DATA_CLASS_NAMES[code][0].toUpperCase()}${DATA_CLASS_NAMES[code].slice(1)}` : code);
 
 /** "a", "a or b", "a, b or c". */
 const either = (parts) => (parts.length < 2 ? parts.join('') : `${parts.slice(0, -1).join(', ')} or ${parts.at(-1)}`);
@@ -40,7 +44,7 @@ function vocabulary(data) {
     name(field, value) {
       switch (field) {
         case 'tools': return tools.get(value) ?? value;
-        case 'labels': return labels.get(value) ?? value;
+        case 'labels': return labels.get(value) ?? labelName(value);
         case 'categories': return CATEGORY_LABELS[value] ?? value;
         case 'sanction': return SANCTION_LABELS[value] ?? value;
         case 'routes': return ROUTE_LABELS[value] ?? value;
@@ -212,10 +216,10 @@ function unsavedBar(state) {
 
 function hitsNote(state, { activity }) {
   const hits = state.hits;
-  if (hits.problem) return `<p class="dp-note">The hits could not be read: ${escapeHtml(hits.problem.message ?? hits.problem.code ?? '')}</p>`;
+  if (hits.problem) return `<p class="dp-note">The prompts each rule decided could not be read: ${escapeHtml(hits.problem.message ?? hits.problem.code ?? '')}</p>`;
   if (!hits.counts) return '';
-  return '<p class="dp-note">Hits counts the prompts each rule decided in the last 30 days.'
-    + (hits.truncated ? ' Not every rule\'s hits could be read, so some are lower than they are.' : '')
+  return '<p class="dp-note">Prompts is how many each rule decided in the last 30 days.'
+    + (hits.truncated ? ' Not every rule\'s prompts could be read, so some counts are lower than they are.' : '')
     + (activity ? ' <a href="#activity">Activity</a> splits them by what happened.' : '')
     + '</p>';
 }
@@ -247,14 +251,13 @@ function rulesCard(state, options) {
     : shown.length === 0 ? `<tr class="row-empty"><td colspan="9">No rule matches “${escapeHtml(state.filter)}”.</td></tr>` : '';
   const filter = '<form class="rl-filter" data-rl-form="filter" role="search" autocomplete="off">'
     + `<input class="dp-input" id="rl-filter" type="search" maxlength="120" data-rl-query aria-label="Filter the rules" placeholder="Filter by name, person, group, tool or label" value="${escapeHtml(state.query)}">`
-    + depButton('Filter', { rl: 'filter' }, { small: true })
     + '</form>';
   const count = filtering
     ? `<span class="table-note">${formatCount(shown.length)} of ${plural(list.length, 'rule', 'rules')}${shown.length < list.length ? ' · reordering is off while filtered' : ''}</span>`
     : `<span class="block-count">${formatCount(list.length)}</span>`;
   const head = '<thead><tr>'
     + '<th scope="col">#</th><th scope="col">On</th><th scope="col">Name</th><th scope="col">Users and groups</th>'
-    + '<th scope="col">Tool</th><th scope="col">Content</th><th scope="col">Action</th><th scope="col" class="num" title="The prompts each rule decided in the last 30 days">Hits</th>'
+    + '<th scope="col">Tool</th><th scope="col">Content</th><th scope="col">Action</th><th scope="col" class="num" title="The prompts each rule decided in the last 30 days">Prompts</th>'
     + '<th scope="col"><span class="sr">Order and edit</span></th></tr></thead>';
   return '<section class="card dp-card rl-card"><div class="card-core">'
     + `<header class="block-head"><h3>Rules</h3>${count}</header>`
@@ -416,7 +419,7 @@ export function renderRules(state, { tab = 'rules', head = {}, activity = false 
 /** The options a match list offers, as [value, label]: the known set, each once, plus any value the rule already holds. */
 function matchOptions(field, data, current) {
   const known = {
-    labels: () => [...(data.data_classes ?? []).map((c) => [c, c]), ...(data.custom_labels ?? []).map((l) => [l.label, l.display_name])],
+    labels: () => [...(data.data_classes ?? []).map((c) => [c, labelName(c)]), ...(data.custom_labels ?? []).map((l) => [l.label, l.display_name])],
     tools: () => [...catalogueTools(data)],
     categories: () => {
       const present = data.app_categories ?? [];

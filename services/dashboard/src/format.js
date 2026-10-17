@@ -59,6 +59,18 @@ export function formatInstant(iso) {
   return `${new Date(ms).toISOString().slice(0, 16).replace('T', ' ')}Z`;
 }
 
+const MONTHS = Object.freeze(['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']);
+
+/** An instant as a reader scans it in a list, "Oct 16 14:33", in UTC; the full form belongs on hover. */
+export function formatWhen(iso) {
+  if (!iso) return '—';
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return '—';
+  const d = new Date(ms);
+  const two = (n) => String(n).padStart(2, '0');
+  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()} ${two(d.getUTCHours())}:${two(d.getUTCMinutes())}`;
+}
+
 /** A label list, summarised without losing the classes that are present. */
 export function formatLabels(labels) {
   if (!Array.isArray(labels) || labels.length === 0) return '—';

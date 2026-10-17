@@ -39,9 +39,9 @@ const items = (view) => findings(view).items.map((f) => [f.topicText, f.text, f.
 test('three figures, each against the previous 30 days and opening the tab that holds the rest of it', () => {
   const view = viewOf({ previous: usageOf(PREVIOUS_ROWS, { ...PEOPLE_ROW, people: 1800 }) });
   assert.deepEqual(view.tiles.map((t) => [t.label, t.value.text, t.note, t.change, t.href]), [
-    ['Users of AI', '2,050', 'of 4,210 active users in the directory', { direction: 'up', text: 'Up from 1,800' }, '#insights?view=adoption'],
-    ['Sanctioned share', '83%', 'of 4,836 prompts', { direction: 'down', text: 'Down from 94%' }, '#insights?view=licensing'],
-    ['Sensitive per 1,000 prompts', '33.3', '161 of 4,836 prompts', { direction: 'down', text: 'Down from 36.0' }, '#insights?view=risk'],
+    ['Users', '2,050', 'of 4,210 active users in the directory', { direction: 'up', text: '+250 (14%) on the 30 days before' }, '#insights?view=adoption'],
+    ['Sanctioned share', '83%', 'of 4,836 prompts', { direction: 'down', text: '−11 points on the 30 days before' }, '#insights?view=licensing'],
+    ['Sensitive per 1,000 prompts', '33.3', '161 of 4,836 prompts', { direction: 'down', text: '−2.7 (8%) on the 30 days before' }, '#insights?view=risk'],
   ]);
   assert.equal(view.subtitle, 'Briefing: the last 30 days against the 30 before, and what needs a decision.');
   assert.ok(!view.notes.includes('The previous 30 days could not be read, so the figures show no change.'));
@@ -52,7 +52,7 @@ test('three figures, each against the previous 30 days and opening the tab that 
 });
 
 test('a figure that cannot be read is absent, never zero, and an undecided fleet points at the decision', () => {
-  const uncounted = tileOf(viewOf({ usage: usageOf(TOOL_ROWS, null) }), 'Users of AI');
+  const uncounted = tileOf(viewOf({ usage: usageOf(TOOL_ROWS, null) }), 'Users');
   assert.equal(uncounted.value.kind, 'absent', 'a read that did not count people has no adopters figure');
 
   const quiet = viewOf({ usage: usageOf(TOOL_ROWS.map((row) => ({ ...row, submissions: 0, sensitive: 0 }))) });

@@ -7,9 +7,9 @@
 
 import { escapeHtml, renderPageHead } from './render.js';
 import { formatInstant } from './format.js';
-import { COLLECTION_MODE_LABELS } from './vocab.js';
+import { COLLECTION_MODE_LABELS, COLLECTION_MODE_CODES } from './vocab.js';
 import {
-  COLLECTION_MODES, SANCTION_STATES, ENDPOINT_COLLECTORS, ENDPOINT_TOOLS, effectiveMode, modeIncreaseNeedsConfirmation, searchTierAllowed,
+  COLLECTION_MODES, ENDPOINT_COLLECTORS, ENDPOINT_TOOLS, effectiveMode, modeIncreaseNeedsConfirmation, searchTierAllowed,
   KILL_SWITCH_ROUTES, RESTART_NOTICES,
 } from './settings.js';
 
@@ -80,7 +80,7 @@ function segItem(label, value, current, data, { disabled = false } = {}) {
 
 function modeSegment(current, disabled, extraData) {
   const data = { action: 'mode', ...extraData };
-  return COLLECTION_MODES.map((m) => segItem(MODE_LABELS[m], m, current, { ...data, value: m }, { disabled })).join('');
+  return COLLECTION_MODES.map((m) => segItem(`${MODE_LABELS[m]} · ${COLLECTION_MODE_CODES[m]}`, m, current, { ...data, value: m }, { disabled })).join('');
 }
 
 function stCollectionMode(state) {
@@ -107,21 +107,31 @@ function stOverrideSelect(tool, state) {
   const current = state.data.scope_overrides[tool.tool_key] ?? '';
   const disabled = Boolean(state.override.pending);
   const options = ['<option value="">Default</option>']
-    .concat(COLLECTION_MODES.map((m) => `<option value="${m}"${m === current ? ' selected' : ''}>${escapeHtml(MODE_LABELS[m])}</option>`))
+    .concat(COLLECTION_MODES.map((m) => `<option value="${m}"${m === current ? ' selected' : ''}>${escapeHtml(`${MODE_LABELS[m]} · ${COLLECTION_MODE_CODES[m]}`)}</option>`))
     .join('');
   return `<select class="dp-input dp-select" data-action="override" data-tool="${escapeHtml(tool.tool_key)}" aria-label="Mode for ${escapeHtml(tool.display_name ?? tool.tool_key)}"${disabled ? ' disabled' : ''}>${options}</select>`;
 }
 
-/** One row per tool: the override covers every fingerprint the catalogue knows for it. */
+/**
+ * The tools with an override, one row each, and a picker that adds one: a tool picked is listed
+ * with a mode to choose, and nothing is written until it is. An override covers every fingerprint
+ * the catalogue knows for the tool.
+ */
 function stOverrides(state) {
   const tools = state.data.tools;
-  const rows = tools.map((tool) => '<tr>'
+  const overridden = tools.filter((tool) => state.data.scope_overrides[tool.tool_key] || state.override.adding === tool.tool_key);
+  const rows = overridden.map((tool) => '<tr>'
     + `<td>${toolCell(tool)}</td>`
     + `<td class="dp-action">${stOverrideSelect(tool, state)}</td></tr>`).join('');
-  const empty = tools.length === 0 ? '<tr class="row-empty"><td colspan="2">No tools are catalogued yet.</td></tr>' : '';
+  const rest = tools.filter((tool) => !overridden.includes(tool));
+  const empty = overridden.length === 0 ? `<tr class="row-empty"><td colspan="2">${tools.length === 0 ? 'No tools are catalogued yet.' : 'No tool has an override: every tool follows the collection mode.'}</td></tr>` : '';
+  const picker = rest.length > 0
+    ? `<p class="dp-inline-row"><label class="dp-label sr" for="st-override-add">Add an override for</label><select class="dp-input dp-select" id="st-override-add" data-action="override-add"${state.override.pending ? ' disabled' : ''}><option value="">Add an override…</option>${rest.map((tool) => `<option value="${escapeHtml(tool.tool_key)}">${escapeHtml(tool.display_name ?? tool.tool_key)}</option>`).join('')}</select></p>`
+    : '';
   const body = '<p>Narrow collection for one tool below the tenant\'s mode. An override can only reduce what is collected, never raise it, and covers every fingerprint of the tool.</p>'
     + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Tool</th><th scope="col">Mode</th></tr></thead>'
     + `<tbody>${rows}${empty}</tbody></table></div>`
+    + picker
     + stProblem(state.override.problem);
   return stCard('Per-tool overrides', body, { wide: true });
 }
@@ -155,36 +165,6 @@ function toolCell(tool) {
   return `<span class="v-text">${escapeHtml(tool.display_name ?? tool.tool_key)}</span> <span class="dp-sub">${n} ${n === 1 ? 'fingerprint' : 'fingerprints'}</span>`;
 }
 
-/**
- * The sanction decisions, above the tools Policy lists: one row per catalogued tool, and the
- * decision covers every fingerprint the catalogue knows for it.
- *
- * @param {object} state  createSettings().state
- */
-export function renderSanctionDecisions(state) {
-  if (state.status === 'idle' || state.status === 'loading') return `<div class="dp" aria-busy="true">${stSkeleton()}</div>`;
-  if (state.status === 'refused' || !state.data) return `<div class="dp">${stRefused(state.problem)}</div>`;
-  const tools = state.data.tools;
-  const rows = tools.map((tool) => {
-    const current = tool.sanctioned_state;
-    const name = tool.display_name ?? tool.tool_key;
-    const seg = SANCTION_STATES.map((s) => segItem(s, s, current, { action: 'sanction', tool: tool.tool_key, value: s }, { disabled: Boolean(state.sanction.pending) })).join('');
-    return '<tr>'
-      + `<td>${toolCell(tool)}</td>`
-      + `<td class="dp-action"><div class="seg dp-seg" role="group" aria-label="Sanction for ${escapeHtml(name)}">${seg}</div></td></tr>`;
-  }).join('');
-  const empty = tools.length === 0 ? '<tr class="row-empty"><td colspan="2">No tools are catalogued yet.</td></tr>' : '';
-  const body = '<p>Mark a tool sanctioned or unsanctioned. A decision covers every fingerprint of the tool: each way a device recognises it. A tool with no decision is <em>unknown</em>, never unsanctioned. Every change is written to the audit trail.</p>'
-    + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Tool</th><th scope="col">Decision</th></tr></thead>'
-    + `<tbody>${rows}${empty}</tbody></table></div>`
-    + stProblem(state.sanction.problem);
-  return `<div class="dp">${stCard('Sanction decisions', body, { wide: true })}</div>`;
-}
-
-/**
- * One switch: whether prompts are stored, and so can be searched and read. On is the full-text
- * search tier, off is disabled; a prompt is uploaded only while it is on.
- */
 function stSearch(state) {
   const data = state.data;
   const current = data.content_search ?? 'disabled';
@@ -296,8 +276,8 @@ function stKillSwitch(state) {
       ? `${stChip('tripped')}<span class="dp-sub">since ${stInstant(tripped.effective_at)}</span>`
         + `<span class="dp-sub"><code>${escapeHtml(tripped.reason_code ?? '')}</code>${tripped.set_by ? ` by ${escapeHtml(tripped.set_by)}` : ''}</span>`
       : '<span class="v-text">Off</span>';
-    const control = `<label class="dp-label sr" for="${id}">Reason code for ${escapeHtml(route.label)}</label>`
-      + `<input class="dp-input" id="${id}" data-kill-switch-reason="${escapeHtml(route.key)}" value="${escapeHtml(reason)}" placeholder="${tripped ? 'new reason code' : 'reason code, e.g. app_breakage'}" maxlength="64" autocomplete="off" spellcheck="false"${busy ? ' disabled' : ''}>`
+    const control = `<label class="dp-label sr" for="${id}">Reason for ${escapeHtml(route.label)}</label>`
+      + `<input class="dp-input" id="${id}" data-kill-switch-reason="${escapeHtml(route.key)}" value="${escapeHtml(reason)}" placeholder="${tripped ? 'New reason' : 'Reason, such as app_breakage'}" maxlength="64" autocomplete="off" spellcheck="false"${busy ? ' disabled' : ''}>`
       + stButton(state.killSwitch.pending === route.key ? 'Saving…' : tripped ? 'Change reason' : 'Trip', { action: 'kill-switch', route: route.key, value: 'on' }, { kind: 'danger', small: true, disabled: busy })
       + (tripped ? stButton('Clear', { action: 'kill-switch', route: route.key, value: 'off' }, { kind: 'primary', small: true, disabled: busy }) : '');
     return '<tr>'
@@ -305,7 +285,7 @@ function stKillSwitch(state) {
       + `<td>${status}</td>`
       + `<td class="dp-action">${control}</td></tr>`;
   }).join('');
-  const body = '<p>Tripping a route\'s kill switch stops decryption and enforcement on it within one policy poll: devices keep carrying the traffic, unread and unenforced, and report the route as killed. Clearing it resumes them. A reason code is required and goes into the audit trail.</p>'
+  const body = '<p>Tripping a route\'s kill switch stops decryption and enforcement on it within one policy poll: devices keep carrying the traffic, unread and unenforced, and report the route as killed. Clearing it resumes them. A reason is required and goes into the audit trail as a short code: lower-case letters, digits, dots, dashes or underscores.</p>'
     + '<div class="table-scroll dp-flush"><table><thead><tr><th scope="col">Route</th><th scope="col">State</th><th scope="col"><span class="sr">Reason and action</span></th></tr></thead>'
     + `<tbody>${rows}</tbody></table></div>`
     + (busy ? '<p class="dp-note" role="status">Saving…</p>' : '')
@@ -334,13 +314,16 @@ export function renderSettings(state, { head = {} } = {}) {
     ? `<div class="banner banner-warning" role="status"><strong>Not refreshed</strong><span>${escapeHtml(state.refreshProblem.message ?? '')} What is shown is from the last read.</span></div>`
     : '';
   const notes = `<details class="notes"><summary>About these settings<span class="notes-count">${ST_NOTES.length}</span></summary><ul>${ST_NOTES.map((n) => `<li>${escapeHtml(n)}</li>`).join('')}</ul></details>`;
+  // What most admins set is above; what the agent watches, how it inspects traffic, and the switch
+  // that stops it are under Advanced, closed until needed.
+  const advanced = '<details class="dp-advanced"><summary>Advanced<span class="dp-sub">TLS inspection, the kill switch, and what the agent watches. Open it to change how collection works, not what is collected.</span></summary>'
+    + `<div class="dp-advanced-body"><div class="dp-grid">${stTLSInspection(state)}${stKillSwitch(state)}</div>${stEndpoint(state)}</div></details>`;
   return `<article class="screen dp">${top}${refresh}`
     + `<div class="dp-grid">${stCollectionMode(state)}${stSearch(state)}</div>`
     + stRetention(state)
     + stOverrides(state)
-    + `<div class="dp-grid">${stTLSInspection(state)}${stKillSwitch(state)}</div>`
-    + stEndpoint(state)
     + stRestartNotice(state)
+    + advanced
     + notes
     + '</article>';
 }

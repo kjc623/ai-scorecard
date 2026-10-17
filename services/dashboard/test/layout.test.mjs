@@ -152,7 +152,7 @@ test('Policy at work says why it is empty: no rule set, the rules not read, or t
 test('a card with nothing to open inside it is one link, with no path written on it', () => {
   const view = postureView({ devices: null, tools: usage(), rules: rules(), ruleMatches: matches() }, { preset: 'd30' });
   const html = renderScreen(view, {});
-  assert.match(html, /<a class="share-block card card-link" href="#sanction" id="b-applications"><div class="card-core"><header class="block-head"><h3>Applications<\/h3>/);
+  assert.match(html, /<a class="share-block card card-link" href="#sanction" id="b-tools-by-decision"><div class="card-core"><header class="block-head"><h3>Tools by decision<\/h3>/);
   assert.match(html, /<a class="rank-block card card-link rank-flat" href="#rules" id="b-policy-at-work"><div class="card-core"><header class="block-head"><h3>Policy at work<\/h3>/);
   assert.doesNotMatch(html, /Decide which tools are sanctioned|→/, 'no link text names where a card goes');
   const cards = html.split('card-link').slice(1).map((part) => part.slice(0, part.indexOf('</a>')));
@@ -175,7 +175,7 @@ test('a tile whose figure is a table on the same page opens that table, and the 
 test('what a figure counts sits behind an (i) in the label, never as a sentence on the card', () => {
   const view = postureView({ devices: null, tools: usage(), rules: rules(), ruleMatches: matches() }, { preset: 'd30' });
   const html = renderScreen(view, {});
-  assert.match(html, /<span class="tile-label">Users<span class="tip" tabindex="0"><svg class="tip-icon"[^>]*>.*?<\/svg><span class="tip-text" role="tooltip">At least this many: the most users counted in any one period of the window\.[^<]*<\/span><\/span><\/span>/);
+  assert.match(html, /<span class="tile-label">Users<span class="tip" tabindex="0"><svg class="tip-icon"[^>]*>.*?<\/svg><span class="tip-text" role="tooltip">The most users seen in any one period of the window, never a sum across periods\.<\/span><\/span><\/span>/);
   assert.doesNotMatch(html, /<span class="tile-note">[^<]*(?:counted once|lower bound|metadata-only)/, 'the explanations are not under the figures');
-  assert.match(html, /<h3>Applications<\/h3><span class="tip" tabindex="0">/, 'a block carries its (i) beside its title');
+  assert.match(html, /<h3>Tools by decision<\/h3><span class="tip" tabindex="0">/, 'a block carries its (i) beside its title');
 });

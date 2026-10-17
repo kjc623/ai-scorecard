@@ -203,7 +203,7 @@ test('the list reads like a rulebase: numbered rows, each criterion by name, Any
   const { html, requests } = await loaded();
   assert.ok(requests.some((r) => r.method === 'GET' && r.path === '/admin/v1/settings/rules'), 'the page reads the rules');
   const page = html();
-  assert.match(page, /<th scope="col">#<\/th><th scope="col">On<\/th><th scope="col">Name<\/th><th scope="col">Users and groups<\/th><th scope="col">Tool<\/th><th scope="col">Content<\/th><th scope="col">Action<\/th><th scope="col" class="num" title="The prompts each rule decided in the last 30 days">Hits<\/th>/);
+  assert.match(page, /<th scope="col">#<\/th><th scope="col">On<\/th><th scope="col">Name<\/th><th scope="col">Users and groups<\/th><th scope="col">Tool<\/th><th scope="col">Content<\/th><th scope="col">Action<\/th><th scope="col" class="num" title="The prompts each rule decided in the last 30 days">Prompts<\/th>/);
   const [first, second, third, fallback, ...rest] = rows(page);
   assert.equal(rest.length, 0);
 
@@ -222,7 +222,7 @@ test('the list reads like a rulebase: numbered rows, each criterion by name, Any
   assert.equal((second.match(/ChatGPT \(web\)/g) ?? []).length, 1, 'a tool is shown once, by its catalogue name');
   assert.match(second, />Chat assistant<span class="rl-kind">Category<\/span>/);
   assert.match(second, />Unsanctioned</);
-  assert.match(second, />credential</);
+  assert.match(second, />Credentials</, 'a label by its name');
   assert.match(second, /Seen by Tool hooks/, 'a route shows under the name');
   assert.match(second, /Remove the credential and try again\./);
   assert.match(second, /rl-action-block">Block</);
@@ -244,7 +244,7 @@ test('the list reads like a rulebase: numbered rows, each criterion by name, Any
   assert.match(third, /data-rl="down" data-index="2"[^>]* disabled/);
   assert.match(third, /data-rl="bottom" data-index="2" disabled>Move to bottom/);
   assert.doesNotMatch(page, /data-rl="save"/);
-  assert.match(page, /Hits counts the prompts each rule decided in the last 30 days\./);
+  assert.match(page, /Prompts is how many each rule decided in the last 30 days\./);
 });
 
 test('the hits are read from the query API over the last 30 days, in a document query-api accepts', async () => {
@@ -260,7 +260,7 @@ test('the hits are read from the query API over the last 30 days, in a document 
   const refused = await loaded({ query: fakeQuery({ refuse: true }) });
   assert.equal(refused.page.state.hits.counts, null);
   assert.match(rows(refused.html())[0], /<span class="v-absent">not reported<\/span>/, 'hits that were not read are not reported, never 0');
-  assert.match(refused.html(), /The hits could not be read: not for this role/);
+  assert.match(refused.html(), /The prompts each rule decided could not be read: not for this role/);
 });
 
 test('an empty list says every prompt goes to the default', async () => {
@@ -431,7 +431,7 @@ test('the panel offers every tool once by its catalogue name, the categories the
   assert.match(open, /<details class="rl-advanced" open><summary>Advanced: collection routes<\/summary>/, 'routes are folded away unless the rule sets one');
   for (const r of ['tool.hook', 'proxy.tls', 'net.flow']) assert.match(open, chip('routes', r));
   assert.match(open, /data-rl-draft="message" value="Remove the credential and try again\."/);
-  assert.match(open, /<p class="dialog-lead rl-sentence">Block prompts holding credential, to ChatGPT \(web\), to a tool in Chat assistant, to an unsanctioned tool, seen by Tool hooks\.<\/p>/);
+  assert.match(open, /<p class="dialog-lead rl-sentence">Block prompts holding Credentials, to ChatGPT \(web\), to a tool in Chat assistant, to an unsanctioned tool, seen by Tool hooks\.<\/p>/);
   assert.match(open, /the person sees “Request blocked” with your message, the link and Dismiss/);
   assert.doesNotMatch(open, /id="rl-at"/, 'an existing rule keeps its place; the list moves it');
   // While a rule is open the list cannot be changed or saved.
@@ -542,7 +542,7 @@ test('people, groups, departments, units and teams are picked from one list, and
   await page.act({ rl: 'user', value: 'department:Engineering' });
   open = panel();
   assert.match(open, /data-rl-pick="team:7d0c1a52-58f4-4a51-9b1e-1f6d2f0a0002" checked>/);
-  assert.match(open, /Block prompts from Ops or Bob Jones, holding credential/);
+  assert.match(open, /Block prompts from Ops or Bob Jones, holding Credentials/);
 
   // The search narrows the people by the start of their name and the rest by any part of it.
   page.setDraft('query', 'bo');
@@ -600,7 +600,7 @@ test('ruleSentence reads a rule back with every criterion it sets', () => {
     match: { labels: ['credential', 'custom_project_falcon'], tools: ['chatgpt_web', 'claude_code'], categories: [], sanction: ['sanctioned', 'unsanctioned'], routes: ['proxy.tls'] },
   };
   assert.equal(ruleSentence(rule, data, { [`group:${FINANCE}`]: { name: 'Finance' } }),
-    'Block prompts from Finance or Sales, holding credential or Project Falcon, to ChatGPT (web) or Claude Code, to a sanctioned or unsanctioned tool, seen by TLS proxy.');
+    'Block prompts from Finance or Sales, holding Credentials or Project Falcon, to ChatGPT (web) or Claude Code, to a sanctioned or unsanctioned tool, seen by TLS proxy.');
 });
 
 test('every string from an API is escaped: a message, a name, a tool and a person', async () => {

@@ -89,7 +89,7 @@ test('an empty ranking says why, and an unrecognised tool shows its fingerprint 
   assert.equal(ranking.items[1].mono, true, 'a bare fingerprint is shown as one');
 });
 
-test('Applications counts each tool detected once, however many days it was seen on, split by its present sanction', () => {
+test('Tools by decision counts each tool detected once, however many days it was seen on, split by its present sanction', () => {
   const state = readState(envelope('ok', {
     data: [
       // One tool, however many fingerprints it was seen under, is one row per day.
@@ -105,7 +105,7 @@ test('Applications counts each tool detected once, however many days it was seen
     freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' },
   }));
   const share = sanctionShare(state);
-  assert.equal(share.title, 'Applications');
+  assert.equal(share.title, 'Tools by decision');
   assert.equal(share.total, 5, 'five tools: not 834 submissions, and not six rows');
   assert.deepEqual(share.parts.map((p) => [p.key, p.label, p.count]), [['sanctioned', 'Sanctioned', 1], ['unsanctioned', 'Unsanctioned', 1], ['unknown', 'No decision yet', 3]]);
   const html = renderShare(share);
@@ -129,16 +129,15 @@ test('a sparkline draws every point to one scale and lists the values for a read
   assert.equal(renderSparkline([{ bucket: 'x', value: 1 }]), '', 'one point is no shape');
 });
 
-test('the Tools screen is the share above the tiles, then the ranking, with the chart below and no per-bucket table', async () => {
+test('the Tools screen is the ranking with the chart below: no tiles or share of its own, and no per-bucket table', async () => {
   const { view } = await dashboardFor().load('tools', {});
-  assert.deepEqual(view.lead.map((b) => [b.kind, b.title]), [['share', 'Applications']]);
-  assert.deepEqual(view.tiles.map((t) => t.label), ['Prompts', 'Blocked', 'Data sent', 'Attachments']);
-  assert.equal(view.tiles[3].href, 'explore.html#events?attachments=yes', 'the attachments open the prompts that carried one');
-  assert.deepEqual(view.blocks.map((b) => b.kind), ['ranking']);
+  assert.equal(view.lead, undefined, 'the share by decision is on the Overview and on Policy, not here');
+  assert.deepEqual(view.tiles, [], 'the totals are on the Overview; this screen is the list');
+  assert.deepEqual(view.blocks.map((b) => [b.kind, b.title]), [['ranking', 'Tools by prompts']]);
   assert.deepEqual(view.tables, []);
   assert.equal(view.series[0].title, 'Prompts per day');
   const html = renderScreen(view, SHELL);
-  assert.ok(html.indexOf('<h3>Applications</h3>') < html.indexOf('class="tiles"'), 'the share sits above the tiles');
+  assert.doesNotMatch(html, /class="tiles"/);
   assert.match(html, /Coverage is partial/);
   assert.ok(!/<table/.test(html), 'no table of buckets');
 });
@@ -150,7 +149,8 @@ test('a tool\'s own screen folds its usage, lists who uses it in the API\'s orde
   const { view } = await dashboard.load('tools', { filters: { tool: 'tls_b6681b043244c43f' } });
   assert.equal(view.id, 'tool');
   assert.equal(view.title, 'Claude Code');
-  assert.equal(view.subtitle, 'Fingerprint tls_b6681b043244c43f');
+  assert.equal(view.subtitle, null);
+  assert.ok(view.notes.includes('This page is read under the fingerprint tls_b6681b043244c43f, one of the ways a device recognises Claude Code.'), 'the fingerprint is a note, not the subtitle');
   assert.deepEqual(view.badges, [{ key: 'unsanctioned', text: 'Unsanctioned' }]);
   assert.deepEqual(sent.filter((b) => b.template).map((b) => [b.template, b.params.tool, b.params.sanctioned_state]), [
     ['q1_tools_ranked', 'tls_b6681b043244c43f', undefined],
@@ -160,8 +160,10 @@ test('a tool\'s own screen folds its usage, lists who uses it in the API\'s orde
   const lookup = sent.find((b) => b.source === 'mart.v_person');
   assert.deepEqual(lookup?.filters, [{ field: 'subject', op: 'in', value: ['u_9a02', 'u_4f21'] }], 'the roster\'s references are looked up by name, in one read');
   assert.deepEqual(view.actions.map((a) => a.href), ['explore.html#events?tool=tls_b6681b043244c43f', '#tools']);
+  assert.deepEqual(view.tables.map((t) => t.title), ['Findings', 'Users'], 'what needs attention sits above the roster');
   const people = view.tables.find((t) => t.title === 'Users');
   assert.deepEqual(people.rows.map((r) => r.row.subject), ['u_9a02', 'u_4f21'], 'this tool\'s users, in the API order, not a volume ranking');
+  assert.equal(people.bars, false, 'a list of people draws no bars');
   const findings = view.tables.find((t) => t.title === 'Findings');
   assert.deepEqual(findings.rows.map((r) => r.row.rule), ['PAYMENT_CARD_PAN'], 'this tool\'s findings only');
   assert.equal(view.series[0].points[0].value.value, 812, 'the chart is this tool\'s series');
@@ -280,7 +282,10 @@ test('a team\'s own screen reads that team only, and lists its people by name', 
   assert.equal(view.tiles[2].value.text, '3', 'this team\'s people');
   const roster = view.tables[0];
   assert.deepEqual(roster.columns.map((c) => c.label), ['User', 'Prompts']);
-  assert.deepEqual(roster.rows.map((r) => r.row.name), ['Ada Lovelace', 'Grace Hopper', 'u_1b77'], 'by name');
+  assert.deepEqual(roster.rows.map((r) => r.row.name), ['Ada Lovelace', 'Grace Hopper'], 'by name, and only those the directory names');
+  assert.equal(roster.summary, '1 user is known only by reference and not listed: the directory has no record of them.');
+  assert.deepEqual(roster.summaryLink, { href: '#directory', label: 'Identity Providers' });
+  assert.equal(roster.bars, false);
   assert.equal(roster.groupBy, undefined);
 });
 
@@ -307,7 +312,7 @@ test('a device row is the device and what it runs, its state with when it was la
   const view = devicesView(state, { now: NOW() });
   const [fin, mac, silent, ops] = view.tables[0].rows.map((r) => r.row);
   assert.deepEqual(fin.device_cell, { primary: 'FIN-LAPTOP-07', mono: false, title: '9f1c0b6e-0000-4000-8000-000000000001', secondary: 'Windows 11 · Managed · Agent 1.4.2' });
-  assert.deepEqual(view.tables[0].rows.map((r) => r.row.mode), ['M3 · prompt', 'M2 · excerpt', 'M1 · digest & labels', 'M0 · metadata'], 'the mode the device applied has a column of its own');
+  assert.deepEqual(view.tables[0].rows.map((r) => r.row.mode), ['Full prompt · M3', 'Short excerpt · M2', 'Labels and digest · M1', 'Metadata only · M0'], 'the mode the device applied has a column of its own, said in words with its code');
   assert.deepEqual(fin.user_cell, { primary: 'Alice Smith', secondary: 'alice@contoso.example', title: 'u_4f21' });
   assert.deepEqual(fin.status_cell, { chip: { key: 'reporting', text: 'Reporting' }, secondary: 'Last seen 3 min ago · Collectors 2 healthy' });
   assert.deepEqual(mac.status_cell, { chip: { key: 'degraded', text: 'Degraded' }, secondary: 'Last seen 2 days ago · Collectors 1 degraded · 1 healthy' }.chip ? { chip: { key: mac.status, text: mac.status_text }, secondary: 'Last seen 2 days ago · Collectors 1 degraded · 1 healthy' } : null);
@@ -373,7 +378,7 @@ test('the attention tile says why devices need attention, each reason opening th
 });
 
 test('a tile with a trend draws it beside the figure, and the screen names where it reads from in its notes', async () => {
-  const { view } = await dashboardFor().load('tools', {});
+  const { view } = await dashboardFor().load('tools', { filters: { tool: 'tls_b6681b043244c43f' } });
   assert.equal(view.tiles[0].trend, undefined, 'one bucket is no trend');
   const html = renderScreen(view, SHELL);
   assert.match(html, /Reads from Tool usage \(view\)\./);
@@ -382,9 +387,9 @@ test('a tile with a trend draws it beside the figure, and the screen names where
     data: [{ bucket: '2026-09-29T00:00:00Z', tool: 'a', submissions: 10 }, { bucket: '2026-09-30T00:00:00Z', tool: 'a', submissions: 4 }],
     freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage', applied_bucket: 'day' },
   }));
-  const tools = toolsView(two);
-  assert.deepEqual(tools.tiles[0].trend.map((p) => p.value), [10, 4]);
-  assert.match(renderScreen(tools, SHELL), /<span class="tile-figure"><span class="tile-value"><span class="v-number">14<\/span><\/span><span class="tile-spark"><svg class="spark"/);
+  const tool = toolView({ usage: two }, { tool: 'a' });
+  assert.deepEqual(tool.tiles[0].trend.map((p) => p.value), [10, 4]);
+  assert.match(renderScreen(tool, SHELL), /<span class="tile-figure"><span class="tile-value"><span class="v-number">14<\/span><\/span><span class="tile-spark"><svg class="spark"/);
 });
 
 test('partial coverage is one quiet line under the title; every other banner keeps its box', () => {
@@ -513,10 +518,12 @@ test('a tool\'s screen marks a tool with no recorded decision as unknown, names 
   const { view } = await dashboard.load('tools', { preset: 'd30', filters: { tool: 'tls_b6681b043244c43f' } });
   const roster = view.tables.find((t) => t.title === 'Users');
   assert.deepEqual(roster.columns.map((c) => c.label), ['User', 'Prompts', 'Data sent']);
-  assert.deepEqual(roster.rows.map((r) => [r.row.subject, r.row.name]), [['u_9a02', 'Bob Jones'], ['u_4f21', null]], 'a name the directory knows; a reference it does not stays a reference');
+  assert.deepEqual(roster.rows.map((r) => [r.row.subject, r.row.name]), [['u_9a02', 'Bob Jones']], 'a name the directory knows is listed; a reference it does not is counted in one line');
+  assert.equal(roster.summary, '1 user is known only by reference and not listed: the directory has no record of them.');
+  assert.deepEqual(roster.summaryLink, { href: '#directory', label: 'Identity Providers' });
   const html = renderScreen(view, SHELL);
   assert.match(html, /<a class="cell-link" href="#person\?subject=u_9a02" title="User reference u_9a02">Bob Jones<\/a>/);
-  assert.match(html, /<a class="cell-link" href="#person\?subject=u_4f21" title="User reference u_4f21">u_4f21<\/a>/);
+  assert.match(html, /<p class="block-summary">1 user is known only by reference and not listed: the directory has no record of them\. <a class="block-summary-link" href="#directory">Identity Providers<\/a><\/p>/);
   assert.equal(view.actions[1].href, '#tools?preset=d30');
   // No decision recorded: the people read is still made, by tool alone, and the badge says so.
   const undecided = readState(envelope('ok', { data: [{ bucket: '2026-09-30T00:00:00Z', tool: 'tls_zzzz', tool_name: 'Unrecognised tool', submissions: 2, users: 1 }], freshness: FRESH, coverage: COMPLETE, meta: { source: 'mart.v_tool_usage' } }));
@@ -536,7 +543,7 @@ test('the Overview tiles open the screens they summarise', async () => {
     ['Sensitive prompts', '#activity?preset=d30'], ['Users', '#person?preset=d30'], ['Devices reporting', '#devices'],
   ]);
   assert.deepEqual(view.blocks.map((b) => [b.title, b.cardHref ?? null, b.href ?? null]), [
-    ['Applications', '#sanction', null], ['Policy at work', '#rules', null], ['Tools in use', null, '#tools?preset=d30'],
+    ['Tools by decision', '#sanction', null], ['Policy at work', '#rules', null], ['Tools in use', null, '#tools?preset=d30'],
   ], 'a card with nothing to open inside it is one link; Tools in use links each tool');
   assert.ok(view.blocks[2].items.every((i) => i.href === null || i.href.endsWith('&preset=d30')));
   assert.deepEqual(view.tables, []);
@@ -568,8 +575,8 @@ test('a share of one part is the figure and a whole bar, with the other parts ke
   assert.equal(share.moreLabel, 'Decide which tools are sanctioned');
   assert.match(share.note, /No tool has a sanction decision yet/);
   const page = renderScreen(postureView({ devices: null, coverage: { devices_reporting: 5, devices_enrolled: 5 } }), SHELL);
-  assert.match(page, /<div class="dist-bar tile-split" aria-hidden="true"><span class="dist-seg v-vocab-reporting" style="flex-grow:5"><\/span><\/div>/, 'the empty part draws no segment');
-  assert.match(page, /<span class="dist-dot v-vocab-never_reported" aria-hidden="true"><\/span>Not reporting<span class="dist-n">0<\/span><\/li>/, 'and stays in the legend as a zero, not a link');
+  assert.doesNotMatch(page, /tile-split/, 'a tile is a figure and a line, never a bar of its own');
+  assert.match(page, /<span class="tile-note">of 5 enrolled<\/span>/, 'with every device reporting, nothing is said to be missing');
 });
 
 test('the Devices filters are offered only where they can change the list', () => {
