@@ -19,10 +19,10 @@ const (
 	sqlTenantIDs = `SELECT t::text FROM ops.tenant_ids() AS t`
 
 	// sqlTargets is the tenant's active connections control-api pulls, or the one $2 names, while its
-	// ingest is open, with the Entra directory a Microsoft connection reads.
+	// ingest is open, with the Entra directory a Microsoft connection reads and its schedule.
 	sqlTargets = `
 SELECT c.connection_id::text, c.provider, coalesce(c.account, ''), c.credential_enc,
-       coalesce(c.cursor, ''), coalesce(e.entra_tenant_id, '')
+       coalesce(c.cursor, ''), coalesce(e.entra_tenant_id, ''), c.last_started_at, c.pull_every_minutes
   FROM ops.provider_connection c
   JOIN ref.provider p ON p.provider = c.provider AND p.credential <> 'intake'
   JOIN ops.tenant t ON t.tenant_id = c.tenant_id
@@ -116,7 +116,8 @@ SELECT p.provider, p.display_name, p.vendor, p.credential, p.source_url,
           FROM unnest(p.apps) WITH ORDINALITY AS u(k, o)
           JOIN ref.app a ON a.app_key = u.k)::text,
        c.connection_id::text, c.account, c.status, c.created_by, c.created_at, c.updated_by, c.updated_at,
-       c.last_started_at, c.last_completed_at, c.last_status, c.last_error, c.records_read, c.records_new
+       c.last_started_at, c.last_completed_at, c.last_status, c.last_error, c.records_read, c.records_new,
+       c.pull_every_minutes
   FROM ref.provider p
   LEFT JOIN ops.provider_connection c ON c.tenant_id = $1::uuid AND c.provider = p.provider
  ORDER BY p.display_name`
@@ -158,6 +159,13 @@ SELECT connection_id::text, status = 'active'
   FROM ops.provider_connection
  WHERE tenant_id = $1::uuid AND provider = $2::text`
 
+	// sqlSchedule sets how often an active connection is pulled.
+	sqlSchedule = `
+UPDATE ops.provider_connection
+   SET pull_every_minutes = $3::int, updated_by = $4::text, updated_at = now()
+ WHERE tenant_id = $1::uuid AND provider = $2::text AND status = 'active'
+RETURNING connection_id::text`
+
 	sqlAudit = `
 INSERT INTO ops.audit (tenant_id, actor_type, actor_id, action, object_type, object_id, detail, occurred_at)
 VALUES ($1::uuid, 'user', $2::text, $3::text, $4::text, NULLIF($5::text, ''), $6::jsonb, $7::timestamptz)`
@@ -169,7 +177,7 @@ var Statements = []string{
 	sqlIntakeOpen, sqlDelivered, sqlPolicy,
 	sqlCustomLabels, sqlRecord, sqlContentPending, sqlInsertGrant, sqlAddContentUsage, sqlTenantExists,
 	sqlProviders, sqlEntraConnected, sqlProviderCredential, sqlConnect, sqlDisconnect, sqlConnection,
-	sqlAudit,
+	sqlSchedule, sqlAudit,
 }
 
 // SQLStore is the PostgreSQL Store and AdminStore.
@@ -232,8 +240,13 @@ func (s *SQLStore) targets(ctx context.Context, tenantID, connectionID string) (
 		defer rows.Close()
 		for rows.Next() {
 			t := Target{Connection: Connection{TenantID: tenantID}}
-			if err := rows.Scan(&t.ConnectionID, &t.Provider, &t.Account, &t.SealedKey, &t.Cursor, &t.EntraTenantID); err != nil {
+			var started sql.NullTime
+			if err := rows.Scan(&t.ConnectionID, &t.Provider, &t.Account, &t.SealedKey, &t.Cursor, &t.EntraTenantID,
+				&started, &t.PullEveryMinutes); err != nil {
 				return err
+			}
+			if started.Valid {
+				t.LastStartedAt = started.Time
 			}
 			out = append(out, t)
 		}
@@ -416,11 +429,11 @@ func scanProviders(ctx context.Context, tx *sql.Tx, tenantID string) ([]Provider
 		var tools string
 		var id, account, status, createdBy, updatedBy, lastStatus, lastError sql.NullString
 		var createdAt, updatedAt, lastStarted, lastCompleted sql.NullTime
-		var read, added sql.NullInt64
+		var read, added, every sql.NullInt64
 		if err := rows.Scan(&p.Provider, &p.DisplayName, &p.Vendor, &p.Credential, &p.SourceURL,
 			&p.CredentialLabel, &p.AccountLabel, &tools,
 			&id, &account, &status, &createdBy, &createdAt, &updatedBy, &updatedAt,
-			&lastStarted, &lastCompleted, &lastStatus, &lastError, &read, &added); err != nil {
+			&lastStarted, &lastCompleted, &lastStatus, &lastError, &read, &added, &every); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(tools), &p.Tools); err != nil {
@@ -432,6 +445,7 @@ func scanProviders(ctx context.Context, tx *sql.Tx, tenantID string) ([]Provider
 				CreatedBy: createdBy.String, CreatedAt: createdAt.Time, UpdatedBy: updatedBy.String, UpdatedAt: updatedAt.Time,
 				LastStartedAt: timePtr(lastStarted), LastCompletedAt: timePtr(lastCompleted),
 				LastStatus: lastStatus.String, LastError: lastError.String, RecordsRead: read.Int64, RecordsNew: added.Int64,
+				PullEveryMinutes: int(every.Int64),
 			}
 		}
 		out = append(out, p)
@@ -523,6 +537,25 @@ func (s *SQLStore) Connection(ctx context.Context, tenantID, provider string) (s
 		return err
 	})
 	return id, active, err
+}
+
+// Schedule implements AdminStore.
+func (s *SQLStore) Schedule(ctx context.Context, tenantID, provider string, minutes int, a Audit) error {
+	return s.inTenant(ctx, tenantID, func(tx *sql.Tx) error {
+		if err := s.tenantExists(ctx, tx, tenantID); err != nil {
+			return err
+		}
+		var id string
+		err := tx.QueryRowContext(ctx, sqlSchedule, tenantID, provider, minutes, a.Actor).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		a.ObjectID = id
+		return audit(ctx, tx, tenantID, a)
+	})
 }
 
 // Audit implements AdminStore.

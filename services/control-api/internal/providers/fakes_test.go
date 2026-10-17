@@ -26,6 +26,9 @@ type fakeStore struct {
 	started   int
 	finished  []Result
 	recordErr error
+	// listed, when set, is what Targets lists instead of targets: a list read before another
+	// replica's pass.
+	listed []Target
 }
 
 func newFakeStore() *fakeStore {
@@ -79,9 +82,18 @@ func (s *fakeStore) AddContentUsage(_ context.Context, _ string, n int64) error 
 	return nil
 }
 
-func (s *fakeStore) Targets(context.Context) ([]Target, error) { return s.targets, nil }
+func (s *fakeStore) Targets(context.Context) ([]Target, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.listed != nil {
+		return s.listed, nil
+	}
+	return append([]Target(nil), s.targets...), nil
+}
 
 func (s *fakeStore) Target(_ context.Context, _, id string) (Target, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, t := range s.targets {
 		if t.ConnectionID == id {
 			return t, true, nil
@@ -97,8 +109,16 @@ func (s *fakeStore) Lock(context.Context, string) (func(), bool, error) {
 	return func() {}, true, nil
 }
 
-func (s *fakeStore) Started(context.Context, string, string, time.Time) error {
+// Started counts the pass and records its start on the connection, as the database does.
+func (s *fakeStore) Started(_ context.Context, _, id string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.started++
+	for i := range s.targets {
+		if s.targets[i].ConnectionID == id {
+			s.targets[i].LastStartedAt = at
+		}
+	}
 	return nil
 }
 

@@ -96,8 +96,8 @@ The device resolves the mode before it reads anything.
    read from its log is given an intake URL and token instead, which the customer's cloud sends its
    log with: a Pub/Sub push subscription for Gemini Code Assist, a Firehose stream for Amazon
    Bedrock, the audit log webhook for Perplexity Enterprise.
-2. **Pull or receive.** control-api reads each API connection an hour apart and on demand, from
-   where its last pass stopped, and receives each log delivery at `/intake/v1/*` as it is sent,
+2. **Pull or receive.** control-api reads each API connection on its schedule (every hour unless the
+   admin chose another) and on demand, from where its last pass stopped, and receives each log delivery at `/intake/v1/*` as it is sent,
    resolving its tenant from the token. Either way it keeps each person's prompts: their text,
    attachments' names, the person's UPN or object id, and the tool (ChatGPT, Claude on the web,
    Claude Code, Claude Desktop, Microsoft 365 Copilot, Gemini Code Assist, the Gemini CLI, Amazon

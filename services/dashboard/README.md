@@ -39,8 +39,9 @@ layout lands on the page that holds it now.
   and each of its collectors with its state and cause; an admin installs the agent below the
   list), Identity Providers (the directory read, sign-in and SCIM provisioning), Integrations
   (every AI provider whose admin API the product reads, as control-api lists them: an admin
-  connects each with its key and account or the tenant's Entra consent, replaces its key, pulls it
-  now or disconnects it, and sees its last pull and the records read) and Audit trail (filtered by
+  connects each with its key and account or the tenant's Entra consent, replaces its key, chooses
+  how often it is pulled, pulls it now or disconnects it, and sees its last and next pull and the
+  records read) and Audit trail (filtered by
   actor, action, object type and case). A viewer's Settings is Devices alone.
 
 It has two halves and no dependencies:

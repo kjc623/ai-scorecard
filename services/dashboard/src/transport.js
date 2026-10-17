@@ -426,6 +426,10 @@ export function createAdminApi({ transport }) {
       const answer = await call({ method: 'POST', path: `${providerPath(provider)}/run` });
       return ok(answer.status) ? { state: 'done', queued: answer.body?.queued === true } : refused(answer);
     },
+    /** How often a connected provider is pulled, in minutes: one of the list's pull_every_choices. */
+    setProviderSchedule(provider, minutes) {
+      return done({ method: 'PUT', path: `${providerPath(provider)}/schedule`, body: { pull_every_minutes: minutes } });
+    },
     async settings() {
       const answer = await call({ method: 'GET', path: ADMIN_SETTINGS_ENDPOINT });
       if (!ok(answer.status) || !answer.body || typeof answer.body !== 'object') return refused(answer);
@@ -545,10 +549,12 @@ export function normaliseTeams(teams) {
 const PROVIDER_CREDENTIALS = Object.freeze(['api_key', 'entra_app', 'intake']);
 const INTAKE_KINDS = Object.freeze(['pubsub', 'firehose', 'webhook']);
 
+const isMinutes = (v) => Number.isInteger(v) && v > 0;
+
 /**
  * The provider list, with an empty label or a value the server did not send as null. A provider
  * whose credential this page cannot ask for is not available here, and a documentation link that
- * is not https is dropped.
+ * is not https is dropped. The schedules a connection can be given are those the server lists.
  */
 export function normaliseProviders(body) {
   const providers = body.providers.filter((p) => p && typeof p === 'object' && typeof p.provider === 'string' && p.provider !== '').map((p) => Object.freeze({
@@ -579,11 +585,14 @@ export function normaliseProviders(body) {
         last_error: nullableText(p.connection.last_error),
         records_read: nullableNumber(p.connection.records_read),
         records_new: nullableNumber(p.connection.records_new),
+        pull_every_minutes: isMinutes(p.connection.pull_every_minutes) ? p.connection.pull_every_minutes : null,
+        next_pull_at: nullableText(p.connection.next_pull_at),
         intake_url: typeof p.connection.intake_url === 'string' && /^https?:\/\//i.test(p.connection.intake_url) ? p.connection.intake_url : null,
       })
       : null,
   }));
-  return Object.freeze({ entra_connected: body.entra_connected === true, providers: Object.freeze(providers) });
+  const choices = Array.isArray(body.pull_every_choices) ? body.pull_every_choices.filter(isMinutes) : [];
+  return Object.freeze({ entra_connected: body.entra_connected === true, pull_every_choices: Object.freeze(choices), providers: Object.freeze(providers) });
 }
 
 /**

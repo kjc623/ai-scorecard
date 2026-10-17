@@ -63,8 +63,13 @@ row of `ref.provider` with the tools its records are filed under and the tenant'
 | Microsoft 365 Copilot | none: the vendor Entra application, with `AiEnterpriseInteraction.Read.All` consented in the customer's tenant and an active Entra connection | Microsoft Graph's `getAllEnterpriseInteractions`, per licensed person | `m365_copilot` |
 
 A key is sealed under `SAC_DIRECTORY_KEY` and never returned or audited; disconnecting forgets it.
-Each active connection is pulled an hour apart, right after it is connected and on demand (Pull now),
-from where the last pass stopped; the first pass reads the last 7 days. Every record of a person's
+Each active connection is pulled right after it is connected, on demand (Pull now) and on its
+schedule: every hour unless an admin chooses every 15 or 30 minutes, 6 hours or a day on its card
+(`PUT /admin/v1/providers/{provider}/schedule`, `ops.provider_connection.pull_every_minutes`). The
+schedule is kept with the connection, not the process: once a minute the runner pulls each
+connection whose last pass started its schedule ago, on whichever replica takes the connection's
+lock first, so a restart or a second replica does not pull it more often. Each pass reads from where
+the last one stopped; the first reads the last 7 days. Every record of a person's
 prompt is classified with the rules and model the agent ships, under the tenant's collection mode,
 attributed by the user reference a device derives from the same UPN or object id, and recorded
 through `ingest.record_provider_event` with the route `provider.api`; at M3 its text is stored in

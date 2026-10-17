@@ -16,6 +16,7 @@ import { fakeDocument } from './helpers.mjs';
 const KEY = 'sk-compliance-7f3a9c0e1b2d4f6a';
 const CONNECTION = '0b3c2f5e-1d4a-4c8e-9a6b-7e2f1c0d0001';
 const PROVIDERS = '/admin/v1/providers';
+const CHOICES = Object.freeze([15, 30, 60, 360, 1440]);
 
 const CHATGPT = Object.freeze({
   provider: 'chatgpt_enterprise', display_name: 'ChatGPT Enterprise', vendor: 'openai',
@@ -52,7 +53,7 @@ function connection(patch = {}) {
     connection_id: CONNECTION, account: 'ws-4821', status: 'active',
     created_by: 'admin@contoso.com', created_at: '2026-10-01T10:00:00Z', updated_by: 'admin@contoso.com', updated_at: '2026-10-01T10:00:00Z',
     last_started_at: '2026-10-01T11:00:00Z', last_completed_at: '2026-10-01T11:02:00Z', last_status: 'ok', last_error: '',
-    records_read: 1520, records_new: 1490,
+    records_read: 1520, records_new: 1490, pull_every_minutes: 60, next_pull_at: '2026-10-01T12:00:00Z',
     ...patch,
   };
 }
@@ -66,11 +67,17 @@ function fakeAdmin({ providers = [CHATGPT, CLAUDE, COPILOT], entra = true, answe
       requests.push(spec);
       const route = `${spec.method} ${spec.path}`;
       if (answers[route]) return answers[route](spec);
-      if (route === `GET ${PROVIDERS}`) return { status: 200, body: { entra_connected: entra, providers: held } };
+      if (route === `GET ${PROVIDERS}`) return { status: 200, body: { entra_connected: entra, pull_every_choices: CHOICES, providers: held } };
       const provider = held.find((p) => p.provider === decodeURIComponent(spec.path.split('/')[4] ?? ''));
       if (!provider) return { status: 404, body: { error: { code: 'not_found', message: 'no such provider' } } };
+      if (spec.method === 'PUT' && spec.path.endsWith('/schedule')) {
+        const every = spec.body.pull_every_minutes;
+        const next = new Date(Date.parse(provider.connection.last_started_at) + every * 60_000).toISOString().replace('.000', '');
+        provider.connection = { ...provider.connection, pull_every_minutes: every, next_pull_at: next, updated_at: '2026-10-01T11:30:00Z' };
+        return { status: 204, body: null };
+      }
       if (spec.method === 'PUT') {
-        provider.connection = connection({ account: spec.body.account ?? '', last_started_at: null, last_completed_at: null, last_status: '', records_read: 0, records_new: 0 });
+        provider.connection = connection({ account: spec.body.account ?? '', last_started_at: null, last_completed_at: null, last_status: '', records_read: 0, records_new: 0, next_pull_at: null });
         return { status: 200, body: { connection_id: CONNECTION, queued: true } };
       }
       if (spec.method === 'DELETE') {
@@ -87,7 +94,7 @@ async function loaded(options) {
   const { admin, requests } = fakeAdmin(options);
   const page = createIntegrations({ admin, copy: options?.copy });
   await page.load();
-  return { page, requests, html: () => renderIntegrations(page.state) };
+  return { page, requests, html: (now) => renderIntegrations(page.state, now ? { now } : {}) };
 }
 
 /** One provider's card, by its name. */
@@ -147,6 +154,66 @@ test('a connected provider shows its account, its last pull and the records read
   assert.deepEqual([...one.matchAll(/<button[^>]*data-int="([^"]+)"[^>]*>([^<]*)</g)].map((m) => [m[1], m[2]]), [['run', 'Pull now'], ['open', 'Replace key'], ['disconnect', 'Disconnect']]);
 });
 
+test('a pulled connection shows how often it is pulled, as a choice of the schedules offered, and when the next pull is due', async () => {
+  const { html } = await loaded({ providers: [{ ...CHATGPT, connection: connection() }, { ...COPILOT, connection: connection({ account: '', pull_every_minutes: 360, next_pull_at: '2026-10-01T17:00:00Z' }) }] });
+  const at = new Date('2026-10-01T11:30:00Z');
+  const chatgpt = card(html(at), 'ChatGPT Enterprise');
+  const select = chatgpt.match(/<dt>Pulled<\/dt><dd>(<select[^>]*>)(.*?)<\/select><\/dd>/);
+  assert.ok(select, 'the card offers its schedule');
+  assert.equal(select[1], '<select class="dp-input dp-select" data-int="schedule" data-provider="chatgpt_enterprise" aria-label="How often Sundial pulls ChatGPT Enterprise">');
+  assert.deepEqual([...select[2].matchAll(/<option value="(\d+)"( selected)?>([^<]*)<\/option>/g)].map((m) => [Number(m[1]), Boolean(m[2]), m[3]]), [
+    [15, false, 'Every 15 minutes'], [30, false, 'Every 30 minutes'], [60, true, 'Every hour'], [360, false, 'Every 6 hours'], [1440, false, 'Every day'],
+  ]);
+  assert.match(chatgpt, /<dt>Next pull<\/dt><dd><span class="v-time"[^>]*>2026-10-01 12:00Z<\/span><\/dd>/);
+  const copilot = card(html(at), 'Microsoft 365 Copilot');
+  assert.match(copilot, /<option value="360" selected>Every 6 hours<\/option>/);
+  assert.match(copilot, /<dt>Next pull<\/dt><dd><span class="v-time"[^>]*>2026-10-01 17:00Z<\/span><\/dd>/);
+  // Past its time, a pull is due; one never run is due at once.
+  assert.match(card(html(new Date('2026-10-01T12:01:00Z')), 'ChatGPT Enterprise'), /<dt>Next pull<\/dt><dd><span class="v-time"[^>]*>2026-10-01 12:00Z<\/span> <span class="dp-sub">due<\/span><\/dd>/);
+  const fresh = await loaded({ providers: [{ ...CHATGPT, connection: connection({ last_started_at: null, last_completed_at: null, next_pull_at: null }) }] });
+  assert.match(card(fresh.html(at), 'ChatGPT Enterprise'), /<dt>Next pull<\/dt><dd>due now<\/dd>/);
+  // A schedule the server did not send, or one it does not offer, is not reported.
+  const unsent = await loaded({ providers: [{ ...CHATGPT, connection: connection({ pull_every_minutes: undefined }) }] });
+  assert.match(card(unsent.html(at), 'ChatGPT Enterprise'), /<dt>Pulled<\/dt><dd><span class="v-absent">not reported<\/span><\/dd>/);
+  const odd = await loaded({ providers: [{ ...CHATGPT, connection: connection({ pull_every_minutes: 45 }) }] });
+  assert.match(card(odd.html(at), 'ChatGPT Enterprise'), /<dt>Pulled<\/dt><dd><span class="v-absent">not reported<\/span><\/dd>/);
+});
+
+test('choosing a schedule sends it once, says what it does, and reads the page again; the same schedule or one not offered sends nothing', async () => {
+  const { page, requests, html } = await loaded({ providers: [{ ...CHATGPT, connection: connection() }] });
+  await page.act({ int: 'schedule', provider: 'chatgpt_enterprise', value: '60' });
+  await page.act({ int: 'schedule', provider: 'chatgpt_enterprise', value: '45' });
+  await page.act({ int: 'schedule', provider: 'chatgpt_enterprise', value: 'often' });
+  assert.deepEqual(writes(requests), [], 'nothing changed, so nothing is sent');
+
+  const pending = page.act({ int: 'schedule', provider: 'chatgpt_enterprise', value: '360' });
+  assert.match(card(html(), 'ChatGPT Enterprise'), /data-int="schedule"[^>]* disabled>.*<span class="dp-sub" role="status">Saving…<\/span>/);
+  await pending;
+  assert.deepEqual(writes(requests), [['PUT', `${PROVIDERS}/chatgpt_enterprise/schedule`, { pull_every_minutes: 360 }]]);
+  assert.equal(requests.at(-1).method, 'GET', 'the page is read again');
+  const one = card(html(new Date('2026-10-01T11:30:00Z')), 'ChatGPT Enterprise');
+  assert.match(one, /<p class="dp-done" role="status">Saved\. Sundial pulls ChatGPT Enterprise every 6 hours, counted from the last pull\.<\/p>/);
+  assert.match(one, /<option value="360" selected>Every 6 hours<\/option>/);
+  assert.match(one, /<dt>Next pull<\/dt><dd><span class="v-time"[^>]*>2026-10-01 17:00Z<\/span><\/dd>/);
+});
+
+test('a refused schedule is shown with its code, and an intake or a disconnected provider has no schedule', async () => {
+  const { page, requests, html } = await loaded({
+    providers: [{ ...CLAUDE, connection: connection() }, { ...BEDROCK, connection: connection({ account: '', intake_url: ENDPOINT }) }, { ...CHATGPT, connection: connection({ status: 'disabled' }) }],
+    answers: { [`PUT ${PROVIDERS}/claude_enterprise/schedule`]: () => ({ status: 409, body: { error: { code: 'invalid_request', message: 'connect Claude Enterprise first' } } }) },
+  });
+  await page.act({ int: 'schedule', provider: 'claude_enterprise', value: '15' });
+  const claude = card(html(), 'Claude Enterprise');
+  assert.match(claude, /<p class="dp-problem" role="alert"><strong>Not done\.<\/strong> connect Claude Enterprise first <code>invalid_request<\/code><\/p>/);
+  assert.match(claude, /<option value="60" selected>/, 'the schedule shown is still the one held');
+  for (const name of ['Amazon Bedrock', 'ChatGPT Enterprise']) {
+    assert.doesNotMatch(card(html(), name), /Pulled|Next pull|data-int="schedule"/, `${name} has no schedule`);
+  }
+  await page.act({ int: 'schedule', provider: 'amazon_bedrock', value: '15' });
+  await page.act({ int: 'schedule', provider: 'chatgpt_enterprise', value: '15' });
+  assert.equal(writes(requests).length, 1, 'only the pulled, connected provider was sent a schedule');
+});
+
 test('a pull still running says so, and a connection whose counts were not sent says "not reported", never 0', async () => {
   const { html } = await loaded({ providers: [{ ...CHATGPT, connection: connection({ last_started_at: '2026-10-01T12:00:00Z', records_read: undefined, records_new: undefined }) }] });
   const one = card(html(), 'ChatGPT Enterprise');
@@ -189,7 +256,8 @@ test('a provider read with the tenant\'s Entra consent is one button, which wait
   const connected = card(html(), 'Microsoft 365 Copilot');
   assert.match(connected, /Connected\. The first pull has started: it reads the last 7 days\./);
   assert.match(connected, /<dt>Last pull<\/dt><dd><span class="v-absent">not run yet<\/span>/);
-  assert.deepEqual([...connected.matchAll(/data-int="([^"]+)"/g)].map((m) => m[1]), ['run', 'disconnect'], 'no key to replace');
+  assert.match(connected, /<dt>Next pull<\/dt><dd>due now<\/dd>/);
+  assert.deepEqual([...connected.matchAll(/data-int="([^"]+)"/g)].map((m) => m[1]), ['schedule', 'run', 'disconnect'], 'no key to replace');
 });
 
 test('a provider this deployment cannot read is listed as not available and offers nothing', async () => {
@@ -336,6 +404,11 @@ test('the admin API keeps only what the page can show of the provider list', asy
   assert.equal(chatgpt.source_url, null, 'a documentation link that is not https is not a link');
   assert.equal(chatgpt.connection.last_status, null, 'an empty status is no status');
   assert.equal(chatgpt.connection.records_read, null, 'a count not sent stays unknown');
+  assert.equal(chatgpt.connection.pull_every_minutes, null, 'a schedule not sent stays unknown');
+  assert.equal(chatgpt.connection.next_pull_at, null);
+  assert.deepEqual(read.data.pull_every_choices, [], 'no schedule is offered that the server did not list');
+  const offered = (await createAdminApi({ transport: { request: async () => ({ status: 200, body: { pull_every_choices: [15, '30', 60.5, -5, 60], providers: [] } }) } }).providers()).data;
+  assert.deepEqual(offered.pull_every_choices, [15, 60], 'only whole minutes are a schedule');
   assert.equal(claude.available, false, 'a credential this page cannot ask for is not available here');
   const copilot = (await createAdminApi({ transport: { request: async () => ({ status: 200, body: { providers: [COPILOT] } }) } }).providers()).data.providers[0];
   assert.equal(copilot.credential_label, null, 'an empty label is no label');
@@ -497,6 +570,14 @@ test('an admin opens Integrations under Settings, and its forms and buttons act 
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(writes(requests), [['PUT', `${PROVIDERS}/chatgpt_enterprise`, { account: 'ws-4821', key: KEY }]]);
   assert.match(doc.html('app'), /Connected\. The first pull has started/);
+
+  // The schedule is a select: a click on it does nothing, the change it fires chooses.
+  const select = { tagName: 'SELECT', dataset: { int: 'schedule', provider: 'chatgpt_enterprise' }, disabled: false, value: '15' };
+  await fire('click', { target: { closest: (selector) => (selector === '[data-int]' ? select : null) }, preventDefault() {} });
+  assert.equal(writes(requests).length, 1, 'opening the select sends nothing');
+  await fire('change', { target: { dataset: {}, closest: (selector) => (selector === 'select[data-int]' ? select : null) } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(writes(requests).at(-1), ['PUT', `${PROVIDERS}/chatgpt_enterprise/schedule`, { pull_every_minutes: 15 }]);
 });
 
 test('a viewer is not offered Integrations, and the admin API is not asked', async () => {

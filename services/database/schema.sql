@@ -474,6 +474,9 @@ CREATE TABLE ops.provider_connection (
   intake_token_hash  text UNIQUE
                        CONSTRAINT provider_connection_intake_token_is_sha256
                        CHECK (intake_token_hash ~ '^sha256:[0-9a-f]{64}$'),
+  -- How often control-api pulls the connection, in minutes, as its admin chose: the next pass is
+  -- due this long after the last one started. An intake connection is never pulled.
+  pull_every_minutes int NOT NULL DEFAULT 60 CHECK (pull_every_minutes IN (15, 30, 60, 360, 1440)),
   PRIMARY KEY (tenant_id, connection_id),
   UNIQUE (tenant_id, provider),
   CONSTRAINT provider_connection_failure_has_code CHECK ((last_status = 'failed') = (last_error IS NOT NULL)),

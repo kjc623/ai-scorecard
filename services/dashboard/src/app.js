@@ -897,7 +897,7 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       return;
     }
     const intTarget = event.target?.closest?.('[data-int]');
-    if (intTarget && integrations && !intTarget.disabled) {
+    if (intTarget && integrations && intTarget.tagName !== 'SELECT' && !intTarget.disabled) {
       event.preventDefault();
       integrations.act({ ...intTarget.dataset });
       return;
@@ -932,6 +932,11 @@ export async function boot({ document, api, admin, session: givenSession } = {})
       editor.toggle(pick);
       // A tick the pop-up refused does not stay ticked.
       event.target.checked = Boolean(editor.state.picked[pick]);
+      return;
+    }
+    const intSelect = event.target?.closest?.('select[data-int]');
+    if (intSelect && integrations) {
+      integrations.act({ ...intSelect.dataset, value: intSelect.value });
       return;
     }
     const select = event.target?.closest?.('select[data-action]');

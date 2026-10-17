@@ -39,6 +39,13 @@ export const INTAKE_SETUP = Object.freeze({
   webhook: 'In the provider\'s settings, set its webhook to this endpoint with this token as its authorization value.',
 });
 
+/** How often a schedule of so many minutes pulls, in words: every 15 minutes, every hour, every day. */
+export function pullEveryText(minutes) {
+  if (minutes % 1440 === 0) return minutes === 1440 ? 'every day' : `every ${minutes / 1440} days`;
+  if (minutes % 60 === 0) return minutes === 60 ? 'every hour' : `every ${minutes / 60} hours`;
+  return `every ${minutes} minutes`;
+}
+
 /** Is a provider connected now? A disconnected connection is kept, disabled, with its history. */
 export function isConnected(provider) {
   return provider?.connection?.status === 'active';
@@ -53,6 +60,12 @@ export function connectKind(provider) {
   if (!provider?.available) return null;
   if (provider.credential === 'entra_app') return 'consent';
   return provider.credential === 'intake' ? 'intake' : 'key';
+}
+
+/** Is a provider connected and pulled by Sundial, so on a schedule? An intake is sent, not pulled. */
+export function isScheduled(provider) {
+  const kind = connectKind(provider);
+  return isConnected(provider) && (kind === 'key' || kind === 'consent');
 }
 
 const IDLE = Object.freeze({ provider: null, form: false, confirm: false, replace: false, pending: null, problem: null, done: null, queued: null, issued: null, copied: null });
@@ -174,6 +187,19 @@ export function createIntegrations({ admin, onChange = () => {}, copy = null }) 
     return answer.state === 'done' ? load({ quiet: true }) : state;
   }
 
+  /** Choose how often a connected provider is pulled. Only a schedule the server offers is sent. */
+  async function schedule(id, value) {
+    const provider = find(id);
+    const minutes = Number(value);
+    if (state.status !== 'ready' || state.action.pending || !isScheduled(provider)) return state;
+    if (!state.data.pull_every_choices.includes(minutes) || minutes === provider.connection.pull_every_minutes) return state;
+    set({ action: Object.freeze({ ...IDLE, provider: id, pending: 'schedule' }), drafts: NO_DRAFTS });
+    const answer = await admin.setProviderSchedule(id, minutes);
+    const saved = answer.state === 'done';
+    set({ action: Object.freeze({ ...IDLE, provider: id, problem: saved ? null : answer.error, done: saved ? 'schedule' : null }) });
+    return saved ? load({ quiet: true }) : state;
+  }
+
   async function run(id) {
     const provider = find(id);
     if (state.status !== 'ready' || state.action.pending || !isConnected(provider) || connectKind(provider) === 'intake') return state;
@@ -195,7 +221,7 @@ export function createIntegrations({ admin, onChange = () => {}, copy = null }) 
     state = Object.freeze({ ...state, action: state.action.pending ? state.action : IDLE, drafts: NO_DRAFTS });
   }
 
-  /** One entry point for the page's controls: `data-int` names the action, `data-provider` its provider. */
+  /** One entry point for the page's controls: `data-int` names the action, `data-provider` its provider, `value` a choice. */
   function act(dataset = {}) {
     switch (dataset.int) {
       case 'retry': return load();
@@ -205,6 +231,7 @@ export function createIntegrations({ admin, onChange = () => {}, copy = null }) 
       case 'disconnect': return Promise.resolve(askDisconnect(dataset.provider));
       case 'confirm-disconnect': return disconnect(dataset.provider);
       case 'run': return run(dataset.provider);
+      case 'schedule': return schedule(dataset.provider, dataset.value);
       case 'replace': return Promise.resolve(askReplace(dataset.provider));
       case 'confirm-replace': return connect(dataset.provider);
       case 'copy': return copyIssued(dataset.what);
@@ -214,6 +241,6 @@ export function createIntegrations({ admin, onChange = () => {}, copy = null }) 
 
   return Object.freeze({
     get state() { return state; },
-    load, openForm, cancel, connect, askReplace, askDisconnect, disconnect, run, copyIssued, setDraft, leave, act,
+    load, openForm, cancel, connect, askReplace, askDisconnect, disconnect, run, schedule, copyIssued, setDraft, leave, act,
   });
 }

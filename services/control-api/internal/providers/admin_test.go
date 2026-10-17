@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/shadow-ai-capture/control-api/internal/deploy"
 )
@@ -25,6 +26,8 @@ type adminStore struct {
 	keys      map[string][]byte
 	hashes    map[string]string
 	accounts  map[string]string
+	every     map[string]int
+	started   map[string]time.Time
 	audits    []Audit
 }
 
@@ -41,7 +44,7 @@ func newAdminStore() *adminStore {
 				Tools: []Tool{{App: "gemini_code_assist", Name: "Gemini Code Assist"}}},
 		},
 		connected: map[string]string{}, disabled: map[string]bool{}, keys: map[string][]byte{}, hashes: map[string]string{},
-		accounts: map[string]string{},
+		accounts: map[string]string{}, every: map[string]int{}, started: map[string]time.Time{},
 	}
 }
 
@@ -54,7 +57,15 @@ func (s *adminStore) Providers(context.Context, string) ([]Provider, error) {
 			if s.disabled[p.Provider] {
 				status = "disabled"
 			}
-			out[i].Connection = &ConnectionState{ConnectionID: id, Account: s.accounts[p.Provider], Status: status}
+			every := s.every[p.Provider]
+			if every == 0 {
+				every = DefaultPullEvery
+			}
+			c := &ConnectionState{ConnectionID: id, Account: s.accounts[p.Provider], Status: status, PullEveryMinutes: every}
+			if at, ok := s.started[p.Provider]; ok {
+				c.LastStartedAt = &at
+			}
+			out[i].Connection = c
 		}
 	}
 	return out, nil
@@ -91,6 +102,17 @@ func (s *adminStore) Connection(_ context.Context, _, provider string) (string, 
 		return "", false, ErrNotFound
 	}
 	return id, !s.disabled[provider], nil
+}
+
+func (s *adminStore) Schedule(_ context.Context, _, provider string, minutes int, a Audit) error {
+	id, ok := s.connected[provider]
+	if !ok || s.disabled[provider] {
+		return ErrNotFound
+	}
+	s.every[provider] = minutes
+	a.ObjectID = id
+	s.audits = append(s.audits, a)
+	return nil
 }
 
 func (s *adminStore) Audit(_ context.Context, _ string, a Audit) error {
@@ -286,6 +308,69 @@ func TestDisconnectingAndPullingNow(t *testing.T) {
 	}
 	if want := "provider.connect:c0000000-0000-4000-8000-000000000003 provider.run:c0000000-0000-4000-8000-000000000003 provider.disconnect:"; strings.Join(actions, " ") != want {
 		t.Fatalf("audits %v", actions)
+	}
+}
+
+func TestAnAdminChoosesHowOftenAConnectionIsPulled(t *testing.T) {
+	r := newAdminRig(t)
+	put := func(provider, body string) (int, map[string]any) {
+		return r.do(http.MethodPut, "/admin/v1/providers/"+provider+"/schedule", body)
+	}
+	if code, _ := put(ClaudeEnterprise, `{"pull_every_minutes":360}`); code != http.StatusConflict {
+		t.Fatalf("scheduling before connecting = %d", code)
+	}
+	r.do(http.MethodPut, "/admin/v1/providers/claude_enterprise", `{"account":"org-1","key":"sk-ant-api01-x"}`)
+	_, list := r.do(http.MethodGet, "/admin/v1/providers", "")
+	if jsonOf(list["pull_every_choices"]) != "[15,30,60,360,1440]" {
+		t.Fatalf("choices %v", list["pull_every_choices"])
+	}
+	connection := func(provider string) map[string]any {
+		t.Helper()
+		_, list := r.do(http.MethodGet, "/admin/v1/providers", "")
+		for _, p := range list["providers"].([]any) {
+			if m := p.(map[string]any); m["provider"] == provider {
+				c, _ := m["connection"].(map[string]any)
+				return c
+			}
+		}
+		return nil
+	}
+	if c := connection(ClaudeEnterprise); c["pull_every_minutes"] != float64(60) || c["next_pull_at"] != nil {
+		t.Fatalf("a connection never pulled: %v", c)
+	}
+
+	for _, body := range []string{`{"pull_every_minutes":45}`, `{"pull_every_minutes":0}`, `{}`, `{"pull_every_minutes":"60"}`, `{"pull_every_minutes":60,"x":1}`} {
+		if code, _ := put(ClaudeEnterprise, body); code != http.StatusBadRequest {
+			t.Errorf("schedule %s = %d, want 400", body, code)
+		}
+	}
+	if code, body := put(ClaudeEnterprise, `{"pull_every_minutes":360}`); code != http.StatusNoContent {
+		t.Fatalf("schedule = %d %v", code, body)
+	}
+	r.st.started[ClaudeEnterprise] = time.Date(2026, 10, 17, 9, 0, 0, 0, time.UTC)
+	if c := connection(ClaudeEnterprise); c["pull_every_minutes"] != float64(360) || c["next_pull_at"] != "2026-10-17T15:00:00Z" {
+		t.Fatalf("after scheduling: %v", c)
+	}
+	a := r.st.audits[len(r.st.audits)-1]
+	if a.Action != "provider.schedule" || a.ObjectID != "c0000000-0000-4000-8000-000000000003" ||
+		a.Detail["provider"] != ClaudeEnterprise || a.Detail["pull_every_minutes"] != 360 || a.Actor != "admin@contoso.example" {
+		t.Fatalf("audit %+v", a)
+	}
+
+	// An intake is sent as it is written, so it has no schedule.
+	r.do(http.MethodPut, "/admin/v1/providers/gemini_code_assist", `{}`)
+	if code, _ := put(GeminiCodeAssist, `{"pull_every_minutes":60}`); code != http.StatusConflict {
+		t.Fatalf("scheduling an intake = %d", code)
+	}
+	if c := connection(GeminiCodeAssist); c["next_pull_at"] != nil {
+		t.Fatalf("an intake shows a next pull: %v", c)
+	}
+	r.do(http.MethodDelete, "/admin/v1/providers/claude_enterprise", "")
+	if code, _ := put(ClaudeEnterprise, `{"pull_every_minutes":60}`); code != http.StatusConflict {
+		t.Fatalf("scheduling a disconnected provider = %d", code)
+	}
+	if c := connection(ClaudeEnterprise); c["next_pull_at"] != nil {
+		t.Fatalf("a disconnected provider shows a next pull: %v", c)
 	}
 }
 
