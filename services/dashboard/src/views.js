@@ -9,8 +9,8 @@
 // kept apart in another.
 
 import { emptyStateFor, measureOf, vocabOf } from './states.js';
-import { formatBytes, formatCount, formatInstant, formatLabels, formatPercent, plural } from './format.js';
-import { SOURCES, TEMPLATES, UNRECOGNISED_TOOL, SITE_PREFIX, COLLECTION_MODE_LABELS, COLLECTOR_DETAILS, WINDOWS } from './vocab.js';
+import { formatBytes, formatCount, formatInstant, formatLabels, formatPercent, formatRate, plural } from './format.js';
+import { SOURCES, TEMPLATES, UNRECOGNISED_TOOL, SITE_PREFIX, COLLECTION_MODE_LABELS, COLLECTOR_DETAILS, DATA_CLASS_NAMES, WINDOWS } from './vocab.js';
 import { EXPLORE_DATASETS, encodeExploreHash } from './explore-model.js';
 import { RULE_ACTION_LABELS, RULE_CATEGORIES, RULE_MATCH_FIELDS, RULE_MATCH_TITLES, RULE_ROUTES } from './rules.js';
 import { ENDPOINT_TOOLS } from './settings.js';
@@ -33,10 +33,10 @@ export function sumMeasure(state, measure) {
 /**
  * A tile: a label, a value and a short note under it. It may carry an address, or the title of the
  * block on its own page that holds its rows (`jump`); what the figure counts, when the label alone
- * does not say, as `info`; the shape of its series; and a split of its value into parts that each
- * open the rows they count.
+ * does not say, as `info`; the shape of its series; a split of its value into parts that each open
+ * the rows they count; and how it moved against the period before, as `change`.
  */
-function tile(label, value, note, { href = null, jump = null, info = null, trend = null, split = null, moreLabel = null } = {}) {
+function tile(label, value, note, { href = null, jump = null, info = null, trend = null, split = null, moreLabel = null, change = null } = {}) {
   return Object.freeze({
     label,
     value,
@@ -47,6 +47,7 @@ function tile(label, value, note, { href = null, jump = null, info = null, trend
     ...(trend ? { trend } : {}),
     ...(split ? { split } : {}),
     ...(moreLabel ? { moreLabel } : {}),
+    ...(change ? { change } : {}),
   });
 }
 
@@ -1070,6 +1071,58 @@ export function sanctionView(state, { link = toolHref } = {}) {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Insights: the last 30 days against the 30 before
+// ---------------------------------------------------------------------------------------------
+
+/** The window every Insights tab reads; each change compares it with the 30 days before. */
+export const INSIGHTS_WINDOW = 'd30';
+
+const insightsHref = (view) => `#insights?view=${view}`;
+const PREVIOUS = 'Previous 30 days';
+
+/** How a figure moved against the previous period, in words: "Up from 378". Nothing unless both are known. */
+function movedFrom(current, before, format = formatCount) {
+  if (typeof current !== 'number' || typeof before !== 'number') return null;
+  const now = format(current);
+  const then = format(before);
+  if (now === then) return Object.freeze({ direction: 'flat', text: 'No change' });
+  return Object.freeze({ direction: current > before ? 'up' : 'down', text: `${current > before ? 'Up' : 'Down'} from ${then}` });
+}
+
+/** Names in a sentence: "a, b and c". */
+function listText(names) {
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names.join('');
+}
+
+/** Why a figure out of the window's prompts is a dash: there were none, or the read did not say. */
+function promptsNote(state) {
+  const prompts = sumMeasure(state, 'submissions');
+  return prompts.kind === 'number' && prompts.value === 0 ? 'No prompts in the last 30 days.' : absentNote(state);
+}
+
+/** A built-in label as a sentence names what a prompt held, and as a table heads its row. */
+const labelText = (code) => DATA_CLASS_NAMES[code] ?? String(code);
+const labelTitle = (code) => {
+  const text = labelText(code);
+  return `${text[0].toUpperCase()}${text.slice(1)}`;
+};
+
+/** A tool's name in a sentence: the fingerprint of one the catalogue does not name, which tells two apart. */
+const namedTool = (row) => (toolName(row) === UNRECOGNISED_TOOL ? String(row.tool) : toolName(row));
+
+/**
+ * A tool as one cell: its name with its sanction, and beneath it what tells it apart when the
+ * catalogue does not name it.
+ */
+const toolCell = (row) => Object.freeze({
+  primary: toolName(row),
+  mono: !row.tool_name,
+  title: `Tool fingerprint ${row.tool}`,
+  chip: sanctionChip(row.sanctioned_state ?? 'unknown'),
+  secondary: isSite({ key: row.tool }) ? NOT_CATALOGUED : toolName(row) === UNRECOGNISED_TOOL ? String(row.tool) : null,
+});
+
+// ---------------------------------------------------------------------------------------------
 // Insights: Adoption
 // ---------------------------------------------------------------------------------------------
 
@@ -1195,427 +1248,6 @@ function sanctionShift(shift) {
   });
 }
 
-/**
- * Insights, Adoption: how many people used AI out of how many could have, and on which side of the
- * sanction line; the applications new in the window; and whether prompts are moving to sanctioned
- * tools. The people are compared with the period of the same length just before the window.
- *
- * @param {object} input
- * @param {object} input.usage        view state for tool usage over the window (Q1), with its people
- * @param {object} [input.previous]   the same read over the previous period
- * @param {object} [input.firstSeen]  view state for the tools first seen in the window
- * @param {object} [input.shift]      view state for prompts per bucket by sanction
- */
-export function adoptionView({ usage, previous = null, firstSeen = null, shift = null }, { preset = 'd7', link = toolHref } = {}) {
-  const period = previousPeriod(preset);
-  const counted = peopleOf(usage);
-  const before = peopleOf(comparable(previous));
-  const notes = [
-    'Users of AI counts everyone who sent a prompt in the window once, however many tools and days they used.',
-    'A tool not sanctioned is one marked unsanctioned or with no decision yet.',
-  ];
-  if (counted?.basis === 'directory') notes.push('The users are out of everyone the directory lists as active.');
-  else if (counted?.basis === 'devices') notes.push('No directory is synced, so the users are out of everyone last signed in on an enrolled device.');
-  else if (counted) notes.push('No directory is synced and no enrolled device has said who is signed in, so there is no count to compare with.');
-  notes.push(before
-    ? `The change compares this window with ${period}.`
-    : `${period[0].toUpperCase()}${period.slice(1)} could not be read, so no change is shown.`);
-  notes.push('An application counts from the day it sent its first prompt here, under any of its fingerprints; Users since counts everyone who has used it from then until now.');
-  // Nothing before the window means collection began inside it, so every tool in use is new.
-  const fresh = comparable(previous) && previous.data.length === 0 ? 'Nothing was recorded before this window, so every application in use is new.' : null;
-  const shiftSeries = sanctionShift(shift);
-  return screen('insights', 'Insights', null, 'mart.v_tool_usage', {
-    subtitle: 'Adoption: how many users send prompts to AI, which applications are new, and whether use is moving to sanctioned tools.',
-    lead: Object.freeze([peopleShare(counted, before, { period, emptyText: emptyLine(usage, 'No one sent a prompt in this window.') })]),
-    tiles: Object.freeze([]),
-    blocks: Object.freeze([
-      newToolsTable(firstSeen, { link: link ? (fingerprint) => link(fingerprint, preset) : null, earliest: fresh }),
-      ...(shiftSeries ? [shiftSeries] : []),
-    ]),
-    series: Object.freeze([]),
-    tables: Object.freeze([]),
-    ...shared(usage, notes),
-  });
-}
-
-// ---------------------------------------------------------------------------------------------
-// Insights: Discovered
-// ---------------------------------------------------------------------------------------------
-
-/**
- * A tool as one cell: its name with its sanction, and beneath it what tells it apart when the
- * catalogue does not name it.
- */
-const toolCell = (row) => Object.freeze({
-  primary: toolName(row),
-  mono: !row.tool_name,
-  title: `Tool fingerprint ${row.tool}`,
-  chip: sanctionChip(row.sanctioned_state ?? 'unknown'),
-  secondary: isSite({ key: row.tool }) ? NOT_CATALOGUED : toolName(row) === UNRECOGNISED_TOOL ? String(row.tool) : null,
-});
-
-/** What each kind of finding is called, in the order a tool lists them: local models and endpoints first. */
-const FOUND_AS = Object.freeze({
-  local_model: 'Local model',
-  inference_connection: 'Inference endpoint',
-  app_installed: 'Desktop app',
-  cli_installed: 'CLI',
-  ide_extension: 'IDE extension',
-  app_running: 'Seen running',
-});
-const LOCAL = Object.freeze(['local_model', 'inference_connection']);
-/** The models or hosts a row names before the rest are counted. */
-const ITEMS_SHOWN = 3;
-
-/**
- * The prompts each tool sent in the window, by the tool its rows count as, which is also its Tools
- * row. Nothing when the read did not answer.
- */
-function promptsByTool(prompts) {
-  if (!prompts || prompts.isRefusal) return null;
-  const tools = new Map();
-  for (const row of prompts.data) {
-    const value = measureOf(row, 'submissions');
-    if (value.kind === 'number') tools.set(String(row.tool), (tools.get(String(row.tool)) ?? 0) + value.value);
-  }
-  return Object.freeze({ truncated: Boolean(prompts.meta?.truncated), get: (tool) => tools.get(tool) ?? null });
-}
-
-/**
- * What discovery found, one entry per tool: its kinds of finding, the models and hosts it named, the
- * most devices any finding was on, and when it was first and last seen.
- */
-function foundTools(found) {
-  const tools = new Map();
-  for (const row of found.data) {
-    const key = String(row.tool);
-    const tool = tools.get(key) ?? { row, types: new Set(), items: new Set(), devices: null, firstSeen: null, lastSeen: null };
-    if (FOUND_AS[row.discovery_type]) tool.types.add(row.discovery_type);
-    if (row.item) tool.items.add(String(row.item));
-    const devices = measureOf(row, 'devices');
-    if (devices.kind === 'number') tool.devices = Math.max(tool.devices ?? 0, devices.value);
-    if (row.first_seen && (!tool.firstSeen || String(row.first_seen) < tool.firstSeen)) tool.firstSeen = String(row.first_seen);
-    if (row.last_seen && (!tool.lastSeen || String(row.last_seen) > tool.lastSeen)) tool.lastSeen = String(row.last_seen);
-    tools.set(key, tool);
-  }
-  return [...tools.entries()].map(([key, tool]) => ({ key, ...tool }));
-}
-
-/** A list of names in a cell: the first few, and how many more. */
-function namesList(names) {
-  const sorted = [...names].sort((a, b) => a.localeCompare(b));
-  const shown = sorted.slice(0, ITEMS_SHOWN).join(', ');
-  return sorted.length > ITEMS_SHOWN ? `${shown} and ${formatCount(sorted.length - ITEMS_SHOWN)} more` : shown;
-}
-
-/**
- * Every tool discovery found in the window, local models and inference endpoints first, then by
- * the devices it was on: what it was found as, the models and hosts it named, when it was first and
- * last seen, and the prompts it sent in the window. A tool that sent prompts opens its Tools row.
- */
-function foundTable(tools, { reporting, link, prompted, truncated, emptyText }) {
-  const local = (tool) => LOCAL.some((type) => tool.types.has(type));
-  const rows = [...tools]
-    .sort((a, b) => Number(local(b)) - Number(local(a)) || (b.devices ?? -1) - (a.devices ?? -1) || toolName(a.row).localeCompare(toolName(b.row)))
-    .map((tool) => {
-      const sent = prompted ? prompted.get(tool.key) : null;
-      // A tool the read of prompts left out is unknown when that read was cut short, and silent otherwise.
-      const prompts = !prompted ? null : sent !== null ? sent : prompted.truncated ? null : 0;
-      const cell = toolCell(tool.row);
-      return Object.freeze({
-        tool_cell: Object.freeze({ ...cell, secondary: [tool.items.size > 0 ? namesList(tool.items) : null, cell.secondary].filter(Boolean).join(' · ') || null }),
-        found_as: Object.keys(FOUND_AS).filter((type) => tool.types.has(type)).map((type) => FOUND_AS[type]).join(', '),
-        devices: tool.devices,
-        first_seen_day: tool.firstSeen ? formatInstant(tool.firstSeen).slice(0, 10) : null,
-        last_seen_day: tool.lastSeen ? formatInstant(tool.lastSeen).slice(0, 10) : null,
-        prompts,
-        href: sent > 0 && link ? link(tool.key) : null,
-      });
-    });
-  return Object.freeze({
-    kind: 'table',
-    ...tableFrom({ data: rows }, {
-      title: 'Found on devices',
-      columns: [
-        column('tool_cell', 'Application', 'stack'),
-        column('found_as', 'Found as'),
-        column('devices', reporting === null ? 'Devices' : `Devices of ${formatCount(reporting)}`, 'measure'),
-        column('first_seen_day', 'First seen'),
-        column('last_seen_day', 'Last seen'),
-        column('prompts', 'Prompts', 'measure'),
-      ],
-      emptyText,
-    }),
-    ...(rows.length > 0 ? { summary: foundSummary(tools, rows, { truncated }) } : {}),
-    rowHref: 'href',
-    breakdowns: false,
-  });
-}
-
-function foundSummary(tools, rows, { truncated }) {
-  const n = tools.length;
-  const count = (type) => tools.filter((tool) => tool.types.has(type)).length;
-  const parts = [];
-  if (count('local_model') > 0) parts.push(`${formatCount(count('local_model'))} ${count('local_model') === 1 ? 'holds' : 'hold'} local models`);
-  if (count('inference_connection') > 0) parts.push(`${formatCount(count('inference_connection'))} reached an inference endpoint`);
-  const silent = rows.filter((row) => row.prompts === 0).length;
-  if (silent > 0) parts.push(`${formatCount(silent)} sent no prompt`);
-  const said = `${truncated ? 'More than ' : ''}${plural(n, 'application was', 'applications were')} found on devices in this window`;
-  if (parts.length === 0) return `${said}.`;
-  const last = parts.pop();
-  return `${said}; ${parts.length > 0 ? `${parts.join(', ')} and ${last}` : last}.`;
-}
-
-/** Where the inventory scan stands on the enrolled fleet, from the side read beside what it found. */
-function scanOf(state) {
-  const row = state?.meta?.extras?.inventory_scan?.[0];
-  if (!row) return null;
-  const n = (value) => (value === null || value === undefined ? 0 : Number(value));
-  return Object.freeze({ enrolled: n(row.devices_enrolled), scanned: n(row.scanned), notScanned: n(row.not_scanned), switchedOff: n(row.switched_off) });
-}
-
-/** The devices whose inventory scan is not reporting, out of the enrolled fleet, opening Devices. */
-function notScannedTile(scan) {
-  const options = { href: '#devices', moreLabel: 'Devices' };
-  if (!scan) return tile('Not scanned', { kind: 'absent', text: '—' }, 'Where the inventory scan stands could not be read.', options);
-  const off = scan.switchedOff > 0 ? ` ${plural(scan.switchedOff, 'more has', 'more have')} it switched off by policy.` : '';
-  return tile('Not scanned', { kind: 'number', text: formatCount(scan.notScanned) }, `of ${plural(scan.enrolled, 'enrolled device', 'enrolled devices')}`, {
-    ...options,
-    info: `Enrolled devices whose inventory scan has not reported in the last 24 hours, so what they hold is not known.${off}`,
-  });
-}
-
-/**
- * Insights, Discovered: every AI application, CLI, IDE extension, local model and inference
- * endpoint device discovery found in the window, whether or not it sent prompts, and the devices
- * whose inventory scan is not reporting, where a tool can be present and not found.
- *
- * @param {object} input
- * @param {object} input.found      view state for what discovery found, with the inventory scan beside it
- * @param {object} [input.prompts]  view state for the prompts per tool in the window
- */
-export function discoveredView({ found, prompts = null }, { preset = 'd7', link = toolHref } = {}) {
-  const tools = foundTools(found);
-  const prompted = promptsByTool(prompts);
-  const reporting = found.coverage?.devices_reporting ?? null;
-  const table = foundTable(tools, {
-    reporting: reporting === null ? null : Number(reporting),
-    link: link ? (fingerprint) => link(fingerprint, preset) : null,
-    prompted,
-    truncated: Boolean(found.meta?.truncated),
-    emptyText: emptyLine(found, 'Discovery found no AI application on a device in this window.'),
-  });
-  const silent = table.rows.filter(({ row }) => row.prompts === 0).length;
-  // A month is read over day rows, so its count is the busiest day's.
-  const busiest = found.meta?.applied_bucket === 'hour' ? 'hour' : 'day';
-  const notes = [
-    `Devices counts the devices that reported a finding on its busiest ${busiest} in the window, out of the devices reporting now; a device can hold a tool without it being found that ${busiest}.`,
-    'First seen is the first day discovery found the application on any device, before this window or in it.',
-    prompted
-      ? 'Prompts counts what each application sent in the window under any of its fingerprints; a row with prompts opens its Tools row.'
-      : 'The prompts each application sent could not be read, so the Prompts column is empty.',
-  ];
-  return screen('insights', 'Insights', null, 'mart.agg_discovery_period', {
-    subtitle: 'Discovered: the AI applications, CLIs, IDE extensions, local models and inference endpoints found on devices, whether or not they sent prompts.',
-    tiles: Object.freeze([
-      tools.length > 0
-        ? tile('Found on devices', { kind: 'number', text: formatCount(tools.length) }, `${tools.length === 1 ? 'application' : 'applications'} in this window`, {
-          jump: 'Found on devices',
-          info: 'AI applications, CLIs, IDE extensions, local models and inference endpoints the inventory scan found on a device in this window.',
-        })
-        : tile('Found on devices', { kind: 'absent', text: '—' }, absentNote(found)),
-      prompted
-        ? tile('Not sending prompts', { kind: 'number', text: formatCount(silent) }, `of ${plural(tools.length, 'application', 'applications')} found`, {
-          jump: 'Found on devices',
-          info: 'Applications found on a device in this window that sent no prompt in it.',
-        })
-        : tile('Not sending prompts', { kind: 'absent', text: '—' }, 'The prompts could not be read for this window.'),
-      notScannedTile(scanOf(found)),
-    ]),
-    blocks: Object.freeze([table]),
-    series: Object.freeze([]),
-    tables: Object.freeze([]),
-    ...shared(found, notes),
-  });
-}
-
-// ---------------------------------------------------------------------------------------------
-// Insights: Demand
-// ---------------------------------------------------------------------------------------------
-
-/** The tools across the top of the teams table; the seats table lists every one. */
-const DEMAND_TOOLS_SHOWN = 8;
-/** The teams a seats row names before the rest are counted. */
-const DEMAND_TEAMS_NAMED = 3;
-
-/**
- * The demand side read, split into one entry per tool not sanctioned (its people across everyone,
- * those in a team, and per team) and the teams that use any of them. Null when the read did not
- * carry it.
- */
-function demandOf(state) {
-  const rows = state?.meta?.extras?.demand;
-  if (!Array.isArray(rows)) return null;
-  const n = (value) => (value === null || value === undefined ? null : Number(value));
-  const tools = new Map();
-  const teams = new Map();
-  for (const row of rows) {
-    const key = String(row.tool);
-    const tool = tools.get(key) ?? { row, people: null, inTeams: null, teams: new Map() };
-    if (row.team_id === null || row.team_id === undefined) {
-      tool.people = n(row.people);
-      tool.inTeams = n(row.people_in_teams);
-    } else {
-      const team = teams.get(row.team_id) ?? { id: String(row.team_id), name: String(row.team_name ?? row.team_id), size: n(row.team_size), total: 0 };
-      team.total += n(row.people) ?? 0;
-      teams.set(team.id, team);
-      tool.teams.set(team.id, n(row.people));
-    }
-    tools.set(key, tool);
-  }
-  const byPeople = (a, b) => (b.people ?? -1) - (a.people ?? -1) || toolName(a.row).localeCompare(toolName(b.row));
-  return Object.freeze({
-    tools: [...tools.entries()].map(([key, tool]) => ({ key, ...tool })).sort(byPeople),
-    teams: [...teams.values()].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name)),
-  });
-}
-
-/** How many teams there are, from the side read beside the demand; null when it did not come back. */
-function teamCountOf(state) {
-  const row = state?.meta?.extras?.team_coverage?.[0];
-  return row && row.teams !== null && row.teams !== undefined ? Number(row.teams) : null;
-}
-
-/**
- * Every tool not sanctioned that people used in the window, by the people who used it, which is
- * the seats a licence would need: the people across everyone, how many of them are in no team,
- * and the teams they are in. Each opens its Tools row.
- */
-function seatsTable(demand, teamNames, { link, emptyText }) {
-  const rows = (demand?.tools ?? []).map((tool) => {
-    const named = [...tool.teams.entries()]
-      .filter(([, people]) => people > 0)
-      .sort((a, b) => b[1] - a[1] || teamNames.get(a[0]).localeCompare(teamNames.get(b[0])))
-      .map(([id, people]) => `${teamNames.get(id)} ${formatCount(people)}`);
-    const shown = named.slice(0, DEMAND_TEAMS_NAMED).join(', ');
-    return Object.freeze({
-      tool_cell: toolCell(tool.row),
-      people: tool.people,
-      no_team: tool.people === null || tool.inTeams === null ? null : tool.people - tool.inTeams,
-      teams: named.length > DEMAND_TEAMS_NAMED ? `${shown} and ${formatCount(named.length - DEMAND_TEAMS_NAMED)} more` : shown || null,
-      href: link ? link(String(tool.row.tool)) : null,
-    });
-  });
-  const top = demand?.tools?.[0];
-  return Object.freeze({
-    kind: 'table',
-    ...tableFrom({ data: rows }, {
-      title: 'Seats to license',
-      columns: [
-        column('tool_cell', 'Application', 'stack'),
-        column('people', 'Users', 'measure'),
-        column('no_team', 'In no team', 'measure'),
-        column('teams', 'Teams they are in'),
-      ],
-      emptyText,
-    }),
-    ...(top && top.people !== null
-      ? { summary: `${plural(rows.length, 'tool not sanctioned was', 'tools not sanctioned were')} used in this window; ${toolName(top.row)} had the most users, ${formatCount(top.people)}${top.teams.size > 0 ? ` in ${plural(top.teams.size, 'team', 'teams')}` : ''}.` }
-      : {}),
-    rowHref: 'href',
-    breakdowns: false,
-  });
-}
-
-/**
- * Teams down the side and the tools not sanctioned with the most people across the top: each cell
- * is the team's members who used the tool, out of the team's size. Each team opens its page.
- */
-function teamsByToolTable(demand, { link, emptyText, href = null }) {
-  const tools = (demand?.tools ?? []).slice(0, DEMAND_TOOLS_SHOWN);
-  const rows = (demand?.teams ?? []).map((team) => Object.freeze({
-    team_cell: Object.freeze({ primary: team.name, secondary: team.size === null ? null : plural(team.size, 'member', 'members') }),
-    ...Object.fromEntries(tools.map((tool, i) => [`tool_${i}`, Object.freeze({ count: tool.teams.get(team.id) ?? 0, of: team.size })])),
-    href: link ? link(team.id) : null,
-  }));
-  return Object.freeze({
-    kind: 'table',
-    ...tableFrom({ data: rows }, {
-      title: 'Tools not sanctioned, by team',
-      // A tool the catalogue does not name heads its column by its fingerprint, which tells two apart.
-      columns: [column('team_cell', 'Team', 'stack'), ...tools.map((tool, i) => column(`tool_${i}`, toolName(tool.row) === UNRECOGNISED_TOOL ? String(tool.row.tool) : toolName(tool.row), 'share'))],
-      emptyText,
-    }),
-    ...(href ? { href, moreLabel: 'Teams' } : {}),
-    rowHref: 'href',
-    breakdowns: false,
-  });
-}
-
-/**
- * Insights, Demand: the tools not sanctioned, by team, and the seats each would need: what to
- * license, and for whom. People are counted, never named.
- *
- * @param {object} state  view state for teams crossed with tools, with the demand beside it
- */
-export function demandView(state, { preset = 'd7', tools = toolHref, teams = teamHref } = {}) {
-  const demand = demandOf(state);
-  const teamCount = teamCountOf(state);
-  const unread = 'The demand could not be read for this window.';
-  const teamNames = new Map((demand?.teams ?? []).map((team) => [team.id, team.name]));
-  const seats = seatsTable(demand, teamNames, {
-    link: tools ? (fingerprint) => tools(fingerprint, preset) : null,
-    emptyText: demand ? emptyLine(state, 'No tool that is not sanctioned was used in this window.') : unread,
-  });
-  let byTeamEmpty = unread;
-  if (demand && teamCount === 0) byTeamEmpty = 'No team exists yet, so demand cannot be shown per team. Teams are added on the Teams page.';
-  else if (demand) byTeamEmpty = 'No team member used a tool that is not sanctioned in this window.';
-  const byTeam = teamsByToolTable(demand, {
-    link: teams ? (team) => teams(team, preset) : null,
-    emptyText: byTeamEmpty,
-    href: teamCount === 0 ? '#teams' : null,
-  });
-  const top = demand?.tools?.[0];
-  const notes = [
-    'Users counts everyone who sent the tool a prompt in the window once, under any of its fingerprints: the seats a licence would need.',
-    'A tool not sanctioned is one marked unsanctioned or with no decision yet.',
-    ...(demand && demand.tools.length > DEMAND_TOOLS_SHOWN
-      ? [`The ${DEMAND_TOOLS_SHOWN} tools with the most users are shown by team; Seats to license lists all ${formatCount(demand.tools.length)}.`]
-      : []),
-  ];
-  return screen('insights', 'Insights', null, 'mart.agg_team_period', {
-    subtitle: 'Demand: the tools not sanctioned that users send prompts to, by team, and the seats each would need.',
-    tiles: Object.freeze([
-      demand
-        ? tile('Tools not sanctioned', { kind: 'number', text: formatCount(demand.tools.length) }, 'used in this window', {
-          jump: 'Seats to license',
-          info: 'Tools marked unsanctioned or with no decision yet that someone sent a prompt to in this window.',
-        })
-        : tile('Tools not sanctioned', { kind: 'absent', text: '—' }, unread),
-      demand && teamCount !== null && teamCount > 0
-        ? tile('Teams using them', { kind: 'number', text: formatCount(demand.teams.length) }, `of ${plural(teamCount, 'team', 'teams')}`, {
-          jump: 'Tools not sanctioned, by team',
-          info: 'Teams with at least one member who sent a prompt to a tool not sanctioned in this window.',
-        })
-        : tile('Teams using them', { kind: 'absent', text: '—' }, teamCount === 0 ? 'No team exists yet.' : unread, teamCount === 0 ? { href: '#teams', moreLabel: 'Teams' } : {}),
-      top && top.people !== null
-        ? tile('Most seats', { kind: 'number', text: formatCount(top.people) }, `users of ${toolName(top.row)}`, {
-          ...(tools ? { href: tools(String(top.row.tool), preset) } : {}),
-          info: 'The tool not sanctioned with the most users in this window: the seats a licence for it would need.',
-        })
-        : tile('Most seats', { kind: 'absent', text: '—' }, demand ? 'No tool that is not sanctioned was used.' : unread),
-    ]),
-    blocks: Object.freeze([seats, byTeam]),
-    series: Object.freeze([]),
-    tables: Object.freeze([]),
-    ...shared(state, notes),
-  });
-}
-
-// ---------------------------------------------------------------------------------------------
-// Insights: Coding agents
-// ---------------------------------------------------------------------------------------------
-
 const AGENT_SUMS = Object.freeze(['requests', 'actions', 'input_tokens', 'output_tokens']);
 
 /** The sums of an agent read's rows, and the most people any one of them counted. */
@@ -1686,7 +1318,7 @@ function agentToolsTable(tools, before, { period, emptyText }) {
   return Object.freeze({
     kind: 'table',
     ...tableFrom({ data: rows }, {
-      title: 'By tool',
+      title: 'Coding agents',
       columns: [
         column('tool_cell', 'Tool', 'stack'),
         column('people', 'Users', 'measure'),
@@ -1697,6 +1329,7 @@ function agentToolsTable(tools, before, { period, emptyText }) {
       ],
       emptyText,
     }),
+    info: 'What each coding agent sent to models in this window, from the telemetry it exports.',
     breakdowns: false,
   });
 }
@@ -1714,7 +1347,7 @@ function agentModelsTable(models, { emptyText }) {
   return Object.freeze({
     kind: 'table',
     ...tableFrom({ data: rows }, {
-      title: 'By model',
+      title: 'Models coding agents call',
       columns: [
         column('model', 'Model'),
         column('tools', 'Used by'),
@@ -1728,59 +1361,886 @@ function agentModelsTable(models, { emptyText }) {
   });
 }
 
-/** A count tile with its change against the period before, when that period was read, opening the table that holds it. */
-function agentTile(label, value, previous, info, period) {
-  if (value === null) return null;
-  const change = previous === null ? null : changeOf({ kind: 'number', value }, { kind: 'number', value: previous }, period);
-  return tile(label, { kind: 'number', text: formatCount(value) }, change?.text ?? null, { jump: 'By tool', info });
+/** The coding agents' tables: by tool, compared with the period before, and by model. */
+function agentTables(agents, previous, { period }) {
+  const unread = agents ? null : 'What coding agents reported could not be read.';
+  const before = comparable(previous);
+  const beforeTools = before ? new Map(agentTools(before).map((tool) => [tool.key, tool])) : null;
+  return [
+    agentToolsTable(agentTools(agents), beforeTools, { period, emptyText: unread ?? emptyLine(agents, 'No coding agent reported in this window.') }),
+    agentModelsTable(agentModels(agents), { emptyText: unread ?? emptyLine(agents, 'No coding agent called a model in this window.') }),
+  ];
+}
+
+/** How to read the coding agents' tables: which agents can report, and what their figures count. */
+function agentNotes(agents) {
+  const exporting = ENDPOINT_TOOLS.filter((tool) => tool.otel).map((tool) => tool.label);
+  const silent = ENDPOINT_TOOLS.filter((tool) => !tool.otel && tool.hooks).map((tool) => tool.label);
+  const one = silent.length === 1;
+  return [
+    `${listText(exporting)} report coding agent figures while their OpenTelemetry switch is on in Settings${silent.length > 0 ? `; ${listText(silent)} ${one ? 'has' : 'have'} no telemetry the device can collect, so ${one ? 'its' : 'their'} prompts are on Tools but not ${one ? 'its' : 'their'} tokens` : ''}. A tool with no row reported nothing in this window.`,
+    'Input tokens are the code and context an agent sent to a model; agent actions are the tool calls it made, such as running a command or editing a file.',
+    `A coding agent's users is the most users on any one ${agents?.meta?.applied_bucket === 'hour' ? 'hour' : 'day'} in the window: a floor for the window, as on Tools.`,
+  ];
 }
 
 /**
- * Insights, Coding agents: what coding agents send, and to which models. A coding agent reports
- * only while it exports its own telemetry, so a tool with no row is unreported, not idle.
+ * Insights, Adoption: how many people used AI out of how many could have, and on which side of the
+ * sanction line; the applications new in the window; whether prompts are moving to sanctioned
+ * tools; and what coding agents send, and to which models. The people and the agents are compared
+ * with the period of the same length just before the window.
  *
- * @param {{agents: object, previous?: object|null}} states  the window's agent read and the period before's
+ * @param {object} input
+ * @param {object} input.usage        view state for tool usage over the window (Q1), with its people
+ * @param {object} [input.previous]   the same read over the previous period
+ * @param {object} [input.firstSeen]  view state for the tools first seen in the window
+ * @param {object} [input.shift]      view state for prompts per bucket by sanction
+ * @param {object} [input.agents]     view state for what coding agents reported in the window
+ * @param {object} [input.previousAgents] the same read over the previous period
  */
-export function agentsView({ agents, previous = null }, { preset = 'd7' } = {}) {
+export function adoptionView({ usage, previous = null, firstSeen = null, shift = null, agents = null, previousAgents = null }, { preset = INSIGHTS_WINDOW, link = toolHref } = {}) {
   const period = previousPeriod(preset);
-  const before = comparable(previous);
-  const tools = agentTools(agents);
-  const models = agentModels(agents);
-  const beforeTools = before ? new Map(agentTools(before).map((tool) => [tool.key, tool])) : null;
-  const total = agentTotals(agents.data, 'tool_users');
-  const earlier = before ? agentTotals(before.data, 'tool_users') : null;
-  const fallback = (label) => tile(label, { kind: 'absent', text: '—' }, absentNote(agents));
-  const exporting = ENDPOINT_TOOLS.filter((tool) => tool.otel).map((tool) => tool.label);
-  const silent = ENDPOINT_TOOLS.filter((tool) => !tool.otel && tool.hooks).map((tool) => tool.label);
-  const names = (list) => (list.length > 1 ? `${list.slice(0, -1).join(', ')} and ${list[list.length - 1]}` : list.join(''));
+  const counted = peopleOf(usage);
+  const before = peopleOf(comparable(previous));
   const notes = [
-    `${names(exporting)} report here while their OpenTelemetry switch is on in Settings${silent.length > 0 ? `; ${names(silent)} ${silent.length === 1 ? 'has' : 'have'} no telemetry the device can collect, so ${silent.length === 1 ? 'its' : 'their'} prompts are on Tools but not ${silent.length === 1 ? 'its' : 'their'} tokens` : ''}. A tool with no row reported nothing in this window.`,
-    'Input tokens are the code and context an agent sent to a model; agent actions are the tool calls it made, such as running a command or editing a file.',
-    `Users counts the most users on any one ${agents.meta?.applied_bucket === 'hour' ? 'hour' : 'day'} in the window: a floor for the window, as on Tools.`,
-    before
-      ? `Each change compares this window with ${period}.`
-      : `${period[0].toUpperCase()}${period.slice(1)} could not be read, so no change is shown.`,
+    'Users of AI counts everyone who sent a prompt in the window once, however many tools and days they used.',
+    'A tool not sanctioned is one marked unsanctioned or with no decision yet.',
   ];
-  const reported = models.filter((model) => model.name !== '').length;
-  return screen('insights', 'Insights', null, 'mart.agg_agent_period', {
-    subtitle: 'Coding agents: what coding agents send, and to which models.',
-    tiles: Object.freeze([
-      agentTile('Input tokens', total.input, earlier ? earlier.input ?? 0 : null, 'The code and context the coding agents sent to models in this window.', period) ?? fallback('Input tokens'),
-      agentTile('Agent actions', total.actions, earlier ? earlier.actions ?? 0 : null, 'The tool calls the coding agents made in this window, such as running a command or editing a file.', period) ?? fallback('Agent actions'),
-      tools.length > 0
-        ? tile('Models', { kind: 'number', text: formatCount(reported) }, `called by ${plural(tools.length, 'coding agent', 'coding agents')}`, {
-          jump: 'By model',
-          info: 'The models that received code and context from a coding agent in this window.',
-        })
-        : fallback('Models'),
-    ]),
+  if (counted?.basis === 'directory') notes.push('The users are out of everyone the directory lists as active.');
+  else if (counted?.basis === 'devices') notes.push('No directory is synced, so the users are out of everyone last signed in on an enrolled device.');
+  else if (counted) notes.push('No directory is synced and no enrolled device has said who is signed in, so there is no count to compare with.');
+  notes.push(before
+    ? `Each change compares this window with ${period}.`
+    : `${period[0].toUpperCase()}${period.slice(1)} could not be read, so no change is shown.`);
+  notes.push('An application counts from the day it sent its first prompt here, under any of its fingerprints; Users since counts everyone who has used it from then until now.');
+  notes.push(...agentNotes(agents));
+  // Nothing before the window means collection began inside it, so every tool in use is new.
+  const fresh = comparable(previous) && previous.data.length === 0 ? 'Nothing was recorded before this window, so every application in use is new.' : null;
+  const shiftSeries = sanctionShift(shift);
+  return screen('insights', 'Insights', null, 'mart.v_tool_usage', {
+    subtitle: 'Adoption: how many users send prompts to AI, which applications are new, whether use is moving to sanctioned tools, and what coding agents send.',
+    lead: Object.freeze([peopleShare(counted, before, { period, emptyText: emptyLine(usage, 'No one sent a prompt in this window.') })]),
+    tiles: Object.freeze([]),
     blocks: Object.freeze([
-      agentToolsTable(tools, beforeTools, { period, emptyText: emptyLine(agents, 'No coding agent reported in this window.') }),
-      agentModelsTable(models, { emptyText: emptyLine(agents, 'No coding agent called a model in this window.') }),
+      newToolsTable(firstSeen, { link: link ? (fingerprint) => link(fingerprint, preset) : null, earliest: fresh }),
+      ...(shiftSeries ? [shiftSeries] : []),
+      ...agentTables(agents, previousAgents, { period }),
     ]),
     series: Object.freeze([]),
     tables: Object.freeze([]),
-    ...shared(agents, notes),
+    ...shared(usage, notes),
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Insights: Risk
+// ---------------------------------------------------------------------------------------------
+
+/** What each kind of finding is called, in the order a tool lists them: local models and endpoints first. */
+const FOUND_AS = Object.freeze({
+  local_model: 'Local model',
+  inference_connection: 'Inference endpoint',
+  app_installed: 'Desktop app',
+  cli_installed: 'CLI',
+  ide_extension: 'IDE extension',
+  app_running: 'Seen running',
+});
+const LOCAL = Object.freeze(['local_model', 'inference_connection']);
+/** The models, hosts or tools a line names before the rest are counted. */
+const ITEMS_SHOWN = 3;
+
+/**
+ * The prompts each tool sent in the window, by the tool its rows count as, which is also its Tools
+ * row. Nothing when the read did not answer.
+ */
+function promptsByTool(prompts) {
+  if (!prompts || prompts.isRefusal) return null;
+  const tools = new Map();
+  for (const row of prompts.data) {
+    const value = measureOf(row, 'submissions');
+    if (value.kind === 'number') tools.set(String(row.tool), (tools.get(String(row.tool)) ?? 0) + value.value);
+  }
+  return Object.freeze({ truncated: Boolean(prompts.meta?.truncated), get: (tool) => tools.get(tool) ?? null });
+}
+
+/** The prompts a found tool sent: unknown when the read of prompts left it out because it was cut short, else none. */
+function promptsOf(tool, prompted) {
+  const sent = prompted.get(tool.key);
+  return sent !== null ? sent : prompted.truncated ? null : 0;
+}
+
+/**
+ * What discovery found, one entry per tool: its kinds of finding, the models and hosts it named, the
+ * most devices any finding was on, and when it was first and last seen.
+ */
+function foundTools(found) {
+  const tools = new Map();
+  for (const row of found.data) {
+    const key = String(row.tool);
+    const tool = tools.get(key) ?? { row, types: new Set(), items: new Set(), devices: null, firstSeen: null, lastSeen: null };
+    if (FOUND_AS[row.discovery_type]) tool.types.add(row.discovery_type);
+    if (row.item) tool.items.add(String(row.item));
+    const devices = measureOf(row, 'devices');
+    if (devices.kind === 'number') tool.devices = Math.max(tool.devices ?? 0, devices.value);
+    if (row.first_seen && (!tool.firstSeen || String(row.first_seen) < tool.firstSeen)) tool.firstSeen = String(row.first_seen);
+    if (row.last_seen && (!tool.lastSeen || String(row.last_seen) > tool.lastSeen)) tool.lastSeen = String(row.last_seen);
+    tools.set(key, tool);
+  }
+  return [...tools.entries()].map(([key, tool]) => ({ key, ...tool }));
+}
+
+/** What a tool was found as, in words. */
+const foundAs = (tool) => Object.keys(FOUND_AS).filter((type) => tool.types.has(type)).map((type) => FOUND_AS[type]).join(', ');
+
+/** A list of names in a cell: the first few, and how many more. */
+function namesList(names) {
+  const sorted = [...names].sort((a, b) => a.localeCompare(b));
+  const shown = sorted.slice(0, ITEMS_SHOWN).join(', ');
+  return sorted.length > ITEMS_SHOWN ? `${shown} and ${formatCount(sorted.length - ITEMS_SHOWN)} more` : shown;
+}
+
+/**
+ * Every tool discovery found in the window, local models and inference endpoints first, then by
+ * the devices it was on: what it was found as, the models and hosts it named, when it was first and
+ * last seen, and the prompts it sent in the window. A tool that sent prompts opens its Tools row.
+ */
+function foundTable(tools, { reporting, link, prompted, truncated, emptyText }) {
+  const local = (tool) => LOCAL.some((type) => tool.types.has(type));
+  const rows = [...tools]
+    .sort((a, b) => Number(local(b)) - Number(local(a)) || (b.devices ?? -1) - (a.devices ?? -1) || toolName(a.row).localeCompare(toolName(b.row)))
+    .map((tool) => {
+      const prompts = prompted ? promptsOf(tool, prompted) : null;
+      const cell = toolCell(tool.row);
+      return Object.freeze({
+        tool_cell: Object.freeze({ ...cell, secondary: [tool.items.size > 0 ? namesList(tool.items) : null, cell.secondary].filter(Boolean).join(' · ') || null }),
+        found_as: foundAs(tool),
+        devices: tool.devices,
+        first_seen_day: tool.firstSeen ? formatInstant(tool.firstSeen).slice(0, 10) : null,
+        last_seen_day: tool.lastSeen ? formatInstant(tool.lastSeen).slice(0, 10) : null,
+        prompts,
+        href: prompts > 0 && link ? link(tool.key) : null,
+      });
+    });
+  return Object.freeze({
+    kind: 'table',
+    ...tableFrom({ data: rows }, {
+      title: 'Found on devices',
+      columns: [
+        column('tool_cell', 'Application', 'stack'),
+        column('found_as', 'Found as'),
+        column('devices', reporting === null ? 'Devices' : `Devices of ${formatCount(reporting)}`, 'measure'),
+        column('first_seen_day', 'First seen'),
+        column('last_seen_day', 'Last seen'),
+        column('prompts', 'Prompts', 'measure'),
+      ],
+      emptyText,
+    }),
+    ...(rows.length > 0 ? { summary: foundSummary(tools, rows, { truncated }) } : {}),
+    info: 'The AI applications, CLIs, IDE extensions, local models and inference endpoints found on devices, whether or not they sent prompts.',
+    rowHref: 'href',
+    breakdowns: false,
+  });
+}
+
+function foundSummary(tools, rows, { truncated }) {
+  const n = tools.length;
+  const count = (type) => tools.filter((tool) => tool.types.has(type)).length;
+  const parts = [];
+  if (count('local_model') > 0) parts.push(`${formatCount(count('local_model'))} ${count('local_model') === 1 ? 'holds' : 'hold'} local models`);
+  if (count('inference_connection') > 0) parts.push(`${formatCount(count('inference_connection'))} reached an inference endpoint`);
+  const silent = rows.filter((row) => row.prompts === 0).length;
+  if (silent > 0) parts.push(`${formatCount(silent)} sent no prompt`);
+  const said = `${truncated ? 'More than ' : ''}${plural(n, 'application was', 'applications were')} found on devices in this window`;
+  if (parts.length === 0) return `${said}.`;
+  const last = parts.pop();
+  return `${said}; ${parts.length > 0 ? `${parts.join(', ')} and ${last}` : last}.`;
+}
+
+/** Where the inventory scan stands on the enrolled fleet, from the side read beside what it found. */
+function scanOf(state) {
+  const row = state?.meta?.extras?.inventory_scan?.[0];
+  if (!row) return null;
+  const n = (value) => (value === null || value === undefined ? 0 : Number(value));
+  return Object.freeze({ enrolled: n(row.devices_enrolled), scanned: n(row.scanned), notScanned: n(row.not_scanned), switchedOff: n(row.switched_off) });
+}
+
+/** The prompts that matched a rule naming one of their labels, out of every prompt, as a rate per 1,000. */
+function exposureOf(state) {
+  if (!state) return null;
+  const sensitive = sumMeasure(state, 'sensitive');
+  const prompts = sumMeasure(state, 'submissions');
+  if (sensitive.kind !== 'number' || prompts.kind !== 'number' || prompts.value === 0) return null;
+  return Object.freeze({ sensitive: sensitive.value, prompts: prompts.value, rate: (sensitive.value / prompts.value) * 1000 });
+}
+
+const EXPOSURE_INFO = 'Prompts that matched a rule naming one of their labels, per 1,000 prompts in the last 30 days. It is a rate, so more use alone does not raise it.';
+
+/** The sensitive prompts per 1,000, with the counts it is made of and how it moved. */
+function exposureTile(usage, previous, options = {}) {
+  const label = 'Sensitive per 1,000 prompts';
+  const now = exposureOf(usage);
+  if (!now) return tile(label, { kind: 'absent', text: '—' }, promptsNote(usage), { ...options, info: EXPOSURE_INFO });
+  const before = exposureOf(previous);
+  return tile(label, { kind: 'number', text: formatRate(now.rate) }, `${formatCount(now.sensitive)} of ${formatCount(now.prompts)} prompts`, {
+    ...options,
+    info: EXPOSURE_INFO,
+    change: before ? movedFrom(now.rate, before.rate, formatRate) : null,
+  });
+}
+
+/**
+ * The built-in labels on prompts sent outside sanctioned tools, one entry per label: the prompts
+ * holding it, those no rule acted on for it, the tools those went to, and the rules that name it.
+ * A prompt with two labels is in both entries. Null when the read did not answer.
+ */
+function labelGaps(labels, rules) {
+  if (!labels || labels.isRefusal) return null;
+  const known = rules && !rules.isRefusal ? rules.data : null;
+  const gaps = new Map();
+  for (const row of labels.data) {
+    if (!row.class || row.sanctioned_state === 'sanctioned') continue;
+    const prompts = measureOf(row, 'submissions');
+    const flagged = measureOf(row, 'flagged');
+    if (prompts.kind !== 'number' || flagged.kind !== 'number') continue;
+    const key = String(row.class);
+    const gap = gaps.get(key) ?? { key, prompts: 0, uncovered: 0, tools: new Map() };
+    const missed = Math.max(0, prompts.value - flagged.value);
+    gap.prompts += prompts.value;
+    gap.uncovered += missed;
+    if (missed > 0) {
+      const tool = gap.tools.get(String(row.tool)) ?? { row, count: 0 };
+      tool.count += missed;
+      gap.tools.set(String(row.tool), tool);
+    }
+    gaps.set(key, gap);
+  }
+  return [...gaps.values()]
+    .map((gap) => Object.freeze({
+      key: gap.key,
+      prompts: gap.prompts,
+      uncovered: gap.uncovered,
+      tools: Object.freeze([...gap.tools.values()].sort((a, b) => b.count - a.count || toolName(a.row).localeCompare(toolName(b.row)))),
+      rules: known ? Object.freeze(known.filter((rule) => Array.isArray(rule.match?.labels) && rule.match.labels.includes(gap.key)).map((rule) => String(rule.rule))) : null,
+    }))
+    .sort((a, b) => b.uncovered - a.uncovered || b.prompts - a.prompts || a.key.localeCompare(b.key));
+}
+
+/** The prompts no rule acted on, per label, in a read that answered; a label it does not hold had none. */
+const uncoveredBy = (gaps) => (gaps ? new Map(gaps.map((gap) => [gap.key, gap.uncovered])) : null);
+
+/** The tools a line counts, the busiest few by name with their counts. */
+function toolCounts(tools) {
+  const shown = tools.slice(0, ITEMS_SHOWN).map((tool) => `${namedTool(tool.row)} ${formatCount(tool.count)}`).join(' · ');
+  return tools.length > ITEMS_SHOWN ? `${shown} · ${formatCount(tools.length - ITEMS_SHOWN)} more` : shown;
+}
+
+/** The labels found outside sanctioned tools that no rule acted on, out of all of them, opening Policy gaps. */
+function gapsTile(gaps) {
+  const label = 'Labels not covered';
+  const options = { jump: 'Policy gaps', info: 'Built-in labels on prompts sent outside sanctioned tools with no rule acting on them, out of every label found on those prompts.' };
+  if (!gaps) return tile(label, { kind: 'absent', text: '—' }, 'The labels could not be read.', options);
+  if (gaps.length === 0) return tile(label, { kind: 'number', text: '0' }, 'No labelled prompt went outside sanctioned tools.', options);
+  const open = gaps.filter((gap) => gap.uncovered > 0).length;
+  return tile(label, { kind: 'number', text: formatCount(open) }, `of ${plural(gaps.length, 'label', 'labels')} found outside sanctioned tools`, options);
+}
+
+/**
+ * Every built-in label on prompts sent outside sanctioned tools: its prompts, the rules that name
+ * it, the prompts no rule acted on and where they went, and how those moved.
+ */
+function gapsTable(gaps, before, { emptyText }) {
+  const rows = (gaps ?? []).map((gap) => Object.freeze({
+    label: labelTitle(gap.key),
+    prompts: gap.prompts,
+    rules: gap.rules === null ? null : gap.rules.length > 0 ? gap.rules.join(', ') : 'No rule',
+    uncovered: gap.uncovered,
+    tools: gap.tools.length > 0 ? toolCounts(gap.tools) : null,
+    change: before ? movedFrom(gap.uncovered, before.get(gap.key) ?? 0)?.text ?? null : null,
+  }));
+  const open = rows.filter((row) => row.uncovered > 0).length;
+  let summary = null;
+  if (rows.length > 0) {
+    summary = open === 0 ? 'A rule acted on every labelled prompt sent outside sanctioned tools.'
+      : `${formatCount(open)} of the ${plural(rows.length, 'label', 'labels')} found outside sanctioned tools had prompts no rule acted on.`;
+  }
+  return Object.freeze({
+    kind: 'table',
+    ...tableFrom({ data: rows }, {
+      title: 'Policy gaps',
+      columns: [
+        column('label', 'Label'),
+        column('prompts', 'Prompts', 'measure'),
+        column('rules', 'Rules that name it'),
+        column('uncovered', 'Not covered', 'measure'),
+        column('tools', 'Not covered, by tool'),
+        column('change', 'Change'),
+      ],
+      emptyText,
+    }),
+    ...(summary ? { summary } : {}),
+    info: 'The prompts holding each built-in label that went to a tool not sanctioned, and those no rule acted on for that label.',
+    href: '#rules',
+    moreLabel: 'Rules',
+    breakdowns: false,
+  });
+}
+
+/**
+ * Each rule that warns, with what its warnings did: the prompts the person cancelled, those that
+ * went ahead, and those on a route where no warning could be shown. Null without the rules or what
+ * they matched.
+ */
+function warningsOf(rules, matches) {
+  if (!rules || rules.isRefusal || !matches || matches.isRefusal) return null;
+  const groups = new Map(foldCells(matches, 'rule', { sum: RULE_MATCHES, max: [] }).map((g) => [g.key, g]));
+  const count = (id, measure) => (groups.has(id) ? foldedMeasure(groups.get(id), measure).value ?? 0 : 0);
+  return rules.data.filter((rule) => rule.action === 'warn').map((rule) => {
+    const id = String(rule.rule);
+    return Object.freeze({ rule, id, stopped: count(id, 'blocked'), wentAhead: count(id, 'warned'), unshown: count(id, 'logged') });
+  });
+}
+
+/** The prompts a warning was shown on. */
+const shownOn = (warning) => warning.stopped + warning.wentAhead;
+
+/** Whether a rule's warning can be answered: only the browser extension asks the person, who can cancel. */
+const asks = (rule) => !Array.isArray(rule.match?.routes) || rule.match.routes.length === 0 || rule.match.routes.some((route) => String(route).startsWith('ext.'));
+
+/** The warned prompts a warning stopped, out of those it was shown on, opening Rules at work. */
+function warningsTile(warnings) {
+  const label = 'Warnings heeded';
+  const info = 'Prompts a warning stopped because the person cancelled, out of the prompts a warning was shown on in the last 30 days.';
+  if (!warnings) return tile(label, { kind: 'absent', text: '—' }, 'The rules or what they matched could not be read.', { jump: 'Rules at work', info });
+  const answerable = warnings.filter((warning) => asks(warning.rule));
+  if (answerable.length === 0) return tile(label, { kind: 'absent', text: '—' }, 'No rule warns in the browser.', { href: '#rules', moreLabel: 'Rules', info });
+  const stopped = answerable.reduce((sum, warning) => sum + warning.stopped, 0);
+  const shown = answerable.reduce((sum, warning) => sum + shownOn(warning), 0);
+  if (shown === 0) return tile(label, { kind: 'absent', text: '—' }, 'No warning was shown in the last 30 days.', { jump: 'Rules at work', info });
+  return tile(label, { kind: 'number', text: formatPercent(stopped / shown) }, `${formatCount(stopped)} of ${plural(shown, 'warned prompt', 'warned prompts')} stopped`, { jump: 'Rules at work', info });
+}
+
+/** What a rule did to the prompts it matched, in words, by its action. */
+function ruleOutcome(action, counts) {
+  if (counts.matches === 0) return 'Did not fire';
+  const { blocked, warned, logged } = counts;
+  const parts = {
+    warn: [[blocked, 'stopped'], [warned, 'went ahead'], [logged, 'where no warning could be shown']],
+    block: [[blocked, 'blocked'], [warned, 'warned'], [logged, 'on routes that cannot block']],
+    redirect: [[blocked, 'redirected'], [warned, 'warned'], [logged, 'on routes that cannot redirect']],
+    allow: [[logged, 'allowed'], [blocked, 'blocked'], [warned, 'warned']],
+  }[action] ?? [[blocked, 'blocked'], [warned, 'warned'], [logged, 'allowed']];
+  // A warning's two answers are always said; any other part only when it happened.
+  const said = parts.filter(([n], i) => i === 0 || n > 0 || (action === 'warn' && i === 1));
+  return said.map(([n, what]) => `${formatCount(n)} ${what}`).join(', ');
+}
+
+/**
+ * Every enforcement rule, in the order a device applies it, with how often it fired in the window
+ * and what happened then. Without what they matched, the rules are listed with that absent.
+ */
+function rulesAtWork(rules, matches) {
+  const known = rules && !rules.isRefusal ? rules.data : null;
+  const counted = matches && !matches.isRefusal ? matches : null;
+  const groups = new Map((counted ? foldCells(counted, 'rule', { sum: RULE_MATCHES, max: [] }) : []).map((g) => [g.key, g]));
+  const counts = (id) => Object.fromEntries(RULE_MATCHES.map((m) => [m, groups.has(id) ? foldedMeasure(groups.get(id), m).value ?? 0 : 0]));
+  const rows = (known ?? []).map((rule, i) => {
+    const n = counted ? counts(String(rule.rule)) : null;
+    return Object.freeze({
+      rule: Object.freeze({ primary: String(rule.rule), mono: true, secondary: `Rule ${i + 1} · ${ruleConditionsText(rule)}` }),
+      action: RULE_ACTION_KEYS[rule.action] ?? 'unknown',
+      action_text: RULE_ACTION_LABELS[rule.action] ?? String(rule.action ?? 'unknown'),
+      matches: n ? n.matches : null,
+      outcome: n ? ruleOutcome(rule.action, n) : null,
+    });
+  });
+  let summary = null;
+  if (known && known.length > 0 && !counted) summary = 'What each rule matched could not be read for the last 30 days.';
+  else if (known && known.length > 0) {
+    const quiet = rows.filter((row) => row.matches === 0).length;
+    summary = quiet === 0 ? 'Every rule fired in the last 30 days.' : `${formatCount(known.length - quiet)} of ${plural(known.length, 'rule', 'rules')} fired in the last 30 days; ${formatCount(quiet)} did not.`;
+  }
+  return Object.freeze({
+    kind: 'table',
+    ...tableFrom({ data: rows }, {
+      title: 'Rules at work',
+      columns: [
+        column('rule', 'Rule', 'stack'),
+        column('action', 'Action', 'status'),
+        column('matches', 'Fired', 'measure'),
+        column('outcome', 'What happened'),
+      ],
+      emptyText: known ? 'No enforcement rule is set, so every prompt is logged.' : 'The rules could not be read.',
+    }),
+    ...(summary ? { summary } : {}),
+    info: 'Each rule, how many prompts it decided in the last 30 days, and what happened to them.',
+    href: '#rules',
+    moreLabel: 'Rules',
+    breakdowns: false,
+  });
+}
+
+/** The applications found on devices from which no prompt was seen, out of every one found, opening Found on devices. */
+function silentTile(tools, prompted) {
+  const label = 'Installed but silent';
+  const options = { jump: 'Found on devices', info: 'Applications found on a device in the last 30 days from which no prompt was seen. Their use is unknown, not zero.' };
+  if (!tools) return tile(label, { kind: 'absent', text: '—' }, 'What discovery found could not be read.', options);
+  if (!prompted) return tile(label, { kind: 'absent', text: '—' }, 'The prompts could not be read.', options);
+  const silent = tools.filter((tool) => promptsOf(tool, prompted) === 0).length;
+  return tile(label, { kind: 'number', text: formatCount(silent) }, `of ${plural(tools.length, 'application', 'applications')} found`, options);
+}
+
+/**
+ * Insights, Risk: whether sensitive data is leaving and whether the rules stop it. The sensitive
+ * rate against the previous 30 days; the labels on prompts sent outside sanctioned tools that no
+ * rule acted on; what each rule did when it fired; and the applications found on devices, with
+ * those from which no prompt was seen.
+ *
+ * @param {object} input
+ * @param {object} input.usage          view state for tool usage over the last 30 days (Q1)
+ * @param {object} [input.previous]     the same read over the 30 days before
+ * @param {object} [input.rules]        view state for the enforcement rules as they stand
+ * @param {object} [input.ruleMatches]  view state for the prompts each rule matched
+ * @param {object} [input.labels]       view state for the labels on prompts, per tool and sanction
+ * @param {object} [input.previousLabels] the same read over the 30 days before
+ * @param {object} [input.found]        view state for what discovery found, with the inventory scan beside it
+ * @param {object} [input.prompts]      view state for the prompts per tool
+ * @param {object} [options]
+ * @param {boolean} [options.activity]  whether Policy → Activity is offered, for the tile that opens it
+ */
+export function riskView({ usage, previous = null, rules = null, ruleMatches = null, labels = null, previousLabels = null, found = null, prompts = null }, { link = toolHref, activity = false } = {}) {
+  const before = comparable(previous);
+  const gaps = labelGaps(labels, rules);
+  const warnings = warningsOf(rules, ruleMatches);
+  const prompted = promptsByTool(prompts);
+  const tools = found && !found.isRefusal ? foundTools(found) : null;
+  const reporting = found?.coverage?.devices_reporting ?? null;
+  const scan = scanOf(found);
+  // A month is read over day rows, so its count is the busiest day's.
+  const busiest = found?.meta?.applied_bucket === 'hour' ? 'hour' : 'day';
+  const notes = [
+    'Sensitive per 1,000 prompts counts the prompts that matched a rule naming one of their labels. Policy gaps counts the labelled prompts no rule acted on, which that rate leaves out.',
+    'Outside sanctioned tools means tools marked unsanctioned or with no decision yet. A prompt with two labels is counted under each in Policy gaps.',
+    'A warning stops a prompt only when the person cancels it, which the browser extension asks. On other routes the prompt goes ahead with the warning recorded.',
+    `Devices counts the devices that reported a finding on its busiest ${busiest} in the window, out of the devices reporting now; a device can hold a tool without it being found that ${busiest}.`,
+    prompted
+      ? 'Prompts counts what each application sent in the last 30 days under any of its fingerprints; a row with prompts opens its Tools row.'
+      : 'The prompts each application sent could not be read, so the Prompts column is empty.',
+    ...(scan && scan.notScanned > 0 ? [`${plural(scan.notScanned, 'enrolled device has', 'enrolled devices have')} no inventory scan in the last 24 hours, of ${formatCount(scan.enrolled)}, so what they hold is not known.`] : []),
+    'Each change compares the last 30 days with the 30 before; there is none where that period could not be read.',
+  ];
+  if (ruleMatches?.meta?.truncated) notes.push('Not every rule\'s matches could be read, so Rules at work undercounts.');
+  const gapsEmpty = !labels ? 'The labels could not be read.'
+    : labels.isRefusal ? `The labels could not be read: ${labels.error?.message ?? labels.resultState}.`
+      : emptyLine(labels, 'No labelled prompt went outside sanctioned tools in the last 30 days.');
+  return screen('insights', 'Insights', null, 'mart.v_tool_usage', {
+    subtitle: 'Risk: whether sensitive data is leaving, and whether the rules stop it.',
+    tiles: Object.freeze([
+      exposureTile(usage, before, activity ? { href: withPreset('#activity', INSIGHTS_WINDOW) } : {}),
+      gapsTile(gaps),
+      warningsTile(warnings),
+      silentTile(tools, prompted),
+    ]),
+    blocks: Object.freeze([
+      gapsTable(gaps, uncoveredBy(labelGaps(comparable(previousLabels), rules)), { emptyText: gapsEmpty }),
+      rulesAtWork(rules, ruleMatches),
+      foundTable(tools ?? [], {
+        reporting: reporting === null ? null : Number(reporting),
+        link: link ? (fingerprint) => link(fingerprint, INSIGHTS_WINDOW) : null,
+        prompted,
+        truncated: Boolean(found?.meta?.truncated),
+        emptyText: found ? emptyLine(found, 'Discovery found no AI application on a device in the last 30 days.') : 'What discovery found could not be read.',
+      }),
+    ]),
+    series: Object.freeze(exposureSeries(usage)),
+    tables: Object.freeze([]),
+    ...shared(usage, notes),
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Insights: Licensing
+// ---------------------------------------------------------------------------------------------
+
+/** The tools across the top of the teams table; the seats table lists every one. */
+const DEMAND_TOOLS_SHOWN = 8;
+/** The teams a seats row names before the rest are counted. */
+const DEMAND_TEAMS_NAMED = 3;
+
+/**
+ * The demand side read, split into one entry per tool not sanctioned (its people across everyone,
+ * those in a team, and per team) and the teams that use any of them. Null when the read did not
+ * carry it.
+ */
+function demandOf(state) {
+  const rows = state?.meta?.extras?.demand;
+  if (!Array.isArray(rows)) return null;
+  const n = (value) => (value === null || value === undefined ? null : Number(value));
+  const tools = new Map();
+  const teams = new Map();
+  for (const row of rows) {
+    const key = String(row.tool);
+    const tool = tools.get(key) ?? { row, people: null, inTeams: null, teams: new Map() };
+    if (row.team_id === null || row.team_id === undefined) {
+      tool.people = n(row.people);
+      tool.inTeams = n(row.people_in_teams);
+    } else {
+      const team = teams.get(row.team_id) ?? { id: String(row.team_id), name: String(row.team_name ?? row.team_id), size: n(row.team_size), total: 0 };
+      team.total += n(row.people) ?? 0;
+      teams.set(team.id, team);
+      tool.teams.set(team.id, n(row.people));
+    }
+    tools.set(key, tool);
+  }
+  const byPeople = (a, b) => (b.people ?? -1) - (a.people ?? -1) || toolName(a.row).localeCompare(toolName(b.row));
+  return Object.freeze({
+    tools: [...tools.entries()].map(([key, tool]) => ({ key, ...tool })).sort(byPeople),
+    teams: [...teams.values()].sort((a, b) => b.total - a.total || a.name.localeCompare(b.name)),
+  });
+}
+
+/** How many teams there are, from the side read beside the demand; null when it did not come back. */
+function teamCountOf(state) {
+  const row = state?.meta?.extras?.team_coverage?.[0];
+  return row && row.teams !== null && row.teams !== undefined ? Number(row.teams) : null;
+}
+
+/** The teams a tool's users are in, the largest few by name with their counts; null when none is. */
+function teamsText(tool, teamNames) {
+  const named = [...tool.teams.entries()]
+    .filter(([, people]) => people > 0)
+    .sort((a, b) => b[1] - a[1] || teamNames.get(a[0]).localeCompare(teamNames.get(b[0])))
+    .map(([id, people]) => `${teamNames.get(id)} ${formatCount(people)}`);
+  const shown = named.slice(0, DEMAND_TEAMS_NAMED).join(', ');
+  return named.length > DEMAND_TEAMS_NAMED ? `${shown} and ${formatCount(named.length - DEMAND_TEAMS_NAMED)} more` : shown || null;
+}
+
+/** The demand's team names by id. */
+const teamNamesOf = (demand) => new Map((demand?.teams ?? []).map((team) => [team.id, team.name]));
+
+/**
+ * Every tool not sanctioned that people used in the window, by the people who used it, which is
+ * the seats a licence would need: the people across everyone, how many of them are in no team,
+ * and the teams they are in. Each opens its Tools row.
+ */
+function seatsTable(demand, teamNames, { link, emptyText }) {
+  const rows = (demand?.tools ?? []).map((tool) => Object.freeze({
+    tool_cell: toolCell(tool.row),
+    people: tool.people,
+    no_team: tool.people === null || tool.inTeams === null ? null : tool.people - tool.inTeams,
+    teams: teamsText(tool, teamNames),
+    href: link ? link(String(tool.row.tool)) : null,
+  }));
+  const top = demand?.tools?.[0];
+  return Object.freeze({
+    kind: 'table',
+    ...tableFrom({ data: rows }, {
+      title: 'Seats to license',
+      columns: [
+        column('tool_cell', 'Application', 'stack'),
+        column('people', 'Users', 'measure'),
+        column('no_team', 'In no team', 'measure'),
+        column('teams', 'Teams they are in'),
+      ],
+      emptyText,
+    }),
+    ...(top && top.people !== null
+      ? { summary: `${plural(rows.length, 'tool not sanctioned was', 'tools not sanctioned were')} used in this window; ${toolName(top.row)} had the most users, ${formatCount(top.people)}${top.teams.size > 0 ? ` in ${plural(top.teams.size, 'team', 'teams')}` : ''}.` }
+      : {}),
+    rowHref: 'href',
+    breakdowns: false,
+  });
+}
+
+/**
+ * Teams down the side and the tools not sanctioned with the most people across the top: each cell
+ * is the team's members who used the tool, out of the team's size. Each team opens its page.
+ */
+function teamsByToolTable(demand, { link, emptyText, href = null }) {
+  const tools = (demand?.tools ?? []).slice(0, DEMAND_TOOLS_SHOWN);
+  const rows = (demand?.teams ?? []).map((team) => Object.freeze({
+    team_cell: Object.freeze({ primary: team.name, secondary: team.size === null ? null : plural(team.size, 'member', 'members') }),
+    ...Object.fromEntries(tools.map((tool, i) => [`tool_${i}`, Object.freeze({ count: tool.teams.get(team.id) ?? 0, of: team.size })])),
+    href: link ? link(team.id) : null,
+  }));
+  return Object.freeze({
+    kind: 'table',
+    ...tableFrom({ data: rows }, {
+      title: 'Tools not sanctioned, by team',
+      columns: [column('team_cell', 'Team', 'stack'), ...tools.map((tool, i) => column(`tool_${i}`, namedTool(tool.row), 'share'))],
+      emptyText,
+    }),
+    ...(href ? { href, moreLabel: 'Teams' } : {}),
+    rowHref: 'href',
+    breakdowns: false,
+  });
+}
+
+/**
+ * Insights, Licensing: the tools not sanctioned, by team, and the seats each would need: what to
+ * license, and for whom. People are counted, never named.
+ *
+ * @param {object} state  view state for teams crossed with tools, with the demand beside it
+ */
+export function licensingView(state, { preset = INSIGHTS_WINDOW, tools = toolHref, teams = teamHref } = {}) {
+  const demand = demandOf(state);
+  const teamCount = teamCountOf(state);
+  const unread = 'The demand could not be read for this window.';
+  const seats = seatsTable(demand, teamNamesOf(demand), {
+    link: tools ? (fingerprint) => tools(fingerprint, preset) : null,
+    emptyText: demand ? emptyLine(state, 'No tool that is not sanctioned was used in this window.') : unread,
+  });
+  let byTeamEmpty = unread;
+  if (demand && teamCount === 0) byTeamEmpty = 'No team exists yet, so demand cannot be shown per team. Teams are added on the Teams page.';
+  else if (demand) byTeamEmpty = 'No team member used a tool that is not sanctioned in this window.';
+  const byTeam = teamsByToolTable(demand, {
+    link: teams ? (team) => teams(team, preset) : null,
+    emptyText: byTeamEmpty,
+    href: teamCount === 0 ? '#teams' : null,
+  });
+  const top = demand?.tools?.[0];
+  const notes = [
+    'Users counts everyone who sent the tool a prompt in the window once, under any of its fingerprints: the seats a licence would need.',
+    'A tool not sanctioned is one marked unsanctioned or with no decision yet.',
+    ...(demand && demand.tools.length > DEMAND_TOOLS_SHOWN
+      ? [`The ${DEMAND_TOOLS_SHOWN} tools with the most users are shown by team; Seats to license lists all ${formatCount(demand.tools.length)}.`]
+      : []),
+  ];
+  return screen('insights', 'Insights', null, 'mart.agg_team_period', {
+    subtitle: 'Licensing: the tools not sanctioned that users send prompts to, by team, and the seats each would need.',
+    tiles: Object.freeze([
+      demand
+        ? tile('Tools not sanctioned', { kind: 'number', text: formatCount(demand.tools.length) }, 'used in this window', {
+          jump: 'Seats to license',
+          info: 'Tools marked unsanctioned or with no decision yet that someone sent a prompt to in this window.',
+        })
+        : tile('Tools not sanctioned', { kind: 'absent', text: '—' }, unread),
+      demand && teamCount !== null && teamCount > 0
+        ? tile('Teams using them', { kind: 'number', text: formatCount(demand.teams.length) }, `of ${plural(teamCount, 'team', 'teams')}`, {
+          jump: 'Tools not sanctioned, by team',
+          info: 'Teams with at least one member who sent a prompt to a tool not sanctioned in this window.',
+        })
+        : tile('Teams using them', { kind: 'absent', text: '—' }, teamCount === 0 ? 'No team exists yet.' : unread, teamCount === 0 ? { href: '#teams', moreLabel: 'Teams' } : {}),
+      top && top.people !== null
+        ? tile('Most seats', { kind: 'number', text: formatCount(top.people) }, `users of ${toolName(top.row)}`, {
+          ...(tools ? { href: tools(String(top.row.tool), preset) } : {}),
+          info: 'The tool not sanctioned with the most users in this window: the seats a licence for it would need.',
+        })
+        : tile('Most seats', { kind: 'absent', text: '—' }, demand ? 'No tool that is not sanctioned was used.' : unread),
+    ]),
+    blocks: Object.freeze([seats, byTeam]),
+    series: Object.freeze([]),
+    tables: Object.freeze([]),
+    ...shared(state, notes),
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Insights: Briefing
+// ---------------------------------------------------------------------------------------------
+
+/** The users who sent a prompt in the window, each once, out of those who could have, and how that moved. */
+function adoptersTile(usage, previous, options = {}) {
+  const label = 'Users of AI';
+  const info = 'Everyone who sent a prompt in the last 30 days, each counted once however many tools they used.';
+  const counted = peopleOf(usage);
+  if (counted?.people === null || counted?.people === undefined) return tile(label, { kind: 'absent', text: '—' }, absentNote(usage), { ...options, info });
+  return tile(label, { kind: 'number', text: formatCount(counted.people) }, outOf(counted), {
+    ...options,
+    info,
+    change: movedFrom(counted.people, peopleOf(previous)?.people ?? null),
+  });
+}
+
+/** The prompts sent to sanctioned tools, out of every prompt, and whether any tool in use has a decision. */
+function sanctionedOf(state) {
+  const prompts = state ? sumMeasure(state, 'submissions') : null;
+  if (prompts?.kind !== 'number' || prompts.value === 0) return null;
+  let sanctioned = 0;
+  for (const row of state.data) {
+    const value = measureOf(row, 'submissions');
+    if (row.sanctioned_state === 'sanctioned' && value.kind === 'number') sanctioned += value.value;
+  }
+  const decided = state.data.some((row) => row.sanctioned_state === 'sanctioned' || row.sanctioned_state === 'unsanctioned');
+  return Object.freeze({ prompts: prompts.value, share: sanctioned / prompts.value, decided });
+}
+
+/** The share of prompts sent to sanctioned tools, and how it moved; until a tool has a decision, where to make one. */
+function sanctionedTile(usage, previous, options = {}) {
+  const label = 'Sanctioned share';
+  const info = 'Prompts sent to sanctioned tools, out of every prompt in the last 30 days. A tool with no decision is not sanctioned.';
+  const now = sanctionedOf(usage);
+  if (!now) return tile(label, { kind: 'absent', text: '—' }, promptsNote(usage), { ...options, info });
+  if (!now.decided) return tile(label, { kind: 'absent', text: '—' }, 'No tool in use has a sanction decision yet.', { href: '#sanction', moreLabel: 'Decide which tools are sanctioned', info });
+  const before = sanctionedOf(previous);
+  return tile(label, { kind: 'number', text: formatPercent(now.share) }, `of ${formatCount(now.prompts)} prompts`, {
+    ...options,
+    info,
+    change: before?.decided ? movedFrom(now.share, before.share, formatPercent) : null,
+  });
+}
+
+/** What raises a finding: fixed counts a reader can check against the tables they come from. */
+const FINDING_THRESHOLDS = Object.freeze({ uncovered: 10, warned: 10, stopped: 1 / 3, undecided: 10, silent: 10 });
+/** The findings the Briefing shows, at most. */
+const FINDINGS_SHOWN = 6;
+/** What a finding is about, in the order the Briefing lists them. */
+const FINDING_TOPICS = Object.freeze({ risk: 'Risk', licensing: 'Licensing', coverage: 'Coverage' });
+const TOPIC_ORDER = Object.freeze(Object.keys(FINDING_TOPICS));
+
+const FINDING_NOTES = Object.freeze([
+  `A label is a finding when ${FINDING_THRESHOLDS.uncovered} or more prompts holding it went outside sanctioned tools and no rule acted on them.`,
+  `A warning is a finding when it was shown on ${FINDING_THRESHOLDS.warned} or more prompts and stopped fewer than a third of them. A warning limited to routes that cannot ask the person is not one.`,
+  `A tool with no sanction decision is a finding when ${FINDING_THRESHOLDS.undecided} or more users sent it a prompt.`,
+  `An application is a finding when it was found on ${FINDING_THRESHOLDS.silent} or more devices and no prompt from it was seen.`,
+  `At most ${FINDINGS_SHOWN} findings show: risk first, then licensing, then coverage, each largest first.`,
+]);
+
+/** One finding: what crossed a threshold, the figures behind it, and the one action it calls for. */
+function finding(topic, key, text, { evidence, action, size }) {
+  return Object.freeze({
+    key,
+    topic,
+    topicText: FINDING_TOPICS[topic],
+    text,
+    evidence: evidence.filter(Boolean).join(' · ') || null,
+    action: Object.freeze(action),
+    size,
+  });
+}
+
+/** The labels whose prompts went outside sanctioned tools with no rule acting on them. */
+function uncoveredFindings(gaps, before) {
+  return gaps.filter((gap) => gap.uncovered >= FINDING_THRESHOLDS.uncovered).map((gap) => {
+    const name = labelText(gap.key);
+    // Only a rulebase that was read can be said to have no rule for the label.
+    const unnamed = gap.rules !== null && gap.rules.length === 0;
+    return finding('risk', `uncovered:${gap.key}`, `${plural(gap.uncovered, 'prompt', 'prompts')} with ${name} went outside sanctioned tools. ${unnamed ? `No rule covers ${name}.` : 'No rule acted on them.'}`, {
+      evidence: [toolCounts(gap.tools), before ? `${PREVIOUS}: ${formatCount(before.get(gap.key) ?? 0)}` : null],
+      action: unnamed ? { label: `Add a rule for ${name}`, href: '#rules' } : { label: 'Review the rules', href: '#rules' },
+      size: gap.uncovered,
+    });
+  });
+}
+
+/** The warnings the person can answer that stopped too few of the prompts they were shown on. */
+function warningFindings(warnings, before) {
+  const earlier = before ? new Map(before.map((warning) => [warning.id, warning])) : null;
+  return warnings
+    .filter((warning) => asks(warning.rule) && shownOn(warning) >= FINDING_THRESHOLDS.warned && warning.stopped / shownOn(warning) < FINDING_THRESHOLDS.stopped)
+    .map((warning) => {
+      const then = earlier?.get(warning.id);
+      const previously = then && shownOn(then) > 0 ? `${formatCount(then.stopped)} of ${formatCount(shownOn(then))} stopped` : 'none warned';
+      return finding('risk', `warning:${warning.id}`, `The warning ${warning.id} stopped ${formatCount(warning.stopped)} of ${plural(shownOn(warning), 'prompt', 'prompts')}. ${formatCount(warning.wentAhead)} went ahead.`, {
+        evidence: [ruleConditionsText(warning.rule), earlier ? `${PREVIOUS}: ${previously}` : null],
+        action: { label: `Edit ${warning.id}`, href: '#rules' },
+        size: warning.wentAhead,
+      });
+    });
+}
+
+/** The tools with no sanction decision that enough people use to need one. */
+function undecidedFindings(demand, before) {
+  const teamNames = teamNamesOf(demand);
+  const earlier = before ? new Map(before.tools.map((tool) => [tool.key, tool.people])) : null;
+  return demand.tools
+    .filter((tool) => !['sanctioned', 'unsanctioned'].includes(tool.row.sanctioned_state) && (tool.people ?? 0) >= FINDING_THRESHOLDS.undecided)
+    .map((tool) => {
+      const name = namedTool(tool.row);
+      const teams = teamsText(tool, teamNames);
+      return finding('licensing', `undecided:${tool.key}`, `${name} has ${plural(tool.people, 'user', 'users')} and no sanction decision.`, {
+        evidence: [teams ? `Teams: ${teams}` : null, earlier ? `${PREVIOUS}: ${plural(earlier.get(tool.key) ?? 0, 'user', 'users')}` : null],
+        action: { label: `Decide on ${name}`, href: '#sanction' },
+        size: tool.people,
+      });
+    });
+}
+
+/** The applications found on enough devices from which no prompt was seen: their use is unknown. */
+function silentFindings(tools, prompted) {
+  return tools
+    .filter((tool) => (tool.devices ?? 0) >= FINDING_THRESHOLDS.silent && promptsOf(tool, prompted) === 0)
+    .map((tool) => finding('coverage', `silent:${tool.key}`, `${namedTool(tool.row)} is on ${plural(tool.devices, 'device', 'devices')}, but no prompt from it was seen.`, {
+      evidence: [`Found as ${foundAs(tool)}`, 'Its use is unknown, not zero'],
+      action: { label: 'See what was found', href: insightsHref('risk') },
+      size: tool.devices,
+    }));
+}
+
+/**
+ * The findings, risk first, then licensing, then coverage, each largest first, up to the most the
+ * Briefing shows. A check whose read did not come back is named, so its silence is not read as clear.
+ */
+function findingsBlock(checks) {
+  const all = checks.flatMap((check) => check.found ?? []);
+  const shown = [...all]
+    .sort((a, b) => TOPIC_ORDER.indexOf(a.topic) - TOPIC_ORDER.indexOf(b.topic) || b.size - a.size || a.key.localeCompare(b.key))
+    .slice(0, FINDINGS_SHOWN);
+  const unchecked = checks.filter((check) => check.found === null).map((check) => check.name);
+  const summary = [
+    all.length > shown.length ? `The ${FINDINGS_SHOWN} largest of ${formatCount(all.length)} findings are shown.` : null,
+    unchecked.length > 0 ? `Not checked, because a read did not come back: ${listText(unchecked)}.` : null,
+  ].filter(Boolean).join(' ');
+  return Object.freeze({
+    kind: 'findings',
+    title: 'Findings',
+    info: 'What crossed a fixed threshold in the last 30 days, each with the action it calls for. The thresholds are under About this data.',
+    items: Object.freeze(shown),
+    ...(summary ? { summary } : {}),
+    emptyText: unchecked.length === checks.length ? 'Nothing could be checked: none of the reads came back.' : 'Nothing crossed a threshold in the last 30 days.',
+  });
+}
+
+/**
+ * Insights, Briefing: three figures against the previous 30 days, then the findings that crossed a
+ * fixed threshold, each with the one action it calls for. Each figure opens the tab that holds the
+ * rest of it.
+ *
+ * @param {object} input
+ * @param {object} input.usage            view state for tool usage over the last 30 days (Q1), with its people
+ * @param {object} [input.previous]       the same read over the 30 days before
+ * @param {object} [input.rules]          view state for the enforcement rules as they stand
+ * @param {object} [input.ruleMatches]    view state for the prompts each rule matched
+ * @param {object} [input.previousMatches] the same read over the 30 days before
+ * @param {object} [input.labels]         view state for the labels on prompts, per tool and sanction
+ * @param {object} [input.previousLabels] the same read over the 30 days before
+ * @param {object} [input.demand]         view state for the users of each tool not sanctioned
+ * @param {object} [input.previousDemand] the same read over the 30 days before
+ * @param {object} [input.found]          view state for what discovery found
+ * @param {object} [input.prompts]        view state for the prompts per tool
+ */
+export function briefingView({
+  usage, previous = null, rules = null, ruleMatches = null, previousMatches = null, labels = null, previousLabels = null,
+  demand = null, previousDemand = null, found = null, prompts = null,
+}) {
+  const before = comparable(previous);
+  const gaps = labelGaps(labels, rules);
+  const warnings = warningsOf(rules, ruleMatches);
+  const wanted = demandOf(demand);
+  const prompted = promptsByTool(prompts);
+  const tools = found && !found.isRefusal ? foundTools(found) : null;
+  const checks = [
+    { name: 'labels no rule covers', found: gaps ? uncoveredFindings(gaps, uncoveredBy(labelGaps(comparable(previousLabels), rules))) : null },
+    { name: 'warnings', found: warnings ? warningFindings(warnings, warningsOf(rules, comparable(previousMatches))) : null },
+    { name: 'tools with no decision', found: wanted ? undecidedFindings(wanted, demandOf(comparable(previousDemand))) : null },
+    { name: 'applications on devices', found: tools && prompted ? silentFindings(tools, prompted) : null },
+  ];
+  const notes = [
+    'Every figure is the last 30 days; each change compares it with the 30 days before.',
+    ...(before ? [] : ['The previous 30 days could not be read, so the figures show no change.']),
+    'Outside sanctioned tools means tools marked unsanctioned or with no decision yet.',
+    ...FINDING_NOTES,
+  ];
+  return screen('insights', 'Insights', null, 'mart.v_tool_usage', {
+    subtitle: 'Briefing: the last 30 days against the 30 before, and what needs a decision.',
+    tiles: Object.freeze([
+      adoptersTile(usage, before, { href: insightsHref('adoption') }),
+      sanctionedTile(usage, before, { href: insightsHref('licensing') }),
+      exposureTile(usage, before, { href: insightsHref('risk') }),
+    ]),
+    blocks: Object.freeze([findingsBlock(checks)]),
+    series: Object.freeze([]),
+    tables: Object.freeze([]),
+    ...shared(usage, notes),
   });
 }
 

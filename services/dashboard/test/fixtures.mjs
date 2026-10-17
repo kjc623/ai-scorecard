@@ -280,6 +280,26 @@ const AGENT_ROWS = Object.freeze([
   agent('app:github_copilot', 'GitHub Copilot', 'sanctioned', 'gpt-4.1', 1200, 0, 5_000_000, 300_000, 20, 22),
 ]);
 
+/** The prompts per tool in the window, each tool counted under all of its fingerprints. */
+const PROMPT_ROWS = Object.freeze([
+  Object.freeze({ bucket: '2026-09-01T00:00:00Z', tool: 'app:claude_code', tool_name: 'Claude Code', submissions: 812 }),
+  Object.freeze({ bucket: '2026-09-01T00:00:00Z', tool: 'app:ollama', tool_name: 'Ollama', submissions: 30 }),
+]);
+
+// The labels on prompts per tool and its sanction in the month bucket, and those a rule naming the
+// label acted on. A tool with no decision has no state. No rule names source code.
+const label = (code, tool, tool_name, sanctioned_state, submissions, flagged) => Object.freeze({
+  bucket: '2026-09-01T00:00:00Z', class: code, tool, tool_name, sanctioned_state, submissions, flagged,
+});
+const LABEL_ROWS = Object.freeze([
+  label('credential', 'tls_f412811be7ac6539', 'ChatGPT', 'sanctioned', 300, 60),
+  label('credential', 'app:claude_code', 'Claude Code', 'unsanctioned', 140, 120),
+  label('credential', 'host:chat.example.ai', 'chat.example.ai', null, 22, 0),
+  label('customer_pii', 'app:claude_code', 'Claude Code', 'unsanctioned', 50, 50),
+  label('source_code', 'app:claude_code', 'Claude Code', 'unsanctioned', 400, 0),
+  label('health', 'host:chat.example.ai', 'chat.example.ai', null, 4, 0),
+]);
+
 /** Where the inventory scan stands on the enrolled fleet, beside what it found. */
 const INVENTORY_SCAN = Object.freeze({ devices_enrolled: 4620, scanned: 4400, not_scanned: 200, switched_off: 20 });
 
@@ -437,6 +457,20 @@ const REALISTIC = Object.freeze({
       applied_bucket: 'month',
       extras: { demand: DEMAND_ROWS, team_coverage: [{ users_all: 4210, users_in_teams: 2680, teams: 4 }] },
     },
+  }),
+  // The prompts per tool, beside what discovery found.
+  'mart.v_tool_usage:tool': ok({
+    data: PROMPT_ROWS,
+    freshness: freshness(),
+    coverage: coverage({ state: 'partial' }),
+    meta: { source: 'mart.v_tool_usage', applied_bucket: 'month' },
+  }),
+  // The labels per tool and sanction, for what went outside sanctioned tools with no rule acting on it.
+  'mart.agg_class_period': ok({
+    data: LABEL_ROWS,
+    freshness: freshness({ aggregate: 'mart.agg_class_period' }),
+    coverage: coverage({ state: 'partial' }),
+    meta: { source: 'mart.agg_class_period', applied_bucket: 'month' },
   }),
   'mart.v_tool_usage': ok({
     data: SHIFT_ROWS,
@@ -617,8 +651,11 @@ export const SCENARIOS = Object.freeze({
 
 export const SCENARIO_NAMES = Object.freeze(Object.keys(SCENARIOS));
 
-function keyOf(body) {
-  return body?.template ?? body?.source ?? 'unknown';
+/** What answers a request: its template, else its source, by its dimensions where an answer is kept for them. */
+function keyOf(body, answers) {
+  if (body?.template) return body.template;
+  const shaped = body?.source && Array.isArray(body.dimensions) ? `${body.source}:${body.dimensions.join(',')}` : null;
+  return shaped && answers?.[shaped] ? shaped : body?.source ?? 'unknown';
 }
 
 /** A template request carries its cursor inside `params`; a document carries it at the top level. */
@@ -654,7 +691,7 @@ export function fixtureTransport(scenario = 'realistic') {
   const issued = new Set();
   return Object.freeze({
     async send(body) {
-      const name = keyOf(body);
+      const name = keyOf(body, spec.answers);
       const cursor = cursorOf(body);
       if (cursor !== null) {
         if (!issued.has(cursor)) return STATE_ENVELOPES.cursor_expired;
@@ -669,4 +706,4 @@ export function fixtureTransport(scenario = 'realistic') {
   });
 }
 
-export { TOOL_ROWS, DEVICE_ROWS, COLLECTOR_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, TEAM_ROWS, TEAM_MEMBER_ROWS, PEOPLE_ROWS, CLASS_ROWS, PERSON_ROWS, RULE_ROWS, RULE_MATCH_ROWS, PEOPLE_ROW, FIRST_SEEN_ROWS, SHIFT_ROWS, DISCOVERY_ROWS, INVENTORY_SCAN, DEMAND_ROWS, AGENT_ROWS, WINDOW };
+export { TOOL_ROWS, DEVICE_ROWS, COLLECTOR_ROWS, ACTIVITY_ROWS, RECORD_ROWS, FINDING_ROWS, AUDIT_ROWS, TEAM_ROWS, TEAM_MEMBER_ROWS, PEOPLE_ROWS, CLASS_ROWS, PERSON_ROWS, RULE_ROWS, RULE_MATCH_ROWS, PEOPLE_ROW, FIRST_SEEN_ROWS, SHIFT_ROWS, DISCOVERY_ROWS, PROMPT_ROWS, LABEL_ROWS, INVENTORY_SCAN, DEMAND_ROWS, AGENT_ROWS, WINDOW };

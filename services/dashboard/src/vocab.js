@@ -161,7 +161,7 @@ export const SOURCES = Object.freeze({
   'mart.agg_class_period': Object.freeze({
     kind: 'aggregate',
     label: 'Sensitive-data class mix',
-    dimensions: Object.freeze(['bucket', 'class', 'tool', 'severity', 'classifier_version']),
+    dimensions: Object.freeze(['bucket', 'class', 'tool', 'sanctioned_state', 'severity', 'classifier_version']),
     measures: Object.freeze(['submissions', 'users', 'max_score', 'degraded_events', 'flagged', 'flagged_blocked', 'flagged_warned', 'flagged_logged']),
     answers: 'Q4',
     note: 'submissions counts submissions carrying the class: the rows fan out and are not additive',
@@ -431,6 +431,17 @@ export const COLLECTOR_DETAILS = Object.freeze({
   no_recent_events: 'The tool ran but sent nothing for 24 hours',
   restart_required: 'The app was running when its settings changed and needs a restart',
   etw_session_failed: 'The Windows event session failed',
+});
+
+/** The built-in data classes (ref.data_class), as a sentence names what a prompt held. */
+export const DATA_CLASS_NAMES = Object.freeze({
+  payment_card: 'payment card numbers',
+  government_id: 'government IDs',
+  credential: 'credentials',
+  customer_pii: 'customer personal data',
+  source_code: 'source code',
+  legal_commercial: 'legal and commercial terms',
+  health: 'health information',
 });
 
 /** The routes an observation arrives by (ref.route_fidelity), in fidelity order. */

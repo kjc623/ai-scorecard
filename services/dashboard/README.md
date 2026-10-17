@@ -1,9 +1,9 @@
 # dashboard
 
-The analyst-facing web application. The navigation holds four destinations, each with its pages as
-tabs under its title, and Archive and Settings at its foot; every other screen is opened from a row,
-a tile or a card. A role is offered only the pages it may open, and an address from an earlier
-layout lands on the page that holds it now.
+The analyst-facing web application. The navigation holds five destinations, each with its pages as
+tabs under its title, and Settings at its foot; every other screen is opened from a row, a tile or a
+card. A role is offered only the pages it may open, and an address from an earlier layout lands on
+the page that holds it now.
 
 - **Overview**: the window's prompts, attachments, sensitive prompts, users and devices reporting,
   the tools by sanction, the rules at work and the tools in use. Every card that shows a figure, here
@@ -13,6 +13,17 @@ layout lands on the page that holds it now.
   findings), Teams (an admin adds, edits and deletes teams from any mix of the people they tick, the
   groups, departments and units the identity provider synced, and other teams) and Users (everyone
   the directory or a device has named, with their teams and prompts, and each person's page).
+- **Insights**: the last 30 days against the 30 before, arranged around what needs a decision.
+  Briefing (the people using AI, the share of prompts to sanctioned tools and the sensitive prompts
+  per 1,000, then the findings that crossed a fixed threshold, each with the one action it calls for:
+  labels no rule covers, warnings people go ahead through, tools many use with no sanction decision,
+  and applications found on devices that send nothing), Adoption (the people using AI out of the
+  directory by the sanction of their tools, the applications new in the window, the weekly shift
+  between sanctioned and other tools, and what coding agents send and to which models), Risk (the
+  sensitive rate, the labels sent outside sanctioned tools that no rule acted on, what each rule did
+  when it fired, and every AI application the devices' inventory scan found with the prompts it sent)
+  and Licensing (the tools not sanctioned by team, every team shown whatever its size, and the seats
+  each tool would need).
 - **Search** (`explore.html`): an analyst lists events and findings, searches prompt text, and
   reads an event's stored prompt. An event read from a provider's admin API names the provider
   where a device would be, and one a device and a provider both collected names both. Each event
@@ -25,14 +36,6 @@ layout lands on the page that holds it now.
   sanction decision, made there by an admin) and Activity (pre-production only: the prompts that
   matched an enforcement rule on one of their labels, what happened to them, the tools they went to
   and the labels involved, each against the period before).
-- **Archive** (pre-production only): Insights, with Adoption (how many people use AI out of the
-  directory, split by the sanction of their tools, the applications that sent their first prompt in
-  the window, and each day's or week's prompts by sanction), Discovered (every AI application, CLI,
-  IDE extension, local model and inference endpoint the devices' inventory scan found, with the
-  prompts each sent, and the devices whose scan is not reporting), Demand (the tools not sanctioned
-  by team, each team's people using each out of its size, and the people each tool would need a seat
-  for) and Coding agents (each coding agent's people, actions and tokens against the period before,
-  and the models that received its code and context).
 - **Settings**: Collection (the collection mode, prompt storage, retention, per-tool overrides, TLS
   inspection, the kill switch, the endpoint collectors and how apps that need a restart are
   reported), Devices (each device with the mode it applied and the apps on it that need a restart,
@@ -78,7 +81,7 @@ The server refuses to start unless every required variable is set.
 | `SAC_QUERY_API_URL` | yes | query-api, for `/v1/*` |
 | `SAC_CONTENT_VAULT_URL` | yes | content-vault, for minted retrieval URLs only |
 | `SAC_HTTP_ADDR` | no | Listen address, `host:port` or `:port`; default `0.0.0.0:8080` |
-| `SAC_ENVIRONMENT` | no | `preprod` or `prod` (the default). Pre-production also offers the pages still being built, Policy → Activity and Archive; production offers neither, and its Overview's Sensitive prompts tile opens Policy → Rules |
+| `SAC_ENVIRONMENT` | no | `preprod` or `prod` (the default). Pre-production also offers the page still being built, Policy → Activity; production does not, and its Overview's Sensitive prompts tile opens Policy → Rules |
 
 Routes: `/signin`, `/signin/start`, `/callback`, `/signout`, `/login` (control-api's onboarding
 hand-off), `/session` (who is signed in and which pages the roles may open), `/healthz` and

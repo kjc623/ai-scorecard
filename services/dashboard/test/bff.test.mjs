@@ -575,7 +575,8 @@ test('GET /session names the pages each role may open; Search is not served to a
   assert.equal(JSON.stringify(viewerSession).includes('at-viewer'), false, 'the page is never given a token');
   const adminSession = (await send(port, '/session', { headers: { cookie: `sac_session=${admin}` } })).json();
   for (const id of ['settings', 'directory', 'integrations', 'labels']) assert.ok(adminSession.pages.includes(id), id);
-  for (const id of ['activity', 'insights']) assert.equal(adminSession.pages.includes(id), false, `production does not offer ${id}, still being built`);
+  assert.equal(adminSession.pages.includes('activity'), false, 'production does not offer Activity, still being built');
+  assert.ok(adminSession.pages.includes('insights'), 'production offers Insights');
   const refused = await send(port, '/explore.html', { headers: { cookie: `sac_session=${viewer}` } });
   assert.equal(refused.status, 403);
   assert.match(refused.text, /Your role cannot open this page/);
@@ -644,7 +645,7 @@ test('GET /session in pre-production also names the pages still being built', as
   const { port, signIn } = await lab(t, { environment: 'preprod' });
   const viewer = (await signIn('viewer')).session;
   const session = (await send(port, '/session', { headers: { cookie: `sac_session=${viewer}` } })).json();
-  assert.ok(session.pages.includes('insights'));
+  assert.ok(session.pages.includes('activity'));
   assert.equal('environment' in session, false, 'the pages say what is offered; the page is not told why');
 });
 

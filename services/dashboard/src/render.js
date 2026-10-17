@@ -396,9 +396,25 @@ export function renderFunnel(block) {
     + `<div class="funnel-outcomes">${bar}<div class="funnel-split">${outcomes.map(renderStage).join('')}</div></div></div>`);
 }
 
+/**
+ * Findings: each a sentence with what it is about, the figures behind it, and a link to where its
+ * action is taken. A block that has a summary says it above them.
+ */
+export function renderFindings(block) {
+  const items = block.items ?? [];
+  const summary = block.summary ? `<p class="block-summary">${escapeHtml(block.summary)}</p>` : '';
+  if (items.length === 0) return blockFrame('findings', block, `${summary}<p class="block-empty">${escapeHtml(block.emptyText ?? 'Nothing to report.')}</p>`);
+  const rows = items.map((item) => `<li class="finding">${chip({ key: `finding_${item.topic}`, text: item.topicText })}`
+    + `<p class="finding-text">${escapeHtml(item.text)}</p>`
+    + (item.evidence ? `<p class="finding-evidence">${escapeHtml(item.evidence)}</p>` : '')
+    + `<a class="finding-action" href="${escapeHtml(item.action.href)}">${escapeHtml(item.action.label)}</a></li>`).join('');
+  return blockFrame('findings', block, `${summary}<ol class="findings">${rows}</ol>`, { count: items.length });
+}
+
 /** A block of a screen, by its kind. */
 function renderBlock(block) {
   switch (block?.kind) {
+    case 'findings': return renderFindings(block);
     case 'ranking': return renderRanking(block);
     case 'funnel': return renderFunnel(block);
     case 'share': return renderShare(block);
@@ -441,7 +457,8 @@ function renderSplit(split) {
 /**
  * A tile. One with an address is a link, unless its split already holds links: then the address
  * is a line of its own, because a link inside a link is not a thing a browser can follow. One with
- * a `jump` opens the block it names on the same page. Its `info` is the (i) beside its label.
+ * a `jump` opens the block it names on the same page. Its `info` is the (i) beside its label, and
+ * its `change` a line under its note.
  */
 export function renderTile(t) {
   const nested = (t.split ?? []).some((part) => part.href && (Number(part.count) || 0) > 0);
@@ -461,6 +478,7 @@ export function renderTile(t) {
     + `<span class="tile-figure"><span class="tile-value">${renderValue(t.value)}</span>${trend}</span>`
     + renderSplit(t.split)
     + (t.note ? `<span class="tile-note">${escapeHtml(t.note)}</span>` : '')
+    + (t.change ? `<span class="tile-change tile-change-${escapeHtml(t.change.direction)}">${escapeHtml(t.change.text)}</span>` : '')
     + more
     + `</div></${tag}>`;
 }
@@ -576,7 +594,7 @@ const NAV_ICONS = Object.freeze({
   search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>',
   usage: '<path d="M4 19.5V10M9.5 19.5v-15M15 19.5v-7M20.5 19.5V7"/>',
   settings: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
-  archive: '<rect x="3.5" y="4.5" width="17" height="4" rx="1"/><path d="M5 8.5v10a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-10"/><path d="M10 12.5h4"/>',
+  insights: '<path d="M9.5 17.5h5M10.5 20.5h3"/><path d="M12 3.5a5.5 5.5 0 0 0-3.2 10c.5.4.7.9.7 1.5v.5h5V15c0-.6.2-1.1.7-1.5A5.5 5.5 0 0 0 12 3.5z"/>',
 });
 
 function navIcon(name) {

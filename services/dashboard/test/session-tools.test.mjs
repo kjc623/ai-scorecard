@@ -37,7 +37,7 @@ const TENANT = '00000000-0000-4000-8000-0000000000aa';
 // ---------------------------------------------------------------------------------------------
 
 test('each role maps to the pages it may open', () => {
-  assert.deepEqual(pagesFor('viewer').sort(), ['devices', 'posture', 'rules', 'sanction', 'teams', 'tools'], 'everyone reads Policy; a viewer\'s Settings is Devices');
+  assert.deepEqual(pagesFor('viewer').sort(), ['devices', 'insights', 'posture', 'rules', 'sanction', 'teams', 'tools'], 'everyone reads Policy and Insights; a viewer\'s Settings is Devices');
   for (const role of ['analyst', 'content_reader']) {
     assert.ok(pagesFor(role).includes('person'), `${role} may open Users`);
     assert.ok(pagesFor(role).includes('explore'), `${role} may open Search`);
@@ -53,11 +53,10 @@ test('each role maps to the pages it may open', () => {
 
 test('pre-production also offers the pages still being built; production, the default, does not', () => {
   for (const role of ['viewer', 'analyst', 'content_reader', 'admin']) {
-    for (const id of ['activity', 'insights']) {
-      assert.ok(pagesForRoles([role], { environment: 'preprod' }).includes(id), `${role} opens ${id} in pre-production`);
-      assert.equal(pagesForRoles([role], { environment: 'prod' }).includes(id), false, `${role} is not offered ${id} in production`);
-    }
-    assert.deepEqual(pagesForRoles([role], { environment: 'preprod' }).filter((p) => p !== 'activity' && p !== 'insights'), pagesForRoles([role]));
+    assert.ok(pagesForRoles([role], { environment: 'preprod' }).includes('activity'), `${role} opens Activity in pre-production`);
+    assert.equal(pagesForRoles([role], { environment: 'prod' }).includes('activity'), false, `${role} is not offered Activity in production`);
+    assert.ok(pagesForRoles([role], { environment: 'prod' }).includes('insights'), `${role} opens Insights in production`);
+    assert.deepEqual(pagesForRoles([role], { environment: 'preprod' }).filter((p) => p !== 'activity'), pagesForRoles([role]));
   }
   assert.deepEqual(pagesForRoles([], { environment: 'preprod' }), []);
 });

@@ -214,6 +214,25 @@ export function buildToolPromptsDocument({ window }) {
 }
 
 /**
+ * The prompts holding each built-in label, per tool with its sanction, and those a rule naming the
+ * label matched, for Insights: what reached a tool not sanctioned with no rule covering it. One total
+ * per tool, in the coarsest bucket the window allows, as for what discovery found.
+ *
+ * @param {{window: {from: string, to: string, bucket?: string}}} input
+ */
+export function buildLabelCoverageDocument({ window }) {
+  return Object.freeze({
+    query_version: QUERY_VERSION,
+    source: 'mart.agg_class_period',
+    bucket: window.bucket === 'hour' ? 'hour' : 'month',
+    dimensions: Object.freeze(['class', 'tool', 'sanctioned_state']),
+    measures: Object.freeze(['submissions', 'flagged']),
+    window: checkWindow(window),
+    limit: 1999,
+  });
+}
+
+/**
  * Teams crossed with tools in the window, for Insights: the read that carries the demand for each
  * tool not sanctioned beside it, counted once over the window per team and across everyone. Its
  * own rows are each team's prompts per fingerprint, in the coarsest bucket the window allows.
