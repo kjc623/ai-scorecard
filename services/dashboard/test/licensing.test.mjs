@@ -1,11 +1,11 @@
-// demand.test.mjs — Insights' Demand tab: the tools not sanctioned that people use, by team, and
-// the seats each would need. People are counted, never named.
+// licensing.test.mjs — Insights' Licensing tab: the tools not sanctioned that people use, by team,
+// and the seats each would need. People are counted, never named.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readState } from '../src/states.js';
 import { renderScreen } from '../src/render.js';
-import { demandView } from '../src/views.js';
+import { licensingView } from '../src/views.js';
 import { boot, createDashboard } from '../src/app.js';
 import { createQueryApi } from '../src/transport.js';
 import { DEMAND_ROWS, fixtureTransport } from './fixtures.mjs';
@@ -27,7 +27,7 @@ const byTeam = (view) => block(view, 'Tools not sanctioned, by team').rows.map((
 ]);
 
 test('each tool not sanctioned is a row of seats: its people, those in no team, and the teams they are in', () => {
-  const view = demandView(stateOf(), { preset: 'd30' });
+  const view = licensingView(stateOf());
   assert.deepEqual(seats(view), [
     ['Claude Code', 'Unsanctioned', 230, 30, 'Engineering 180, Finance 25, Legal 1'],
     ['chat.example.ai', 'No decision yet', 14, 5, 'Finance 9'],
@@ -40,7 +40,7 @@ test('each tool not sanctioned is a row of seats: its people, those in no team, 
 });
 
 test('teams run down the side and the tools across the top, each cell a part of the team, both by people', () => {
-  const view = demandView(stateOf(), { preset: 'd30' });
+  const view = licensingView(stateOf());
   const table = block(view, 'Tools not sanctioned, by team');
   assert.deepEqual(table.columns.map((c) => c.label), ['Team', 'Claude Code', 'chat.example.ai', 'shadow_llm_gateway']);
   assert.deepEqual(byTeam(view), [
@@ -62,7 +62,7 @@ test('past eight tools the table by team keeps the eight with the most people an
     { tool: `host:t${i}.example`, tool_name: `t${i}.example`, sanctioned_state: 'unknown', team_id: null, team_name: null, team_size: null, people: 20 - i, people_in_teams: 1 },
     { tool: `host:t${i}.example`, tool_name: `t${i}.example`, sanctioned_state: 'unknown', team_id: 'team-a', team_name: 'Ops', team_size: 30, people: 1, people_in_teams: null },
   ]).flat();
-  const view = demandView(stateOf(rows));
+  const view = licensingView(stateOf(rows));
   assert.equal(block(view, 'Tools not sanctioned, by team').columns.length, 9);
   assert.equal(block(view, 'Seats to license').rows.length, 10);
   assert.match(view.notes.join(' '), /The 8 tools with the most users are shown by team; Seats to license lists all 10\./);
@@ -70,7 +70,7 @@ test('past eight tools the table by team keeps the eight with the most people an
 
 test('with no team yet the table by team says so and opens Teams, and the seats still stand', () => {
   const rows = DEMAND_ROWS.filter((r) => r.team_id === null);
-  const view = demandView(stateOf(rows, { teams: 0 }));
+  const view = licensingView(stateOf(rows, { teams: 0 }));
   const table = block(view, 'Tools not sanctioned, by team');
   assert.equal(table.emptyText, 'No team exists yet, so demand cannot be shown per team. Teams are added on the Teams page.');
   assert.deepEqual([table.href, table.moreLabel], ['#teams', 'Teams']);
@@ -79,24 +79,25 @@ test('with no team yet the table by team says so and opens Teams, and the seats 
 });
 
 test('a window with nothing not sanctioned says so, and a read without the demand is a dash, not a zero', () => {
-  const none = demandView(stateOf([]));
+  const none = licensingView(stateOf([]));
   assert.equal(block(none, 'Seats to license').emptyText, 'No tool that is not sanctioned was used in this window.');
   assert.equal(block(none, 'Tools not sanctioned, by team').emptyText, 'No team member used a tool that is not sanctioned in this window.');
   assert.deepEqual(none.tiles.map((t) => t.value.text), ['0', '0', '—']);
 
-  const unread = demandView(stateOf([], { extras: {} }));
+  const unread = licensingView(stateOf([], { extras: {} }));
   assert.deepEqual(unread.tiles.map((t) => t.value.kind), ['absent', 'absent', 'absent']);
   assert.equal(block(unread, 'Seats to license').emptyText, 'The demand could not be read for this window.');
 });
 
-test('the Demand tab reads teams crossed with tools and renders each cell as a part of its team', async () => {
+test('the Licensing tab reads teams crossed with tools over the last 30 days and renders each cell as a part of its team', async () => {
   const sent = [];
   const fixtures = fixtureTransport('realistic');
   const transport = { send: (body) => { sent.push(body); return fixtures.send(body); } };
   const dashboard = createDashboard({ api: createQueryApi({ transport }), now: NOW });
-  const { view } = await dashboard.load('insights', { preset: 'd30', filters: { view: 'demand' } });
+  const { view } = await dashboard.load('insights', { filters: { view: 'licensing' } });
   const read = sent.find((b) => b.source === 'mart.agg_team_period');
-  assert.deepEqual([read.bucket, read.dimensions, read.measures, read.limit], ['month', ['team', 'tool'], ['submissions'], 1999]);
+  assert.deepEqual([read.bucket, read.dimensions, read.measures, read.limit, read.window.from], ['month', ['team', 'tool'], ['submissions'], 1999, '2026-09-01T12:00:00.000Z']);
+  assert.match(view.subtitle, /^Licensing: /);
   assert.equal(view.source, 'mart.agg_team_period');
   const html = renderScreen(view, {});
   assert.match(html, /<h3>Seats to license<\/h3>/);
@@ -104,10 +105,11 @@ test('the Demand tab reads teams crossed with tools and renders each cell as a p
   assert.doesNotMatch(html, /u_[0-9a-f]{4}/, 'nobody is named');
 });
 
-test('Insights switches to Demand beside its window', async () => {
+test('the old Demand address opens Licensing', async () => {
   const doc = fakeDocument('#insights?view=demand&preset=d30');
   await boot({ document: doc, api: createQueryApi({ transport: fixtureTransport() }), admin: null, session: null });
+  assert.equal(doc.location.hash, '#insights?view=licensing');
   const html = doc.html('app');
-  assert.match(html, /<a class="page-tab" href="#insights\?preset=d30&amp;view=demand" aria-current="page">Demand<\/a>/);
+  assert.match(html, /<a class="page-tab" href="#insights\?view=licensing" aria-current="page">Licensing<\/a>/);
   assert.match(html, /Most seats/);
 });

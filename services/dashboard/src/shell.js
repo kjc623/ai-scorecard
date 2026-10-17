@@ -8,16 +8,16 @@
 import { escapeHtml } from './render.js';
 
 /**
- * The navigation: four destinations and Settings, each holding its pages as tabs under its title.
- * Archive holds the pages still being built, and only pre-production offers it. Settings and Archive
- * sit at the foot of the panel. Every other screen is reached from a row or a tile on one of these.
+ * The navigation: five destinations and Settings, each holding its pages as tabs under its title.
+ * Insights has tabs of its own, one per decision. Settings sits at the foot of the panel. Every
+ * other screen is reached from a row or a tile on one of these.
  */
 export const SECTIONS = Object.freeze([
   section('overview', 'Overview', 'overview', [['posture', 'Overview']]),
   section('usage', 'Usage', 'usage', [['tools', 'Tools'], ['teams', 'Teams'], ['person', 'Users']]),
+  section('insights', 'Insights', 'insights', [['insights', 'Insights']]),
   section('search', 'Search', 'search', [['explore', 'Search']], { href: 'explore.html' }),
   section('policy', 'Policy', 'rules', [['rules', 'Rules'], ['labels', 'Labels'], ['sanction', 'Tools'], ['activity', 'Activity']]),
-  section('archive', 'Archive', 'archive', [['insights', 'Insights']], { foot: true }),
   section('settings', 'Settings', 'settings', [['settings', 'Collection'], ['devices', 'Devices'], ['directory', 'Identity Providers'], ['integrations', 'Integrations'], ['audit', 'Audit trail']], { foot: true }),
 ]);
 

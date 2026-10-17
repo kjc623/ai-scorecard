@@ -136,7 +136,7 @@ code {
 .nav a.active { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
 .nav-icon { flex: none; width: 17px; height: 17px; color: var(--ink-soft); }
 .nav a.active .nav-icon { color: var(--accent); }
-/* Settings and Archive sit at the foot of the panel, apart from the destinations above them. */
+/* Settings sits at the foot of the panel, apart from the destinations above it. */
 .nav-spacer { flex: 1 1 auto; min-height: 18px; }
 
 .side-foot { margin-top: auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 4px 0; border-top: 1px solid var(--line); }
@@ -234,10 +234,10 @@ code {
 .tile .card-core { padding: 20px 22px; display: flex; flex-direction: column; gap: 6px; }
 .tile:first-child { grid-column: span 2; }
 .tile:first-child .tile-value { font-size: 52px; }
-/* Five tiles share one row where it fits, the first no wider than the rest. */
-.tiles:has(> .tile:nth-child(5)) { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
-.tiles:has(> .tile:nth-child(5)) > .tile:first-child { grid-column: auto; }
-.tiles:has(> .tile:nth-child(5)) > .tile:first-child .tile-value { font-size: 44px; }
+/* Four or more tiles share one row where it fits, the first no wider than the rest. */
+.tiles:has(> .tile:nth-child(4)) { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.tiles:has(> .tile:nth-child(4)) > .tile:first-child { grid-column: auto; }
+.tiles:has(> .tile:nth-child(4)) > .tile:first-child .tile-value { font-size: 44px; }
 a.tile, a.card-link { display: block; text-decoration: none; color: inherit; }
 .card-link { cursor: pointer; transition: transform .5s var(--ease); }
 .card-link:hover { transform: translateY(-2px); }
@@ -285,6 +285,8 @@ a.tile, a.card-link { display: block; text-decoration: none; color: inherit; }
 .tile-value { font: 400 36px/1.1 var(--serif); letter-spacing: -0.02em; color: var(--ink); }
 .tile-value .v-vocab { font: 12px/1.7 var(--mono); letter-spacing: 0; vertical-align: middle; }
 .tile-note { font-size: 12.5px; color: var(--ink-soft); }
+.tile-change { font-size: 12.5px; color: var(--ink-soft); }
+.tile-change-up, .tile-change-down { color: var(--ink); }
 .tile-figure { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px 16px; }
 .tile-spark { display: inline-flex; align-items: flex-end; margin-bottom: 6px; }
 .tile-more { margin-top: 2px; font-size: 12.5px; color: var(--accent); text-decoration: none; }
@@ -403,6 +405,22 @@ tr.row-empty td { color: var(--ink-soft); font-style: italic; }
 .bar-seg.v-vocab-unsanctioned { background: var(--bad); }
 .bar-seg.v-vocab-unknown { background: var(--ink-faint); }
 .dist-seg.v-vocab-both, .dist-dot.v-vocab-both { background: var(--warn); }
+
+/* Findings: what each is about, the sentence and the figures behind it, and its action at the right. */
+/* The findings share their columns, so each one's text starts where the others' does. */
+.findings { list-style: none; margin: 0; padding: 0 22px 20px; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 10px 14px; }
+.finding {
+  grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: baseline; gap: 4px 14px;
+  padding: 14px 16px; border-radius: 14px; border: 1px solid var(--line); background: var(--tray);
+}
+.finding > .v-vocab { grid-row: 1 / span 2; align-self: start; justify-self: start; margin-top: 1px; }
+.finding-text { grid-column: 2; margin: 0; font-size: 14.5px; color: var(--ink); }
+.finding-evidence { grid-column: 2; margin: 0; font-size: 12.5px; color: var(--ink-soft); overflow-wrap: anywhere; }
+.finding-action { grid-column: 3; grid-row: 1 / span 2; align-self: center; font-size: 13px; font-weight: 500; color: var(--accent); text-decoration: none; white-space: nowrap; }
+.finding-action:hover { text-decoration: underline; }
+.v-vocab-finding_risk { background: var(--bad-bg); color: var(--bad); }
+.v-vocab-finding_licensing { background: var(--accent-soft); color: var(--accent); }
+.v-vocab-finding_coverage { background: var(--warn-bg); color: var(--warn); }
 
 /* A funnel: its stages left to right, the last split into outcomes under one bar. */
 .funnel { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 14px 18px; padding: 4px 22px 22px; }
@@ -675,6 +693,10 @@ td.dp-action { text-align: right; white-space: nowrap; }
   .funnel-outcomes { flex-basis: auto; align-self: stretch; }
   .funnel-split { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
   .funnel-split .funnel-step { min-width: 0; }
+  .findings, .finding { grid-template-columns: minmax(0, 1fr); }
+  .finding > .v-vocab { grid-row: auto; justify-self: start; }
+  .finding-text, .finding-evidence, .finding-action { grid-column: 1; }
+  .finding-action { grid-row: auto; justify-self: start; white-space: normal; }
   .side { position: sticky; top: 0; height: auto; padding: 10px 12px 0; }
   .side-inner { height: auto; gap: 0; padding: 10px 12px; border-radius: 9999px; overflow: visible; }
   .menu {

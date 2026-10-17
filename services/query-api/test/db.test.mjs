@@ -777,6 +777,36 @@ test('what coding agents report reads per tool under all its fingerprints and mo
   );
 });
 
+test('the labels on prompts read per tool under all its fingerprints, with the sanction decision on that tool', { skip: SKIP }, async () => {
+  await scratch(
+    async (client) => {
+      await client.query("INSERT INTO ops.tool_sanction (tenant_id, tool_key, sanctioned_state, decided_by, decided_at) VALUES (ops.current_tenant(), 'claude_code', 'sanctioned', 'db-test', now())");
+      await client.query(
+        `INSERT INTO mart.agg_class_period (tenant_id, bucket_start, bucket_size, class_code, tool_fingerprint, severity, classifier_version, submissions, users, flagged) VALUES
+           (ops.current_tenant(), '2026-09-02', 'day', 'credential', 'app:claude_code', 'high', 'v1', 5, 1, 2),
+           (ops.current_tenant(), '2026-09-03', 'day', 'credential', 'tls_b6681b043244c43f', 'medium', 'v1', 3, 1, 3),
+           (ops.current_tenant(), '2026-09-03', 'day', 'source_code', 'app:codex', 'low', 'v1', 4, 1, 0),
+           (ops.current_tenant(), '2026-08-20', 'day', 'source_code', 'app:codex', 'low', 'v1', 9, 1, 0)`,
+      );
+    },
+    async (client, tenant) => {
+      const ctx = { now: NOW, tenant, actorId: 'db-test', cursorKey: KEY };
+      const read = await executePlan(
+        plan({ query_version: '1', source: 'mart.agg_class_period', bucket: 'month', dimensions: ['class', 'tool', 'sanctioned_state'], measures: ['submissions', 'flagged'], window: WINDOW, limit: 100 }, ctx),
+        { ...ctx, client: nested(client) },
+      );
+      assert.deepEqual(
+        read.data.map((r) => [r.class, r.tool, r.sanctioned_state, Number(r.submissions), Number(r.flagged), r.tool_name]).sort((a, b) => a[0].localeCompare(b[0])),
+        [
+          ['credential', 'app:claude_code', 'sanctioned', 8, 5, 'Claude Code'],
+          ['source_code', 'app:codex', null, 4, 0, 'Codex CLI'],
+        ],
+        'day rows in the window only, summed across fingerprints and severities; a tool with no decision has no state',
+      );
+    },
+  );
+});
+
 test('Q1 counts the people behind the usage once each, by the sanction of their tools, beside the people they are out of', { skip: SKIP }, async () => {
   const [ada, bob, cara, dan] = ['a', 'b', 'c', 'd'].map((c) => `u_${c.repeat(32)}`);
   let sanctioned = null;

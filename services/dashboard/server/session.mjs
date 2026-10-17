@@ -51,7 +51,7 @@ const PAGE_CAPABILITY = Object.freeze({
 const ALWAYS_VISIBLE = Object.freeze(['posture', 'tools', 'teams', 'rules', 'sanction', 'activity', 'insights']);
 
 /** Pages still being built: pre-production offers them, and production does not. */
-const PREPRODUCTION_ONLY = Object.freeze(['activity', 'insights']);
+const PREPRODUCTION_ONLY = Object.freeze(['activity']);
 
 /** The capabilities of one role. An unknown role carries none. */
 export function capabilitiesFor(role) {

@@ -11,13 +11,13 @@ import { createQueryApi, httpTransport, loadSession, createAdminApi, httpAdminTr
 import { readState } from './states.js';
 import { QUESTIONS, context } from './questions.js';
 import {
-  postureView, activityView, adoptionView, discoveredView, demandView, agentsView, toolsView, toolView, teamsView, teamView,
+  postureView, activityView, briefingView, adoptionView, riskView, licensingView, toolsView, toolView, teamsView, teamView,
   personView, peopleView, devicesView, deviceView, eventView, auditView, rulesView, sanctionView, refusalView,
-  needsInputView,
+  needsInputView, INSIGHTS_WINDOW,
 } from './views.js';
 import {
-  buildAgentDocument, buildDemandDocument, buildDiscoveryDocument, buildFirstSeenDocument, buildListDocument, buildPeopleDocument, buildRuleMatchesDocument,
-  buildSanctionShiftDocument, buildTeamMembersDocument, buildToolPromptsDocument,
+  buildAgentDocument, buildDemandDocument, buildDiscoveryDocument, buildFirstSeenDocument, buildLabelCoverageDocument, buildListDocument,
+  buildPeopleDocument, buildRuleMatchesDocument, buildSanctionShiftDocument, buildTeamMembersDocument, buildToolPromptsDocument,
 } from './dsl.js';
 import { renderScreen, renderNav } from './render.js';
 import { SECTIONS, sectionOf, shellNavItems, tabsFor, wireShell } from './shell.js';
@@ -171,8 +171,9 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
           }
           if (screen.id === 'activity') return { view: await activityScreen(ctx), shell: shell() };
           if (screen.id === 'insights') {
-            const tab = INSIGHTS_SCREENS[params.filters.view] ?? adoptionScreen;
-            return { view: await tab(ctx), shell: shell() };
+            // Every tab reads the same fixed window, whatever window the address carries.
+            const tab = INSIGHTS_SCREENS[params.filters.view] ?? briefingScreen;
+            return { view: await tab(context({ preset: INSIGHTS_WINDOW, now: now() }), params), shell: shell() };
           }
           if (screen.id === 'devices' && params.filters.device) return { view: await deviceScreen(String(params.filters.device)), shell: shell() };
           if (screen.id === 'audit') {
@@ -289,55 +290,85 @@ export function createDashboard({ api, admin = null, now = () => new Date() }) {
     return deviceView({ device, row, collectors }, { now: now() });
   }
 
+  /** The same window, ended where the given one starts: the period each change is measured against. */
+  const before = (ctx) => context({ preset: ctx.preset, now: new Date(Date.parse(ctx.window.from)) });
+
+  /** The enforcement rules as they stand. */
+  const readRules = () => part(async () => readState(await api.run(buildListDocument('ops.enforcement_rule', {}, 100))));
+
+  /** A document read beside the main one; one that fails leaves its panel saying so. */
+  const side = (document) => part(async () => readState(await api.run(document)));
+
+  /**
+   * Insights, Briefing: the window's tool usage and the same read of the period before it, for the
+   * three figures; and for the findings, the rules with what they matched, the labels per tool and
+   * sanction, the users of each tool not sanctioned (each of those three for both periods), what
+   * discovery found and the prompts per tool. Only the window's usage is needed; a check whose read
+   * fails is said not to have been made. The previous period is read first, so the coverage the
+   * page reports is the window's own.
+   */
+  async function briefingScreen(ctx) {
+    const earlier = before(ctx);
+    const previous = await part(() => ask('q1_tools_ranked', earlier));
+    const usage = await ask('q1_tools_ranked', ctx);
+    const rules = await readRules();
+    const ruleMatches = await side(buildRuleMatchesDocument({ window: ctx.window }));
+    const previousMatches = await side(buildRuleMatchesDocument({ window: earlier.window }));
+    const labels = await side(buildLabelCoverageDocument({ window: ctx.window }));
+    const previousLabels = await side(buildLabelCoverageDocument({ window: earlier.window }));
+    const demand = await side(buildDemandDocument({ window: ctx.window }));
+    const previousDemand = await side(buildDemandDocument({ window: earlier.window }));
+    const found = await side(buildDiscoveryDocument({ window: ctx.window }));
+    const prompts = await side(buildToolPromptsDocument({ window: ctx.window }));
+    return briefingView({ usage, previous, rules, ruleMatches, previousMatches, labels, previousLabels, demand, previousDemand, found, prompts });
+  }
+
   /**
    * Insights, Adoption: the window's tool usage, which carries the people who used AI; the same
-   * read of the period before it, for the change; the applications first seen in the window; and
-   * the prompts per bucket by sanction. Only the window's usage is needed; without the others their
-   * panels say what is missing. The previous period is read first, as on Activity.
+   * read of the period before it, for the change; the applications first seen in the window; the
+   * prompts per bucket by sanction; and what coding agents reported in both periods. Only the
+   * window's usage is needed; without the others their panels say what is missing. The previous
+   * period is read first, as on Activity.
    */
   async function adoptionScreen(ctx) {
-    const previous = await part(() => ask('q1_tools_ranked', context({ preset: ctx.preset, now: new Date(Date.parse(ctx.window.from)) })));
+    const earlier = before(ctx);
+    const previous = await part(() => ask('q1_tools_ranked', earlier));
     const usage = await ask('q1_tools_ranked', ctx);
-    const firstSeen = await part(async () => readState(await api.run(buildFirstSeenDocument({ window: ctx.window }))));
-    const shift = await part(async () => readState(await api.run(buildSanctionShiftDocument({ window: ctx.window }))));
-    return adoptionView({ usage, previous, firstSeen, shift }, { preset: ctx.preset });
+    const firstSeen = await side(buildFirstSeenDocument({ window: ctx.window }));
+    const shift = await side(buildSanctionShiftDocument({ window: ctx.window }));
+    const previousAgents = await side(buildAgentDocument({ window: earlier.window }));
+    const agents = await side(buildAgentDocument({ window: ctx.window }));
+    return adoptionView({ usage, previous, firstSeen, shift, agents, previousAgents });
   }
 
   /**
-   * Insights, Discovered: what device discovery found in the window, with where the inventory scan
-   * stands beside it, and the prompts each tool sent in the window, which tell the tools in use from
-   * the ones only present. Only what was found is needed; without the prompts their column says so.
-   * The prompts are read first, so the freshness the page reports is discovery's own.
+   * Insights, Risk: the window's tool usage and the period before it, the rules with what they
+   * matched, the labels per tool and sanction in both periods, what discovery found with where the
+   * inventory scan stands, and the prompts per tool, which tell the tools in use from the ones only
+   * present. Only the window's usage is needed; without the others their panels say so.
    */
-  async function discoveredScreen(ctx) {
-    const prompts = await part(async () => readState(await api.run(buildToolPromptsDocument({ window: ctx.window }))));
-    const found = readState(await api.run(buildDiscoveryDocument({ window: ctx.window })));
-    remember(found);
-    return discoveredView({ found, prompts }, { preset: ctx.preset });
+  async function riskScreen(ctx, params) {
+    const earlier = before(ctx);
+    const previous = await part(() => ask('q1_tools_ranked', earlier));
+    const usage = await ask('q1_tools_ranked', ctx);
+    const rules = await readRules();
+    const ruleMatches = await side(buildRuleMatchesDocument({ window: ctx.window }));
+    const labels = await side(buildLabelCoverageDocument({ window: ctx.window }));
+    const previousLabels = await side(buildLabelCoverageDocument({ window: earlier.window }));
+    const found = await side(buildDiscoveryDocument({ window: ctx.window }));
+    const prompts = await side(buildToolPromptsDocument({ window: ctx.window }));
+    return riskView({ usage, previous, rules, ruleMatches, labels, previousLabels, found, prompts }, { activity: params.activity !== false });
   }
 
-  /** Insights, Demand: teams crossed with tools, with the demand for each tool not sanctioned beside them. */
-  async function demandScreen(ctx) {
+  /** Insights, Licensing: teams crossed with tools, with the demand for each tool not sanctioned beside them. */
+  async function licensingScreen(ctx) {
     const state = readState(await api.run(buildDemandDocument({ window: ctx.window })));
     remember(state);
-    return demandView(state, { preset: ctx.preset });
-  }
-
-  /**
-   * Insights, Coding agents: what coding agents reported in the window, and the same read of the
-   * period before it, for the change. Only the window's read is needed; the previous period is read
-   * first, so the freshness the page reports is the window's own.
-   */
-  async function agentsScreen(ctx) {
-    const earlier = context({ preset: ctx.preset, now: new Date(Date.parse(ctx.window.from)) }).window;
-    const previous = await part(async () => readState(await api.run(buildAgentDocument({ window: earlier }))));
-    const agents = readState(await api.run(buildAgentDocument({ window: ctx.window })));
-    remember(agents);
-    return agentsView({ agents, previous }, { preset: ctx.preset });
+    return licensingView(state);
   }
 
   /** The tabs of Insights, by the `view` that names them. */
-  const INSIGHTS_SCREENS = Object.freeze({ adoption: adoptionScreen, discovered: discoveredScreen, demand: demandScreen, agents: agentsScreen });
+  const INSIGHTS_SCREENS = Object.freeze({ briefing: briefingScreen, adoption: adoptionScreen, risk: riskScreen, licensing: licensingScreen });
 
   /** The Teams screen: every team, or one team when the address names it. */
   async function teamsScreen(params, ctx) {
@@ -382,6 +413,9 @@ export function parseHash(hash) {
   return { id, preset: filters.preset, filters };
 }
 
+/** The Insights tabs that became part of another, by the tab that now holds them. */
+const INSIGHTS_MOVED = Object.freeze({ discovered: 'risk', demand: 'licensing', agents: 'adoption' });
+
 /**
  * An address from an earlier layout, as the address that now opens the same thing; null for an
  * address that is current. Links and bookmarks made before keep working.
@@ -398,11 +432,14 @@ export function redirectFor({ id, filters }, allowed = null) {
   if (id === 'tools' && view === 'unsanctioned') return at('tools', { ...rest, sanction: 'unsanctioned' });
   if (id === 'tools' && view === 'classes') return mayOpen(allowed, 'activity') ? at('activity', window) : at('tools', window);
   if (id === 'insights' && view === 'exposure') return at('activity', rest);
+  // Insights reads one fixed window, so its tabs carry none.
+  if (id === 'insights' && INSIGHTS_MOVED[view]) return at('insights', { view: INSIGHTS_MOVED[view] });
   return null;
 }
 
+
 /** Screens whose question takes a time window, and the windows offered. */
-const WINDOWED = Object.freeze(['posture', 'tools', 'teams', 'person', 'activity', 'insights', 'audit']);
+const WINDOWED = Object.freeze(['posture', 'tools', 'teams', 'person', 'activity', 'audit']);
 const PRESET_LABELS = Object.freeze({ h24: '24h', d7: '7d', d30: '30d', d90: '90d' });
 
 /** The window switcher for a screen: each preset is a link that keeps the other parameters. */
@@ -418,8 +455,8 @@ function presetsFor(screen, preset, filters) {
   return { current, items };
 }
 
-/** The tabs of Insights, each a question a customer asks; Adoption is the default. */
-const INSIGHTS_TABS = Object.freeze({ adoption: 'Adoption', discovered: 'Discovered', demand: 'Demand', agents: 'Coding agents' });
+/** The tabs of Insights: the Briefing, which opens it, then one tab per decision. */
+const INSIGHTS_TABS = Object.freeze({ briefing: 'Briefing', adoption: 'Adoption', risk: 'Risk', licensing: 'Licensing' });
 
 /** The parameters that open one record of a list rather than the list. */
 const RECORD_PARAMS = Object.freeze({ tools: 'tool', teams: 'team', person: 'subject', devices: 'device' });
@@ -427,24 +464,19 @@ const RECORD_PARAMS = Object.freeze({ tools: 'tool', teams: 'team', person: 'sub
 /**
  * What a screen's head shows: on a list, its destination's name with the destination's pages as
  * tabs; on one record, the record's own title under its destination's name. Insights' tabs are its
- * own questions. A tab that takes a window keeps the one chosen.
+ * own: the Briefing, then one per decision. A tab that takes a window keeps the one chosen.
  */
 function headFor(screen, preset, filters, allowed) {
   const section = sectionOf(screen.id);
   const keep = (id) => (PRESET_LABELS[preset] && WINDOWED.includes(id) ? `?preset=${preset}` : '');
   if (screen.id === 'event' || filters[RECORD_PARAMS[screen.id]]) return { eyebrow: section?.label ?? null };
   if (screen.id === 'insights') {
-    const link = (extra) => {
-      const query = new URLSearchParams({ ...(PRESET_LABELS[preset] ? { preset } : {}), ...extra }).toString();
-      return `#insights${query ? `?${query}` : ''}`;
-    };
     return {
-      eyebrow: section?.label ?? null,
       title: screen.label,
       tabs: {
         label: screen.label,
-        current: INSIGHTS_TABS[filters.view] ? filters.view : 'adoption',
-        items: Object.entries(INSIGHTS_TABS).map(([id, label]) => ({ id, label, href: link(id === 'adoption' ? {} : { view: id }) })),
+        current: INSIGHTS_TABS[filters.view] ? filters.view : 'briefing',
+        items: Object.entries(INSIGHTS_TABS).map(([id, label]) => ({ id, label, href: id === 'briefing' ? '#insights' : `#insights?view=${id}` })),
       },
     };
   }

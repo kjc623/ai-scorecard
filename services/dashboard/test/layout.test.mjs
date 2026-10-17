@@ -48,7 +48,10 @@ test('an address from the old layout names where its page is now; every other ad
   assert.equal(at('#tools?view=classes&preset=d30', new Set(['tools', 'activity'])), '#activity?preset=d30');
   assert.equal(at('#tools?view=classes&preset=d30', new Set(['tools'])), '#tools?preset=d30', 'where Activity is not offered the classes land on Tools');
   assert.equal(at('#insights?view=exposure&preset=h24'), '#activity?preset=h24');
-  for (const kept of ['#tools', '#tools?sanction=unknown', '#rules', '#insights?view=demand', '#devices?device=x', '#audit?actor=a']) assert.equal(at(kept), null, kept);
+  assert.equal(at('#insights?view=discovered&preset=d7'), '#insights?view=risk', 'Insights reads one window, so the moved tab carries none');
+  assert.equal(at('#insights?view=demand'), '#insights?view=licensing');
+  assert.equal(at('#insights?view=agents'), '#insights?view=adoption');
+  for (const kept of ['#tools', '#tools?sanction=unknown', '#rules', '#insights', '#insights?view=risk', '#devices?device=x', '#audit?actor=a']) assert.equal(at(kept), null, kept);
 });
 
 test('the old address is replaced, not added to the history, and the page it names is shown', async () => {

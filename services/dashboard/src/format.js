@@ -38,6 +38,13 @@ export function formatPercent(share) {
   return `${Math.round(pct)}%`;
 }
 
+/** A rate per 1,000 to one decimal; a rate too small to round to a tenth says so rather than reading as none. */
+export function formatRate(rate) {
+  if (typeof rate !== 'number' || !Number.isFinite(rate)) return '—';
+  if (rate > 0 && rate < 0.05) return '<0.1';
+  return rate >= 1000 ? formatCount(rate) : rate.toFixed(1);
+}
+
 /** A score is a proportion; two decimals is all the information a MaxScore has. */
 export function formatScore(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return '—';

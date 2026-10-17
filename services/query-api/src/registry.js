@@ -568,6 +568,7 @@ export const SOURCES = Object.freeze({
         values: ['payment_card', 'government_id', 'credential', 'customer_pii', 'source_code', 'legal_commercial', 'health'],
       }),
       tool: toolDim('c'),
+      sanctioned_state: dim('sanctioned_state', 'ot.sanctioned_state', 'text', { nullable: true, ...SANCTIONED_CARD }),
       severity: dim('severity', 'c.severity', 'text', {
         ...SEVERITY_CARD,
         values: ['low', 'medium', 'high', 'critical'],
@@ -597,10 +598,12 @@ export const SOURCES = Object.freeze({
     subjectBearing: false,
     requiresSubjectScope: false,
     indexes: Object.freeze(['mart.agg_class_period PK (tenant_id, bucket_start, bucket_size, class_code, tool_fingerprint, severity, classifier_version)']),
+    joins: Object.freeze([sanctionJoin('c')]),
     extraSelect: Object.freeze([toolName('c')]),
     warnings: Object.freeze([
       'submissions counts submissions CARRYING that class: one submission with three labels contributes to three rows. Summing class rows and calling the result "submissions" overstates volume. The q4 template returns the non-additive total separately, from mart.agg_tool_period.',
       'max_score is MAX over the collapsed rows, not a sum: it is a score, not a counter.',
+      'sanctioned_state is present-tense configuration joined at read time (the decision on the tool the row counts as, ops.tool_sanction); NULL means no decision, or a tool outside the catalogue.',
     ]),
   }),
 

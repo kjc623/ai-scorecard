@@ -1,7 +1,7 @@
 // insights.test.mjs — Policy → Activity and the Overview tiles that open it and Search: the
 // sensitive prompts out of every prompt, what happened to them, where they went and which labels,
 // each compared with the period before; the attachments, with the prompts they were counted on; and
-// the navigation: four destinations, then Archive and Settings at its foot.
+// the navigation: five destinations, then Settings at its foot.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -284,24 +284,24 @@ test('a window with nothing recorded shows the funnel\'s empty line, not a row o
   assert.match(renderFunnel(view.lead[0]), /<p class="block-empty">No prompts in this window\.<\/p>/);
 });
 
-test('the navigation is four destinations, then Archive and Settings at its foot, each opening its first page', () => {
+test('the navigation is five destinations, then Settings at its foot, each opening its first page', () => {
   const items = shellNavItems();
   assert.deepEqual(items.map((i) => [i.id, i.label, i.href, i.foot]), [
     ['overview', 'Overview', '#posture', false],
     ['usage', 'Usage', '#tools', false],
+    ['insights', 'Insights', '#insights', false],
     ['search', 'Search', 'explore.html', false],
     ['policy', 'Policy', '#rules', false],
-    ['archive', 'Archive', '#insights', true],
     ['settings', 'Settings', '#settings', true],
   ]);
   assert.deepEqual(SECTIONS.find((s) => s.id === 'policy').pages.map((p) => p.label), ['Rules', 'Labels', 'Tools', 'Activity']);
   assert.equal(sectionOf('activity').id, 'policy');
-  assert.equal(sectionOf('insights').id, 'archive');
+  assert.equal(sectionOf('insights').id, 'insights');
   assert.equal(sectionOf('event').id, 'search', 'an event is a record Search opens');
 
-  const nav = renderNav(items, 'policy');
-  assert.match(nav, /<a href="#rules" class="active" aria-current="page"><svg class="nav-icon"[^>]*>.*?<\/svg><span>Policy<\/span><\/a>/);
-  assert.match(nav, /<span class="nav-spacer" aria-hidden="true"><\/span><a href="#insights">/, 'the foot starts at Archive');
+  const nav = renderNav(items, 'insights');
+  assert.match(nav, /<a href="#insights" class="active" aria-current="page"><svg class="nav-icon"[^>]*>.*?<\/svg><span>Insights<\/span><\/a>/);
+  assert.match(nav, /<span class="nav-spacer" aria-hidden="true"><\/span><a href="#settings">/, 'the foot holds Settings alone');
   assert.equal(nav.split('nav-spacer').length - 1, 1);
   assert.match(nav, /<span>Settings<\/span><\/a>$/);
 });
@@ -313,28 +313,31 @@ test('a destination opens the first of its pages the session may open, and leave
   assert.deepEqual(search.map((i) => [i.id, i.href]), [['overview', 'index.html#posture'], ['search', 'explore.html']]);
 });
 
-test('where the server does not offer Activity or Insights, Archive leaves the navigation and the Sensitive prompts tile opens Rules', async () => {
+test('production offers Insights and not Activity, and the Sensitive prompts tile opens Rules', async () => {
   const doc = fakeDocument();
   const sent = [];
-  await boot({ document: doc, api: createQueryApi({ transport: { send: (body) => { sent.push(body); return fixtureTransport().send(body); } } }), session: { actor: 'v@lab.test', roles: ['viewer'], pages: ['posture', 'tools', 'teams', 'rules', 'sanction', 'devices'] } });
-  assert.doesNotMatch(doc.html('nav'), /Archive|Insights/);
-  assert.doesNotMatch(doc.html('app'), /#insights|#activity/);
+  await boot({ document: doc, api: createQueryApi({ transport: { send: (body) => { sent.push(body); return fixtureTransport().send(body); } } }), session: { actor: 'v@lab.test', roles: ['viewer'], pages: ['posture', 'tools', 'teams', 'rules', 'sanction', 'insights', 'devices'] } });
+  assert.match(doc.html('nav'), /<a href="#insights"><svg[^>]*>.*?<\/svg><span>Insights<\/span><\/a>/);
+  assert.doesNotMatch(doc.html('nav'), /Archive/);
+  assert.doesNotMatch(doc.html('app'), /#activity/);
   assert.match(doc.html('app'), /<a class="tile card tile-link" href="#rules"><div class="card-core"><span class="tile-label">Sensitive prompts</, 'the rules are what make a prompt sensitive');
   const before = sent.length;
-  await doc.navigate('#insights');
-  assert.match(doc.html('app'), /This page is not offered to you here/);
   await doc.navigate('#activity');
   assert.match(doc.html('app'), /This page is not offered to you here/);
-  assert.equal(sent.length, before, 'nothing was read for either');
+  assert.equal(sent.length, before, 'nothing was read for it');
+  await doc.navigate('#insights?view=risk');
+  assert.match(doc.html('app'), /<span class="tile-label">Sensitive per 1,000 prompts/);
+  assert.doesNotMatch(doc.html('app'), /href="#activity/, 'the rate does not open a page the session is not offered');
 });
 
-test('in pre-production Archive holds Insights, Policy offers Activity, and the Sensitive prompts tile opens it', async () => {
+test('in pre-production Policy offers Activity, and the Sensitive prompts tile opens it', async () => {
   const doc = fakeDocument();
   await boot({ document: doc, api: createQueryApi({ transport: fixtureTransport() }), session: { actor: 'v@lab.test', roles: ['viewer'], pages: ['posture', 'tools', 'teams', 'rules', 'sanction', 'activity', 'insights', 'devices'] } });
-  assert.match(doc.html('nav'), /<span class="nav-spacer" aria-hidden="true"><\/span><a href="#insights"><svg[^>]*>.*?<\/svg><span>Archive<\/span><\/a>/);
   assert.match(doc.html('app'), /<a class="tile card tile-link" href="#activity"><div class="card-core"><span class="tile-label">Sensitive prompts</);
   await doc.navigate('#activity');
   assert.match(doc.html('app'), /<h2>Policy<\/h2>/);
   assert.match(doc.html('app'), /<a class="page-tab" href="#activity" aria-current="page">Activity<\/a>/);
   assert.match(doc.html('nav'), /<a href="#rules" class="active" aria-current="page">/, 'Policy is the current destination');
+  await doc.navigate('#insights?view=risk');
+  assert.match(doc.html('app'), /<a class="tile card tile-link" href="#activity\?preset=d30"><div class="card-core"><span class="tile-label">Sensitive per 1,000 prompts/, 'the rate opens Activity over the same 30 days');
 });
