@@ -37,10 +37,9 @@ func (d *Drainer) UploadDiagnostics(ctx context.Context, requestID string, bundl
 	}
 	req.Header.Set("Content-Type", protocol.DiagnosticsContentType)
 	req.Header.Set(protocol.HeaderDiagnosticsRequest, requestID)
-	// The transport, not the client: the client's timeout is sized for small API calls.
-	resp, err := d.client.tr.RoundTrip(req)
+	resp, err := d.client.transfer(req)
 	if err != nil {
-		return &apiError{transport: true, cause: err}
+		return err
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))

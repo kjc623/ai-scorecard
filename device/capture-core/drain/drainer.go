@@ -93,10 +93,14 @@ type Result struct {
 	Empty bool
 }
 
-// Status is the drainer's health surface.
+// Status is the drainer's health surface. It is healthy while the edge answers the device's
+// requests, whichever they are, and degraded with upstream_unreachable when the latest request did
+// not reach it. An event batch the edge answered but did not take holds it at upstream_failure
+// until a batch is delivered.
 type Status struct {
-	State       protocol.CollectorState
-	Detail      protocol.Detail
+	State  protocol.CollectorState
+	Detail protocol.Detail
+	// LastSuccess is when the edge last answered a request with a success.
 	LastSuccess time.Time
 	Endpoint    string
 	Enrolled    bool
@@ -120,6 +124,9 @@ type Drainer struct {
 	state       protocol.CollectorState
 	detail      protocol.Detail
 	lastSuccess time.Time
+	// refused is set while the last event batch was answered but not taken; other requests
+	// succeeding do not deliver the spool, so only a delivered batch clears it.
+	refused bool
 
 	stopCh  chan struct{}
 	wg      sync.WaitGroup
@@ -158,11 +165,13 @@ func New(cfg Config, store StoreFunc, creds *credential.Store, log Logger, clock
 		clock:   clock,
 		backoff: Backoff{Base: cfg.BackoffBase, Cap: cfg.BackoffCap},
 		// A configured drain starts degraded, never absent: absent would claim there is no path
-		// when there is one not yet proven to work. The first success makes it healthy.
+		// when there is one not yet proven to work. The first request the edge answers with a
+		// success makes it healthy.
 		state:  protocol.StateDegraded,
 		detail: protocol.DetailUpstreamUnreachable,
 		stopCh: make(chan struct{}),
 	}
+	c.reach = d.observe
 	cred, err := creds.Load()
 	switch {
 	case err == nil:
@@ -409,12 +418,12 @@ func (d *Drainer) Drain(ctx context.Context, deadline time.Time) (Result, error)
 			if classified && !ae.Retryable() {
 				// A refusal of the whole batch: retain the spool, report the cause, stop sending.
 				d.release(store, bb.seqs, string(ae.code))
-				d.setStatus(protocol.StateDegraded, protocol.DetailUpstreamFailure)
+				d.batchFailed(err)
 				d.log.Printf("drain: the edge refused the batch, retaining the spool: %v", err)
 				return res, nil
 			}
 			// A retryable failure, or a 200 whose body would not parse or validate.
-			d.setStatus(protocol.StateDegraded, detailForErr(err))
+			d.batchFailed(err)
 			if !d.sleepUntil(ctx, deadline, d.retryDelay(ae, attempt)) {
 				d.release(store, bb.seqs, err.Error())
 				return res, nil
@@ -467,7 +476,36 @@ func (d *Drainer) markSuccess() {
 	d.lastSuccess = d.clock()
 	d.state = protocol.StateHealthy
 	d.detail = protocol.DetailNone
+	d.refused = false
 	d.mu.Unlock()
+}
+
+// batchFailed records an event batch the edge did not take: upstream_unreachable when the batch
+// did not reach it, otherwise upstream_failure, held until a batch is delivered.
+func (d *Drainer) batchFailed(err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.state, d.detail = protocol.StateDegraded, detailForErr(err)
+	if d.detail == protocol.DetailUpstreamFailure {
+		d.refused = true
+	}
+}
+
+// observe records what one request to the edge found, whichever request it was, so the status
+// says whether the edge is reachable even while the spool is empty and no batch is sent.
+func (d *Drainer) observe(reached bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	switch {
+	case !reached:
+		d.state, d.detail = protocol.StateDegraded, protocol.DetailUpstreamUnreachable
+	case d.refused:
+		d.lastSuccess = d.clock()
+		d.state, d.detail = protocol.StateDegraded, protocol.DetailUpstreamFailure
+	default:
+		d.lastSuccess = d.clock()
+		d.state, d.detail = protocol.StateHealthy, protocol.DetailNone
+	}
 }
 
 func (d *Drainer) setStatus(state protocol.CollectorState, detail protocol.Detail) {

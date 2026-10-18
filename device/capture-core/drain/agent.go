@@ -60,10 +60,9 @@ func (d *Drainer) DownloadAgentPackage(ctx context.Context, w io.Writer, offset,
 	if offset > 0 {
 		req.Header.Set("Range", "bytes="+strconv.FormatInt(offset, 10)+"-")
 	}
-	// The transport, not the client: the client's timeout is sized for API calls.
-	resp, err := d.client.tr.RoundTrip(req)
+	resp, err := d.client.transfer(req)
 	if err != nil {
-		return 0, &apiError{transport: true, cause: err}
+		return 0, err
 	}
 	defer resp.Body.Close()
 	want := http.StatusOK

@@ -423,3 +423,110 @@ func TestDrainQuarantinesARecordMintedUnderAnotherIdentity(t *testing.T) {
 		t.Fatalf("current entry = %s, want delivered", store.state(2))
 	}
 }
+
+// healthRequest is a report POST /v1/health accepts.
+func healthRequest() protocol.HealthRequest {
+	return protocol.HealthRequest{
+		SchemaVersion: protocol.HealthSchemaVersion,
+		ReportedAt:    time.Now().UTC(),
+		Collectors:    []protocol.HealthReport{{Collector: string(protocol.CollectorClassifierHost), State: protocol.StateHealthy}},
+	}
+}
+
+func healthHandler(t *testing.T, e *fakeEdge) {
+	e.mux.HandleFunc("/v1/health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, http.StatusOK, []byte(`{"acked_at":"2026-10-18T12:45:00Z","server_time":"2026-10-18T12:45:00Z","next_report_after_s":60}`))
+	})
+}
+
+// An idle device sends no batch, so the drain's status comes from the requests it does send: a
+// health report, a policy check the edge answers 304, a diagnostics upload.
+func TestAnIdleDrainIsHealthyOnceTheEdgeAnswers(t *testing.T) {
+	ctx := context.Background()
+	for name, call := range map[string]func(*Drainer) error{
+		"health report": func(d *Drainer) error { _, err := d.ReportHealth(ctx, healthRequest()); return err },
+		"policy check":  func(d *Drainer) error { _, err := d.FetchPolicy(ctx, `"3"`); return err },
+		"diagnostics":   func(d *Drainer) error { return d.UploadDiagnostics(ctx, "r1", []byte("PK")) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newFakeEdge(t)
+			healthHandler(t, e)
+			e.mux.HandleFunc("/v1/policy", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotModified) })
+			e.mux.HandleFunc(protocol.DiagnosticsUploadPath, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) })
+			d := newTestDrainer(t, e, storeOf(newMemStore()), e.issued(24*time.Hour))
+			if st := d.Status(); st.State != protocol.StateDegraded || st.Detail != protocol.DetailUpstreamUnreachable || !st.LastSuccess.IsZero() {
+				t.Fatalf("starting status = %+v, want degraded/upstream_unreachable and no success", st)
+			}
+			if err := call(d); err != nil {
+				t.Fatal(err)
+			}
+			if st := d.Status(); st.State != protocol.StateHealthy || st.Detail != protocol.DetailNone || st.LastSuccess.IsZero() {
+				t.Fatalf("status = %+v, want healthy with a last success", st)
+			}
+		})
+	}
+}
+
+// A request that does not reach the edge says so, batch or not, and the last success stays when it
+// was.
+func TestAnIdleDrainIsUnreachableWhenTheEdgeStopsAnswering(t *testing.T) {
+	e := newFakeEdge(t)
+	healthHandler(t, e)
+	d := newTestDrainer(t, e, storeOf(newMemStore()), e.issued(24*time.Hour))
+	if _, err := d.ReportHealth(context.Background(), healthRequest()); err != nil {
+		t.Fatal(err)
+	}
+	st := d.Status()
+	if st.State != protocol.StateHealthy {
+		t.Fatalf("status after a health report = %+v, want healthy", st)
+	}
+	reached := st.LastSuccess
+	e.srv.Close()
+	if _, err := d.ReportHealth(context.Background(), healthRequest()); err == nil {
+		t.Fatal("a health report to a closed edge succeeded")
+	}
+	if st := d.Status(); st.State != protocol.StateDegraded || st.Detail != protocol.DetailUpstreamUnreachable || !st.LastSuccess.Equal(reached) {
+		t.Fatalf("status = %+v, want degraded/upstream_unreachable with the last success at %s", st, reached)
+	}
+}
+
+// Other requests succeeding do not deliver the spool: a batch the edge refused holds the drain at
+// upstream_failure until a batch is delivered.
+func TestARefusedBatchHoldsTheFailureUntilABatchIsDelivered(t *testing.T) {
+	e := newFakeEdge(t)
+	healthHandler(t, e)
+	store := newMemStore()
+	if _, err := store.Append(testEnvelope(t, "evt-held")); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	refuse := true
+	eventsHandler(e, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if refuse {
+			writeJSON(t, w, http.StatusBadRequest, []byte(`{"error":{"code":"schema_violation"}}`))
+			return
+		}
+		writeJSON(t, w, http.StatusOK, acceptedResponse(t, r))
+	})
+	d := newTestDrainer(t, e, storeOf(store), e.issued(24*time.Hour))
+	if _, err := d.Drain(context.Background(), time.Now().Add(5*time.Second)); err != nil {
+		t.Fatalf("Drain: %v", err)
+	}
+	if _, err := d.ReportHealth(context.Background(), healthRequest()); err != nil {
+		t.Fatal(err)
+	}
+	if st := d.Status(); st.State != protocol.StateDegraded || st.Detail != protocol.DetailUpstreamFailure || st.LastSuccess.IsZero() {
+		t.Fatalf("status after a refused batch and a health report = %+v, want degraded/upstream_failure with a last success", st)
+	}
+	mu.Lock()
+	refuse = false
+	mu.Unlock()
+	if res, err := d.Drain(context.Background(), time.Now().Add(5*time.Second)); err != nil || res.Delivered != 1 {
+		t.Fatalf("Drain = %+v, %v; want the held event delivered", res, err)
+	}
+	if st := d.Status(); st.State != protocol.StateHealthy || st.Detail != protocol.DetailNone {
+		t.Fatalf("status after a delivered batch = %+v, want healthy", st)
+	}
+}

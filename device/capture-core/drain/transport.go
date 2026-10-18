@@ -46,6 +46,11 @@ type client struct {
 	mu   sync.Mutex
 	cert *tls.Certificate
 
+	// reach, when set, is told what each request found: true when the edge answered it with a
+	// success, false when the request did not reach the edge. A refusal tells it nothing: whether
+	// one is a fault is the caller's to judge.
+	reach func(reached bool)
+
 	// unverifiedSince is when the edge's certificate first failed verification after the last
 	// handshake that verified it, and unverifiedCount how many requests have failed verification
 	// since; both are zero while the last verification passed or none has failed.
@@ -196,14 +201,46 @@ func (c *client) do(ctx context.Context, method, path string, body []byte, heade
 	resp, err := c.http.Do(req)
 	if err != nil {
 		c.noteVerification(err)
+		c.noteReach(false)
 		return nil, nil, &apiError{transport: true, cause: err}
 	}
 	defer resp.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
+		c.noteReach(false)
 		return resp, nil, &apiError{transport: true, cause: err}
 	}
+	if succeeded(resp.StatusCode) {
+		c.noteReach(true)
+	}
 	return resp, b, nil
+}
+
+// transfer sends req on the transport alone, without the client's timeout, which is sized for API
+// calls; the caller bounds it with its context, and reads and closes the body. A transport-level
+// failure is returned as a retryable *apiError.
+func (c *client) transfer(req *http.Request) (*http.Response, error) {
+	resp, err := c.tr.RoundTrip(req)
+	if err != nil {
+		c.noteReach(false)
+		return nil, &apiError{transport: true, cause: err}
+	}
+	if succeeded(resp.StatusCode) {
+		c.noteReach(true)
+	}
+	return resp, nil
+}
+
+// succeeded reports whether status is the edge taking the request: a 2xx, or a 304 confirming
+// what the device holds.
+func succeeded(status int) bool {
+	return status >= 200 && status < 300 || status == http.StatusNotModified
+}
+
+func (c *client) noteReach(reached bool) {
+	if c.reach != nil {
+		c.reach(reached)
+	}
 }
 
 // noteVerification records a request that failed because the edge's certificate did not verify.
