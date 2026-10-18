@@ -43,14 +43,16 @@ func newHealthChannel(svc *service) *healthChannel {
 	return &healthChannel{svc: svc, interval: healthInterval, stop: make(chan struct{})}
 }
 
+// Start reports at once, so a device is seen as soon as the agent runs, and then at the cadence
+// nextReport gives.
 func (h *healthChannel) Start(ctx context.Context) {
 	h.wg.Add(1)
 	go func() {
 		defer h.wg.Done()
-		for {
+		for first := true; ; first = false {
 			h.tick(ctx)
 			h.mu.Lock()
-			wait := h.interval
+			wait := nextReport(first, h.interval)
 			h.mu.Unlock()
 			t := time.NewTimer(wait)
 			select {
@@ -64,6 +66,17 @@ func (h *healthChannel) Start(ctx context.Context) {
 			}
 		}
 	}()
+}
+
+// nextReport is how long after a report the next one goes: the cadence the control plane asked for,
+// except after the first report, which finds collectors that are still starting (the user-session
+// helpers connect moments after it). The second follows within healthInterval, so their state
+// does not stand for a whole interval.
+func nextReport(first bool, interval time.Duration) time.Duration {
+	if first {
+		return min(interval, healthInterval)
+	}
+	return interval
 }
 
 func (h *healthChannel) Stop() {
