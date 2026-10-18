@@ -38,9 +38,11 @@ the page that holds it now.
   and the labels involved, each against the period before).
 - **Settings**: Collection (the collection mode, prompt storage, retention, per-tool overrides, TLS
   inspection, the kill switch, the endpoint collectors and how apps that need a restart are
-  reported), Devices (each device with the mode it applied and the apps on it that need a restart,
-  and each of its collectors with its state and cause; an admin installs the agent below the
-  list), Identity Providers (the directory read, sign-in and SCIM provisioning), Integrations
+  reported), Devices (each device with when it was last seen, the mode it applied and the apps on
+  it that need a restart; a device's page says who uses it and what it runs, and lists its
+  collectors by name, grouped into those that need attention, work, are not installed or are off
+  in policy; an admin collects its diagnostics there, and a request waiting for the device is read
+  again until its logs arrive; an admin installs the agent below the list), Identity Providers (the directory read, sign-in and SCIM provisioning), Integrations
   (every AI provider whose admin API the product reads, as control-api lists them: an admin
   connects each with its key and account or the tenant's Entra consent, replaces its key, chooses
   how often it is pulled, pulls it now or disconnects it, and sees its last and next pull and the

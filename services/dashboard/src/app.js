@@ -643,7 +643,7 @@ export async function boot({ document, api, admin, session: givenSession } = {})
         ? { before: '<nav class="screen-actions"><button type="button" class="btn btn-small" data-jump="install">Install on more devices</button></nav>', after: setup }
         : { before: setup };
     }
-    if (screenId === 'devices' && filters.device) return { after: renderDeviceDiagnostics(diagnosticsController().state) };
+    if (screenId === 'devices' && filters.device) return { after: renderDeviceDiagnostics(diagnosticsController().state, { quietSince: painted?.view?.quietSince ?? null }) };
     return {};
   }
 
@@ -798,6 +798,8 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     if (!sameScreen && paintedScreen === 'directory') deployment?.leave();
     // Leaving Integrations takes a key being typed with it.
     if (!sameScreen && paintedScreen === 'integrations') integrations?.leave();
+    // Leaving a device's page stops following its diagnostics requests.
+    if (!(screen.id === 'devices' && filters.device)) diagnostics?.leave();
     const before = paintedScreen;
     paintedScreen = screen.id;
     root.classList?.toggle('same-screen', sameScreen);
@@ -859,12 +861,8 @@ export async function boot({ document, api, admin, session: givenSession } = {})
     if (typing) root.querySelector?.('input[name="subject"]')?.focus();
     // An admin's section below or above the screen reads its own settings.
     if (setup) await loadOnce(deploymentController(), sameScreen);
-    // An admin's device page reads that device's diagnostics requests.
-    if (mayAdmin && screen.id === 'devices' && filters.device) {
-      const device = String(filters.device);
-      const controller = diagnosticsController();
-      if (controller.state.device !== device || controller.state.status !== 'ready') await controller.load(device);
-    }
+    // An admin's device page reads that device's diagnostics requests each time it is opened.
+    if (mayAdmin && screen.id === 'devices' && filters.device) await diagnosticsController().load(String(filters.device), { quiet: true });
     if (mayAdmin && screen.id === 'sanction') await loadOnce(settingsController(), sameScreen);
   }
 

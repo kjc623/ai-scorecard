@@ -5,23 +5,25 @@
 // string from the API is escaped.
 
 import { escapeHtml } from './render.js';
-import { formatBytes, formatInstant } from './format.js';
+import { formatBytes, formatInstant, formatWhen } from './format.js';
 import { depButton, depInstant, depProblem } from './deployment-render.js';
 
-const INTRO = 'The device sends its health snapshot, a configuration summary, its service log and its update logs '
-  + 'the next time it checks in: every 15 minutes by default, at most an hour apart when the deployment slows '
-  + 'the fleet, and when it is next online if it is off. No prompt it captured is included, but the logs name '
-  + 'the device and the Windows accounts that used it. '
-  + 'A request the device does not answer lapses after 7 days; a bundle is kept for 14. '
-  + 'Each request and download is recorded in the audit trail.';
+const INTRO = 'Collect the agent\'s logs and a health snapshot from this device. It sends them the next time it checks in, usually within 15 minutes.';
+const SMALL = 'No captured prompt is included, but the logs name the device and the Windows accounts that used it. '
+  + 'A request the device does not answer lapses after 7 days, and a bundle is kept for 14. Each request and download is recorded in the audit trail.';
 
-function stateCell(d) {
+/** An instant in a line of text: "Oct 16 14:33", with the full form on hover. */
+const when = (iso) => `<span title="${escapeHtml(formatInstant(iso))}">${escapeHtml(formatWhen(iso))}</span>`;
+
+/** A request's state: received, with when and from which agent; or waiting, with what it waits for and when it lapses. */
+function stateCell(d, quietSince) {
   if (d.state === 'received') {
-    return '<span class="v-vocab v-vocab-healthy">Received</span>'
-      + (d.received_at ? ` <span class="dp-sub">${escapeHtml(formatInstant(d.received_at))}</span>` : '');
+    const facts = [d.received_at ? when(d.received_at) : null, d.agent_version ? `agent ${escapeHtml(d.agent_version)}` : null].filter(Boolean).join(' · ');
+    return `<span class="v-vocab v-vocab-healthy">Received</span>${facts ? ` <span class="dp-sub">${facts}</span>` : ''}`;
   }
+  const waits = quietSince ? `The device has not checked in since ${when(quietSince)}` : 'It sends them when it next checks in';
   return '<span class="v-vocab v-vocab-degraded">Waiting for the device</span>'
-    + (d.expires_at ? ` <span class="dp-sub">lapses ${escapeHtml(formatInstant(d.expires_at))}</span>` : '');
+    + ` <span class="dp-sub">${waits}${d.expires_at ? ` · lapses ${when(d.expires_at)}` : ''}</span>`;
 }
 
 function actionCell(d, state) {
@@ -30,32 +32,18 @@ function actionCell(d, state) {
   return depButton('Download', { diag: 'download', id: d.request_id }, { small: true, disabled: Boolean(state.download.pending) });
 }
 
-function table(state) {
+function table(state, quietSince) {
   const rows = state.data.map((d) => '<tr>'
     + `<td>${depInstant(d.requested_at, 'not reported')}</td>`
     + `<td>${d.requested_by ? `<span class="v-text">${escapeHtml(d.requested_by)}</span>` : '<span class="v-absent">not reported</span>'}</td>`
-    + `<td>${stateCell(d)}</td>`
+    + `<td>${stateCell(d, quietSince)}</td>`
     + `<td class="num">${d.size_bytes === null ? '<span class="v-absent">—</span>' : `<span class="v-number">${escapeHtml(formatBytes(d.size_bytes))}</span>`}</td>`
-    + `<td>${d.agent_version ? `<span class="v-text">${escapeHtml(d.agent_version)}</span>` : '<span class="v-absent">—</span>'}</td>`
     + `<td class="dp-action">${actionCell(d, state)}</td>`
     + '</tr>').join('');
-  const empty = state.data.length === 0 ? '<tr class="row-empty"><td colspan="6">No diagnostics have been requested from this device.</td></tr>' : '';
+  const empty = state.data.length === 0 ? '<tr class="row-empty"><td colspan="5">No diagnostics have been requested from this device.</td></tr>' : '';
   return '<div class="table-scroll"><table><thead><tr><th scope="col">Requested</th><th scope="col">By</th><th scope="col">State</th>'
-    + '<th scope="col" class="num">Size</th><th scope="col">Agent</th><th scope="col"><span class="sr">Action</span></th></tr></thead>'
+    + '<th scope="col" class="num">Size</th><th scope="col"><span class="sr">Action</span></th></tr></thead>'
     + `<tbody>${rows}${empty}</tbody></table></div>`;
-}
-
-function status(state) {
-  const r = state.request;
-  if (r.pending) return '<p class="dp-note" role="status">Asking the device…</p>';
-  if (r.last) {
-    return `<p class="dp-done" role="status">${r.last.created
-      ? 'Requested. The device sends its diagnostics the next time it checks in; refresh to see them arrive.'
-      : 'A request is already waiting for this device; it answers that one the next time it checks in.'}</p>`;
-  }
-  const d = state.download;
-  if (d.last) return `<p class="dp-done" role="status">Saved <strong>${escapeHtml(d.last.filename)}</strong>.</p>`;
-  return '';
 }
 
 function refused(problem) {
@@ -70,26 +58,28 @@ function refused(problem) {
 }
 
 /**
- * A device's diagnostics, below its collectors.
+ * A device's diagnostics, below its collectors. A request waiting for the device says so in its
+ * row for as long as it waits, and the row turns to a download when the bundle arrives.
  *
  * @param {object} state  createDiagnostics().state
+ * @param {object} [options]
+ * @param {string} [options.quietSince]  when a quiet device last checked in, which a request waits on
  */
-export function renderDeviceDiagnostics(state) {
+export function renderDeviceDiagnostics(state, { quietSince = null } = {}) {
   const waiting = state.data?.some((d) => d.state === 'waiting') ?? false;
   const busy = state.status !== 'ready' || state.request.pending;
   const actions = '<div class="dp-actions">'
-    + depButton('Collect logs', { diag: 'request' }, { kind: 'primary', disabled: busy || waiting })
-    + depButton('Refresh', { diag: 'refresh' }, { disabled: state.status !== 'ready' })
+    + depButton(state.request.pending ? 'Asking the device…' : 'Collect logs', { diag: 'request' }, { kind: 'primary', disabled: busy || waiting })
     + '</div>';
   const body = state.status === 'idle' || state.status === 'loading'
     ? '<p class="dp-note" role="status">Loading the diagnostics requests…</p>'
     : state.status === 'refused' || !state.data
       ? refused(state.problem)
-      : `${actions}${status(state)}${depProblem(state.request.problem, 'Not requested.')}${depProblem(state.download.problem, 'Not downloaded.')}`
+      : `${actions}${depProblem(state.request.problem, 'Not requested.')}${depProblem(state.download.problem, 'Not downloaded.')}`
         + (state.refreshProblem ? depProblem(state.refreshProblem, 'Not refreshed.') : '')
-        + table(state);
+        + table(state, quietSince);
   return '<section class="table-block card dp" id="device-diagnostics"><div class="card-core">'
     + '<header class="block-head"><h3>Diagnostics</h3></header>'
-    + `<div class="dp-body"><p>${escapeHtml(INTRO)}</p>${body}</div>`
+    + `<div class="dp-body"><p>${escapeHtml(INTRO)}</p><p class="dp-note">${escapeHtml(SMALL)}</p>${body}</div>`
     + '</div></section>';
 }

@@ -314,12 +314,14 @@ test('a device row is the device and what it runs, its state with when it was la
   assert.deepEqual(fin.device_cell, { primary: 'FIN-LAPTOP-07', mono: false, title: '9f1c0b6e-0000-4000-8000-000000000001', secondary: 'Windows 11 · Managed · Agent 1.4.2' });
   assert.deepEqual(view.tables[0].rows.map((r) => r.row.mode), ['Full prompt · M3', 'Short excerpt · M2', 'Labels and digest · M1', 'Metadata only · M0'], 'the mode the device applied has a column of its own, said in words with its code');
   assert.deepEqual(fin.user_cell, { primary: 'Alice Smith', secondary: 'alice@contoso.example', title: 'u_4f21' });
-  assert.deepEqual(fin.status_cell, { chip: { key: 'reporting', text: 'Reporting' }, secondary: 'Last seen 3 min ago · Collectors 2 healthy' });
-  assert.deepEqual(mac.status_cell, { chip: { key: 'degraded', text: 'Degraded' }, secondary: 'Last seen 2 days ago · Collectors 1 degraded · 1 healthy' }.chip ? { chip: { key: mac.status, text: mac.status_text }, secondary: 'Last seen 2 days ago · Collectors 1 degraded · 1 healthy' } : null);
+  assert.deepEqual(fin.status_cell, { chip: { key: 'reporting', text: 'Reporting' }, secondary: 'Last seen 3 min ago', title: 'Last seen 2026-10-01 11:57Z' },
+    'a device that reports says when, and nothing about collectors that work');
+  assert.deepEqual(mac.status_cell, { chip: { key: 'stale', text: 'Quiet' }, secondary: 'Last seen 2 days ago · 1 collector degraded', title: 'Last seen 2026-09-29 02:11Z' },
+    'a quiet device says when it was last seen once, and only the collectors that need attention');
   assert.equal(silent.device_cell.primary, '9f1c0b6e…', 'a device with no hostname is named by the start of its id');
   assert.equal(silent.device_cell.mono, true);
   assert.equal(silent.user_cell.primary, null, 'nobody has used it');
-  assert.deepEqual(silent.status_cell, { chip: { key: 'never_reported', text: 'Never checked in' }, secondary: null });
+  assert.deepEqual(silent.status_cell, { chip: { key: 'never_reported', text: 'Never checked in' }, secondary: null, title: null });
   assert.equal(ops.status_cell.chip.key, 'revoked');
   assert.equal(view.tables[0].rowHref, 'href');
   const html = renderScreen(view, SHELL);
@@ -344,12 +346,12 @@ test('a device with apps waiting for a restart names them in its row, and says "
   }));
   const view = devicesView(state, { now: NOW() });
   const byHost = Object.fromEntries(view.tables[0].rows.map((r) => [r.row.hostname, r.row.status_cell]));
-  assert.deepEqual(byHost['DEV-1'], { chip: { key: 'degraded', text: 'Restart needed' }, secondary: 'Claude Code needs a restart · Last seen 3 min ago · Collectors 1 degraded · 1 healthy' });
-  assert.deepEqual(byHost['DEV-2'], { chip: { key: 'degraded', text: 'Restart needed' }, secondary: 'Claude Code and Codex need a restart · Last seen 3 min ago · Collectors 2 degraded' });
-  assert.deepEqual(byHost['DEV-3'], { chip: { key: 'degraded', text: 'Degraded' }, secondary: 'Codex needs a restart · Last seen 3 min ago · Collectors 2 degraded' },
+  assert.deepEqual(byHost['DEV-1'], { chip: { key: 'degraded', text: 'Restart needed' }, secondary: 'Claude Code needs a restart · Last seen 3 min ago', title: 'Last seen 2026-10-01 11:57Z' });
+  assert.deepEqual(byHost['DEV-2'], { chip: { key: 'degraded', text: 'Restart needed' }, secondary: 'Claude Code and Codex need a restart · Last seen 3 min ago', title: 'Last seen 2026-10-01 11:57Z' });
+  assert.deepEqual(byHost['DEV-3'], { chip: { key: 'degraded', text: 'Degraded' }, secondary: 'Codex needs a restart · Last seen 3 min ago · 1 collector degraded', title: 'Last seen 2026-10-01 11:57Z' },
     'another collector is degraded for another cause, so the device is degraded');
   assert.deepEqual(byHost['DEV-4'].chip, { key: 'degraded', text: 'Degraded' });
-  assert.equal(byHost['DEV-4'].secondary, 'Last seen 3 min ago · Collectors 1 degraded · 1 healthy');
+  assert.equal(byHost['DEV-4'].secondary, 'Last seen 3 min ago · 1 collector degraded');
   assert.match(byHost['DEV-5'].secondary, /^tool_config_newtool needs a restart · /, 'a collector of no known tool is named as it is');
   assert.equal(byHost['DEV-6'].chip.key, 'stale', 'a quiet device stays quiet');
   assert.match(byHost['DEV-6'].secondary, /^Codex needs a restart · Last seen 2 days ago/);
@@ -588,5 +590,5 @@ test('the Devices filters are offered only where they can change the list', () =
   assert.deepEqual(devicesView(uniform, { now: NOW(), filters: { device_os: 'macos' } }).filters.map((f) => f.label), ['OS'], 'a filter already chosen stays, so it can be cleared');
   const mixed = readState(envelope('ok', { data: DEVICE_ROWS, freshness: FRESH, coverage: PARTIAL, meta: { source: 'mart.v_device_liveness' } }));
   assert.deepEqual(devicesView(mixed, { now: NOW() }).filters.map((f) => f.label), ['Status', 'OS', 'Management']);
-  assert.deepEqual(devicesView(mixed, { now: NOW() }).tables[0].columns.map((c) => c.label), ['Device', 'Status', 'User', 'Applied mode']);
+  assert.deepEqual(devicesView(mixed, { now: NOW() }).tables[0].columns.map((c) => c.label), ['Device', 'Status', 'User', 'Collection mode']);
 });

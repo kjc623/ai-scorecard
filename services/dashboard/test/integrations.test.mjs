@@ -146,8 +146,8 @@ test('a connected provider shows its account, its last pull and the records read
   const one = card(html(), 'ChatGPT Enterprise');
   assert.match(one, /<span class="v-vocab v-vocab-active">connected<\/span>/);
   assert.match(one, /<dt>Workspace ID<\/dt><dd><code>ws-4821<\/code><\/dd>/);
-  assert.match(one, /<dt>Connected<\/dt><dd><span class="v-time"[^>]*>2026-10-01 10:00Z<\/span> <span class="dp-sub">by admin@contoso\.com<\/span>/);
-  assert.match(one, /<dt>Last pull<\/dt><dd><span class="v-time"[^>]*>2026-10-01 11:02Z<\/span> <span class="v-vocab v-vocab-ok">ok<\/span>/);
+  assert.match(one, /<dt>Connected<\/dt><dd><span class="v-time"[^>]*>Oct 1 10:00<\/span> <span class="dp-sub">by admin@contoso\.com<\/span>/);
+  assert.match(one, /<dt>Last pull<\/dt><dd><span class="v-time"[^>]*>Oct 1 11:02<\/span> <span class="v-vocab v-vocab-ok">ok<\/span>/);
   assert.match(one, /<dt>Records read<\/dt><dd><span class="v-number">1,520<\/span> <span class="dp-sub">1,490 of them new to Sundial<\/span>/);
   assert.doesNotMatch(one, /Last changed/, 'a connection never changed since it was made says nothing more');
   assert.doesNotMatch(one, /The last pull failed/);
@@ -164,12 +164,12 @@ test('a pulled connection shows how often it is pulled, as a choice of the sched
   assert.deepEqual([...select[2].matchAll(/<option value="(\d+)"( selected)?>([^<]*)<\/option>/g)].map((m) => [Number(m[1]), Boolean(m[2]), m[3]]), [
     [15, false, 'Every 15 minutes'], [30, false, 'Every 30 minutes'], [60, true, 'Every hour'], [360, false, 'Every 6 hours'], [1440, false, 'Every day'],
   ]);
-  assert.match(chatgpt, /<dt>Next pull<\/dt><dd><span class="v-time"[^>]*>2026-10-01 12:00Z<\/span><\/dd>/);
+  assert.match(chatgpt, /<dt>Next pull<\/dt><dd><span class="v-time"[^>]*>Oct 1 12:00<\/span><\/dd>/);
   const copilot = card(html(at), 'Microsoft 365 Copilot');
   assert.match(copilot, /<option value="360" selected>Every 6 hours<\/option>/);
-  assert.match(copilot, /<dt>Next pull<\/dt><dd><span class="v-time"[^>]*>2026-10-01 17:00Z<\/span><\/dd>/);
+  assert.match(copilot, /<dt>Next pull<\/dt><dd><span class="v-time"[^>]*>Oct 1 17:00<\/span><\/dd>/);
   // Past its time, a pull is due; one never run is due at once.
-  assert.match(card(html(new Date('2026-10-01T12:01:00Z')), 'ChatGPT Enterprise'), /<dt>Next pull<\/dt><dd><span class="v-time"[^>]*>2026-10-01 12:00Z<\/span> <span class="dp-sub">due<\/span><\/dd>/);
+  assert.match(card(html(new Date('2026-10-01T12:01:00Z')), 'ChatGPT Enterprise'), /<dt>Next pull<\/dt><dd><span class="v-time"[^>]*>Oct 1 12:00<\/span> <span class="dp-sub">due<\/span><\/dd>/);
   const fresh = await loaded({ providers: [{ ...CHATGPT, connection: connection({ last_started_at: null, last_completed_at: null, next_pull_at: null }) }] });
   assert.match(card(fresh.html(at), 'ChatGPT Enterprise'), /<dt>Next pull<\/dt><dd>due now<\/dd>/);
   // A schedule the server did not send, or one it does not offer, is not reported.
@@ -194,7 +194,7 @@ test('choosing a schedule sends it once, says what it does, and reads the page a
   const one = card(html(new Date('2026-10-01T11:30:00Z')), 'ChatGPT Enterprise');
   assert.match(one, /<p class="dp-done" role="status">Saved\. Sundial pulls ChatGPT Enterprise every 6 hours, counted from the last pull\.<\/p>/);
   assert.match(one, /<option value="360" selected>Every 6 hours<\/option>/);
-  assert.match(one, /<dt>Next pull<\/dt><dd><span class="v-time"[^>]*>2026-10-01 17:00Z<\/span><\/dd>/);
+  assert.match(one, /<dt>Next pull<\/dt><dd><span class="v-time"[^>]*>Oct 1 17:00<\/span><\/dd>/);
 });
 
 test('a refused schedule is shown with its code, and an intake or a disconnected provider has no schedule', async () => {
@@ -217,7 +217,7 @@ test('a refused schedule is shown with its code, and an intake or a disconnected
 test('a pull still running says so, and a connection whose counts were not sent says "not reported", never 0', async () => {
   const { html } = await loaded({ providers: [{ ...CHATGPT, connection: connection({ last_started_at: '2026-10-01T12:00:00Z', records_read: undefined, records_new: undefined }) }] });
   const one = card(html(), 'ChatGPT Enterprise');
-  assert.match(one, /2026-10-01 12:00Z<\/span> <span class="dp-sub">started, still running<\/span>/);
+  assert.match(one, />Oct 1 12:00<\/span> <span class="dp-sub">started, still running<\/span>/);
   assert.match(one, /<dt>Records read<\/dt><dd><span class="v-absent">not reported<\/span>/);
 });
 
@@ -372,7 +372,7 @@ test('Pull now sends POST …/run and says whether a pull started; Disconnect as
   const gone = card(html(), 'ChatGPT Enterprise');
   assert.match(gone, /Disconnected\. Sundial no longer reads ChatGPT Enterprise and has forgotten its key\./);
   assert.match(gone, /<span class="v-vocab v-vocab-unknown">disconnected<\/span>/);
-  assert.match(gone, /<dt>Disconnected<\/dt><dd><span class="v-time"[^>]*>2026-10-02 09:00Z<\/span>/);
+  assert.match(gone, /<dt>Disconnected<\/dt><dd><span class="v-time"[^>]*>Oct 2 09:00<\/span>/);
   assert.match(gone, /data-int="open" data-provider="chatgpt_enterprise"[^>]*>Connect</, 'it can be connected again');
 });
 
@@ -457,7 +457,7 @@ test('a connected intake shows its endpoint and last delivery, offers no pull, a
   const { page, requests, html } = await loaded({ providers, answers: issuing(['sacintake_second']) });
   const one = card(html(), 'Amazon Bedrock');
   assert.ok(one.includes(`<dt>Endpoint</dt><dd><code class="dp-url">${escapeHtml(ENDPOINT)}</code></dd>`));
-  assert.match(one, /<dt>Last delivery<\/dt><dd><span class="v-time"[^>]*>2026-10-01 11:02Z<\/span> <span class="v-vocab v-vocab-ok">ok<\/span>/);
+  assert.match(one, /<dt>Last delivery<\/dt><dd><span class="v-time"[^>]*>Oct 1 11:02<\/span> <span class="v-vocab v-vocab-ok">ok<\/span>/);
   assert.doesNotMatch(one, /Last pull|still running/);
   assert.deepEqual([...one.matchAll(/<button[^>]*data-int="([^"]+)"[^>]*>([^<]*)</g)].map((m) => [m[1], m[2]]), [['replace', 'Replace token'], ['disconnect', 'Disconnect']]);
 

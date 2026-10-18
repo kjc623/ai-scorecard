@@ -5,7 +5,7 @@
 // is escaped.
 
 import { escapeHtml, renderPageHead, renderTile } from './render.js';
-import { formatCount, formatInstant } from './format.js';
+import { formatCount, formatWhen } from './format.js';
 import { depButton, depCard, depChip, depInstant, depProblem, renderIdentitySetup } from './deployment-render.js';
 import { SYNC_ERRORS } from './directory.js';
 
@@ -40,7 +40,7 @@ function dirTiles(data) {
     { label: 'Users', value: number(data.people), note: data.people === null ? 'not reported by the server' : 'in the directory Sundial holds' },
     { label: 'Groups', value: number(data.groups), note: data.groups === null ? 'not reported by the server' : 'provisioned or imported' },
     {
-      label: 'Last directory read', value: sync?.last_completed_at ? { kind: 'number', value: 0, text: formatInstant(sync.last_completed_at) } : { kind: 'absent' },
+      label: 'Last directory read', value: sync?.last_completed_at ? { kind: 'number', value: 0, text: formatWhen(sync.last_completed_at) } : { kind: 'absent' },
       note: !sync ? 'reading from Entra is off' : sync.last_status === 'failed' ? 'failed' : sync.last_completed_at ? null : 'not finished yet',
     },
   ].map(renderTile).join('')}</div>`;
@@ -63,7 +63,7 @@ function dirSync(state) {
     const result = sync.last_status === 'failed'
       ? `<p class="dp-problem" role="alert"><strong>The last read failed.</strong> ${escapeHtml(SYNC_ERRORS[sync.last_error] ?? 'The directory could not be read.')} <code>${escapeHtml(sync.last_error ?? '')}</code></p>`
       : sync.last_status === 'ok'
-        ? `<p class="dp-done">Read ${escapeHtml(formatCount(sync.users_synced ?? 0))} people and ${escapeHtml(formatCount(sync.groups_synced ?? 0))} team group${sync.groups_synced === 1 ? '' : 's'} ${escapeHtml(formatInstant(sync.last_completed_at))}.</p>`
+        ? `<p class="dp-done">Read ${escapeHtml(formatCount(sync.users_synced ?? 0))} people and ${escapeHtml(formatCount(sync.groups_synced ?? 0))} team group${sync.groups_synced === 1 ? '' : 's'} on ${escapeHtml(formatWhen(sync.last_completed_at))}.</p>`
         : '<p class="dp-note" role="status">The first read has not finished yet.</p>';
     const queued = state.sync.queued === true ? '<p class="dp-note" role="status">A read has been started.</p>'
       : state.sync.queued === false ? '<p class="dp-note" role="status">A read is already running.</p>' : '';
