@@ -81,8 +81,9 @@ state its process holds. It stops with an error so the service manager starts it
 once an hour, and records when in `edge-restart` in the state directory.
 
 An admin can ask a device for its diagnostics on the device's page in the console. The next health
-response names the request (reports follow the response's `next_report_after_s`, 900 s by default,
-held between 30 s and an hour), and the agent uploads to `/v1/diagnostics` a zip of `health.json` as of
+response names the request (the agent reports when it starts and again a minute later, while its
+collectors finish starting, then at the response's `next_report_after_s`, 900 s by default, held
+between 30 s and an hour), and the agent uploads to `/v1/diagnostics` a zip of `health.json` as of
 that moment, the `--print-config` summary, `capture-core.log` and its previous generation, and the
 update's `attempt.json` and each version's `install.log`, each cut to its last 8 MiB. It reads
 nothing else in the state directory.
@@ -208,8 +209,12 @@ running when a file last changed runs without the change until it restarts. Ever
 tool's configuration is in place and the bundle's `endpoint.restart_notice` is not `off`, the service
 lists the running processes of the apps that read it (Claude Code and the Claude desktop app, which
 starts the Claude Code sessions of its Code tab and Cowork; Codex), as the catalog names them by their
-executable and package, and compares each one's start with the managed files' last change. With
-`dashboard` or `both`, the tool's row is `degraded` with `restart_required` while such a process runs.
+executable and package, and compares each one's start with the managed files' last change. A
+process that started before it still runs with the configuration when a check had seen it running
+after an earlier write of the same content: the agent removes the files when it stops and writes
+them again when it starts, so an update of the agent does not ask anyone to restart. Those processes
+are kept in `toolconfig/<tool>/running` in the state directory. With `dashboard` or `both`, the
+tool's row is `degraded` with `restart_required` while any other such process runs.
 With `notify` or `both`, the person signed in to each session running one is shown a notification
 through the user-session helper, "Restart Claude" for a process the desktop app started and otherwise
 the app's own name, once for each change; one that is not shown is tried again at the next check.

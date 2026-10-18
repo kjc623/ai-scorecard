@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -296,4 +297,77 @@ func TestRestartNotificationsAreValid(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The agent removes the configuration when it stops and writes it again when it starts. A process
+// that ran with it before still runs with it when an update of the agent writes the same
+// configuration again; one that started while the agent was stopped, or before a configuration that
+// differs, needs a restart.
+func TestProviderKeepsAppsRunningWithTheConfigurationAcrossAnAgentRestart(t *testing.T) {
+	w, path := newTestWriter(t)
+	runningFile := filepath.Join(t.TempDir(), "toolconfig", "claude_code", "running")
+	var procs []AppProcess
+	start := func(b policy.Bundle) *Provider {
+		t.Helper()
+		p := newProvider(supportedTool, w, Config{
+			Token:       func() string { return testToken },
+			Executable:  func() (string, error) { return testExe, nil },
+			Processes:   func([]string) ([]AppProcess, error) { return slices.Clone(procs), nil },
+			RunningFile: runningFile,
+		})
+		b.Endpoint.RestartNotice = policy.RestartNoticeDashboard
+		if err := p.ApplyPolicy(b); err != nil {
+			t.Fatal(err)
+		}
+		if err := p.Start(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	written := func(at time.Time) {
+		t.Helper()
+		if err := os.Chtimes(path, at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(p *Provider, when string, want protocol.CollectorState, detail protocol.Detail, running ...AppProcess) {
+		t.Helper()
+		procs = running
+		p.checkRestart()
+		if h := p.Health(); h.State != want || h.Detail != detail {
+			t.Fatalf("%s: health = %s/%s, want %s/%s", when, h.State, h.Detail, want, detail)
+		}
+	}
+
+	first := time.Date(2026, 10, 14, 18, 55, 0, 0, time.UTC)
+	p := start(otelBundle(protocol.ModeM1))
+	written(first)
+	desktop := AppProcess{PID: 13724, Started: first.Add(20 * time.Hour), Session: 2, App: "claude_desktop"}
+	codeTab := AppProcess{PID: 8668, Started: first.Add(37 * time.Hour), Session: 2, App: "claude_code", Parent: "claude_desktop"}
+	check(p, "started after the configuration was written", protocol.StateHealthy, protocol.DetailNone, desktop, codeTab)
+	if err := p.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("after Stop the managed file is there (%v)", err)
+	}
+
+	// The updated agent is a new process: it knows the processes only from the running file.
+	again := first.Add(4 * 24 * time.Hour)
+	p = start(otelBundle(protocol.ModeM1))
+	t.Cleanup(func() { _ = p.Stop(context.Background()) })
+	written(again)
+	check(p, "the same configuration written again", protocol.StateHealthy, protocol.DetailNone, desktop, codeTab)
+	gap := AppProcess{PID: 9100, Started: again.Add(-30 * time.Second), Session: 3, App: "claude_code"}
+	check(p, "a process started while the agent was stopped", protocol.StateDegraded, protocol.DetailRestartRequired, desktop, codeTab, gap)
+
+	b := otelBundle(protocol.ModeM0)
+	b.Endpoint.RestartNotice = policy.RestartNoticeDashboard
+	if err := p.ApplyPolicy(b); err != nil {
+		t.Fatal(err)
+	}
+	written(again.Add(time.Hour))
+	check(p, "a different configuration", protocol.StateDegraded, protocol.DetailRestartRequired, desktop, codeTab)
+	restarted := AppProcess{PID: 20376, Started: again.Add(2 * time.Hour), Session: 2, App: "claude_desktop"}
+	check(p, "the app restarted", protocol.StateHealthy, protocol.DetailNone, restarted)
 }

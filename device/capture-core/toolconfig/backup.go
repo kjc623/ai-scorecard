@@ -11,8 +11,13 @@ import (
 	"github.com/shadow-ai-capture/device/capture-core/state"
 )
 
-// backupDir is the state directory's folder for the backups, one subfolder per tool.
+// backupDir is the state directory's folder for each tool's backup and running file, one subfolder
+// per tool.
 const backupDir = "toolconfig"
+
+// RunningFile is the file in dir that keeps the processes known to run with tool's configuration
+// (Config.RunningFile).
+func RunningFile(dir state.Dir, tool string) string { return dir.Path(backupDir, tool, "running") }
 
 // original is a managed file as it was before the agent first wrote it.
 type original struct {
