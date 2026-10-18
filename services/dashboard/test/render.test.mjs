@@ -163,13 +163,13 @@ test('the devices screen says the fleet, what needs attention, and each device i
   assert.deepEqual(view.tiles[0].split.map((p) => [p.label, p.count]), [['Reporting', 4180], ['Not reporting', 440]]);
   assert.equal(view.tiles[1].href, '#devices?status=attention');
   assert.deepEqual(view.tables.map((x) => x.title), ['Devices']);
-  assert.deepEqual(view.tables[0].columns.map((c) => c.label), ['Device', 'Status', 'User', 'Applied mode']);
+  assert.deepEqual(view.tables[0].columns.map((c) => c.label), ['Device', 'Status', 'User', 'Collection mode']);
   assert.equal(view.tables[0].rows.length, 4, 'one row per device');
   assert.deepEqual(view.filters.map((f) => f.label), ['Status', 'OS', 'Management']);
   const html = renderScreen(view, SHELL);
   assert.match(html, /Never checked in/);
-  assert.match(html, /Quiet since 2026-09-29/);
-  assert.match(html, /days ago/);
+  assert.match(html, />Quiet<\/span><span class="cell-secondary">Last seen 2 days ago · 1 collector degraded<\/span>/, 'a quiet device says when it was last seen once');
+  assert.doesNotMatch(html, /Quiet since/);
   assert.match(html, /data-href="#devices\?device=9f1c0b6e-0000-4000-8000-000000000001"/, 'a row opens its device');
   // The device is named by hostname, the UUID stays on hover, and the user, version and mode are shown.
   assert.match(html, /FIN-LAPTOP-07/);
@@ -178,8 +178,7 @@ test('the devices screen says the fleet, what needs attention, and each device i
   assert.match(html, /Alice Smith/, 'the directory display name is shown beside the account name');
   assert.match(html, /1\.4\.2/);
   assert.match(html, /Full prompt · M3/, 'the collection mode is said in words, with its code after');
-  assert.match(html, /2 healthy/, 'a device sums its collectors by state');
-  assert.match(html, /1 degraded · 1 healthy/, 'the worst state leads');
+  assert.doesNotMatch(html, /healthy</, 'collectors that work are not counted in the row; those that need attention are');
   assert.ok(!/Spool|watermark/i.test(html), 'pipeline internals are not on this screen');
   const windowsOnly = (await dashboard.load('devices', { filters: { device_os: 'windows' } })).view;
   assert.ok(windowsOnly.tables[0].rows.every(({ row }) => row.device_os === 'windows'));
@@ -333,49 +332,104 @@ test('a device whose app waits for a restart says so in its status and gives the
   const DEVICE = '9f1c0b6e-0000-4000-8000-000000000005';
   const row = listOf([{ device: DEVICE, hostname: 'DEV-5', device_os: 'macos', liveness: 'reporting', collectors_reporting: 2, collectors_healthy: 1, collectors_degraded: 1, collectors_absent: 0, collectors_tampered: 0, restart_required: ['tool_config_claude_code'], last_seen_at: '2026-10-01T11:57:00Z' }], 'mart.v_device_liveness');
   const collectors = listOf([
-    { device: DEVICE, collector: 'capture_core', collector_state: 'healthy', error_code: null, last_report_at: '2026-10-01T11:57:00Z' },
+    { device: DEVICE, collector: 'classifier_host', collector_state: 'healthy', error_code: null, last_report_at: '2026-10-01T11:57:00Z' },
     { device: DEVICE, collector: 'tool_config_claude_code', collector_state: 'degraded', error_code: 'restart_required', last_report_at: '2026-10-01T11:56:00Z' },
   ], 'ops.collector_state');
   const view = deviceView({ device: DEVICE, row, collectors }, { now: new Date('2026-10-01T12:00:00Z') });
   assert.deepEqual(view.tiles[0].value, { kind: 'vocab', text: 'Restart needed', key: 'degraded' });
   const html = renderScreen(view, SHELL);
-  assert.match(html, /<span class="cell-primary">Claude Code settings<\/span><span class="cell-secondary">tool_config_claude_code<\/span><\/span><\/td><td><span class="v-vocab v-vocab-degraded" title="degraded">Degraded<\/span><\/td><td><span class="cell-stack" title="restart_required"><span class="cell-primary">The app was running when its settings changed and needs a restart<\/span><\/span><\/td>/);
+  assert.match(html, /<span class="cell-stack" title="tool_config_claude_code"><span class="cell-primary">Claude Code<\/span><span class="cell-secondary">Sets Claude Code up to report to the agent<\/span><\/span><\/td><td><span class="v-vocab v-vocab-degraded" title="degraded">Degraded<\/span><\/td><td><span class="cell-stack" title="restart_required"><span class="cell-primary">The app was running when its settings changed and needs a restart<\/span><\/span><\/td>/);
 });
 
-test('a device lists every collector it reported, with its state, the cause in words and the code on hover', () => {
-  const DEVICE = '9f1c0b6e-0000-4000-8000-000000000002';
-  const row = listOf([{ device: DEVICE, hostname: 'MAC-DESIGN-2', device_os: 'macos', os_version: '15', agent_version: '1.4.2', collection_mode: 'm2', managed_state: 'managed', user_ref: 'u_9a02', subject_name: 'bob@contoso.example', liveness: 'reporting', collectors_reporting: 3, collectors_healthy: 1, collectors_degraded: 1, collectors_absent: 1, collectors_tampered: 0, last_seen_at: '2026-10-01T11:57:00Z' }], 'mart.v_device_liveness');
+test('a device\'s page says its state once, what it is in labelled facts, and groups its collectors by whether they need attention', () => {
+  const DEVICE = '5b2bab66-9ed2-4f32-b952-27c5c45e4293';
+  const row = listOf([{ device: DEVICE, hostname: 'WinDev2407Eval', device_os: 'windows', os_version: null, agent_version: '1.0.77', collection_mode: 'm3', managed_state: 'managed', user_ref: 'u_4f21', subject_name: 'kyle@contoso.example', directory_name: 'Kyle Clark', liveness: 'stale', collectors_reporting: 6, collectors_healthy: 2, collectors_degraded: 1, collectors_absent: 3, collectors_tampered: 0, enrolled_at: '2026-10-09T14:22:00Z', last_seen_at: '2026-10-16T09:32:00Z' }], 'mart.v_device_liveness');
+  const at = '2026-10-16T09:32:00Z';
   const collectors = listOf([
-    { device: DEVICE, collector: 'capture_core', collector_state: 'healthy', error_code: null, last_report_at: '2026-10-01T11:57:00Z' },
-    { device: DEVICE, collector: 'egress_proxy', collector_state: 'degraded', error_code: 'client_pinned', last_report_at: '2026-10-01T11:56:00Z' },
-    { device: DEVICE, collector: 'tool_config_cursor', collector_state: 'absent', error_code: 'disabled_by_policy', last_report_at: '2026-10-01T11:56:00Z' },
+    { device: DEVICE, collector: 'capture_extension', collector_state: 'healthy', error_code: null, last_report_at: at, last_success_at: at },
+    { device: DEVICE, collector: 'tool_config_claude_code', collector_state: 'healthy', error_code: null, last_report_at: at, last_success_at: at },
+    { device: DEVICE, collector: 'egress_proxy', collector_state: 'degraded', error_code: 'client_pinned', last_report_at: at, last_success_at: '2026-10-15T17:40:00Z' },
+    { device: DEVICE, collector: 'egress_proxy_next', collector_state: 'absent', error_code: null, last_report_at: at, last_success_at: null },
+    { device: DEVICE, collector: 'tool_config_cursor', collector_state: 'absent', error_code: 'tool_not_installed', last_report_at: at, last_success_at: null },
+    { device: DEVICE, collector: 'tool_config_codex', collector_state: 'absent', error_code: 'tool_not_installed', last_report_at: at, last_success_at: null },
+    { device: DEVICE, collector: 'desktop_proxy', collector_state: 'absent', error_code: 'disabled_by_policy', last_report_at: at, last_success_at: null },
   ], 'ops.collector_state');
-  const view = deviceView({ device: DEVICE, row, collectors }, { now: new Date('2026-10-01T12:00:00Z') });
-  assert.equal(view.title, 'MAC-DESIGN-2');
-  assert.equal(view.subtitle, `macOS 15 · Managed · Agent 1.4.2 · Last used by bob@contoso.example · ${DEVICE}`);
-  assert.deepEqual(view.tiles.map((t) => [t.label, t.value.text]), [['Status', 'Degraded'], ['Applied mode', 'Short excerpt · M2'], ['Collectors', '3']]);
-  assert.deepEqual(view.actions.map((a) => a.href), [`explore.html#events?device=${DEVICE}`, '#devices']);
-  const html = renderScreen(view, SHELL);
+  const view = deviceView({ device: DEVICE, row, collectors }, { now: new Date('2026-10-18T12:32:00Z') });
+  assert.equal(view.title, 'WinDev2407Eval');
+  assert.equal(view.subtitle, null, 'what the device is lives in its facts, not in a line of ids under the name');
+
+  const [status, mode] = view.tiles;
+  assert.equal(view.tiles.length, 2, 'the collectors are counted in their own table, not in a tile');
+  assert.deepEqual([status.label, status.value.text, status.note], ['Status', 'Quiet', 'Last seen 2 days ago, Oct 16 09:32'], 'the state, and when it was last seen said once');
+  assert.match(status.info, /has not checked in lately/);
+  assert.equal(status.jump, 'Collectors', 'the status opens the collectors');
+  assert.deepEqual([mode.label, mode.value.text, mode.note], ['Collection mode', 'Full prompt', 'M3']);
+
+  const facts = view.blocks[0];
+  assert.equal(facts.title, 'About this device');
+  assert.deepEqual(facts.items.map((f) => [f.label, f.text]), [
+    ['Last used by', 'Kyle Clark'], ['Operating system', 'Windows'], ['Device management', 'Managed by MDM'], ['Agent version', '1.0.77'], ['Enrolled', 'Oct 9 14:22'], ['Device ID', DEVICE],
+  ]);
+
   const table = view.tables[0];
-  assert.equal(table.groupBy, 'group');
-  assert.deepEqual(table.rows.map(({ row }) => [row.group, row.collector.primary, row.collector.secondary]), [
-    ['1 collector needs attention', 'Network proxy', 'egress_proxy'], ['1 healthy, 1 off in policy', 'Capture core', 'capture_core'], ['1 healthy, 1 off in policy', 'Cursor settings', 'tool_config_cursor'],
-  ], 'the collector that needs attention leads, named by what it watches');
-  assert.deepEqual(table.collapsed, ['1 healthy, 1 off in policy'], 'the ones that are fine stay folded');
-  assert.match(html, /<td><span class="cell-stack"><span class="cell-primary">Network proxy<\/span><span class="cell-secondary">egress_proxy<\/span><\/span><\/td><td><span class="v-vocab v-vocab-degraded" title="degraded">Degraded<\/span><\/td><td><span class="cell-stack" title="client_pinned"><span class="cell-primary">An app pins its certificates, so its traffic cannot be inspected<\/span><\/span><\/td>/);
-  assert.match(html, /tool_config_cursor<\/span><\/span><\/td><td><span class="v-vocab v-vocab-disabled" title="disabled">Off in policy<\/span><\/td><td><span class="cell-stack"><span class="cell-primary">None<\/span><\/span><\/td>/, 'switched off by policy is not a fault and gives no cause');
-  assert.match(html, /<button type="button" class="fold" data-fold="1 healthy, 1 off in policy" aria-expanded="false">1 healthy, 1 off in policy<span class="block-count">2<\/span><\/button>/);
+  assert.deepEqual(table.columns.map((c) => c.label), ['Group', 'Collector', 'State', 'Detail']);
+  assert.equal(table.summary, 'As the device last reported them, Oct 16 09:32.', 'a quiet device\'s collectors are as it last reported them');
+  assert.deepEqual(table.rows.map(({ row: r }) => [r.group, r.collector.primary, r.state_text]), [
+    ['Needs attention', 'egress_proxy_next', 'Not running'],
+    ['Needs attention', 'TLS inspection', 'Degraded'],
+    ['Working', 'Browser extension', 'Working'],
+    ['Working', 'Claude Code', 'Working'],
+    ['Not installed', 'Codex CLI', 'Not installed'],
+    ['Not installed', 'Cursor', 'Not installed'],
+    ['Off in policy', 'Desktop apps', 'Off'],
+  ], 'what needs attention leads; the rest is grouped by working, not installed and off');
+  assert.deepEqual(table.collapsed, ['Working', 'Not installed', 'Off in policy'], 'only what needs attention is open');
+
+  const html = renderScreen(view, SHELL);
+  assert.match(html, /<div class="tiles tiles-compact">/, 'tiles that hold a state are no wider than their note');
+  assert.doesNotMatch(html, /Coverage is partial/, 'the fleet\'s coverage says nothing about one device');
+  assert.match(html, /<span class="cell-stack" title="egress_proxy"><span class="cell-primary">TLS inspection<\/span><span class="cell-secondary">Reads what desktop apps and command-line tools send to AI services<\/span><\/span><\/td><td><span class="v-vocab v-vocab-degraded" title="degraded">Degraded<\/span><\/td><td><span class="cell-stack" title="client_pinned"><span class="cell-primary">An app pins its certificates, so its traffic cannot be inspected<\/span><span class="cell-secondary">Last worked Oct 15 17:40<\/span><\/span><\/td>/,
+    'a collector is named by what it does, with its code on hover, and its cause in words');
+  assert.match(html, /<span class="cell-stack"><span class="cell-primary v-mono">egress_proxy_next<\/span><\/span>/, 'a collector this console has no name for is its code');
+  assert.match(html, /<span class="v-vocab v-vocab-not_installed" title="not_installed">Not installed<\/span><\/td><td><span class="cell-stack"><span class="v-absent">—<\/span><\/span><\/td>/, 'a tool that is not installed gives no cause');
+  assert.match(html, /<button type="button" class="fold" data-fold="Not installed" aria-expanded="false">Not installed<span class="block-count">2<\/span><\/button>/);
+  assert.match(html, /<dt>Last used by<\/dt><dd><a href="#person\?subject=u_4f21">Kyle Clark<\/a><span class="facts-sub">kyle@contoso\.example<\/span><\/dd>/, 'the person opens their page');
+  assert.match(html, /<dt>Device ID<\/dt><dd><span class="v-mono">5b2bab66-9ed2-4f32-b952-27c5c45e4293<\/span><\/dd>/);
+  assert.doesNotMatch(html, /Quiet since|\d{4}-\d\d-\d\d \d\d:\d\dZ</, 'no date in the ISO form on the page');
+  assert.equal(view.quietSince, '2026-10-16T09:32:00Z', 'a quiet device tells its diagnostics when it last checked in');
 
   const busy = readState(envelope('busy', { error: { code: 'rate_limited', message: 'Busy, try again shortly' } }));
-  const unread = deviceView({ device: DEVICE, row, collectors: busy }, { now: new Date('2026-10-01T12:00:00Z') });
+  const unread = deviceView({ device: DEVICE, row, collectors: busy }, { now: new Date('2026-10-18T12:32:00Z') });
   assert.deepEqual(unread.tables, []);
   assert.ok(unread.notes.includes('The collectors could not be read: Busy, try again shortly.'));
-  assert.equal(unread.tiles[2].value.text, '3', 'the row\'s own count stands in');
+  assert.equal(unread.tiles[0].jump, undefined, 'with no table, the status opens nothing');
 
   const unknown = deviceView({ device: DEVICE, row: listOf([], 'mart.v_device_liveness') });
   assert.ok(unknown.notes.includes('No enrolled device has this id.'));
   const refused = deviceView({ device: DEVICE, row: busy });
   assert.ok(!refused.notes.includes('No enrolled device has this id.'), 'a read that was refused does not say the device is unknown');
+});
+
+test('a device that works says so in one line of folded groups, and one that never checked in says when it enrolled', () => {
+  const DEVICE = '9f1c0b6e-0000-4000-8000-000000000002';
+  const row = listOf([{ device: DEVICE, hostname: 'MAC-DESIGN-2', device_os: 'macos', os_version: '15', agent_version: '1.4.2', collection_mode: 'm2', managed_state: 'managed', user_ref: null, subject_name: null, liveness: 'reporting', collectors_reporting: 2, collectors_healthy: 2, collectors_degraded: 0, collectors_absent: 0, collectors_tampered: 0, last_seen_at: '2026-10-01T11:57:00Z' }], 'mart.v_device_liveness');
+  const collectors = listOf([
+    { device: DEVICE, collector: 'classifier_host', collector_state: 'healthy', error_code: null, last_report_at: '2026-10-01T11:57:00Z' },
+    { device: DEVICE, collector: 'tool_config_cursor', collector_state: 'absent', error_code: 'tool_version_unsupported', last_report_at: '2026-10-01T11:57:00Z' },
+  ], 'ops.collector_state');
+  const view = deviceView({ device: DEVICE, row, collectors }, { now: new Date('2026-10-01T12:00:00Z') });
+  assert.deepEqual([view.tiles[0].value.text, view.tiles[0].note], ['Reporting', 'Last seen 3 min ago, Oct 1 11:57']);
+  assert.equal(view.tables[0].summary, undefined, 'a reporting device\'s collectors need no date');
+  assert.deepEqual(view.tables[0].rows.map(({ row: r }) => [r.group, r.collector.primary, r.detail.primary]), [
+    ['Working', 'Content classifier', null],
+    ['Not installed', 'Cursor', 'Not set up on this operating system'],
+  ]);
+  assert.equal(view.blocks[0].items[0].text, null, 'nobody has used it');
+  assert.match(renderScreen(view, SHELL), /<dt>Last used by<\/dt><dd><span class="v-absent">Not reported<\/span><\/dd>/);
+
+  const silent = deviceView({ device: DEVICE, row: listOf([{ device: DEVICE, liveness: 'never_reported', enrolled_at: '2026-09-30T08:05:00Z', last_seen_at: null }], 'mart.v_device_liveness'), collectors: listOf([], 'ops.collector_state') });
+  assert.deepEqual([silent.tiles[0].value.text, silent.tiles[0].note], ['Never checked in', 'Enrolled Sep 30 08:05']);
+  assert.equal(silent.quietSince, null);
 });
 
 test('a device\'s reads are list documents query-api accepts, and neither carries a window', async () => {

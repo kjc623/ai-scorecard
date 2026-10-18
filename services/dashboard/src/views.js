@@ -9,8 +9,8 @@
 // kept apart in another.
 
 import { emptyStateFor, measureOf, vocabOf } from './states.js';
-import { formatBytes, formatCount, formatInstant, formatLabels, formatPercent, formatRate, plural } from './format.js';
-import { SOURCES, TEMPLATES, UNRECOGNISED_TOOL, SITE_PREFIX, COLLECTION_MODE_LABELS, COLLECTION_MODE_CODES, COLLECTOR_DETAILS, COLLECTOR_NAMES, DATA_CLASS_NAMES, WINDOWS, AUDIT_ACTIONS, AUDIT_REPORTS } from './vocab.js';
+import { formatBytes, formatCount, formatInstant, formatLabels, formatPercent, formatRate, formatWhen, plural } from './format.js';
+import { SOURCES, TEMPLATES, UNRECOGNISED_TOOL, SITE_PREFIX, COLLECTION_MODE_LABELS, COLLECTION_MODE_CODES, COLLECTOR_DETAILS, COLLECTORS, DATA_CLASS_NAMES, WINDOWS, AUDIT_ACTIONS, AUDIT_REPORTS } from './vocab.js';
 import { EXPLORE_DATASETS, encodeExploreHash } from './explore-model.js';
 import { RULE_ACTION_LABELS, RULE_CATEGORIES, RULE_MATCH_FIELDS, RULE_MATCH_TITLES, RULE_ROUTES } from './rules.js';
 import { ENDPOINT_TOOLS } from './settings.js';
@@ -2869,7 +2869,7 @@ function deviceStatus(row) {
   if (row.liveness === 'revoked') return { key: 'revoked', text: 'Revoked' };
   if (count(row.collectors_tampered) > 0) return { key: 'tampered', text: 'Tampered' };
   if (row.liveness === 'never_reported') return { key: 'never_reported', text: 'Never checked in' };
-  if (row.liveness === 'stale') return { key: 'stale', text: row.last_seen_at ? `Quiet since ${formatInstant(row.last_seen_at).slice(0, 10)}` : 'Quiet' };
+  if (row.liveness === 'stale') return { key: 'stale', text: 'Quiet' };
   if (row.liveness === 'reporting') {
     const degraded = count(row.collectors_degraded);
     if (degraded === 0) return { key: 'reporting', text: 'Reporting' };
@@ -2878,20 +2878,33 @@ function deviceStatus(row) {
   return { key: 'unknown', text: 'Unknown' };
 }
 
-/** The device's collectors by state, worst first, as "1 tampered · 12 healthy"; null when none reported. */
-function collectorsSummary(row) {
-  const parts = [['tampered', row.collectors_tampered], ['degraded', row.collectors_degraded], ['absent', row.collectors_absent], ['healthy', row.collectors_healthy]]
-    .filter(([, n]) => count(n) > 0)
-    .map(([state, n]) => `${formatCount(count(n))} ${state}`);
-  return parts.length ? parts.join(' · ') : null;
+/** What a device's status means, beside its Status tile. */
+const STATUS_INFO = Object.freeze({
+  reporting: 'The agent checks in, and none of its collectors is degraded or tampered with.',
+  stale: 'The agent has not checked in lately. The device may be switched off or offline, or its agent cannot reach the service; the collectors below are as it last reported them.',
+  never_reported: 'The device enrolled, and its agent has not checked in since.',
+  degraded: 'The agent checks in, but a collector below is not working as it should.',
+  tampered: 'A collector below reports a change made outside the agent.',
+  revoked: 'The device\'s enrolment was revoked, so it no longer checks in.',
+  unknown: 'The device reported a state this console does not know.',
+});
+
+/** A device's collectors that are degraded or tampered with, as "1 collector degraded"; an app waiting for a restart is restartText's. */
+function collectorProblems(row) {
+  const tampered = count(row.collectors_tampered);
+  const degraded = Math.max(0, count(row.collectors_degraded) - restartCollectors(row).length);
+  return [
+    tampered > 0 ? `${plural(tampered, 'collector', 'collectors')} tampered with` : null,
+    degraded > 0 ? `${plural(degraded, 'collector', 'collectors')} degraded` : null,
+  ].filter(Boolean).join(' · ') || null;
 }
 
 /** How long ago an instant was, in the coarsest unit that is still true. */
 function ago(iso, now) {
   const ms = now.getTime() - Date.parse(iso);
-  if (!Number.isFinite(ms) || ms < 0) return formatInstant(iso);
+  if (!Number.isFinite(ms) || ms < 0) return formatWhen(iso);
   const minutes = Math.floor(ms / 60_000);
-  if (minutes < 1) return 'Just now';
+  if (minutes < 1) return 'just now';
   if (minutes < 60) return `${minutes} min ago`;
   const hours = Math.floor(minutes / 60);
   if (hours < 48) return `${hours} h ago`;
@@ -2900,15 +2913,20 @@ function ago(iso, now) {
 
 const DEVICE_LABELS = Object.freeze({ windows: 'Windows', macos: 'macOS', linux: 'Linux', managed: 'Managed', unmanaged: 'Unmanaged', unknown: 'Unknown' });
 
+/** Whether an MDM manages the device, as its page says it. */
+const MANAGEMENT_TEXT = Object.freeze({ managed: 'Managed by MDM', unmanaged: 'Not managed by MDM', unknown: 'Not known' });
+
 /** A device state in the words of the status filter and the attention split. */
 const STATUS_LABELS = Object.freeze({ attention: 'Needs attention', reporting: 'Reporting', stale: 'Quiet', never_reported: 'Never checked in', degraded: 'Degraded', tampered: 'Tampered', revoked: 'Revoked' });
 const ATTENTION_KEYS = Object.freeze(['stale', 'never_reported', 'degraded', 'tampered']);
 
+/** What the device runs: "Windows 11"; null when it reported nothing. */
+const osText = (row) => [DEVICE_LABELS[row.device_os] ?? (row.device_os ? String(row.device_os) : null), row.os_version ? String(row.os_version) : null].filter(Boolean).join(' ') || null;
+
 /** The words beside a device's name: what it runs, whether it is managed, and its agent. */
 function deviceFacts(row) {
-  const os = [DEVICE_LABELS[row.device_os] ?? (row.device_os ? String(row.device_os) : null), row.os_version ? String(row.os_version) : null].filter(Boolean).join(' ');
   return [
-    os || null,
+    osText(row),
     DEVICE_LABELS[row.managed_state] ?? (row.managed_state ? String(row.managed_state) : null),
     row.agent_version ? `Agent ${row.agent_version}` : null,
   ].filter(Boolean).join(' · ') || null;
@@ -2923,25 +2941,23 @@ export const deviceHref = (device) => `#devices?device=${encodeURIComponent(Stri
 /** One device's row, in the cells the list and the device's page both show. */
 function deviceRow(row, now) {
   const status = deviceStatus(row);
-  const lastSeen = row.last_seen_at ? ago(row.last_seen_at, now) : null;
-  const collectors = collectorsSummary(row);
-  const restart = restartText(row);
   // The device name is the hostname, with the UUID kept for the hover and as the fallback. The
   // user is the clear account name of the most recent submission, with the pseudonymous ref as
   // the fallback. directory_name is the directory's own current name, shown above it when a
   // sync has supplied one; both are absent for a 'hashed' tenant.
   const user = row.subject_name ?? row.user_ref ?? null;
   const directoryName = row.directory_name ?? null;
+  // When the device last checked in, with the time itself on hover; one that never has says when it enrolled.
+  const seen = row.last_seen_at ? `Last seen ${ago(row.last_seen_at, now)}`
+    : row.liveness === 'never_reported' && row.enrolled_at ? `Enrolled ${formatWhen(row.enrolled_at)}` : null;
   return {
     ...row,
     status: status.key,
     status_text: status.text,
-    last_seen_at_ago: lastSeen,
     device_name: row.hostname || null,
     user,
     directory_name: directoryName,
     mode: modeText(row),
-    collectors,
     href: row.device ? deviceHref(row.device) : null,
     device_cell: Object.freeze({
       primary: row.hostname || (row.device ? `${String(row.device).slice(0, 8)}…` : null),
@@ -2956,7 +2972,8 @@ function deviceRow(row, now) {
     }),
     status_cell: Object.freeze({
       chip: Object.freeze({ key: status.key, text: status.text }),
-      secondary: [restart, lastSeen ? `Last seen ${lastSeen}` : null, collectors ? `Collectors ${collectors}` : null].filter(Boolean).join(' · ') || null,
+      secondary: [restartText(row), seen, collectorProblems(row)].filter(Boolean).join(' · ') || null,
+      title: row.last_seen_at ? `Last seen ${formatInstant(row.last_seen_at)}` : null,
     }),
   };
 }
@@ -3060,7 +3077,7 @@ export function devicesView(state, { filters = {}, now = new Date() } = {}) {
             column('device_cell', 'Device', 'stack'),
             column('status_cell', 'Status', 'stack'),
             column('user_cell', 'User', 'stack'),
-            column('mode', 'Applied mode'),
+            column('mode', 'Collection mode'),
           ],
           emptyText: 'No device matches these filters.',
         }),
@@ -3070,57 +3087,71 @@ export function devicesView(state, { filters = {}, now = new Date() } = {}) {
     ]),
     series: Object.freeze([]),
     ...shared(state, [
-      'Reporting, quiet, never checked in and revoked are four different facts, and none is inferred from silence.',
+      'Reporting, quiet, never checked in and revoked are four different facts, and none is inferred from silence. A quiet device has checked in before, but not lately.',
       'One row per device. Its status is the worst of its collectors\' states; open a device to see each collector.',
-      'Applied mode is the collection mode the device reported it applied, which can trail the mode set in Settings until the device next checks in.',
+      'Collection mode is the mode the device reported it applied, which can trail the mode set in Settings until the device next checks in.',
     ]),
   });
 }
 
-const COLLECTOR_STATE_TEXT = Object.freeze({ healthy: 'Healthy', degraded: 'Degraded', absent: 'Absent', tampered: 'Tampered' });
+/** Where a collector belongs on its device's page, in the order the groups are shown. */
+const COLLECTOR_GROUPS = Object.freeze({ attention: 'Needs attention', working: 'Working', not_installed: 'Not installed', off: 'Off in policy' });
 
 /**
- * What a collector reported, those that need attention first. Off in policy is not a fault. Each
- * run is headed by how many collectors it holds, and the fine ones stay folded: the page reads as
- * one line until a collector is looked at.
+ * A collector's group. A tool that is not installed, or that the agent does not set up on this
+ * operating system, and a collector switched off by policy are not faults; any state but healthy
+ * otherwise is.
+ */
+function collectorGroup(r) {
+  if (r.error_code === 'disabled_by_policy') return 'off';
+  if (r.collector_state === 'absent' && (r.error_code === 'tool_not_installed' || r.error_code === 'tool_version_unsupported')) return 'not_installed';
+  return r.collector_state === 'healthy' ? 'working' : 'attention';
+}
+
+/** A collector's state in words: healthy reads as working and absent as not running; the key keeps its colour. */
+const COLLECTOR_STATE_TEXT = Object.freeze({ healthy: 'Working', degraded: 'Degraded', absent: 'Not running', tampered: 'Tampered' });
+
+/**
+ * What each collector reported, grouped: those that need attention first, open, with the cause in
+ * words and when each last worked; then those working, not installed and off in policy, each
+ * folded under its heading. A collector is named by what it does, with its code on hover; one
+ * this console has no name for is its code.
  */
 function collectorRows(collectors) {
+  const order = Object.keys(COLLECTOR_GROUPS);
   const rows = collectors.data.map((r) => {
-    const off = r.error_code === 'disabled_by_policy';
-    const fine = off || r.collector_state === 'healthy';
+    const group = collectorGroup(r);
     const code = r.collector ?? null;
+    const known = code ? COLLECTORS[code] : null;
+    const detail = group === 'attention' && r.error_code ? COLLECTOR_DETAILS[r.error_code] ?? String(r.error_code)
+      : group === 'not_installed' && r.error_code === 'tool_version_unsupported' ? 'Not set up on this operating system' : null;
     return Object.freeze({
-      fine,
-      off,
-      // The collector by what it watches, with its code beneath; one this console has no name for is its code.
-      collector: Object.freeze(code && COLLECTOR_NAMES[code] ? { primary: COLLECTOR_NAMES[code], secondary: code } : { primary: code, mono: true }),
-      state: off ? 'disabled' : r.collector_state ?? 'unknown',
-      state_text: off ? 'Off in policy' : COLLECTOR_STATE_TEXT[r.collector_state] ?? String(r.collector_state ?? 'Unknown'),
-      // The cause in words, with the device's detail code kept on hover.
-      cause: Object.freeze(off || !r.error_code ? { primary: 'None' } : { primary: COLLECTOR_DETAILS[r.error_code] ?? String(r.error_code), title: String(r.error_code) }),
-      last_report_at: r.last_report_at ?? null,
+      group,
+      name: known?.name ?? String(code ?? ''),
+      collector: Object.freeze(known ? { primary: known.name, secondary: known.about, title: code } : { primary: code, mono: true }),
+      state: group === 'off' ? 'disabled' : group === 'not_installed' ? 'not_installed' : r.collector_state ?? 'unknown',
+      state_text: group === 'off' ? 'Off' : group === 'not_installed' ? 'Not installed' : COLLECTOR_STATE_TEXT[r.collector_state] ?? String(r.collector_state ?? 'Unknown'),
+      // The cause in words, with the device's code kept on hover.
+      detail: Object.freeze({
+        primary: detail,
+        secondary: group === 'attention' && r.last_success_at ? `Last worked ${formatWhen(r.last_success_at)}` : null,
+        title: detail && r.error_code ? String(r.error_code) : null,
+      }),
     });
-  });
-  const attention = rows.filter((r) => !r.fine);
-  const fine = rows.filter((r) => r.fine);
-  const healthy = fine.filter((r) => !r.off).length;
-  const off = fine.length - healthy;
-  const fineLabel = attention.length === 0
-    ? `All ${plural(fine.length, 'collector', 'collectors')} ${off === 0 ? 'healthy' : healthy === 0 ? 'off in policy' : `fine: ${healthy} healthy, ${off} off in policy`}`
-    : [healthy > 0 ? `${healthy} healthy` : null, off > 0 ? `${off} off in policy` : null].filter(Boolean).join(', ');
-  const attentionLabel = `${plural(attention.length, 'collector needs', 'collectors need')} attention`;
+  }).sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group) || a.name.localeCompare(b.name));
   return Object.freeze({
-    rows: Object.freeze([
-      ...attention.map((r) => Object.freeze({ ...r, group: attentionLabel })),
-      ...fine.map((r) => Object.freeze({ ...r, group: fineLabel })),
-    ]),
-    collapsed: Object.freeze(fine.length > 0 ? [fineLabel] : []),
+    rows: Object.freeze(rows.map((r) => Object.freeze({ ...r, group: COLLECTOR_GROUPS[r.group] }))),
+    collapsed: Object.freeze(order.filter((g) => g !== 'attention' && rows.some((r) => r.group === g)).map((g) => COLLECTOR_GROUPS[g])),
   });
 }
 
+/** Partial coverage is a fact about the fleet's figures, which one device's page holds none of. */
+const deviceBanners = (state) => Object.freeze((state.banners ?? []).filter((b) => b.about !== 'coverage'));
+
 /**
- * One device: what it runs, its state and the person on it, and every collector it reported, with
- * the cause each gave. A device the fleet list does not hold is said to be unknown.
+ * One device: its state and when it last checked in, the mode it applied, what it is and who last
+ * used it, and every collector it reported, grouped by whether it needs attention. A device the
+ * fleet list does not hold is said to be unknown.
  *
  * @param {object} input
  * @param {string} input.device       the device id the address names
@@ -3142,28 +3173,43 @@ export function deviceView({ device, row, collectors = null }, { now = new Date(
       tables: Object.freeze([]),
       series: Object.freeze([]),
       ...shared(row, row.isRefusal ? [] : ['No enrolled device has this id.']),
+      banners: deviceBanners(row),
     });
   }
   const read = collectors && !collectors.isRefusal;
-  const reported = read ? collectors.data.length : found.collectors_reporting ?? null;
   const grouped = read ? collectorRows(collectors) : null;
-  // The status and the collector count are the collectors' table, folded: each opens it when it was
-  // read. The mode the device applied is set on Settings → Collection.
+  // The status opens the collectors' table when it was read. The mode the device applied is set on
+  // Settings → Collection.
   const below = read ? { jump: 'Collectors' } : {};
+  const seen = found.last_seen_at ? `Last seen ${ago(found.last_seen_at, now)}, ${formatWhen(found.last_seen_at)}`
+    : found.enrolled_at ? `Enrolled ${formatWhen(found.enrolled_at)}` : null;
+  const mode = found.collection_mode ?? null;
   const tiles = [
-    tile('Status', { kind: 'vocab', text: d.status_text, key: d.status }, d.last_seen_at_ago ? `Last seen ${d.last_seen_at_ago}` : 'Never seen',
-      { ...below, info: 'The worst state among the device\'s collectors, and whether its agent has checked in.' }),
-    tile('Applied mode', d.mode ? { kind: 'vocab', text: d.mode, key: found.collection_mode } : { kind: 'absent', text: '—' }, d.mode ? null : 'The device has not reported a mode.',
+    tile('Status', { kind: 'vocab', text: d.status_text, key: d.status }, seen, { ...below, info: STATUS_INFO[d.status] }),
+    tile('Collection mode', mode ? { kind: 'vocab', text: COLLECTION_MODE_LABELS[mode] ?? `Mode ${mode}`, key: mode } : { kind: 'absent', text: '—' },
+      mode ? COLLECTION_MODE_CODES[mode] ?? null : 'The device has not reported a mode.',
       { href: '#settings', info: 'The collection mode the device last reported it applied. It can trail the mode set in Settings until the device next checks in.' }),
-    tile('Collectors', reported === null ? { kind: 'absent', text: '—' } : { kind: 'number', text: formatCount(count(reported)) }, d.collectors, below),
   ];
+  const facts = Object.freeze({
+    kind: 'facts',
+    title: 'About this device',
+    items: Object.freeze([
+      Object.freeze({ label: 'Last used by', text: d.user_cell.primary, secondary: d.user_cell.secondary, href: found.user_ref ? `#person?subject=${encodeURIComponent(found.user_ref)}` : null }),
+      Object.freeze({ label: 'Operating system', text: osText(found) }),
+      Object.freeze({ label: 'Device management', text: MANAGEMENT_TEXT[found.managed_state] ?? found.managed_state ?? null }),
+      Object.freeze({ label: 'Agent version', text: found.agent_version ?? null }),
+      Object.freeze({ label: 'Enrolled', text: found.enrolled_at ? formatWhen(found.enrolled_at) : null, title: found.enrolled_at ? formatInstant(found.enrolled_at) : null }),
+      Object.freeze({ label: 'Device ID', text: device, mono: true }),
+    ]),
+  });
   const notes = [];
   if (collectors?.isRefusal) notes.push(`The collectors could not be read: ${collectors.error?.message ?? collectors.resultState}.`);
-  const user = d.user_cell.primary ? `Last used by ${d.user_cell.primary}` : null;
   return screen('device', d.device_cell.primary ?? device, null, 'mart.v_device_liveness', {
-    subtitle: [d.device_cell.secondary, user, device].filter(Boolean).join(' · '),
+    subtitle: null,
     actions,
     tiles: Object.freeze(tiles),
+    compactTiles: true,
+    blocks: Object.freeze([facts]),
     tables: Object.freeze(read ? [
       Object.freeze({
         ...tableFrom({ data: grouped.rows }, {
@@ -3172,21 +3218,25 @@ export function deviceView({ device, row, collectors = null }, { now = new Date(
             column('group', 'Group'),
             column('collector', 'Collector', 'stack'),
             column('state', 'State', 'status'),
-            column('cause', 'Cause', 'stack'),
-            column('last_report_at', 'Last report', 'instant'),
+            column('detail', 'Detail', 'stack'),
           ],
           emptyText: 'This device has not reported any collector.',
         }),
+        // A quiet device's collectors are as it last reported them.
+        ...(found.liveness === 'stale' && found.last_seen_at ? { summary: `As the device last reported them, ${formatWhen(found.last_seen_at)}.` } : {}),
         groupBy: 'group',
         collapsed: grouped.collapsed,
         breakdowns: false,
       }),
     ] : []),
     series: Object.freeze([]),
+    // When the device last checked in, for its diagnostics: a request waits for the next check-in.
+    quietSince: found.liveness === 'stale' ? found.last_seen_at ?? null : null,
     ...shared(row, [
       ...notes,
-      'A collector switched off by policy is off, not a fault. Every other state is the one the device last reported.',
+      'A collector for a tool that is not installed, or one switched off by policy, is not a fault. Every other state is the one the device last reported.',
     ]),
+    banners: deviceBanners(row),
   });
 }
 

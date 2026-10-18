@@ -8,7 +8,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { SOURCES, TEMPLATES, TEMPLATE_NAMES, RESULT_STATES, STATE_PAIRS, COLLECTOR_DETAILS, ROUTES } from '../src/vocab.js';
+import { SOURCES, TEMPLATES, TEMPLATE_NAMES, RESULT_STATES, STATE_PAIRS, COLLECTOR_DETAILS, COLLECTORS, ROUTES } from '../src/vocab.js';
 import { ROLE_CAPABILITIES } from '../server/session.mjs';
 import * as registry from '../../query-api/src/registry.js';
 import * as serverTemplates from '../../query-api/src/templates.js';
@@ -54,6 +54,19 @@ test('every cause a device can report has its words, and nothing else has', () =
   assert.deepEqual(Object.keys(COLLECTOR_DETAILS).sort(), [...details].sort());
   for (const [detail, words] of Object.entries(COLLECTOR_DETAILS)) {
     assert.ok(typeof words === 'string' && words.length > 0 && words !== detail, `${detail} has words of its own`);
+  }
+});
+
+test('every collector a device can report has a name and a line of its own, and nothing else has', () => {
+  const source = readFileSync(new URL('../../../device/protocol/envelope.go', import.meta.url), 'utf8');
+  const collectors = [...source.matchAll(/\bCollector[A-Za-z0-9]+\s+Collector\s*=\s*"([^"]+)"/g)].map((m) => m[1]);
+  assert.ok(collectors.includes('egress_proxy') && collectors.includes('flow_monitor'), 'the vocabulary was read');
+  assert.deepEqual(Object.keys(COLLECTORS).sort(), [...collectors].sort());
+  const names = Object.values(COLLECTORS).map((c) => c.name);
+  assert.equal(new Set(names).size, names.length, 'no two collectors share a name');
+  for (const [code, { name, about }] of Object.entries(COLLECTORS)) {
+    assert.ok(name && name !== code && !name.includes('_'), `${code} has a name of its own`);
+    assert.ok(about && about.length <= 80, `${code} says in one short line what it does`);
   }
 });
 

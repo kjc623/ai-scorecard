@@ -379,30 +379,28 @@ export const STATE_PAIRS = Object.freeze({
   merge_confidence: Object.freeze(['high', 'low']),
 });
 
-/** What each collector on a device watches, in words; a collector not listed here is shown by its code. */
-export const COLLECTOR_NAMES = Object.freeze({
-  capture_core: 'Capture core',
-  capture_extension: 'Browser extension',
-  classifier_host: 'Classifier',
-  cli_shim: 'Command-line tools',
-  desktop_proxy: 'Desktop apps',
-  egress_proxy: 'Network proxy',
-  flow_monitor: 'Network flows',
-  flows: 'Network flows',
-  hook_relay: 'Coding-tool hooks',
-  hooks: 'Coding-tool hooks',
-  inventory: 'Inventory',
-  inventory_scanner: 'Inventory',
-  loopback: 'Local model capture',
-  loopback_broker: 'Local model capture',
-  otel: 'Coding-tool telemetry',
-  otel_receiver: 'Coding-tool telemetry',
-  process_detector: 'Running apps',
-  user_helper: 'User notices',
-  tool_config_claude_code: 'Claude Code settings',
-  tool_config_codex: 'Codex CLI settings',
-  tool_config_copilot: 'GitHub Copilot settings',
-  tool_config_cursor: 'Cursor settings',
+/**
+ * Each collector a device reports, by the name a customer admin knows it by and one line on what it
+ * does; a tool's setup collector is named by its tool. test/parity.test.mjs holds the keys equal to
+ * the device's closed collector vocabulary.
+ */
+export const COLLECTORS = Object.freeze({
+  capture_extension: Object.freeze({ name: 'Browser extension', about: 'Prompts sent from AI sites in Chrome and Edge' }),
+  classifier_host: Object.freeze({ name: 'Content classifier', about: 'Finds sensitive data in prompts, on the device' }),
+  cli_shim: Object.freeze({ name: 'Command-line tools', about: 'Routes command-line AI tools through TLS inspection' }),
+  desktop_proxy: Object.freeze({ name: 'Desktop apps', about: 'Routes desktop AI apps through TLS inspection' }),
+  egress_proxy: Object.freeze({ name: 'TLS inspection', about: 'Reads what desktop apps and command-line tools send to AI services' }),
+  flow_monitor: Object.freeze({ name: 'Network connections', about: 'Which apps connect to AI services' }),
+  hook_relay: Object.freeze({ name: 'Coding-agent hooks', about: 'Prompts coding agents are about to send, checked against the rules' }),
+  inventory_scanner: Object.freeze({ name: 'Installed apps', about: 'AI apps installed on the device' }),
+  loopback_broker: Object.freeze({ name: 'Local AI models', about: 'Prompts sent to AI models running on the device' }),
+  otel_receiver: Object.freeze({ name: 'Coding-agent telemetry', about: 'Activity coding agents report about themselves' }),
+  process_detector: Object.freeze({ name: 'Running apps', about: 'AI apps as they start' }),
+  user_helper: Object.freeze({ name: 'User notices', about: 'Shows people the warnings and blocks the rules decide' }),
+  tool_config_claude_code: Object.freeze({ name: 'Claude Code', about: 'Sets Claude Code up to report to the agent' }),
+  tool_config_codex: Object.freeze({ name: 'Codex CLI', about: 'Sets the Codex CLI up to report to the agent' }),
+  tool_config_copilot: Object.freeze({ name: 'GitHub Copilot', about: 'Sets GitHub Copilot up to report to the agent' }),
+  tool_config_cursor: Object.freeze({ name: 'Cursor', about: 'Sets Cursor up to report to the agent' }),
 });
 
 /** What an audit entry's action means, in words; its code stays beside it. */
