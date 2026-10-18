@@ -38,8 +38,11 @@ $config = ($json -join "`n") | ConvertFrom-Json
 $credential = Import-Clixml -Path $config.vmAdminCredential
 $UserTimeoutSeconds = 600
 
-# Runs in the VM as its administrator: runs Script as the signed-in Entra user Upn through a one-shot
-# scheduled task with an Interactive principal, and returns what it printed.
+# Runs in the VM as its administrator: runs Script as the signed-in Entra user Upn in that user's
+# session, and returns what it printed. Task Scheduler refuses an Entra user's SID as a task
+# principal ("No mapping between account names and security IDs was done"), so the one-shot task's
+# principal is the INTERACTIVE group: Task Scheduler starts it in each signed-in user's session, and
+# only Upn's instance runs the script.
 $runAsUser = {
     param([string]$Upn, [string]$Script, [int]$TimeoutSeconds)
     $ErrorActionPreference = 'Stop'
@@ -65,14 +68,15 @@ $runAsUser = {
     $done = Join-Path $dir "$id.done"
     Set-Content -LiteralPath $body -Value $Script -Encoding UTF8
     Set-Content -LiteralPath $wrapper -Encoding UTF8 -Value @(
+        "if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -ne '$sid') { exit }",
         "try { & '$body' *>&1 | Out-File -LiteralPath '$out' -Encoding utf8 -Width 4096 }",
         "finally { Set-Content -LiteralPath '$done' -Value 'done' -Encoding ascii }"
     )
     $task = "SacTestbed-$id"
     $path = '\SacTestbed\'
     $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$wrapper`""
-    $principal = New-ScheduledTaskPrincipal -UserId $sid -LogonType Interactive -RunLevel Limited
-    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Seconds $TimeoutSeconds)
+    $principal = New-ScheduledTaskPrincipal -GroupId 'S-1-5-4' -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances Parallel -ExecutionTimeLimit (New-TimeSpan -Seconds $TimeoutSeconds)
     Register-ScheduledTask -TaskName $task -TaskPath $path -Action $action -Principal $principal -Settings $settings -Force | Out-Null
     try {
         $started = Get-Date
@@ -81,9 +85,9 @@ $runAsUser = {
             $elapsed = ((Get-Date) - $started).TotalSeconds
             if ($elapsed -gt 5 -and (Get-ScheduledTask -TaskName $task -TaskPath $path).State -eq 'Ready' -and -not (Test-Path -LiteralPath $done)) {
                 $result = (Get-ScheduledTaskInfo -TaskName $task -TaskPath $path).LastTaskResult
-                throw ('the task as {0} ended without finishing its script (result 0x{1:X8})' -f $Upn, $result)
+                throw ('the task ended without running the script as {0} (result 0x{1:X8})' -f $Upn, $result)
             }
-            if ($elapsed -gt $TimeoutSeconds) { throw "the task as $Upn did not finish within $TimeoutSeconds seconds" }
+            if ($elapsed -gt $TimeoutSeconds) { throw "the script as $Upn did not finish within $TimeoutSeconds seconds" }
             Start-Sleep -Milliseconds 500
         }
         if (Test-Path -LiteralPath $out) { Get-Content -LiteralPath $out -Encoding UTF8 }
