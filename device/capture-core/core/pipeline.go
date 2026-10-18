@@ -580,16 +580,23 @@ func (p *Pipeline) Process(ctx context.Context, obs Observation) (Outcome, error
 			if xerr == nil && text != "" {
 				held = []byte(text)
 			}
-			if len(held) > protocol.MaxContentObjectBytes {
+			switch {
+			case len(held) == 0:
+				// The observation carried no content (the extension's metadata-only observations, a
+				// prompt whose text the tool's telemetry redacted): there is nothing to hold, and no
+				// upload accepts an empty object.
+			case len(held) > protocol.MaxContentObjectBytes:
 				out.Degraded = true
 				out.Reason = ReasonContentUnheld
 				c.Add(protocol.CounterDropped)
-			} else if err := p.Content.Put(ctx, eventID, held, dedup.BucketStart(obs.OccurredAt).Add(retention)); err != nil {
-				// A failed local write is a named gap: the event still goes, with the classifier's
-				// output, because dropping it would lose the metadata too.
-				out.Degraded = true
-				out.Reason = ReasonContentUnheld
-				c.Add(protocol.CounterDropped)
+			default:
+				if err := p.Content.Put(ctx, eventID, held, dedup.BucketStart(obs.OccurredAt).Add(retention)); err != nil {
+					// A failed local write is a named gap: the event still goes, with the
+					// classifier's output, because dropping it would lose the metadata too.
+					out.Degraded = true
+					out.Reason = ReasonContentUnheld
+					c.Add(protocol.CounterDropped)
+				}
 			}
 		}
 		in.Decision = decide(obs, in.Labels, in.Confidence != protocol.ConfidenceDegraded, id.UserRef)

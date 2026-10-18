@@ -60,8 +60,9 @@ func (d *Drainer) noteDelivered(payload []byte) {
 }
 
 // contentPass asks for a grant for each held object whose event has been delivered, and uploads
-// the granted ones. A denial is terminal and the content stays on the device until retention
-// removes it; anything else is retried with backoff. Nothing here can fail the event drain.
+// the granted ones. A denial, or a refusal that no retry of the same object can change, is terminal
+// and the content stays on the device until retention removes it; anything else is retried with
+// backoff. Nothing here can fail the event drain.
 func (d *Drainer) contentPass(ctx context.Context, deadline time.Time) {
 	src := d.cfg.Content
 	if src == nil {
@@ -100,7 +101,11 @@ func (d *Drainer) uploadOne(ctx context.Context, it contentstore.Item) (contents
 	if err != nil {
 		return "", "", fmt.Errorf("reading held content: %w", err)
 	}
-	if len(body) > protocol.MaxContentObjectBytes {
+	switch {
+	case len(body) == 0:
+		// An upload carries at least one byte, so an empty object can never be granted and sent.
+		return contentstore.StateDenied, "empty_object", nil
+	case len(body) > protocol.MaxContentObjectBytes:
 		return contentstore.StateDenied, "over_max_object_size", nil
 	}
 	req, err := json.Marshal(protocol.ContentGrantRequest{
@@ -127,8 +132,13 @@ func (d *Drainer) uploadOne(ctx context.Context, it contentstore.Item) (contents
 			// The grant for this event was already used: an earlier upload landed and its
 			// acknowledgement was lost.
 			return contentstore.StateUploaded, string(protocol.ReasonGrantConsumed), nil
-		case ae.code == protocol.ReasonModeViolation:
-			return contentstore.StateDenied, string(protocol.ReasonModeViolation), nil
+		case ae.code == protocol.ReasonModeViolation, ae.code == protocol.ReasonOversize:
+			return contentstore.StateDenied, string(ae.code), nil
+		case ae.code == protocol.ReasonUnknownEvent:
+			// Content is asked for only once its event was delivered, so the server recorded the
+			// event and has since removed it (by retention, erasure or a migration): no grant can
+			// follow.
+			return contentstore.StateDenied, string(protocol.ReasonUnknownEvent), nil
 		}
 		return "", "", ae
 	}
@@ -159,11 +169,15 @@ func (d *Drainer) uploadOne(ctx context.Context, it contentstore.Item) (contents
 		return contentstore.StateUploaded, grant.GrantID, nil
 	default:
 		ae := classify(resp.StatusCode, respBody)
-		if ae.code == protocol.ReasonGrantConsumed {
+		switch ae.code {
+		case protocol.ReasonGrantConsumed:
 			// Already stored under this grant: the upload is idempotent.
 			return contentstore.StateUploaded, grant.GrantID, nil
+		case protocol.ReasonOversize:
+			// The object is outside the sizes an upload may be, and the held bytes never change.
+			return contentstore.StateDenied, string(protocol.ReasonOversize), nil
 		}
-		// An expired grant, an outage or a refusal: ask for a fresh grant on the next attempt.
+		// An expired grant, an outage or another refusal: ask for a fresh grant on the next attempt.
 		return "", "", fmt.Errorf("upload refused: %w", ae)
 	}
 }
