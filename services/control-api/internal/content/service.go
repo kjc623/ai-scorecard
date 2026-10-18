@@ -138,9 +138,10 @@ func (s *Service) Decide(ctx context.Context, tenantID, deviceID string, req pro
 	if ec.ContentState == "uploaded" || ec.ContentState == "shredded" {
 		return nil, apierr.New(http.StatusConflict, string(protocol.ReasonGrantConsumed), "the content of this event was already uploaded")
 	}
-	if req.RawSizeBytes > protocol.MaxContentObjectBytes {
+	// Upload refuses the same sizes, so no grant is issued for an object it could never accept.
+	if req.RawSizeBytes < 1 || req.RawSizeBytes > protocol.MaxContentObjectBytes {
 		return nil, apierr.New(http.StatusRequestEntityTooLarge, string(protocol.ReasonOversize),
-			"the declared object is over the per-object cap")
+			"a content object is between one byte and the per-object cap")
 	}
 	now := s.now().UTC()
 
