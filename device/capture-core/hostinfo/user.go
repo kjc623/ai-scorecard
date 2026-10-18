@@ -14,8 +14,9 @@ import (
 
 // The user lookups fail in three distinguishable ways, and the caller acts differently on each.
 var (
-	// ErrNoConsoleUser: nobody is signed in at the console. The device's traffic is unattributed;
-	// the service account is never used in a person's place.
+	// ErrNoConsoleUser: nobody is signed in at the console (nor, on Windows, connected to a remote
+	// session). The device's traffic is unattributed; the service account is never used in a
+	// person's place.
 	ErrNoConsoleUser = errors.New("hostinfo: no user is signed in at the console")
 	// ErrNotPermitted: this process may not ask (WTSQueryUserToken needs the service's privilege).
 	// A console run falls back to its own user, which is the person who started it.
@@ -35,7 +36,8 @@ type User struct {
 	UPN string
 	// ObjectID is the Entra object id an Entra account's SID encodes (S-1-12-1-…).
 	ObjectID string
-	// Source is "console" for the console session's user, "process" for this process's own user.
+	// Source is "console" for the interactive user UserSources.Console names, "process" for this
+	// process's own user.
 	Source string
 }
 
@@ -120,7 +122,8 @@ func cleanUPN(v string) string {
 // never reports one of these as the person.
 var serviceAccountSIDs = map[string]bool{"S-1-5-18": true, "S-1-5-19": true, "S-1-5-20": true, "0": true}
 
-// UserSources are the lookups Resolver drives. Console names the console session's user with what
+// UserSources are the lookups Resolver drives. Console names the interactive user (the console
+// session's, or on Windows a connected remote session's while nobody is at the console) with what
 // is cheap to read (SID, account, cached UPN); UPN asks the directory for that user's principal name,
 // which can be slow, so the resolver calls it once per user and retries it rarely; Process names
 // this process's own user, the fallback for a console run that may not query the session.
@@ -154,8 +157,8 @@ func NewResolver(src UserSources, clock func() time.Time) *Resolver {
 		upns: map[string]string{}, tried: map[string]time.Time{}}
 }
 
-// Current returns the interactive user: the console session's, or, when this process may not ask,
-// its own user unless that is a service account.
+// Current returns the interactive user Console names, or, when this process may not ask, its own
+// user unless that is a service account.
 func (r *Resolver) Current() (User, error) {
 	if r.src.Console == nil {
 		return User{}, ErrUnsupported

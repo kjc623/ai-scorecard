@@ -25,7 +25,8 @@ func SystemSources() Sources {
 	}
 }
 
-// SystemUserSources names the real console user.
+// SystemUserSources names the real interactive user: the console's, or a connected remote
+// session's while nobody is at the console (interactiveSession).
 func SystemUserSources() UserSources {
 	return UserSources{Console: consoleUser, UPN: directoryUPN, Process: processUser}
 }
@@ -141,29 +142,67 @@ func firmwareSMBIOS() (RawSMBIOS, error) {
 	return RawSMBIOS{Major: buf[1], Minor: buf[2], Table: table}, nil
 }
 
-// consoleToken is the primary token of the user signed in at the physical console. Only a
-// service (SE_TCB_NAME) may ask; anyone else is told ErrNotPermitted.
-func consoleToken() (windows.Token, error) {
-	sess := windows.WTSGetActiveConsoleSessionId()
-	if sess == 0xFFFFFFFF {
-		return 0, ErrNoConsoleUser
+// interactiveToken is the primary token of the person at the device: the user of the session
+// interactiveSession chooses. Only a service (SE_TCB_NAME) may ask; anyone else is told
+// ErrNotPermitted.
+func interactiveToken() (windows.Token, error) {
+	sess, err := interactiveSession(windows.WTSGetActiveConsoleSessionId(), connectedSessions, signedIn)
+	if err != nil {
+		return 0, err
 	}
+	return sessionToken(sess)
+}
+
+// sessionToken is the primary token of the user signed in to a session. A session nobody is signed
+// in to, or one that has ended since it was named, is ErrNoConsoleUser.
+func sessionToken(sess uint32) (windows.Token, error) {
 	var tok windows.Token
 	if err := windows.WTSQueryUserToken(sess, &tok); err != nil {
 		switch {
-		case errors.Is(err, windows.ERROR_NO_TOKEN):
+		case errors.Is(err, windows.ERROR_NO_TOKEN), errors.Is(err, windows.ERROR_FILE_NOT_FOUND):
 			return 0, ErrNoConsoleUser
 		case errors.Is(err, windows.ERROR_PRIVILEGE_NOT_HELD), errors.Is(err, windows.ERROR_ACCESS_DENIED):
 			return 0, ErrNotPermitted
 		default:
-			return 0, fmt.Errorf("WTSQueryUserToken: %w", err)
+			return 0, fmt.Errorf("WTSQueryUserToken(%d): %w", sess, err)
 		}
 	}
 	return tok, nil
 }
 
+func signedIn(sess uint32) (bool, error) {
+	tok, err := sessionToken(sess)
+	if errors.Is(err, ErrNoConsoleUser) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	tok.Close()
+	return true, nil
+}
+
+// connectedSessions lists the sessions in state WTSActive: someone is connected to each, at the
+// console or remotely.
+func connectedSessions() ([]uint32, error) {
+	var info *windows.WTS_SESSION_INFO
+	var count uint32
+	// WTS_CURRENT_SERVER_HANDLE is 0; the reserved argument is 0 and the version 1.
+	if err := windows.WTSEnumerateSessions(0, 0, 1, &info, &count); err != nil {
+		return nil, fmt.Errorf("WTSEnumerateSessionsW: %w", err)
+	}
+	defer windows.WTSFreeMemory(uintptr(unsafe.Pointer(info)))
+	var out []uint32
+	for _, s := range unsafe.Slice(info, count) {
+		if s.State == windows.WTSActive {
+			out = append(out, s.SessionID)
+		}
+	}
+	return out, nil
+}
+
 func consoleUser() (User, error) {
-	tok, err := consoleToken()
+	tok, err := interactiveToken()
 	if err != nil {
 		return User{}, err
 	}
@@ -218,21 +257,21 @@ func userFromToken(tok windows.Token) (User, error) {
 	return u, nil
 }
 
-// directoryUPN asks the directory for the user's principal name. For the console user it runs
+// directoryUPN asks the directory for the user's principal name. For the interactive user it runs
 // while impersonating them, because GetUserNameEx answers for the calling thread's user; for this
 // process's own user it needs no impersonation.
 func directoryUPN(u User) (string, error) {
 	if u.Source == "process" {
 		return upnOfCaller(u.Account)
 	}
-	tok, err := consoleToken()
+	tok, err := interactiveToken()
 	if err != nil {
 		return "", err
 	}
 	defer tok.Close()
-	// The console may have changed hands since u was read; answer only for the same account.
+	// The device may have changed hands since u was read; answer only for the same account.
 	if cur, err := userFromToken(tok); err != nil || cur.SID != u.SID {
-		return "", errors.New("hostinfo: the console user changed during the lookup")
+		return "", errors.New("hostinfo: the interactive user changed during the lookup")
 	}
 	return impersonating(tok, func() (string, error) { return upnOfCaller(u.Account) })
 }

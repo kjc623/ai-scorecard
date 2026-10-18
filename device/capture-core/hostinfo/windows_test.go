@@ -40,3 +40,11 @@ func TestSystemUserSourcesNameARealUser(t *testing.T) {
 		t.Fatalf("user = %+v, want a SID and an account", u)
 	}
 }
+
+func TestConnectedSessionsReadThisMachine(t *testing.T) {
+	ids, err := connectedSessions()
+	if err != nil {
+		t.Fatalf("connectedSessions: %v", err)
+	}
+	t.Logf("connected sessions=%v", ids)
+}
