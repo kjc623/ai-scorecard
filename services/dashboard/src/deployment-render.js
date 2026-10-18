@@ -9,7 +9,7 @@
 // say only what this product needs; they are not a copy of Microsoft's documentation.
 
 import { escapeHtml, renderTile } from './render.js';
-import { formatCount, formatInstant } from './format.js';
+import { formatCount, formatInstant, formatWhen } from './format.js';
 import { DEPLOYMENT_FORMATS, deploymentKeyState, verificationAvailable } from './deployment.js';
 
 const DEP_INSTALL_COMMAND = 'msiexec /i ShadowAICapture.msi /qn';
@@ -18,8 +18,9 @@ const DEP_INSTALL_COMMAND = 'msiexec /i ShadowAICapture.msi /qn';
 const DEP_UNINSTALL_COMMAND = 'powershell.exe -NoProfile -NonInteractive -Command "foreach ($p in (New-Object -ComObject WindowsInstaller.Installer).RelatedProducts(\'{7E9C2B7A-6D0E-4C6A-9F2B-1A6E6C2D44A1}\')) { $r = (Start-Process msiexec.exe -ArgumentList \'/x\',$p,\'/qn\' -Wait -PassThru).ExitCode; if ($r -ne 0) { exit $r } }"';
 const DEP_DETECTION_KEY = 'HKEY_LOCAL_MACHINE\\SOFTWARE\\ShadowAICapture';
 
+/** An instant as a list reads it, "Oct 16 14:33", with the full form on hover. */
 export function depInstant(iso, absent = 'never') {
-  return iso ? `<span class="v-time" title="${escapeHtml(iso)}">${escapeHtml(formatInstant(iso))}</span>` : `<span class="v-absent">${escapeHtml(absent)}</span>`;
+  return iso ? `<span class="v-time" title="${escapeHtml(formatInstant(iso))}">${escapeHtml(formatWhen(iso))}</span>` : `<span class="v-absent">${escapeHtml(absent)}</span>`;
 }
 
 export function depChip(value) {
@@ -89,7 +90,7 @@ function depTiles(data, now) {
   const tiles = [
     {
       label: 'Devices enrolled', value: number(data.devices.enrolled),
-      note: data.devices.enrolled === null ? 'not reported by the server' : data.devices.last_enrolled_at ? `last enrolled ${formatInstant(data.devices.last_enrolled_at)}` : 'none enrolled yet',
+      note: data.devices.enrolled === null ? 'not reported by the server' : data.devices.last_enrolled_at ? `last enrolled ${formatWhen(data.devices.last_enrolled_at)}` : 'none enrolled yet',
     },
     {
       label: 'Active deployment keys',
@@ -204,7 +205,7 @@ function depKeys(state, now) {
   const active = keys.filter((k) => deploymentKeyState(k, now) === 'active').length;
   const rows = keys.map((k) => {
     const keyState = deploymentKeyState(k, now);
-    const expires = keyState === 'active' && k.expires_at ? `<span class="dp-sub">expires ${escapeHtml(formatInstant(k.expires_at))}</span>` : '';
+    const expires = keyState === 'active' && k.expires_at ? `<span class="dp-sub">expires ${escapeHtml(formatWhen(k.expires_at))}</span>` : '';
     return '<tr>'
       + `<td>${k.label ? `<span class="v-text">${escapeHtml(k.label)}</span>` : '<span class="v-absent">no label</span>'}</td>`
       + `<td>${depInstant(k.created_at, 'not reported')}</td>`
@@ -277,7 +278,7 @@ function depScim(state) {
   const rows = tokens.map((t) => '<tr>'
     + `<td>${t.label ? `<span class="v-text">${escapeHtml(t.label)}</span>` : '<span class="v-absent">no label</span>'}</td>`
     + `<td>${depInstant(t.created_at, 'not reported')}</td>`
-    + `<td>${depChip(t.revoked_at ? 'revoked' : 'active')}${t.revoked_at ? `<span class="dp-sub">${escapeHtml(formatInstant(t.revoked_at))}</span>` : ''}</td>`
+    + `<td>${depChip(t.revoked_at ? 'revoked' : 'active')}${t.revoked_at ? `<span class="dp-sub">${escapeHtml(formatWhen(t.revoked_at))}</span>` : ''}</td>`
     + `<td class="dp-action">${depTokenAction(t, state)}</td>`
     + '</tr>').join('');
   const empty = tokens.length === 0 ? '<tr class="row-empty"><td colspan="4">No SCIM tokens. Create one for your identity provider\'s provisioning settings.</td></tr>' : '';

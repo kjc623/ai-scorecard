@@ -456,9 +456,26 @@ export function renderFindings(block) {
   return blockFrame('findings', block, `${summary}<ol class="findings">${rows}</ol>`, { count: items.length });
 }
 
+/**
+ * Facts about one thing, each under its label: a value with a second line, a link or an id in the
+ * monospace face. A fact with no value says it was not reported.
+ */
+export function renderFacts(block) {
+  const items = (block.items ?? []).map((item) => {
+    const text = item.text === null || item.text === undefined || item.text === '' ? null : String(item.text);
+    const value = text === null ? '<span class="v-absent">Not reported</span>'
+      : item.href ? `<a href="${escapeHtml(item.href)}">${escapeHtml(text)}</a>`
+        : `<span class="${item.mono ? 'v-mono' : 'v-text'}"${item.title ? ` title="${escapeHtml(item.title)}"` : ''}>${escapeHtml(text)}</span>`;
+    const secondary = text !== null && item.secondary ? `<span class="facts-sub">${escapeHtml(item.secondary)}</span>` : '';
+    return `<div><dt>${escapeHtml(item.label)}</dt><dd>${value}${secondary}</dd></div>`;
+  }).join('');
+  return blockFrame('facts', block, `<dl class="facts">${items}</dl>`);
+}
+
 /** A block of a screen, by its kind. */
 function renderBlock(block) {
   switch (block?.kind) {
+    case 'facts': return renderFacts(block);
     case 'findings': return renderFindings(block);
     case 'ranking': return renderRanking(block);
     case 'funnel': return renderFunnel(block);
@@ -607,7 +624,8 @@ export function renderScreen(view, shell = {}) {
   if (view.needsInput && !view.search) return renderNeeds(view);
   const status = renderStatusLine(view.banners ?? []);
   const banners = (view.banners ?? []).filter((b) => !quiet(b)).map(renderBanner).join('');
-  const tiles = (view.tiles ?? []).length > 0 ? `<div class="tiles">${view.tiles.map(renderTile).join('')}</div>` : '';
+  // Tiles that each hold a state rather than a figure are compact: no wider than their note.
+  const tiles = (view.tiles ?? []).length > 0 ? `<div class="tiles${view.compactTiles ? ' tiles-compact' : ''}">${view.tiles.map(renderTile).join('')}</div>` : '';
   const lead = (view.lead ?? []).map(renderBlock).join('');
   const blocks = (view.blocks ?? []).map(renderBlock).join('');
   const tables = (view.tables ?? []).map(renderTable).join('');
