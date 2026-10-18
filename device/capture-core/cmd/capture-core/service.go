@@ -605,11 +605,12 @@ func (s *service) buildProviders() error {
 		return inventory.CLIInstalled(s.currentBundle(), "claude_code") || desktopInstalled()
 	}
 	claude := toolconfig.NewClaudeCode(toolconfig.NewClaudeCodeWriter(s.dir, platform.claudeCodeSettings, claudeInstalled), toolHealth(toolconfig.Config{
-		Token:   otel.Token,
-		Scope:   s.toolScope,
-		Log:     s.logf,
-		Clock:   time.Now,
-		Watcher: drift,
+		Token:       otel.Token,
+		Scope:       s.toolScope,
+		Log:         s.logf,
+		Clock:       time.Now,
+		Watcher:     drift,
+		RunningFile: toolconfig.RunningFile(s.dir, toolconfig.ClaudeCodeTool),
 	}))
 	if err := s.reg.Add(claude); err != nil {
 		return err
@@ -663,11 +664,12 @@ func (s *service) buildProviders() error {
 		toolconfig.NewCodexConfigWriter(s.dir, platform.codexConfig, platform.codexUserConfigs),
 	)
 	codex := toolconfig.NewCodex(codexFiles, toolHealth(toolconfig.Config{
-		Token:   otel.Token,
-		Scope:   s.toolScope,
-		Log:     s.logf,
-		Clock:   time.Now,
-		Watcher: drift,
+		Token:       otel.Token,
+		Scope:       s.toolScope,
+		Log:         s.logf,
+		Clock:       time.Now,
+		Watcher:     drift,
+		RunningFile: toolconfig.RunningFile(s.dir, toolconfig.CodexTool),
 	}))
 	if err := s.reg.Add(codex); err != nil {
 		return err

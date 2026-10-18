@@ -78,6 +78,9 @@ type Config struct {
 	// restart. Notify shows a notification to the person signed in to a session; nil tells no one.
 	Processes func(apps []string) ([]AppProcess, error)
 	Notify    func(session uint32, n protocol.Notify) error
+	// RunningFile keeps the processes known to run with the tool's configuration across restarts
+	// of the agent (RunningFile in the state directory). Empty keeps them only in memory.
+	RunningFile string
 }
 
 // Provider is one tool's tool_config_<tool> collector: while the bundle switches the tool's OTel
@@ -118,6 +121,10 @@ type Provider struct {
 	notice           policy.RestartNotice
 	restartDue       bool
 	processesFailing bool
+	// current is the processes the last check found running with the configuration on disk;
+	// runningFailing: the last write of them to the running file failed.
+	current        runningWith
+	runningFailing bool
 	// notified is, per session and app, the restart notification for the last configuration change;
 	// notifying holds those being shown.
 	notified  map[restartKey]restartNotified
@@ -146,6 +153,7 @@ func newProvider(t tool, w Writer, cfg Config) *Provider {
 	}
 	now := cfg.Clock()
 	return &Provider{tool: t, w: w, cfg: cfg, startedAt: now, counters: core.NewCounterSet(now),
+		current:  loadRunning(cfg.RunningFile),
 		notified: map[restartKey]restartNotified{}, notifying: map[restartKey]bool{}}
 }
 
