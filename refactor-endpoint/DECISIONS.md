@@ -2945,3 +2945,18 @@ dashboard.
 - **Deadlines are idle deadlines.** An intercepted exchange was cut 40 seconds after it started,
   however much was still streaming. Every read and write now moves the deadline on, so an exchange
   is cut after 40 seconds without a byte either way.
+
+## 2026-10-18: `invm.ps1 -AsUser` through the INTERACTIVE group
+
+- **Observed on WIN11-TEST.** `invm.ps1 -AsUser console` failed with "No mapping between account
+  names and security IDs was done". The script had already found kyle@sundial.solutions's SID in the
+  identity cache and an `explorer.exe` that SID owns (it throws its own errors otherwise), so Task
+  Scheduler refused that Entra SID (`S-1-12-1-...`) as the principal of the Interactive task. The SID
+  itself maps: the agent on the same VM names the user `AzureAD\KyleClark` with `LookupAccountSid`.
+- **The task's principal is the INTERACTIVE group** (`S-1-5-4`), with `-MultipleInstances Parallel`.
+  Task Scheduler starts the task in each signed-in user's session, and the wrapper runs the script
+  only when its token's user is the requested SID.
+- **Not a LocalSystem task that starts the script with the session's token.** Task Scheduler runs a
+  task in a job object, and a job's processes share one session (`AssignProcessToJobObject`), so a
+  child that `CreateProcessAsUser` starts in the user's session needs the job to allow breakaway.
+- **[device]** `invm.ps1 -AsUser console -Command 'whoami; whoami /user'` proves it.
