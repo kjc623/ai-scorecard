@@ -21,8 +21,8 @@ function stateCell(d, quietSince) {
     const facts = [d.received_at ? when(d.received_at) : null, d.agent_version ? `agent ${escapeHtml(d.agent_version)}` : null].filter(Boolean).join(' · ');
     return `<span class="v-vocab v-vocab-healthy">Received</span>${facts ? ` <span class="dp-sub">${facts}</span>` : ''}`;
   }
-  const waits = quietSince ? `The device has not checked in since ${when(quietSince)}` : 'It sends them when it next checks in';
-  return '<span class="v-vocab v-vocab-degraded">Waiting for the device</span>'
+  const waits = quietSince ? `The device has not checked in since ${when(quietSince)}` : 'Due at its next check-in';
+  return '<span class="v-vocab v-vocab-degraded">Waiting for the device to send its log bundle</span>'
     + ` <span class="dp-sub">${waits}${d.expires_at ? ` · lapses ${when(d.expires_at)}` : ''}</span>`;
 }
 

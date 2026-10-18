@@ -74,10 +74,10 @@ test('requesting makes one POST, then the request waits in its own row and no se
   seen.length = 0;
   await c.act({ diag: 'request' });
   assert.deepEqual(requests.map((r) => `${r.method} ${r.path}`), [`GET ${BASE}`, `POST ${BASE}`, `GET ${BASE}`]);
-  assert.ok(seen.every((html) => /Waiting for the device/.test(html) || /Asking the device…/.test(html)),
+  assert.ok(seen.every((html) => /Waiting for the device to send its log bundle/.test(html) || /Asking the device…/.test(html)),
     'the button is busy until the request is listed, so it never comes back before the row');
   const html = renderDeviceDiagnostics(c.state);
-  assert.match(html, /Waiting for the device<\/span> <span class="dp-sub">It sends them when it next checks in · lapses <span title="2026-10-21 12:00Z">Oct 21 12:00<\/span>/);
+  assert.match(html, /Waiting for the device to send its log bundle<\/span> <span class="dp-sub">Due at its next check-in · lapses <span title="2026-10-21 12:00Z">Oct 21 12:00<\/span>/);
   assert.match(html, /data-diag="request"[^>]*disabled/, 'a request already waiting is not asked for again');
   assert.doesNotMatch(html, /Requested\.|dp-done|Asking the device/, 'the row says the request waits; no message stays behind');
   // On a quiet device the row says what it is waiting on.
@@ -120,7 +120,7 @@ test('a waiting request is read again until its bundle arrives, repaints only wh
   list = null;
   await timers.fire();
   const html = renderDeviceDiagnostics(w.state);
-  assert.match(html, /Waiting for the device/);
+  assert.match(html, /Waiting for the device to send its log bundle/);
   assert.match(html, /Not refreshed\./);
 });
 

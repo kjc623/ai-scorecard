@@ -240,6 +240,11 @@ code {
 .tiles:has(> .tile:nth-child(4)) { grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
 .tiles:has(> .tile:nth-child(4)) > .tile:first-child { grid-column: auto; }
 .tiles:has(> .tile:nth-child(4)) > .tile:first-child .tile-value { font-size: 44px; }
+/* Compact tiles hold a state: each as wide as its note, the first no wider than the rest. */
+.tiles-compact { grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 300px)); }
+.tiles-compact > .tile:first-child { grid-column: auto; }
+.tiles-compact .tile .card-core { padding: 16px 18px; gap: 4px; }
+.tiles-compact .tile .tile-value { font-size: 15px; line-height: 1.6; }
 a.tile, a.card-link { display: block; text-decoration: none; color: inherit; }
 .card-link { cursor: pointer; transition: transform .5s var(--ease); }
 .card-link:hover { transform: translateY(-2px); }
@@ -337,7 +342,8 @@ a.tile, a.card-link { display: block; text-decoration: none; color: inherit; }
 .block-link:hover { text-decoration: underline; }
 .block-head .table-note + .block-link { margin-left: 14px; }
 .block-count { font: 11px/1.8 var(--mono); padding: 0 8px; border-radius: 9999px; background: var(--sunken); color: var(--ink-soft); }
-.table-scroll { overflow-x: auto; padding: 0 8px 8px; }
+/* Positioned, so a hidden column label scrolls with its table rather than widening the page. */
+.table-scroll { position: relative; overflow-x: auto; padding: 0 8px 8px; }
 table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 th, td { text-align: left; padding: 11px 14px; border-top: 1px solid var(--line); vertical-align: middle; }
 th {

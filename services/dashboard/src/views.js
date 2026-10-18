@@ -2899,14 +2899,6 @@ function collectorProblems(row) {
   ].filter(Boolean).join(' · ') || null;
 }
 
-/** The device's collectors by state, worst first, as "1 tampered · 12 healthy"; null when none reported. */
-function collectorsSummary(row) {
-  const parts = [['tampered', row.collectors_tampered], ['degraded', row.collectors_degraded], ['absent', row.collectors_absent], ['healthy', row.collectors_healthy]]
-    .filter(([, n]) => count(n) > 0)
-    .map(([state, n]) => `${formatCount(count(n))} ${state}`);
-  return parts.length ? parts.join(' · ') : null;
-}
-
 /** How long ago an instant was, in the coarsest unit that is still true. */
 function ago(iso, now) {
   const ms = now.getTime() - Date.parse(iso);
@@ -3147,36 +3139,19 @@ function collectorRows(collectors) {
       }),
     });
   }).sort((a, b) => order.indexOf(a.group) - order.indexOf(b.group) || a.name.localeCompare(b.name));
-  const counts = Object.fromEntries(order.map((g) => [g, rows.filter((r) => r.group === g).length]));
   return Object.freeze({
     rows: Object.freeze(rows.map((r) => Object.freeze({ ...r, group: COLLECTOR_GROUPS[r.group] }))),
-    collapsed: Object.freeze(order.filter((g) => g !== 'attention' && counts[g] > 0).map((g) => COLLECTOR_GROUPS[g])),
-    counts: Object.freeze(counts),
+    collapsed: Object.freeze(order.filter((g) => g !== 'attention' && rows.some((r) => r.group === g)).map((g) => COLLECTOR_GROUPS[g])),
   });
-}
-
-/** The Collectors tile: how many of the collectors that apply work, and what the rest are. */
-function collectorsTile(found, grouped, options) {
-  if (!grouped) {
-    const reported = found.collectors_reporting ?? null;
-    return tile('Collectors', reported === null ? { kind: 'absent', text: '—' } : { kind: 'number', text: formatCount(count(reported)) }, collectorsSummary(found), options);
-  }
-  const { attention, working, not_installed: notInstalled, off } = grouped.counts;
-  if (attention + working + notInstalled + off === 0) return tile('Collectors working', { kind: 'absent', text: '—' }, 'The device has not reported its collectors.', options);
-  return tile('Collectors working', { kind: 'number', text: `${formatCount(working)} of ${formatCount(working + attention)}` }, [
-    attention > 0 ? `${formatCount(attention)} ${attention === 1 ? 'needs' : 'need'} attention` : null,
-    notInstalled > 0 ? `${formatCount(notInstalled)} not installed` : null,
-    off > 0 ? `${formatCount(off)} off in policy` : null,
-  ].filter(Boolean).join(' · ') || null, options);
 }
 
 /** Partial coverage is a fact about the fleet's figures, which one device's page holds none of. */
 const deviceBanners = (state) => Object.freeze((state.banners ?? []).filter((b) => b.about !== 'coverage'));
 
 /**
- * One device: its state and when it last checked in, the mode it applied, how many of its
- * collectors work, what it is and who last used it, and every collector it reported, grouped by
- * whether it needs attention. A device the fleet list does not hold is said to be unknown.
+ * One device: its state and when it last checked in, the mode it applied, what it is and who last
+ * used it, and every collector it reported, grouped by whether it needs attention. A device the
+ * fleet list does not hold is said to be unknown.
  *
  * @param {object} input
  * @param {string} input.device       the device id the address names
@@ -3203,8 +3178,8 @@ export function deviceView({ device, row, collectors = null }, { now = new Date(
   }
   const read = collectors && !collectors.isRefusal;
   const grouped = read ? collectorRows(collectors) : null;
-  // The status and the collector count are the collectors' table: each opens it when it was read.
-  // The mode the device applied is set on Settings → Collection.
+  // The status opens the collectors' table when it was read. The mode the device applied is set on
+  // Settings → Collection.
   const below = read ? { jump: 'Collectors' } : {};
   const seen = found.last_seen_at ? `Last seen ${ago(found.last_seen_at, now)}, ${formatWhen(found.last_seen_at)}`
     : found.enrolled_at ? `Enrolled ${formatWhen(found.enrolled_at)}` : null;
@@ -3214,7 +3189,6 @@ export function deviceView({ device, row, collectors = null }, { now = new Date(
     tile('Collection mode', mode ? { kind: 'vocab', text: COLLECTION_MODE_LABELS[mode] ?? `Mode ${mode}`, key: mode } : { kind: 'absent', text: '—' },
       mode ? COLLECTION_MODE_CODES[mode] ?? null : 'The device has not reported a mode.',
       { href: '#settings', info: 'The collection mode the device last reported it applied. It can trail the mode set in Settings until the device next checks in.' }),
-    collectorsTile(found, grouped, below),
   ];
   const facts = Object.freeze({
     kind: 'facts',
@@ -3234,6 +3208,7 @@ export function deviceView({ device, row, collectors = null }, { now = new Date(
     subtitle: null,
     actions,
     tiles: Object.freeze(tiles),
+    compactTiles: true,
     blocks: Object.freeze([facts]),
     tables: Object.freeze(read ? [
       Object.freeze({

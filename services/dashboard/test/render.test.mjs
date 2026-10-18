@@ -358,12 +358,12 @@ test('a device\'s page says its state once, what it is in labelled facts, and gr
   assert.equal(view.title, 'WinDev2407Eval');
   assert.equal(view.subtitle, null, 'what the device is lives in its facts, not in a line of ids under the name');
 
-  const [status, mode, working] = view.tiles;
+  const [status, mode] = view.tiles;
+  assert.equal(view.tiles.length, 2, 'the collectors are counted in their own table, not in a tile');
   assert.deepEqual([status.label, status.value.text, status.note], ['Status', 'Quiet', 'Last seen 2 days ago, Oct 16 09:32'], 'the state, and when it was last seen said once');
   assert.match(status.info, /has not checked in lately/);
+  assert.equal(status.jump, 'Collectors', 'the status opens the collectors');
   assert.deepEqual([mode.label, mode.value.text, mode.note], ['Collection mode', 'Full prompt', 'M3']);
-  assert.deepEqual([working.label, working.value.text, working.note], ['Collectors working', '2 of 4', '2 need attention · 2 not installed · 1 off in policy'],
-    'a tool that is not installed and a collector off in policy are not counted against the device');
 
   const facts = view.blocks[0];
   assert.equal(facts.title, 'About this device');
@@ -386,6 +386,7 @@ test('a device\'s page says its state once, what it is in labelled facts, and gr
   assert.deepEqual(table.collapsed, ['Working', 'Not installed', 'Off in policy'], 'only what needs attention is open');
 
   const html = renderScreen(view, SHELL);
+  assert.match(html, /<div class="tiles tiles-compact">/, 'tiles that hold a state are no wider than their note');
   assert.doesNotMatch(html, /Coverage is partial/, 'the fleet\'s coverage says nothing about one device');
   assert.match(html, /<span class="cell-stack" title="egress_proxy"><span class="cell-primary">TLS inspection<\/span><span class="cell-secondary">Reads what desktop apps and command-line tools send to AI services<\/span><\/span><\/td><td><span class="v-vocab v-vocab-degraded" title="degraded">Degraded<\/span><\/td><td><span class="cell-stack" title="client_pinned"><span class="cell-primary">An app pins its certificates, so its traffic cannot be inspected<\/span><span class="cell-secondary">Last worked Oct 15 17:40<\/span><\/span><\/td>/,
     'a collector is named by what it does, with its code on hover, and its cause in words');
@@ -401,7 +402,7 @@ test('a device\'s page says its state once, what it is in labelled facts, and gr
   const unread = deviceView({ device: DEVICE, row, collectors: busy }, { now: new Date('2026-10-18T12:32:00Z') });
   assert.deepEqual(unread.tables, []);
   assert.ok(unread.notes.includes('The collectors could not be read: Busy, try again shortly.'));
-  assert.deepEqual([unread.tiles[2].label, unread.tiles[2].value.text], ['Collectors', '6'], 'the row\'s own count stands in');
+  assert.equal(unread.tiles[0].jump, undefined, 'with no table, the status opens nothing');
 
   const unknown = deviceView({ device: DEVICE, row: listOf([], 'mart.v_device_liveness') });
   assert.ok(unknown.notes.includes('No enrolled device has this id.'));
@@ -418,7 +419,6 @@ test('a device that works says so in one line of folded groups, and one that nev
   ], 'ops.collector_state');
   const view = deviceView({ device: DEVICE, row, collectors }, { now: new Date('2026-10-01T12:00:00Z') });
   assert.deepEqual([view.tiles[0].value.text, view.tiles[0].note], ['Reporting', 'Last seen 3 min ago, Oct 1 11:57']);
-  assert.deepEqual([view.tiles[2].value.text, view.tiles[2].note], ['1 of 1', '1 not installed']);
   assert.equal(view.tables[0].summary, undefined, 'a reporting device\'s collectors need no date');
   assert.deepEqual(view.tables[0].rows.map(({ row: r }) => [r.group, r.collector.primary, r.detail.primary]), [
     ['Working', 'Content classifier', null],
@@ -429,7 +429,6 @@ test('a device that works says so in one line of folded groups, and one that nev
 
   const silent = deviceView({ device: DEVICE, row: listOf([{ device: DEVICE, liveness: 'never_reported', enrolled_at: '2026-09-30T08:05:00Z', last_seen_at: null }], 'mart.v_device_liveness'), collectors: listOf([], 'ops.collector_state') });
   assert.deepEqual([silent.tiles[0].value.text, silent.tiles[0].note], ['Never checked in', 'Enrolled Sep 30 08:05']);
-  assert.deepEqual([silent.tiles[2].value.kind, silent.tiles[2].note], ['absent', 'The device has not reported its collectors.']);
   assert.equal(silent.quietSince, null);
 });
 

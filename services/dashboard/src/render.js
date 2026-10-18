@@ -624,7 +624,8 @@ export function renderScreen(view, shell = {}) {
   if (view.needsInput && !view.search) return renderNeeds(view);
   const status = renderStatusLine(view.banners ?? []);
   const banners = (view.banners ?? []).filter((b) => !quiet(b)).map(renderBanner).join('');
-  const tiles = (view.tiles ?? []).length > 0 ? `<div class="tiles">${view.tiles.map(renderTile).join('')}</div>` : '';
+  // Tiles that each hold a state rather than a figure are compact: no wider than their note.
+  const tiles = (view.tiles ?? []).length > 0 ? `<div class="tiles${view.compactTiles ? ' tiles-compact' : ''}">${view.tiles.map(renderTile).join('')}</div>` : '';
   const lead = (view.lead ?? []).map(renderBlock).join('');
   const blocks = (view.blocks ?? []).map(renderBlock).join('');
   const tables = (view.tables ?? []).map(renderTable).join('');
