@@ -410,6 +410,46 @@ func TestPipelineM3HoldsContentLocallyAndCarriesNoExcerpt(t *testing.T) {
 	}
 }
 
+// An M3 observation that carried no content (the extension's metadata-only observations have no
+// reader; a prompt Claude Code's telemetry redacted reads as empty) is emitted and holds nothing: an
+// empty object is one no grant could ever upload.
+func TestPipelineM3HoldsNothingForAnObservationWithoutContent(t *testing.T) {
+	noText := ExtractorFunc(func(payload []byte, _ string) (string, []dedup.Attachment, error) {
+		if len(payload) == 0 {
+			return "", nil, errors.New("no payload")
+		}
+		return string(payload), nil, nil
+	})
+	for name, content := range map[string]ContentReader{"no reader": nil, "empty": &countingReader{body: []byte{}}} {
+		t.Run(name, func(t *testing.T) {
+			b := testBundle("b4", protocol.ModeM3, map[string]protocol.CollectionMode{"tool": protocol.ModeM3})
+			sink := &recordingSink{}
+			store := &stubContentStore{}
+			p := newTestPipeline(t, sink, b)
+			p.Content = store
+
+			out, err := p.Process(context.Background(), Observation{
+				Route:           protocol.RouteExtWebRequest,
+				Kind:            protocol.KindPrompt,
+				ToolFingerprint: "tool",
+				OccurredAt:      time.Unix(1_700_000_000, 0),
+				Content:         content,
+				Extract:         noText,
+				Enforce:         decided(protocol.Decision{RuleID: "R", Action: protocol.ActionLogged}),
+			})
+			if err != nil || !out.Emitted || out.Mode != protocol.ModeM3 {
+				t.Fatalf("Process = %+v, %v; want an emitted m3 record", out, err)
+			}
+			if len(store.putIDs) != 0 {
+				t.Fatalf("content store ids = %v, want nothing held", store.putIDs)
+			}
+			if obj, _ := p.ContentState(); obj != 0 {
+				t.Fatalf("content state holds %d objects, want 0", obj)
+			}
+		})
+	}
+}
+
 func TestPipelineClassifierUnavailableStillEmitsDegraded(t *testing.T) {
 	sink := &recordingSink{}
 	p := newTestPipeline(t, sink, m1Bundle())

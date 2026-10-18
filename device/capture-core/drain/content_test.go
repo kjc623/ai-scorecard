@@ -179,3 +179,95 @@ func TestFailedUploadIsRetried(t *testing.T) {
 		t.Fatalf("settled %q after %d retries, want unsettled with one retry", src.settled, src.retries)
 	}
 }
+
+// An empty object is one no upload accepts, so it is settled on the device without a grant
+// request.
+func TestEmptyContentIsDeniedWithoutAGrant(t *testing.T) {
+	e := newFakeEdge(t)
+	src := &fakeContent{body: []byte{}, ready: true}
+	e.mux.HandleFunc("/v1/content/grant", func(w http.ResponseWriter, r *http.Request) {
+		t.Error("a grant was requested for an empty object")
+	})
+	d := contentDrainer(t, e, src)
+	d.contentPass(context.Background(), time.Now().Add(5*time.Second))
+	if src.settled != contentstore.StateDenied || src.detail != "empty_object" || src.retries != 0 {
+		t.Fatalf("settled %s %q after %d retries, want denied/empty_object at once", src.settled, src.detail, src.retries)
+	}
+}
+
+// A refusal that no retry of the same object can change is settled at once: the event the
+// server no longer has, and an object outside the sizes an upload may be, at the grant or at the
+// upload.
+func TestPermanentRefusalsAreSettled(t *testing.T) {
+	for name, tc := range map[string]struct {
+		grant, upload int
+		code, detail  string
+	}{
+		"unknown event":      {grant: http.StatusNotFound, code: "unknown_event", detail: "unknown_event"},
+		"oversize at grant":  {grant: http.StatusRequestEntityTooLarge, code: "oversize", detail: "oversize"},
+		"oversize at upload": {grant: http.StatusOK, upload: http.StatusRequestEntityTooLarge, code: "oversize", detail: "oversize"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newFakeEdge(t)
+			src := &fakeContent{body: []byte("x"), ready: true}
+			refusal := []byte(`{"error":{"code":"` + tc.code + `"}}`)
+			e.mux.HandleFunc("/v1/content/grant", func(w http.ResponseWriter, r *http.Request) {
+				if tc.grant != http.StatusOK {
+					writeJSON(t, w, tc.grant, refusal)
+					return
+				}
+				raw, _ := json.Marshal(protocol.ContentGrantResponse{GrantID: "g-5", State: protocol.ContentGrantGranted})
+				writeJSON(t, w, http.StatusOK, raw)
+			})
+			e.mux.HandleFunc(protocol.ContentUploadPath, func(w http.ResponseWriter, r *http.Request) {
+				if tc.upload == 0 {
+					t.Error("content was uploaded after the grant was refused")
+				}
+				writeJSON(t, w, tc.upload, refusal)
+			})
+			d := contentDrainer(t, e, src)
+			d.contentPass(context.Background(), time.Now().Add(5*time.Second))
+			if src.settled != contentstore.StateDenied || src.detail != tc.detail || src.retries != 0 {
+				t.Fatalf("settled %s %q after %d retries, want denied/%s at once", src.settled, src.detail, src.retries, tc.detail)
+			}
+		})
+	}
+}
+
+// An object an earlier agent left retrying is settled by the first pass: a store holding the
+// empty object and the event the server no longer has lists nothing ready afterwards.
+func TestObjectsLeftRetryingAreSettled(t *testing.T) {
+	store, err := contentstore.Open(t.TempDir(), make([]byte, 32), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const unknown = "bbbbbbbb-cccc-4ddd-8eee-ffffffffffff"
+	for id, body := range map[string][]byte{contentEvent: {}, unknown: []byte("held")} {
+		if err := store.Put(context.Background(), id, body, time.Now().Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.MarkDelivered(id, contentstore.Request{CollectionMode: "m3"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Retry(id, "upload refused", time.Now().Add(-time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	e := newFakeEdge(t)
+	e.mux.HandleFunc("/v1/content/grant", func(w http.ResponseWriter, r *http.Request) {
+		var req protocol.ContentGrantRequest
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.EventID != unknown {
+			t.Errorf("a grant was requested for %s", req.EventID)
+		}
+		writeJSON(t, w, http.StatusNotFound, []byte(`{"error":{"code":"unknown_event"}}`))
+	})
+	d := newTestDrainer(t, e, nil, e.issued(24*time.Hour), func(c *Config) { c.Content = store })
+	d.contentPass(context.Background(), time.Now().Add(5*time.Second))
+	if ready := store.Ready(); len(ready) != 0 {
+		t.Fatalf("still ready after the pass: %+v", ready)
+	}
+	if n := store.Counts()[contentstore.StateDenied]; n != 2 {
+		t.Fatalf("denied = %d, want 2", n)
+	}
+}

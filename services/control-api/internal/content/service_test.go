@@ -125,6 +125,7 @@ func TestGrantDecisions(t *testing.T) {
 		{name: "not an M3 event", ec: func(e *EventContext) { e.CollectionMode = "m2" }, code: string(protocol.ReasonModeViolation)},
 		{name: "already uploaded", ec: func(e *EventContext) { e.ContentState = "uploaded" }, code: string(protocol.ReasonGrantConsumed)},
 		{name: "oversize", req: func(r *protocol.ContentGrantRequest) { r.RawSizeBytes = protocol.MaxContentObjectBytes + 1 }, code: string(protocol.ReasonOversize)},
+		{name: "empty object", req: func(r *protocol.ContentGrantRequest) { r.SizeBytes, r.RawSizeBytes = 0, 0 }, code: string(protocol.ReasonOversize)},
 		{name: "bad event id", req: func(r *protocol.ContentGrantRequest) { r.EventID = "x" }, code: apierr.CodeSchemaViolation},
 		{name: "ceiling below m3", ec: func(e *EventContext) { e.CeilingMode = "m2" }, reason: DenyModeNotPermitted},
 		{name: "retention expired", ec: func(e *EventContext) { e.ExpiresAt = time.Now().Add(-time.Minute) }, reason: DenyRetentionExpired},
